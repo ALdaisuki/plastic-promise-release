@@ -856,6 +856,57 @@ class ContextEngine:
         return [(k, v[0], v[1], v[2]) for k, v in
                 sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
 
+    def _apply_symbol_rules(self, items, task: str) -> List[tuple]:
+        result = []
+        for item_id, score, content, source in items:
+            boost = 1.0
+            for category, keywords in SYMBOL_RULE_KEYWORDS.items():
+                if any(kw in task for kw in keywords) or any(kw in content for kw in keywords):
+                    if category == "security":
+                        boost *= 1.5
+                    elif category == "commitment":
+                        boost *= 1.4
+                    elif category == "quality":
+                        boost *= 1.2
+            result.append((item_id, min(score * boost, 1.0), content, source))
+        return result
+
+    def _apply_feedback(self, items: List[tuple]) -> List[tuple]:
+        return [(
+            item_id,
+            min(1.0, max(0.0, score + self._feedback.get(item_id, 0.0))),
+            content,
+            source,
+        ) for item_id, score, content, source in items]
+
+    def _calc_freshness(self, item_id: str) -> str:
+        mem = self._memories.get(item_id, {})
+        created = mem.get("created_at", "")
+        if not created or not self._current_time:
+            return "valid"
+        try:
+            created_date = created[:10]
+            now_date = self._current_time[:10]
+            if created_date == now_date:
+                return "fresh"
+            created_parts = created_date.split("-")
+            now_parts = now_date.split("-")
+            if len(created_parts) == 3 and len(now_parts) == 3:
+                created_days = int(created_parts[0]) * 365 + int(created_parts[1]) * 30 + int(created_parts[2])
+                now_days = int(now_parts[0]) * 365 + int(now_parts[1]) * 30 + int(now_parts[2])
+                diff = now_days - created_days
+                if diff <= 1:
+                    return "fresh"
+                elif diff <= 7:
+                    return "valid"
+                elif diff <= 30:
+                    return "stale"
+                else:
+                    return "expired"
+        except (ValueError, IndexError):
+            pass
+        return "valid"
+
 
 # ============================================================
 # SQLite 持久化存储 — 写穿透模式
@@ -964,56 +1015,3 @@ class _SQLiteStorage:
             "worth_failure": row[13] or 0,
             "activation_weight": row[14] or 0.5,
         }
-
-    def _apply_symbol_rules(self, items, task: str) -> List[tuple]:
-        result = []
-        for item_id, score, content, source in items:
-            boost = 1.0
-            for category, keywords in SYMBOL_RULE_KEYWORDS.items():
-                if any(kw in task for kw in keywords) or any(kw in content for kw in keywords):
-                    # 简单 boost
-                    if category == "security":
-                        boost *= 1.5
-                    elif category == "commitment":
-                        boost *= 1.4
-                    elif category == "quality":
-                        boost *= 1.2
-            result.append((item_id, min(score * boost, 1.0), content, source))
-        return result
-
-    def _apply_feedback(self, items: List[tuple]) -> List[tuple]:
-        return [(
-            item_id,
-            min(1.0, max(0.0, score + self._feedback.get(item_id, 0.0))),
-            content,
-            source,
-        ) for item_id, score, content, source in items]
-
-    def _calc_freshness(self, item_id: str) -> str:
-        mem = self._memories.get(item_id, {})
-        created = mem.get("created_at", "")
-        if not created or not self._current_time:
-            return "valid"
-        try:
-            created_date = created[:10]
-            now_date = self._current_time[:10]
-            if created_date == now_date:
-                return "fresh"
-            # 粗略天数
-            created_parts = created_date.split("-")
-            now_parts = now_date.split("-")
-            if len(created_parts) == 3 and len(now_parts) == 3:
-                created_days = int(created_parts[0]) * 365 + int(created_parts[1]) * 30 + int(created_parts[2])
-                now_days = int(now_parts[0]) * 365 + int(now_parts[1]) * 30 + int(now_parts[2])
-                diff = now_days - created_days
-                if diff <= 1:
-                    return "fresh"
-                elif diff <= 7:
-                    return "valid"
-                elif diff <= 30:
-                    return "stale"
-                else:
-                    return "expired"
-        except (ValueError, IndexError):
-            pass
-        return "valid"
