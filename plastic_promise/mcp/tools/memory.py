@@ -97,69 +97,36 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         scope = args.get("scope", "global")
         entity_ids = args.get("entity_ids", [])
 
-        memory_id = f"mem_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
         owner = args.get("owner", "")
 
-        # Create MemoryRecord — Rust PyO3 first, Python fallback
-        try:
-            import context_engine_core
-            record = context_engine_core.MemoryRecord(
-                memory_id, content, memory_type, source
-            )
-        except ImportError:
-            from plastic_promise.core.context_engine import MemoryRecord
-            record = MemoryRecord(
-                memory_id, content, memory_type, source
-            )
-        record.scope = scope
-        record.owner = owner
-        record.category = "other"
-        record.importance = 0.7
         # Auto-extract entity links from content (原则 #6 数据流驱动)
         extracted = _extract_entity_ids(content, engine)
         all_entities = list(set(entity_ids + extracted))
-        record.entity_ids = all_entities
-        record.created_at = datetime.datetime.now().isoformat()
 
-        # Persist via ContextEngine delegation
-        stored_id = engine.store_memory(record)
+        # ALL memories go through fuzzy buffer pipeline first:
+        #   raw → tagged(关键词) → classified(大类分L1/L3) → embedded(细分向量) → 迁移主池
+        # This is the standard path, not a fallback. (原则 #4 上下文驱动, #10 自演化闭环)
+        fb = _get_fuzzy_buffer(engine)
+        fuzzy_id = fb.store_urgent(content, memory_type, source, entity_ids=all_entities)
 
-        # Embed — fall back to fuzzy buffer if service unavailable
-        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
-        vector_dim = 0
-        final_id = stored_id
-        try:
-            embedder = get_embedder(fallback_on_error=False)
-            vec = embedder.embed(content)
-            vector_dim = len(vec)
-            engine._memories[stored_id]["_vector"] = vec
-        except Exception:
-            # Embedding unavailable: remove from main pool, store in fuzzy buffer
-            try:
-                engine.delete_memory(stored_id)
-            except Exception:
-                pass
-            fb = _get_fuzzy_buffer(engine)
-            final_id = fb.store_urgent(content, memory_type, source, entity_ids=all_entities)
-
-        # Auto-link extracted entities to graph (runs for both paths)
+        # Auto-link extracted entities to graph immediately
         for eid in all_entities:
-            edge = {"from": final_id, "to": eid, "relation": "references", "weight": 0.5}
+            edge = {"from": fuzzy_id, "to": eid, "relation": "references", "weight": 0.5}
             if edge not in engine._graph_edges:
                 engine._graph_edges.append(edge)
 
-        if final_id != stored_id:
-            return [TextContent(type="text", text=json.dumps({
-                "stored": True, "memory_id": final_id, "content_preview": content[:200],
-                "memory_type": memory_type, "scope": scope,
-                "fuzzy": True, "entity_ids": all_entities,
-                "note": "Stored in fuzzy buffer — will migrate after background processing",
-            }, ensure_ascii=False))]
+        # Process through pipeline immediately (同步处理——大类分完就入池)
+        result = fb.process_pipeline()
 
         return [TextContent(type="text", text=json.dumps({
-            "stored": True, "memory_id": stored_id, "content_preview": content[:200],
-            "memory_type": memory_type, "scope": scope,
-            "vector_dim": vector_dim, "entity_ids": all_entities,
+            "stored": True,
+            "memory_id": fuzzy_id,
+            "content_preview": content[:200],
+            "memory_type": memory_type,
+            "scope": scope,
+            "entity_ids": all_entities,
+            "pipeline": result["pipeline"],
+            "note": "必经流水线: raw→tagged→classified(大类)→embedded(细分)→主池",
         }, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
