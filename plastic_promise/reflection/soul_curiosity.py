@@ -186,3 +186,45 @@ def curiosity_explore(current_context: str) -> Dict[str, Any]:
     """
     explorer = CuriosityExplorer()
     return explorer.get_exploration_suggestion(current_context)
+
+
+_exploration_log: List[Dict[str, Any]] = []
+_explore_rate = 0.15
+
+
+def curiosity_act(suggestion_id: str, outcome: str) -> Dict[str, Any]:
+    """Record exploration outcome and adapt explore rate.
+
+    Args:
+        suggestion_id: ID from curiosity_explore result.
+        outcome: "adopted" | "ignored" | "failed"
+    """
+    global _explore_rate, _exploration_log
+    _exploration_log.append({
+        "suggestion_id": suggestion_id,
+        "outcome": outcome,
+        "timestamp": __import__('datetime').datetime.now().isoformat(),
+    })
+    # Adaptive explore rate
+    adopted = sum(1 for e in _exploration_log if e["outcome"] == "adopted")
+    total = len(_exploration_log)
+    adopted_rate = adopted / total if total > 0 else 0.5
+    if adopted_rate > 0.7:
+        _explore_rate = min(0.30, _explore_rate + 0.02)
+    elif adopted_rate < 0.3:
+        _explore_rate = max(0.05, _explore_rate - 0.02)
+    return {"explore_rate": _explore_rate, "adopted_rate": adopted_rate, "total": total}
+
+
+def curiosity_stats() -> Dict[str, Any]:
+    """Return curiosity exploration statistics."""
+    adopted = sum(1 for e in _exploration_log if e["outcome"] == "adopted")
+    total = len(_exploration_log)
+    return {
+        "explore_rate": _explore_rate,
+        "total_explorations": total,
+        "adopted": adopted,
+        "ignored": sum(1 for e in _exploration_log if e["outcome"] == "ignored"),
+        "failed": sum(1 for e in _exploration_log if e["outcome"] == "failed"),
+        "adopted_rate": round(adopted / total, 3) if total > 0 else 0.0,
+    }
