@@ -6,6 +6,9 @@
 //! - FtsIndex: Full-text BM25 search (LanceDB impl)
 //! - Embedder: Text-to-vector (Python-side impl, trait declared here)
 
+pub mod schema;
+pub mod sqlite_impl;
+
 use std::collections::HashMap;
 use crate::domain::Tier;
 use crate::memory_worth::MemoryRecord;

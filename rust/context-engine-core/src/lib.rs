@@ -16,6 +16,7 @@ pub mod association_feedback;
 pub mod memory_worth;
 pub mod context_engine;
 pub mod principles;
+pub mod storage;
 
 use pyo3::prelude::*;
 
