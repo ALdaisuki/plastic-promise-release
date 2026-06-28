@@ -175,7 +175,21 @@ class MemoryRecord:
         Returns:
             包含所有字段的字典，适用于 JSON 序列化及 Rust 引擎桥接。
         """
-        pass
+        return {
+            "memory_id": self.memory_id,
+            "content": self.content,
+            "memory_type": self.memory_type,
+            "source": self.source,
+            "worth_success": self.worth_success,
+            "worth_failure": self.worth_failure,
+            "activation_weight": self.activation_weight,
+            "tier": self.tier,
+            "metadata": dict(self.metadata),
+            "created_at": self.created_at,
+            "last_accessed": self.last_accessed,
+            "access_count": self.access_count,
+            "worth_score": self.worth_score,
+        }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemoryRecord":
@@ -187,7 +201,21 @@ class MemoryRecord:
         Returns:
             新创建的 MemoryRecord 实例。
         """
-        pass
+        record = cls(
+            content=data.get("content", ""),
+            memory_type=data.get("memory_type", "experience"),
+            source=data.get("source", "user"),
+            memory_id=data.get("memory_id"),
+            worth_success=data.get("worth_success", 0),
+            worth_failure=data.get("worth_failure", 0),
+            activation_weight=data.get("activation_weight", 0.5),
+            tier=data.get("tier", "L1"),
+            metadata=data.get("metadata", {}),
+        )
+        record.created_at = data.get("created_at", record.created_at)
+        record.last_accessed = data.get("last_accessed", record.last_accessed)
+        record.access_count = data.get("access_count", 0)
+        return record
 
 
 # ============================================================
