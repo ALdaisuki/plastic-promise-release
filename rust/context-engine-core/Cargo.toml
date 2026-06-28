@@ -6,7 +6,7 @@ description = "Plastic Promise 上下文供应引擎 — Rust 核心"
 
 [lib]
 name = "context_engine_core"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.20", features = ["extension-module"] }
@@ -14,7 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
-uuid = { version = "1", features = ["v4"] }
+# uuid removed — using timestamp-based IDs to avoid getrandom→dlltool dependency
 
 [profile.release]
 opt-level = 3

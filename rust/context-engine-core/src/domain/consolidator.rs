@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
-use uuid::Uuid;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static CONSOLIDATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 use crate::domain::{ConsolidatedInsight, MemoryConsolidator};
 use crate::memory_worth::MemoryRecord;
@@ -137,7 +139,11 @@ impl MemoryConsolidator for EvolveRConsolidator {
         };
 
         let source_ids: Vec<String> = cluster.iter().map(|m| m.id.clone()).collect();
-        let id = format!("cons-{}", Uuid::new_v4());
+        let id = format!(
+            "cons-{}-{}",
+            now.timestamp_nanos_opt().unwrap_or(0),
+            CONSOLIDATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
 
         Some(ConsolidatedInsight {
             id,
