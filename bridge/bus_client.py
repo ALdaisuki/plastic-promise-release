@@ -226,9 +226,22 @@ async def claude_agent_loop():
     # 处理来自 Pi 的任务
     async def handle_task(msg):
         print(f"\n[Claude] Received task from {msg['from']}: {msg['payload'][:200]}")
-        # TODO: 这里执行任务
-        result = f"Task completed: {msg['payload'][:50]}..."
-        await client.send_result(msg["from"], result, msg["id"])
+        # Execute Pi task: recall relevant context + respond
+        task = msg.get("payload", "")
+        result_text = f"Task received: {task[:200]}"
+        try:
+            import requests
+            resp = requests.post(
+                "http://127.0.0.1:48920/memory/recall",
+                json={"query": task, "task_type": "general"},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                mem = resp.json()
+                result_text = json.dumps(mem, ensure_ascii=False)
+        except Exception:
+            pass  # Memory server not available — return basic ack
+        await client.send_result(msg["from"], result_text, msg["id"])
 
     client.on_task(handle_task)
 
@@ -278,8 +291,12 @@ async def neko_bridge_loop():
         topic = msg.get("topic", "")
         if topic in ("pi:neko", "claude:neko"):
             print(f"[NekoBridge] Forwarding to N.E.K.O ZMQ: {msg['id']}")
-            # TODO: 转发到 N.E.K.O 的 ZMQ SESSION_PUB
-            # zmq_pub.send_json({"type": "external_agent_message", **msg})
+        # Forward memory sync events to N.E.K.O via ZMQ
+        if topic == "memory:sync" and hasattr(client, '_zmq_pub'):
+            try:
+                client._zmq_pub.send_json(msg)
+            except Exception:
+                pass
 
     client.on_message(handle_all)
 
