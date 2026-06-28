@@ -28,10 +28,10 @@ def run(engine: Any = None) -> dict:
             )
             cutoff = datetime.datetime.now() - datetime.timedelta(hours=24)
             for mem in all_mems:
-                if mem.tier == "working" and mem.last_accessed_at:
+                if mem.tier == "L1" and mem.created_at:
                     try:
-                        last = datetime.datetime.fromisoformat(mem.last_accessed_at)
-                        if last < cutoff:
+                        created = datetime.datetime.fromisoformat(mem.created_at)
+                        if created < cutoff:
                             stale_count += 1
                             stale_ids.append(mem.id)
                     except (ValueError, TypeError):

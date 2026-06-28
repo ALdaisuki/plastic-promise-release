@@ -181,11 +181,14 @@ class HormoneEngine:
             delta = -TRUST_DECAY_RATE * 0.3 * intensity  # mild decay
 
         # Sync to trust_manager if available
-        if self.trust_manager is not None:
+        if self.trust_manager is not None and delta != 0.0:
             try:
-                self.trust_manager.apply_trust_delta(delta)
+                if delta > 0:
+                    self.trust_manager.boost(abs(delta))
+                else:
+                    self.trust_manager.decay(abs(delta))
             except AttributeError:
-                # trust_manager does not support apply_trust_delta; ignore
+                # trust_manager does not support boost/decay; ignore
                 pass
 
         return delta
