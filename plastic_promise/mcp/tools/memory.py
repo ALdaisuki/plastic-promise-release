@@ -119,14 +119,26 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         # Persist via ContextEngine delegation
         stored_id = engine.store_memory(record)
 
-        # Embed and prepare for vector indexing (embedding computed for future use)
+        # Embed — fall back to fuzzy buffer if service unavailable
         from plastic_promise.embedder import get_embedder, FallbackEmbedder
         try:
             embedder = get_embedder(fallback_on_error=False)
             vec = embedder.embed(content)
+            vector_dim = len(vec)
         except Exception:
-            embedder = FallbackEmbedder()
-            vec = embedder.embed(content)
+            # Embedding unavailable: store in fuzzy buffer for later processing
+            fb = _get_fuzzy_buffer(engine)
+            fuzzy_id = fb.store_urgent(content, memory_type, source)
+            return [TextContent(type="text", text=json.dumps({
+                "stored": True,
+                "memory_id": stored_id,
+                "content_preview": content[:200],
+                "memory_type": memory_type,
+                "scope": scope,
+                "fuzzy_id": fuzzy_id,
+                "fuzzy": True,
+                "note": "Stored in fuzzy buffer — embedding deferred to background processing",
+            }, ensure_ascii=False))]
 
         return [TextContent(type="text", text=json.dumps({
             "stored": True,
@@ -134,7 +146,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
             "content_preview": content[:200],
             "memory_type": memory_type,
             "scope": scope,
-            "vector_dim": len(vec),
+            "vector_dim": vector_dim,
         }, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
@@ -338,3 +350,47 @@ async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "memory_gc"}, ensure_ascii=False))]
+
+
+# ---- _get_fuzzy_buffer (internal helper) ----
+def _get_fuzzy_buffer(engine: Any):
+    """Get or create a FuzzyBuffer attached to the engine."""
+    if not hasattr(engine, '_fuzzy_buffer') or engine._fuzzy_buffer is None:
+        from plastic_promise.memory.fuzzy_buffer import FuzzyBuffer
+        from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
+        from plastic_promise.embedder import get_embedder
+
+        rec_mem = engine._rec_mem if hasattr(engine, '_rec_mem') else RecMem(engine)
+        try:
+            embedder = get_embedder()
+        except Exception:
+            from plastic_promise.embedder import FallbackEmbedder
+            embedder = FallbackEmbedder()
+        tier_mgr = MemoryTierManager(rec_mem)
+        engine._fuzzy_buffer = FuzzyBuffer(rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr)
+        engine._rec_mem = rec_mem
+    return engine._fuzzy_buffer
+
+
+# ---- fuzzy_status ----
+async def handle_fuzzy_status(engine: Any, args: dict) -> list[TextContent]:
+    """Query fuzzy buffer statistics — items per stage, total, oldest pending."""
+    try:
+        fb = _get_fuzzy_buffer(engine)
+        stats = fb.stats()
+        return [TextContent(type="text", text=json.dumps(stats, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "fuzzy_status"}, ensure_ascii=False))]
+
+
+# ---- fuzzy_process ----
+async def handle_fuzzy_process(engine: Any, args: dict) -> list[TextContent]:
+    """Trigger fuzzy buffer pipeline processing (raw→tagged→embedded→classified→migrate)."""
+    try:
+        fb = _get_fuzzy_buffer(engine)
+        result = fb.process_pipeline()
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "fuzzy_process"}, ensure_ascii=False))]

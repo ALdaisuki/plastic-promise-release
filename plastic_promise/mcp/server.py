@@ -167,6 +167,22 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="fuzzy_status",
+            description="查看模糊缓存区统计：各区数量、待处理量、最旧条目时间。",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="fuzzy_process",
+            description="手动触发模糊缓存区处理流水线：raw→tagged→embedded→classified→迁移到主记忆池。",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ])
 
     # === 原则域 ===
@@ -439,6 +455,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_gc":
             from plastic_promise.mcp.tools.memory import handle_memory_gc
             return await handle_memory_gc(engine, arguments)
+        elif name == "fuzzy_status":
+            from plastic_promise.mcp.tools.memory import handle_fuzzy_status
+            return await handle_fuzzy_status(engine, arguments)
+        elif name == "fuzzy_process":
+            from plastic_promise.mcp.tools.memory import handle_fuzzy_process
+            return await handle_fuzzy_process(engine, arguments)
 
         # Principle domain
         elif name == "principle_activate":

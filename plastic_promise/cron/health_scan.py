@@ -54,10 +54,27 @@ def run(engine: Any = None, ollama_host: str = "http://127.0.0.1:11434") -> dict
     except Exception as e:
         checks["ollama"] = {"status": "error", "message": str(e)}
 
+    # Fuzzy buffer backlog check — auto-process if items pending
+    fuzzy_processed = 0
+    try:
+        if engine is not None and hasattr(engine, '_fuzzy_buffer') and engine._fuzzy_buffer is not None:
+            fb_stats = engine._fuzzy_buffer.stats()
+            if fb_stats["total"] > 0:
+                result = engine._fuzzy_buffer.process_pipeline()
+                fuzzy_processed = result.get("total_processed", 0)
+            checks["fuzzy_buffer"] = {
+                "status": "ok",
+                "backlog": fb_stats["total"],
+                "processed": fuzzy_processed,
+            }
+    except Exception as e:
+        checks["fuzzy_buffer"] = {"status": "error", "message": str(e)}
+
     all_ok = all(c.get("status") == "ok" for c in checks.values())
 
     return {
         "timestamp": now,
         "healthy": all_ok,
         "checks": checks,
+        "fuzzy_processed": fuzzy_processed,
     }
