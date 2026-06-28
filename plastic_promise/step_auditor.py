@@ -59,8 +59,9 @@ class StepAuditor:
         # 审计记录自动保存
     """
 
-    def __init__(self, trust_manager=None, audit_log_path: Optional[str] = None):
+    def __init__(self, trust_manager=None, audit_log_path: Optional[str] = None, engine=None):
         self._trust = trust_manager
+        self._engine = engine  # optional ContextEngine for reflection memory storage
         self._history: list[StepAuditResult] = []
         self._audit_log_path = audit_log_path or "step_audit_log.jsonl"
         self._load_history()
@@ -135,6 +136,19 @@ class StepAuditor:
         # 6. 保存
         self._history.append(result)
         self._save(result)
+
+        # 7. 反思记忆存储 — 将教训提炼自动存入记忆池（原则 #10 自演化闭环）
+        if self._engine is not None and lesson and lesson != self._derive_lesson(task_description):
+            try:
+                self._engine.register_memory({
+                    "id": f"reflection_{result.step_id}",
+                    "content": lesson,
+                    "memory_type": "reflection",
+                    "source": "step_auditor",
+                    "tier": "L3",
+                })
+            except Exception:
+                pass
 
         return result
 

@@ -178,6 +178,7 @@ class ContextEngine:
             "content": record.get("content", ""),
             "memory_type": record.get("memory_type", "experience"),
             "source": record.get("source", "user"),
+            "tier": record.get("tier", "L1"),
             "worth_success": record.get("worth_success", 0),
             "worth_failure": record.get("worth_failure", 0),
             "activation_weight": record.get("activation_weight", 0.5),
