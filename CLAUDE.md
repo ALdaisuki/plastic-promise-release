@@ -1,6 +1,6 @@
 # CLAUDE.md — Plastic Promise 操作指令
 
-> 完整架构和路线图见 [GOAL.md](GOAL.md)。
+> 📋 完整架构、当前状态、路线图见 **[GOAL.md](GOAL.md)** —— 那是唯一真相源。
 > 核心范式：**约定工程** — 内化约定替代外部约束。
 
 ## 会话启动
@@ -11,18 +11,16 @@
 2. `memory_recall(query="<当前任务关键词>")` — 查阅相关记忆
 3. `fuzzy_status` — 检查模糊缓存区是否有积压（有则 `fuzzy_process`）
 
-## 可用 MCP 工具（28 个）
+## 可用 MCP 工具（32 个）
 
-| 域 | 工具 |
-|------|------|
-| Memory (10) | memory_recall, memory_store, memory_update, memory_forget, memory_stats, memory_list, memory_gc, fuzzy_status, fuzzy_process, memory_correct |
-| Principles (4) | principle_activate, principle_inherit, principle_diffuse, principle_evaluate |
-| Context (3) | context_supply, context_inject, context_graph |
-| Audit (5) | audit_run, audit_pre_check, audit_report, defense_trust, defense_status |
-| Reflection (3) | scarf_reflect, inertia_check, feedback_apply |
-| System (3) | system_stats, system_backup, system_migrate |
-
-记忆域包含 `memory_correct`（人类纠正）、`fuzzy_status`（缓存区状态）、`fuzzy_process`（触发处理）。
+| 域 | 数量 | 工具 |
+|------|------|------|
+| Memory | 10 | memory_recall, memory_store, memory_update, memory_forget, memory_stats, memory_list, memory_gc, fuzzy_status, fuzzy_process, memory_correct |
+| Principles | 4 | principle_activate, principle_inherit, principle_diffuse, principle_evaluate |
+| Context | 4 | context_supply, context_inject, context_graph, context_ready |
+| Audit | 5 | audit_run, audit_pre_check, audit_report, defense_trust, defense_status |
+| Reflection | 3 | scarf_reflect, inertia_check, feedback_apply |
+| System | 6 | system_stats, system_backup, system_migrate, issue_create, issue_transition, issue_list |
 
 ## 标准工作流
 

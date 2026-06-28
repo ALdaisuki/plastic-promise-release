@@ -2,7 +2,9 @@
 
 > 记忆是可塑的，灵魂因记忆存在、因约定成长。
 
-**Plastic Promise** 是以「约定工程」(Commitment Engineering) 替代「约束工程」的 AI 行为治理系统。28 个 MCP 工具覆盖记忆、原则、上下文、审计、反思、系统六大域——原则是决策参考，不是门禁约束。
+**Plastic Promise** 是以「约定工程」(Commitment Engineering) 替代「约束工程」的 AI 行为治理系统。32 个 MCP 工具覆盖记忆、原则、上下文、审计、反思、系统六大域。
+
+> 📋 完整架构、路线图和当前状态见 **[GOAL.md](GOAL.md)**。
 
 ---
 
@@ -123,27 +125,6 @@ memory_recall → 沿实体关系遍历 → 返回关联记忆 (source: "entity-
 | 存储 | 内存 dict (生产建议 SQLite / LanceDB) |
 | 协议 | MCP (stdio + SSE, 28 tools) |
 | 多 Agent | SSE transport + owner 字段隔离 |
-
----
-
-## 当前状态
-
-| 组件 | 状态 |
-|------|------|
-| 28 个 MCP 工具 | ✅ 全部可用 |
-| 12 条核心原则 + 后果 + 建议 | ✅ |
-| 7 维审计 | ✅ |
-| 分层检索 (细→类→粗) | ✅ |
-| 模糊缓存区 (raw→tagged→classified→embedded→migrate) | ✅ |
-| 记忆纠正 (人类可编辑) | ✅ |
-| 反思记忆自动存储 | ✅ |
-| 实体自动链接 | ✅ |
-| 多 Agent owner 隔离 | ✅ |
-| SSE 传输 (Pi 连接) | ✅ |
-| L1/L3 分层 + EvolveR + GC | ✅ |
-| Bridge 桥接 (N.E.K.O) | ⚠️ bus_client 有 2 个 TODO |
-| Rust 引擎 | 🟡 未构建 (Python 回退可用) |
-| LanceDB 向量存储 | 🟡 待接入 |
 
 ---
 

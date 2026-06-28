@@ -46,22 +46,29 @@
 ## 三、当前状态
 
 ### 已完成
-- 28 个 MCP 工具全部可用（memory/principles/context/audit/reflection/system/fuzzy）
+- 32 个 MCP 工具全部可用
 - 12 条核心原则，激活时返回后果+建议
 - 7 维审计 + 5 维 SCARF 自省
-- 三层防线（L0 硬边界 + L1 信任约束 + L2 免疫巡检）
-- 分层检索（细=graph×1.0 → 类=L1 boost×1.5 → 粗=vector×0.6）
+- 三层防线（L0 + L1 信任约束 + L2 免疫巡检）
+- 分层检索（细=graph → 类=L1 boost → 粗=text+vector）
 - 模糊缓存区（raw→tagged→classified→embedded→migrate）
-- 记忆纠正（人类可编辑）
-- 实体自动链接（memory_store 提取实体 → 图边 → recall 实体遍历）
-- 多 Agent owner 隔离（shared domain + per-agent private）
-- SSE 传输（Pi 连接：`python -m plastic_promise.mcp.server --sse 9020`）
-- FallbackEmbedder（Ollama 离线时零向量降级）
+- 记忆纠正（memory_correct — 人类可编辑）
+- 实体自动链接（提取 → 图边 → 遍历）
+- 多 Agent owner 隔离（共享域 + 独立域）
+- SSE 传输 + 健康检查 + 优雅关闭
+- FallbackEmbedder（零向量降级）
 - L1/L3 分层 + EvolveR + MemoryGC
-- post_task 六联闭环（约定对齐 → SCARF → 激素 → 信任 → 反思 → CEI）
-- PrincipleTracker（原则遵守量化）
+- SQLite 写穿透持久化
+- post_task 六联闭环（约定对齐→SCARF→激素→信任→反思→CEI）
+- PrincipleTracker 原则遵守量化 + 趋势分析
 - 信任分接入检索权重
 - 修复建议自动生成
+- worth 反馈闭环（access_count + EvolveR 联动）
+- AgentBehaviorTracker 行为模式学习
+- curiosity 自适应探索闭环
+- Issue 生命周期 + 依赖管理（4 MCP 工具）
+- 上下文预备（post_task 自动预取 + context_ready MCP）
+- Bridge Pi 任务执行 + N.E.K.O ZMQ 转发
 
 ### 进行中
 - 无
