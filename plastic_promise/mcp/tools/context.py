@@ -35,6 +35,18 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         task_vector = embedder.embed(task_description)
 
         pack = engine.supply(task_description, task_vector, task_type, scope)
+
+        try:
+            from plastic_promise.reranker import cross_encode_rerank
+            if pack.core:
+                candidates = [(i.id, i.content, i.relevance) for i in pack.core]
+                reranked = cross_encode_rerank(task_description, candidates)
+                # Reorder pack.core to match reranked order
+                score_map = dict(reranked)
+                pack.core.sort(key=lambda i: score_map.get(i.id, i.relevance), reverse=True)
+        except Exception:
+            pass  # reranking is optional enhancement
+
         return [TextContent(type="text", text=pack.to_prompt())]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(

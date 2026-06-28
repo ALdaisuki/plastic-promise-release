@@ -33,9 +33,15 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response with core/related/divergent layers.
     """
     try:
-        from plastic_promise.embedder import get_embedder
-
+        from plastic_promise.adaptive_retrieval import should_retrieve
         query = args["query"]
+        if not should_retrieve(query):
+            return [TextContent(type="text", text=json.dumps(
+                {"skipped": True, "reason": "adaptive_retrieval",
+                 "query": query[:100]},
+                ensure_ascii=False))]
+
+        from plastic_promise.embedder import get_embedder
         task_type = args.get("task_type", "general")
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
@@ -74,9 +80,15 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response with stored memory metadata.
     """
     try:
-        import context_engine_core
-
+        from plastic_promise.noise_filter import is_noise
         content = args["content"]
+        if is_noise(content):
+            return [TextContent(type="text", text=json.dumps(
+                {"stored": False, "reason": "noise_filtered",
+                 "content_preview": content[:100]},
+                ensure_ascii=False))]
+
+        import context_engine_core
         memory_type = args.get("memory_type", "experience")
         source = args.get("source", "user")
         scope = args.get("scope", "global")
