@@ -532,7 +532,48 @@ class RecMem:
             - by_type: 各类型记忆数量分布
             - by_source: 各来源记忆数量分布
         """
-        pass
+        try:
+            import json
+            json_str = self._engine.memory_stats_json()
+            stats = json.loads(json_str)
+            # Map Rust stat keys to expected Python keys
+            result = {
+                "total": stats.get("total", len(self._records)),
+                "l1_count": stats.get("by_tier", {}).get("L1", 0),
+                "l3_count": stats.get("by_tier", {}).get("L3", 0),
+                "avg_worth": stats.get("average_worth", 0.0),
+                "health_ratio": stats.get("healthy", 0) / max(stats.get("total", 1), 1),
+                "by_type": stats.get("by_type", {}),
+                "by_source": stats.get("by_category", {}),
+            }
+            return result
+        except Exception:
+            records = list(self._records.values())
+            total = len(records)
+            if total == 0:
+                return {
+                    "total": 0, "l1_count": 0, "l3_count": 0,
+                    "avg_worth": 0.0, "health_ratio": 1.0,
+                    "by_type": {}, "by_source": {},
+                }
+            l1_count = sum(1 for r in records if r.tier == "L1")
+            l3_count = sum(1 for r in records if r.tier == "L3")
+            avg_worth = sum(r.worth_score for r in records) / total
+            healthy = sum(1 for r in records if r.worth_score >= MEMORY_DECAY_THRESHOLD)
+            by_type: Dict[str, int] = {}
+            by_source: Dict[str, int] = {}
+            for r in records:
+                by_type[r.memory_type] = by_type.get(r.memory_type, 0) + 1
+                by_source[r.source] = by_source.get(r.source, 0) + 1
+            return {
+                "total": total,
+                "l1_count": l1_count,
+                "l3_count": l3_count,
+                "avg_worth": round(avg_worth, 4),
+                "health_ratio": healthy / total,
+                "by_type": by_type,
+                "by_source": by_source,
+            }
 
     def apply_feedback(
         self,
@@ -558,7 +599,53 @@ class RecMem:
             - delta: worth_score 变化量
             - feedback_type: 应用的反馈类型
         """
-        pass
+        try:
+            # Get old worth
+            old_worth = 0.0
+            try:
+                rust_record = self._engine.get_memory(memory_id)
+                if rust_record is not None:
+                    old_worth = rust_record.worth_score()
+                    # Apply feedback on Rust record
+                    ft = feedback_type.strip().lower()
+                    if ft in ("adopted", "success"):
+                        rust_record.record_adopted()
+                    elif ft in ("rejected", "failure"):
+                        rust_record.record_rejected()
+                    # ignored: no change
+                    self._engine.store_memory(rust_record)
+                    new_worth = rust_record.worth_score()
+                else:
+                    new_worth = old_worth
+            except Exception:
+                new_worth = old_worth
+
+            # Also update Python-side record
+            if memory_id in self._records:
+                py_record = self._records[memory_id]
+                old_worth = py_record.worth_score
+                ft = feedback_type.strip().lower()
+                if ft in ("adopted", "success"):
+                    py_record.worth_success += 1
+                elif ft in ("rejected", "failure"):
+                    py_record.worth_failure += 1
+                new_worth = py_record.worth_score
+
+            return {
+                "memory_id": memory_id,
+                "old_worth": old_worth,
+                "new_worth": new_worth,
+                "delta": new_worth - old_worth,
+                "feedback_type": feedback_type,
+            }
+        except Exception:
+            return {
+                "memory_id": memory_id,
+                "old_worth": 0.0,
+                "new_worth": 0.0,
+                "delta": 0.0,
+                "feedback_type": feedback_type,
+            }
 
     @property
     def total_count(self) -> int:
@@ -567,7 +654,11 @@ class RecMem:
         Returns:
             非负整数，表示当前存储的记忆总数。
         """
-        pass
+        try:
+            s = self.stats()
+            return s.get("total", len(self._records))
+        except Exception:
+            return len(self._records)
 
     @property
     def health_ratio(self) -> float:
@@ -579,7 +670,15 @@ class RecMem:
         Returns:
             范围 [0.0, 1.0] 的浮点数，目标值为 1.0。
         """
-        pass
+        try:
+            s = self.stats()
+            return s.get("health_ratio", 1.0)
+        except Exception:
+            records = list(self._records.values())
+            if not records:
+                return 1.0
+            healthy = sum(1 for r in records if r.worth_score >= MEMORY_DECAY_THRESHOLD)
+            return healthy / len(records)
 
 
 # ============================================================
