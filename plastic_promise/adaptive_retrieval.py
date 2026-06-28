@@ -40,15 +40,15 @@ def should_retrieve(query: str) -> bool:
 
     q_lower = q.lower()
 
-    # 1. Force-retrieve keywords
-    for pattern in FORCE_RETRIEVE_PATTERNS:
-        if pattern.lower() in q_lower:
-            return True
-
-    # 2. Skip patterns (regex)
+    # 1. Skip patterns (regex) — commands/syntax always skip
     for pattern in SKIP_PATTERNS:
         if re.match(pattern, q):
             return False
+
+    # 2. Force-retrieve keywords
+    for pattern in FORCE_RETRIEVE_PATTERNS:
+        if pattern.lower() in q_lower:
+            return True
 
     # 3. Greetings (short only)
     if any(q_lower.startswith(g) for g in GREETINGS) and len(q) <= 15:
