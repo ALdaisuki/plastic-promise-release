@@ -8,6 +8,7 @@
 
 pub mod schema;
 pub mod sqlite_impl;
+pub mod lancedb_impl;
 
 use std::collections::HashMap;
 use crate::domain::Tier;
