@@ -660,6 +660,7 @@ async def main():
             write_stream,
             InitializationOptions(
                 server_name="plastic-promise",
+                server_version="0.1.0",
                 capabilities=ServerCapabilities(),
             ),
             raise_exceptions=False,
