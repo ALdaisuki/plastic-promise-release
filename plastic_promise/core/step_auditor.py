@@ -298,6 +298,36 @@ class StepAuditor:
             pass
 
     # ============================================================
+    # 修复建议
+    # ============================================================
+
+    def suggest_repairs(self, result: "StepAuditResult") -> list[dict]:
+        """Generate repair suggestions for dimensions scoring below 0.60.
+
+        Serves 实践层反思/修复: 发现问题 → 生成修复建议。
+        """
+        suggestions = []
+        if result.simplicity_score < 0.60:
+            suggestions.append({
+                "dimension": "simplicity",
+                "current_score": result.simplicity_score,
+                "suggestion": "删除不必要的中间步骤，检查是否存在可以简化的逻辑路径",
+            })
+        if result.transparency_score < 0.60:
+            suggestions.append({
+                "dimension": "transparency",
+                "current_score": result.transparency_score,
+                "suggestion": f"确保每一步有 git commit，当前任务缺少可追溯痕迹",
+            })
+        if result.audit_closure_score < 0.60:
+            suggestions.append({
+                "dimension": "audit_closure",
+                "current_score": result.audit_closure_score,
+                "suggestion": "补充根因分析、改良措施或教训提炼，当前审计不完整",
+            })
+        return suggestions
+
+    # ============================================================
     # 查询接口
     # ============================================================
 
