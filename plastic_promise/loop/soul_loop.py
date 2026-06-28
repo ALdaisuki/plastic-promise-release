@@ -7,13 +7,13 @@ pre_task_v2: 任务执行前编排管线
   - 三层防线 pre_check
   - 审计记录 (pre_task 快照)
 
-post_task: 任务执行后编排管线
-  - 任务结果采集
-  - SCARF 自省 (post-mortem)
-  - 激素更新 (信任分、情感账户)
-  - 记忆演化 (反馈注入、worth 更新)
-  - 审计记录 (post_task 快照)
-  - CEI 重计算
+post_task: 六联闭环 — 每步完成后的约定工程全层连线
+  - 约定对齐检查 → PrincipleTracker
+  - SCARF 五维自省 → SCARFReflector
+  - 激素更新 → HormoneEngine
+  - 信任联动 → TrustManager
+  - 反思记忆存储 → StepAuditor
+  - CEI 更新
 """
 
 import datetime
@@ -27,6 +27,7 @@ from plastic_promise.core.constants import (
     WORTH_MIN_OBSERVATIONS,
 )
 from plastic_promise.core.context_engine import ContextEngine, ContextPack
+from plastic_promise.core.step_auditor import StepAuditor
 
 
 class SoulLoop:
@@ -51,6 +52,11 @@ class SoulLoop:
         self._task_count = 0
         self._cei_history: list[float] = []
         self._cached_cei = 0.5
+        # Lazy-init attributes for post_task six-link loop
+        self._principle_tracker = None
+        self._hormone_engine = None
+        self._trust_manager = None
+        self._auditor = None
 
     def pre_task_v2(
         self,
@@ -107,88 +113,108 @@ class SoulLoop:
 
         return pack
 
-    def post_task(
-        self,
-        task_description: str,
-        task_type: str,
-        context_pack: ContextPack,
-        feedback: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """执行任务后编排管线。
-
-        编排顺序：
-        1. 采集任务执行结果与调用方反馈
-        2. 执行 SCARF post-mortem 自省
-        3. 更新激素状态 (信任分、情感账户)
-        4. 将反馈注入记忆系统，更新 worth 双计数器
-        5. 记录 post_task 审计快照
-        6. 重新计算 CEI 约定作用指数
-
-        Args:
-            task_description: 与 pre_task_v2 相同的任务描述文本，
-                             用于关联前后快照。
-            task_type: 任务分类标签，用于审计维度权重调整。
-            context_pack: pre_task_v2 产出的上下文包，
-                         用于对比实际使用的上下文与供应内容。
-            feedback: 调用方提供的反馈字典，可包含:
-                      - "adopted": 上下文被采纳的条目 ID 列表
-                      - "ignored": 上下文被忽略的条目 ID 列表
-                      - "rejected": 上下文被拒绝的条目 ID 列表
-                      - "trust_delta": 手动信任分调整量
-                      - "notes": 人工备注
+    def post_task(self, task_description: str = "", git_commit: str = "") -> dict:
+        """六联闭环 — 每步完成后的约定工程全层连线。
 
         Returns:
-            编排报告字典，包含:
-            - "scarf": SCARF 五维度评分 (0.0-1.0)
-            - "hormone": 激素更新摘要
-            - "trust": 信任分变化量
-            - "cei": 重计算后的 CEI 值
-            - "cei_tier": CEI 层级标签
-            - "memory_updates": 受影响记忆条目数
-            - "audit_id": 审计记录 ID
+            dict with keys: alignment, scarf, hormone, trust, reflection, cei, repairs
         """
-        # Build result dict with timestamp
-        audit_record = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "task_type": task_type,
-            "task_description": task_description,
-            "context_layers": {
-                "core_count": len(context_pack.core),
-                "related_count": len(context_pack.related),
-                "divergent_count": len(context_pack.divergent),
-            },
-            "activated_principles": context_pack.activated_principles,
+        result = {
+            "alignment": None, "scarf": None, "hormone": None,
+            "trust": None, "reflection": None, "cei": None, "repairs": [],
         }
 
-        # Apply feedback via engine if item_ids are provided
-        feedback_applied = 0
-        if feedback and self._engine is not None:
-            for category in ("adopted", "ignored", "rejected"):
-                item_ids = feedback.get(category, [])
-                if isinstance(item_ids, list) and item_ids:
-                    delta = ASSOCIATION_WEIGHTS.get(category, 0.0)
-                    for item_id in item_ids:
-                        current = self._engine._feedback.get(item_id, 0.0)
-                        self._engine._feedback[item_id] = current + delta
-                        feedback_applied += 1
+        # Ensure engine is initialized
+        if self._engine is None:
+            self._engine = ContextEngine()
 
-        audit_record["feedback_applied_count"] = feedback_applied
+        # 1. 约定对齐检查 — 记录原则遵守
+        try:
+            activated = self._engine._activate_principles("general", task_description)
+            result["alignment"] = {"checked": len(activated), "principles": activated}
+            # Lazy-init PrincipleTracker
+            if self._principle_tracker is None:
+                from plastic_promise.core.principles import PrincipleTracker
+                self._principle_tracker = PrincipleTracker()
+            for p_name in activated:
+                pid = self._resolve_principle_id(p_name)
+                if pid:
+                    self._principle_tracker.record(pid, True, task_description[:100])
+        except Exception as e:
+            result["alignment"] = {"error": str(e)}
 
-        # Calculate CEI delta
-        old_cei = self._cached_cei
-        new_cei = self.calculate_cei()
-        self._cached_cei = new_cei
-        self._cei_history.append(new_cei)
-        cei_delta = new_cei - old_cei
+        # 2. SCARF 五维自省
+        try:
+            from plastic_promise.reflection.soul_scarf import SCARFReflector
+            reflector = SCARFReflector()
+            scarf_result = reflector.reflect(task_description)
+            result["scarf"] = scarf_result
+        except Exception as e:
+            result["scarf"] = {"error": str(e)}
 
-        audit_record["cei"] = new_cei
-        audit_record["cei_delta"] = cei_delta
+        # 3. 激素更新
+        try:
+            if self._hormone_engine is None:
+                from plastic_promise.growth.soul_hormone import HormoneEngine
+                self._hormone_engine = HormoneEngine(trust_manager=self._trust_manager)
+            overall = self._cached_cei
+            feedback = "adopted" if overall >= 0.6 else "ignored" if overall >= 0.4 else "rejected"
+            hormone_result = self._hormone_engine.apply_feedback(feedback, context=task_description[:100])
+            result["hormone"] = hormone_result
+        except Exception as e:
+            result["hormone"] = {"error": str(e)}
 
-        return {
-            "audit_record": audit_record,
-            "cei_delta": cei_delta,
-            "task_count": self._task_count,
-        }
+        # 4. 信任联动
+        try:
+            if self._trust_manager is None:
+                from plastic_promise.defense.soul_enforcer import TrustManager
+                self._trust_manager = TrustManager()
+            if result.get("scarf") and isinstance(result["scarf"], dict):
+                scarf_overall = result["scarf"].get("summary", {}).get("overall_score", 0.6)
+                if scarf_overall >= 0.80:
+                    self._trust_manager.boost(0.02, f"post_task SCARF {scarf_overall:.2f}")
+                elif scarf_overall < 0.40:
+                    self._trust_manager.decay(0.02, f"post_task SCARF {scarf_overall:.2f}")
+            result["trust"] = {
+                "score": self._trust_manager.get(),
+                "tier": self._trust_manager.tier,
+            }
+        except Exception as e:
+            result["trust"] = {"error": str(e)}
+
+        # 5. 反思记忆存储 (StepAuditor free)
+        try:
+            if self._auditor is None:
+                self._auditor = StepAuditor(trust_manager=self._trust_manager, engine=self._engine)
+            audit_result = self._auditor.audit_step(
+                task_description=task_description,
+                git_commit=git_commit,
+            )
+            result["reflection"] = {
+                "overall_score": audit_result.overall_score,
+                "lesson": audit_result.lesson[:200],
+                "step_id": audit_result.step_id,
+            }
+            result["repairs"] = self._auditor.suggest_repairs(audit_result)
+        except Exception as e:
+            result["reflection"] = {"error": str(e)}
+
+        # 6. CEI 更新
+        try:
+            cei = self.calculate_cei()
+            result["cei"] = {"score": cei, "tier": self.cei_tier}
+        except Exception as e:
+            result["cei"] = {"error": str(e)}
+
+        return result
+
+    def _resolve_principle_id(self, name: str) -> int:
+        """Resolve principle name to ID from CORE_PRINCIPLES."""
+        from plastic_promise.core.constants import CORE_PRINCIPLES
+        for p in CORE_PRINCIPLES:
+            if p["name"] == name:
+                return p["id"]
+        return 0
 
     def calculate_cei(self) -> float:
         """计算当前约定作用指数 (Convention Efficacy Index)。
@@ -322,23 +348,19 @@ def pre_task_v2(
 
 
 def post_task(
-    task_description: str,
-    task_type: str,
-    context_pack: ContextPack,
-    feedback: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """模块级便捷函数：执行任务后编排管线。
+    task_description: str = "",
+    git_commit: str = "",
+) -> dict:
+    """模块级便捷函数：执行任务后编排管线（六联闭环）。
 
     等价于 ``_get_default_loop().post_task(...)``。
     适用于不想自行维护 SoulLoop 实例的简单调用场景。
 
     Args:
         task_description: 任务描述文本，需与 pre_task_v2 一致。
-        task_type: 任务分类标签。
-        context_pack: pre_task_v2 产出的上下文包。
-        feedback: 调用方提供的反馈字典。
+        git_commit: 关联的 git commit hash。
 
     Returns:
-        编排报告字典 (scarf, hormone, trust, cei 等)。
+        编排报告字典 (alignment, scarf, hormone, trust, reflection, cei, repairs)。
     """
-    return _get_default_loop().post_task(task_description, task_type, context_pack, feedback)
+    return _get_default_loop().post_task(task_description, git_commit)
