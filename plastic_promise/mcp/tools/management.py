@@ -250,3 +250,49 @@ async def handle_issue_list(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "issue_list"}, ensure_ascii=False))]
+
+
+# ---- pack_export ----
+async def handle_pack_export(engine: Any, args: dict) -> list[TextContent]:
+    """Export memories as a shareable JSON experience pack."""
+    try:
+        from plastic_promise.pack import export_pack
+        path = export_pack(
+            engine, name=args["name"],
+            tags=args.get("tags"), memory_ids=args.get("memory_ids"),
+            author=args.get("author", "claude"),
+            description=args.get("description", ""),
+        )
+        return [TextContent(type="text", text=json.dumps(
+            {"exported": True, "path": path}, ensure_ascii=False))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "pack_export"}, ensure_ascii=False))]
+
+
+# ---- pack_import ----
+async def handle_pack_import(engine: Any, args: dict) -> list[TextContent]:
+    """Import a JSON experience pack into the memory pool."""
+    try:
+        from plastic_promise.pack import import_pack
+        result = import_pack(engine, path=args["path"], owner=args.get("owner", ""))
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "pack_import"}, ensure_ascii=False))]
+
+
+# ---- pack_recall ----
+async def handle_pack_recall(engine: Any, args: dict) -> list[TextContent]:
+    """Recall ONLY from stored memories. Strict mode: never fabricate."""
+    try:
+        from plastic_promise.pack import recall_pack
+        result = recall_pack(
+            engine, query=args["query"],
+            pack_name=args.get("pack"),
+            strict=args.get("strict", True),
+        )
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "pack_recall"}, ensure_ascii=False))]

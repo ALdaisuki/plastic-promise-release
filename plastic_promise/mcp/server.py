@@ -478,6 +478,46 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="pack_export",
+            description="Export memories as a shareable JSON experience pack. Filter by tags or memory IDs.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pack name (used as filename)"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags to filter memories by"},
+                    "memory_ids": {"type": "array", "items": {"type": "string"}, "description": "Specific memory IDs to include"},
+                    "author": {"type": "string", "description": "Author identifier (default: claude)"},
+                    "description": {"type": "string", "description": "Pack description"},
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="pack_import",
+            description="Import a JSON experience pack into the memory pool.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the JSON pack file"},
+                    "owner": {"type": "string", "description": "Owner to assign to imported memories"},
+                },
+                "required": ["path"],
+            },
+        ),
+        Tool(
+            name="pack_recall",
+            description="Recall ONLY from stored memories. Strict mode: never fabricate — returns empty on no match.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query for memory retrieval"},
+                    "pack": {"type": "string", "description": "Optional pack name to scope recall"},
+                    "strict": {"type": "boolean", "description": "Strict mode: return empty on no match (default: true)"},
+                },
+                "required": ["query"],
+            },
+        ),
     ])
 
     return tools
@@ -605,6 +645,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "issue_list":
             from plastic_promise.mcp.tools.management import handle_issue_list
             return await handle_issue_list(engine, arguments)
+        elif name == "pack_export":
+            from plastic_promise.mcp.tools.management import handle_pack_export
+            return await handle_pack_export(engine, arguments)
+        elif name == "pack_import":
+            from plastic_promise.mcp.tools.management import handle_pack_import
+            return await handle_pack_import(engine, arguments)
+        elif name == "pack_recall":
+            from plastic_promise.mcp.tools.management import handle_pack_recall
+            return await handle_pack_recall(engine, arguments)
 
         else:
             return [TextContent(type="text", text=json.dumps(
