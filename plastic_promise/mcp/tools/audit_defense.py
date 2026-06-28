@@ -29,11 +29,17 @@ async def handle_audit_run(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
+        from plastic_promise.defense.soul_audit import SoulAuditor
+        scope = args.get("scope", "global")
+        time_range_hours = args.get("time_range_hours", 24)
+        auditor = SoulAuditor()
+        report = auditor.run_audit()
         return [TextContent(type="text", text=json.dumps({
             "tool": "audit_run",
-            "status": "not_implemented",
-            "message": "Seven-dimension audit engine is not yet wired.",
-        }, ensure_ascii=False))]
+            "scope": scope,
+            "time_range_hours": time_range_hours,
+            "report": report.to_dict() if hasattr(report, 'to_dict') else str(report),
+        }, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "audit_run"}, ensure_ascii=False))]
@@ -120,11 +126,18 @@ async def handle_audit_report(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
+        from plastic_promise.defense.soul_audit import SoulAuditor
+        dimension = args.get("dimension")
+        auditor = SoulAuditor()
+        report = auditor.get_report()
+        fmt = args.get("format", "json")
+        if fmt == "markdown" and hasattr(report, 'to_markdown'):
+            return [TextContent(type="text", text=report.to_markdown())]
         return [TextContent(type="text", text=json.dumps({
             "tool": "audit_report",
-            "status": "not_implemented",
-            "message": "Audit report retrieval is not yet wired.",
-        }, ensure_ascii=False))]
+            "dimension": dimension,
+            "report": report.to_dict() if hasattr(report, 'to_dict') else str(report),
+        }, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "audit_report"}, ensure_ascii=False))]
@@ -145,11 +158,36 @@ async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
-        return [TextContent(type="text", text=json.dumps({
-            "tool": "defense_trust",
-            "status": "not_implemented",
-            "message": "Trust score management is not yet wired.",
-        }, ensure_ascii=False))]
+        from plastic_promise.defense.soul_enforcer import TrustManager
+        action = args.get("action", "get")
+        tm = TrustManager()
+        if action == "get":
+            return [TextContent(type="text", text=json.dumps({
+                "trust": tm.get(),
+                "tier": tm.tier,
+                "autonomy_level": tm.autonomy_level,
+                "history": tm.history(10),
+            }, ensure_ascii=False, indent=2))]
+        elif action == "boost":
+            delta = args.get("delta", 0.02)
+            reason = args.get("reason", "manual boost")
+            new_trust = tm.boost(delta, reason)
+            return [TextContent(type="text", text=json.dumps({
+                "action": "boost", "delta": delta, "new_trust": new_trust,
+                "tier": tm.tier,
+            }, ensure_ascii=False, indent=2))]
+        elif action == "decay":
+            delta = args.get("delta", 0.005)
+            reason = args.get("reason", "manual decay")
+            new_trust = tm.decay(delta, reason)
+            return [TextContent(type="text", text=json.dumps({
+                "action": "decay", "delta": delta, "new_trust": new_trust,
+                "tier": tm.tier,
+            }, ensure_ascii=False, indent=2))]
+        else:
+            return [TextContent(type="text", text=json.dumps({
+                "error": f"Unknown action '{action}'. Valid: get, boost, decay"
+            }, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "defense_trust"}, ensure_ascii=False))]

@@ -27,11 +27,17 @@ async def handle_scarf_reflect(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
+        from plastic_promise.reflection.soul_scarf import SCARFReflector
+        context = args.get("context", "")
+        dimensions = args.get("dimensions")
+        reflector = SCARFReflector()
+        result = reflector.reflect(context)
+        if dimensions:
+            result = {d: result.get(d) for d in dimensions if d in result}
         return [TextContent(type="text", text=json.dumps({
             "tool": "scarf_reflect",
-            "status": "not_implemented",
-            "message": "SCARF reflection engine is not yet wired.",
-        }, ensure_ascii=False))]
+            "reflection": result,
+        }, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "scarf_reflect"}, ensure_ascii=False))]
@@ -52,11 +58,16 @@ async def handle_inertia_check(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
+        from plastic_promise.reflection.soul_proprioception import ProprioceptionManager
+        recent_tasks = args.get("recent_tasks", [])
+        pm = ProprioceptionManager()
+        for task in recent_tasks:
+            pm.record_task(task)
+        result = pm.check_inertia()
         return [TextContent(type="text", text=json.dumps({
             "tool": "inertia_check",
-            "status": "not_implemented",
-            "message": "Inertia check engine is not yet wired.",
-        }, ensure_ascii=False))]
+            "inertia": result,
+        }, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "inertia_check"}, ensure_ascii=False))]

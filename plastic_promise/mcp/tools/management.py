@@ -85,11 +85,41 @@ async def handle_system_backup(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
-        return [TextContent(type="text", text=json.dumps({
-            "tool": "system_backup",
-            "status": "not_implemented",
-            "message": "System backup/export is not yet wired.",
-        }, ensure_ascii=False))]
+        fmt = args.get("format", "json")
+        include_audit = args.get("include_audit_history", False)
+
+        # Collect all memories
+        memories = engine.list_memories(limit=10000) if engine else []
+        mem_list = []
+        for m in memories:
+            mem_list.append({
+                "id": m.id, "content": m.content,
+                "memory_type": m.memory_type, "source": m.source,
+                "tier": m.tier, "created_at": m.created_at,
+            })
+
+        # Collect graph
+        graph = engine.get_graph() if engine else {}
+        if hasattr(graph, '_nodes'):
+            graph_data = {"nodes": dict(graph._nodes), "edges": list(graph._edges)}
+        elif isinstance(graph, dict):
+            graph_data = graph
+        else:
+            graph_data = {"nodes": {}, "edges": []}
+
+        backup = {
+            "version": "0.1.0",
+            "timestamp": __import__('datetime').datetime.now().isoformat(),
+            "memories": mem_list,
+            "graph": graph_data,
+            "memory_count": len(mem_list),
+        }
+        if include_audit:
+            from plastic_promise.defense.soul_audit import SoulAuditor
+            auditor = SoulAuditor()
+            backup["audit_report"] = auditor.get_report().to_dict() if hasattr(auditor.get_report(), 'to_dict') else str(auditor.get_report())
+
+        return [TextContent(type="text", text=json.dumps(backup, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "system_backup"}, ensure_ascii=False))]
@@ -110,11 +140,50 @@ async def handle_system_migrate(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
+        source_path = args.get("source_path", "")
+        dry_run = args.get("dry_run", True)
+
+        if not source_path:
+            return [TextContent(type="text", text=json.dumps(
+                {"error": "source_path is required"}, ensure_ascii=False))]
+
+        import os
+        if not os.path.exists(source_path):
+            return [TextContent(type="text", text=json.dumps(
+                {"error": f"Source file not found: {source_path}"}, ensure_ascii=False))]
+
+        with open(source_path, 'r', encoding='utf-8') as f:
+            source_data = json.load(f)
+
+        memories = source_data.get("memories", [])
+        imported = 0
+        skipped = 0
+
+        for mem in memories:
+            if dry_run:
+                imported += 1
+                continue
+            try:
+                if isinstance(mem, dict):
+                    engine.register_memory({
+                        "id": mem.get("id", ""),
+                        "content": mem.get("content", ""),
+                        "memory_type": mem.get("memory_type", "experience"),
+                        "source": mem.get("source", "migration"),
+                        "tier": mem.get("tier", "L1"),
+                    })
+                    imported += 1
+            except Exception:
+                skipped += 1
+
         return [TextContent(type="text", text=json.dumps({
             "tool": "system_migrate",
-            "status": "not_implemented",
-            "message": "System migration is not yet wired.",
-        }, ensure_ascii=False))]
+            "source_path": source_path,
+            "dry_run": dry_run,
+            "total_found": len(memories),
+            "imported": imported,
+            "skipped": skipped,
+        }, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "system_migrate"}, ensure_ascii=False))]
