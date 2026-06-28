@@ -155,6 +155,23 @@ class TrustManager:
         else:
             return "minimal"
 
+    def get_retrieval_boost(self) -> float:
+        """Return retrieval weight multiplier based on current trust tier.
+
+        High trust → broader context, more risk tolerance.
+        Low trust → narrower scope, conservative retrieval.
+        Serves 实践层: 动态信任调节信息获取范围。
+        """
+        _tier = self.tier
+        if _tier == "high":
+            return 1.3
+        elif _tier == "medium":
+            return 1.0
+        elif _tier == "low":
+            return 0.7
+        else:  # critical
+            return 0.5
+
 
 class SoulEnforcer:
     """三层防线执行引擎 —— 数字反射弧。

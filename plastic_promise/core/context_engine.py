@@ -395,12 +395,20 @@ class ContextEngine:
         if self.enable_principles:
             self._inject_activated_to_graph(activated, task_type)
 
+        # Trust-aware retrieval: higher trust → broader context
+        try:
+            from plastic_promise.defense.soul_enforcer import TrustManager
+            tm = TrustManager()
+            trust_boost = tm.get_retrieval_boost()
+        except Exception:
+            trust_boost = 1.0
+
         # Phase 1: 三路分层检索 — 细→类→粗
         # 细 (graph): 原则关联图谱 — 最精确的信号
         graph_results = self._graph_traversal(task_type)
 
         # 类 (tier): 文本匹配 + L1 工作记忆优先级提升
-        text_results = self._text_retrieval(task_description)
+        text_results = self._text_retrieval(task_description, trust_boost)
 
         # 粗 (vector): 语义向量相关性 (零向量时跳过)
         vector_results = self._vector_retrieval(task_vector) if any(v != 0.0 for v in task_vector) else []
@@ -706,7 +714,7 @@ class ContextEngine:
                 result.append(p["name"])
         return result
 
-    def _text_retrieval(self, task: str) -> List[tuple]:
+    def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> List[tuple]:
         """粗匹配: CJK bigram / word split + L1 tier boost (大类优先)."""
         results = []
         import re
@@ -744,9 +752,9 @@ class ContextEngine:
                 # 大类优先: L1 working memory gets 1.5× boost
                 tier = mem.get("tier", "L2")
                 if tier == "L1":
-                    score = min(score * 1.5, 1.0)
+                    score = min(score * 1.5 * trust_boost, 1.0)
                 elif tier == "L3":
-                    score = score * 0.8  # long-term slightly de-prioritized
+                    score = score * 0.8 * trust_boost  # long-term slightly de-prioritized
                 results.append((mid, min(score, 1.0), content[:300], mem["source"]))
         return results
 
