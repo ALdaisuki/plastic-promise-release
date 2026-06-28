@@ -738,16 +738,32 @@ class ContextEngine:
         return results
 
     def _graph_traversal(self, task_type: str) -> List[tuple]:
-        """细匹配: principle association graph traversal."""
+        """细匹配: principle association + entity link traversal."""
         results = []
+        visited = set()
+
+        # 1. Task type → principles (direct activation edges)
         target = f"task_type:{task_type}"
         for edge in self._graph_edges:
             if edge.get("from") == target:
                 node_id = edge["to"]
+                visited.add(node_id)
                 node = self._graph_nodes.get(node_id, {})
                 results.append((node_id, edge.get("weight", 0.5),
                                 node.get("description", node_id),
                                 "graph"))
+
+        # 2. Memory → entity (auto-extracted references) — 数据流驱动的关联遍历
+        for edge in self._graph_edges:
+            if edge.get("relation") == "references":
+                memory_id = edge.get("from", "")
+                entity_id = edge.get("to", "")
+                # If this entity was already found via principles, pull in the memory
+                if entity_id in visited and memory_id in self._memories:
+                    mem = self._memories[memory_id]
+                    results.append((memory_id, 0.6,
+                                    mem.get("content", "")[:300],
+                                    "entity-link"))
         return results
 
     def _layered_fuse(self, graph_results, text_results, vector_results) -> List[tuple]:

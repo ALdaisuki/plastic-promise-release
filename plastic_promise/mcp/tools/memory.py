@@ -113,7 +113,10 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         record.scope = scope
         record.category = "other"
         record.importance = 0.7
-        record.entity_ids = entity_ids
+        # Auto-extract entity links from content (原则 #6 数据流驱动)
+        extracted = _extract_entity_ids(content, engine)
+        all_entities = list(set(entity_ids + extracted))
+        record.entity_ids = all_entities
         record.created_at = datetime.datetime.now().isoformat()
 
         # Persist via ContextEngine delegation
@@ -122,37 +125,39 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         # Embed — fall back to fuzzy buffer if service unavailable
         from plastic_promise.embedder import get_embedder, FallbackEmbedder
         vector_dim = 0
+        final_id = stored_id
         try:
             embedder = get_embedder(fallback_on_error=False)
             vec = embedder.embed(content)
             vector_dim = len(vec)
-            # Store vector for _vector_retrieval (细匹配)
             engine._memories[stored_id]["_vector"] = vec
         except Exception:
-            # Embedding unavailable: remove from main pool, store in fuzzy buffer instead
+            # Embedding unavailable: remove from main pool, store in fuzzy buffer
             try:
                 engine.delete_memory(stored_id)
             except Exception:
                 pass
             fb = _get_fuzzy_buffer(engine)
-            fuzzy_id = fb.store_urgent(content, memory_type, source)
+            final_id = fb.store_urgent(content, memory_type, source, entity_ids=all_entities)
+
+        # Auto-link extracted entities to graph (runs for both paths)
+        for eid in all_entities:
+            edge = {"from": final_id, "to": eid, "relation": "references", "weight": 0.5}
+            if edge not in engine._graph_edges:
+                engine._graph_edges.append(edge)
+
+        if final_id != stored_id:
             return [TextContent(type="text", text=json.dumps({
-                "stored": True,
-                "memory_id": fuzzy_id,
-                "content_preview": content[:200],
-                "memory_type": memory_type,
-                "scope": scope,
-                "fuzzy": True,
-                "note": "Stored in fuzzy buffer — will migrate to main pool after background processing",
+                "stored": True, "memory_id": final_id, "content_preview": content[:200],
+                "memory_type": memory_type, "scope": scope,
+                "fuzzy": True, "entity_ids": all_entities,
+                "note": "Stored in fuzzy buffer — will migrate after background processing",
             }, ensure_ascii=False))]
 
         return [TextContent(type="text", text=json.dumps({
-            "stored": True,
-            "memory_id": stored_id,
-            "content_preview": content[:200],
-            "memory_type": memory_type,
-            "scope": scope,
-            "vector_dim": vector_dim,
+            "stored": True, "memory_id": stored_id, "content_preview": content[:200],
+            "memory_type": memory_type, "scope": scope,
+            "vector_dim": vector_dim, "entity_ids": all_entities,
         }, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
@@ -356,6 +361,33 @@ async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "memory_gc"}, ensure_ascii=False))]
+
+
+# ---- _extract_entity_ids (internal helper) ----
+def _extract_entity_ids(content: str, engine: Any) -> list[str]:
+    """Auto-extract entity references from memory content.
+
+    Matches known principle names and graph node names against content.
+    Serves principle #6 (data-flow driven — actual content → actual links).
+    """
+    entity_ids = []
+    try:
+        from plastic_promise.core.constants import CORE_PRINCIPLES
+        # Match principle names
+        for p in CORE_PRINCIPLES:
+            if p["name"][:4] in content or p["name"][-4:] in content:
+                pid = f"principle:{p['id']}"
+                if pid not in entity_ids:
+                    entity_ids.append(pid)
+        # Match existing graph nodes
+        for nid in engine._graph_nodes:
+            name = engine._graph_nodes[nid].get("name", "")
+            if name and len(name) >= 3 and name in content:
+                if nid not in entity_ids:
+                    entity_ids.append(nid)
+    except Exception:
+        pass
+    return entity_ids
 
 
 # ---- _get_fuzzy_buffer (internal helper) ----

@@ -34,7 +34,8 @@ class FuzzyBuffer:
     # ================================================================
 
     def store_urgent(
-        self, content: str, memory_type: str = "experience", source: str = "user"
+        self, content: str, memory_type: str = "experience", source: str = "user",
+        entity_ids: list[str] = None,
     ) -> str:
         """Store a memory urgently with temporary tags, skipping embedding.
 
@@ -42,6 +43,7 @@ class FuzzyBuffer:
             content: Memory text content.
             memory_type: Memory type (experience/reflection/principle/feedback).
             source: Source identifier (user/agent/system).
+            entity_ids: Auto-extracted entity references (for graph linking).
 
         Returns:
             memory_id with 'fuzzy_' prefix.
@@ -53,6 +55,7 @@ class FuzzyBuffer:
             "content": content,
             "memory_type": memory_type,
             "source": source,
+            "entity_ids": entity_ids or [],
             "stage": "raw",
             "tags": tags,
             "vector": None,
