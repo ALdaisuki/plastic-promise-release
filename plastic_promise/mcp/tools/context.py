@@ -9,8 +9,10 @@
 import json
 from typing import Any
 
+from mcp.types import TextContent
 
-async def handle_context_supply(engine: Any, args: dict) -> Any:
+
+async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
     """Handle context_supply tool call.
 
     Core tool: calls ContextEngine.supply() and returns a three-layer
@@ -18,38 +20,25 @@ async def handle_context_supply(engine: Any, args: dict) -> Any:
 
     Args:
         engine: ContextEngine instance.
-        args: {"task_description": str, "task_vector": list[float],
-               "task_type"?: str, "scope"?: str}.
+        args: {"task_description": str, "task_type"?: str, "scope"?: str}.
 
     Returns:
         list[TextContent]: MCP response.
     """
-    # TODO: wire real embedder; pass [] as placeholder for now
-    task_description = args["task_description"]
-    task_vector = args.get("task_vector", [])
-    task_type = args.get("task_type", "general")
-    scope = args.get("scope", "global")
+    try:
+        from plastic_promise.embedder import get_embedder
+        task_description = args["task_description"]
+        task_type = args.get("task_type", "general")
+        scope = args.get("scope", "global")
 
-    pack = engine.supply(task_description, task_vector, task_type, scope)
+        embedder = get_embedder()
+        task_vector = embedder.embed(task_description)
 
-    from mcp.types import TextContent
-    return [TextContent(type="text", text=json.dumps({
-        "core": [{"id": i.id, "content": i.content, "relevance": i.relevance,
-                  "source": i.source, "freshness": i.freshness, "layer": i.layer,
-                  "is_principle": i.is_principle, "worth_score": i.worth_score}
-                 for i in pack.core],
-        "related": [{"id": i.id, "content": i.content, "relevance": i.relevance,
-                     "source": i.source, "freshness": i.freshness, "layer": i.layer,
-                     "is_principle": i.is_principle, "worth_score": i.worth_score}
-                    for i in pack.related],
-        "divergent": [{"id": i.id, "content": i.content, "relevance": i.relevance,
-                       "source": i.source, "freshness": i.freshness, "layer": i.layer,
-                       "is_principle": i.is_principle, "worth_score": i.worth_score}
-                      for i in pack.divergent],
-        "activated_principles": pack.activated_principles,
-        "audit_metadata": pack.audit_metadata,
-        "total_items": pack.total_items,
-    }, ensure_ascii=False))]
+        pack = engine.supply(task_description, task_vector, task_type, scope)
+        return [TextContent(type="text", text=pack.to_prompt())]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "context_supply"}, ensure_ascii=False))]
 
 
 async def handle_context_inject(engine: Any, args: dict) -> Any:

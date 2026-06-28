@@ -231,11 +231,10 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "task_description": {"type": "string", "description": "当前任务的完整自然语言描述（含前文上下文）"},
-                    "task_vector": {"type": "array", "items": {"type": "number"}, "description": "任务描述经 embedder 生成的向量（当前可为空数组占位）"},
                     "task_type": {"type": "string", "description": "任务类型标签"},
                     "scope": {"type": "string", "description": "检索范围: global (默认) 或 domain 限定"},
                 },
-                "required": ["task_description", "task_vector"],
+                "required": ["task_description"],
             },
         ),
         Tool(

@@ -122,12 +122,29 @@ impl HybridRetriever {
             category: None,
         };
 
-        // 1. Vector search
-        let vector_results = self.vector.search(query_vector, self.candidate_pool_size, &filter)?;
-
-        // 2. BM25 search (graceful fallback on error)
-        let bm25_results = self.fts.search(query_text, self.candidate_pool_size, &filter)
+        // 1. Vector search — fall back to empty on error
+        let vector_results = self.vector.search(query_vector, self.candidate_pool_size, &filter)
             .unwrap_or_default();
+
+        // 2. BM25 search — fall back to keyword-overlap scan on error
+        let bm25_results = self.fts.search(query_text, self.candidate_pool_size, &filter)
+            .unwrap_or_else(|_| {
+                let mut fallback: Vec<(String, f64)> = Vec::new();
+                let q_lower = query_text.to_lowercase();
+                let q_words: Vec<&str> = q_lower.split_whitespace().collect();
+                if !q_words.is_empty() {
+                    for (id, (content, _source)) in item_lookup.iter() {
+                        let c_lower = content.to_lowercase();
+                        let hits = q_words.iter().filter(|w| c_lower.contains(*w)).count();
+                        let score = hits as f64 / q_words.len() as f64;
+                        if score > 0.0 {
+                            fallback.push((id.clone(), score));
+                        }
+                    }
+                    fallback.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                }
+                fallback
+            });
 
         // 3. RRF fusion
         let fused = fusion::rrf_fuse(&[vector_results, bm25_results]);
