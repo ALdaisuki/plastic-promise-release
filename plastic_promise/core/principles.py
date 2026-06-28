@@ -411,6 +411,50 @@ class PrincipleManager:
         return [dict(p) for p in CORE_PRINCIPLES if p["domain"] == domain]
 
 
+class PrincipleTracker:
+    """原则遵守量化追踪器 — 记录每条原则被遵循/违反的次数与趋势。
+
+    Serves 约定层: 从"记住约定"到"量化践行"。
+    """
+
+    def __init__(self):
+        self._records: Dict[int, list] = {}  # principle_id -> [{adhered, context, timestamp}]
+
+    def record(self, principle_id: int, adhered: bool, context: str = ""):
+        """Record one adherence event for a principle."""
+        import datetime
+        if principle_id not in self._records:
+            self._records[principle_id] = []
+        self._records[principle_id].append({
+            "adhered": adhered,
+            "context": context[:200],
+            "timestamp": datetime.datetime.now().isoformat(),
+        })
+
+    def stats(self) -> dict:
+        """Return per-principle adherence statistics."""
+        from plastic_promise.core.constants import CORE_PRINCIPLES
+        result = {}
+        for p in CORE_PRINCIPLES:
+            pid = p["id"]
+            events = self._records.get(pid, [])
+            total = len(events)
+            adhered = sum(1 for e in events if e["adhered"])
+            result[str(pid)] = {
+                "name": p["name"],
+                "total_checks": total,
+                "adhered": adhered,
+                "violated": total - adhered,
+                "rate": round(adhered / total, 3) if total > 0 else None,
+            }
+        return result
+
+    def get_history(self, principle_id: int, limit: int = 20) -> list:
+        """Return recent adherence events for a principle."""
+        events = self._records.get(principle_id, [])
+        return events[-limit:]
+
+
 # ================================================================
 # 模块级便捷函数 (pass-through stubs)
 # ================================================================
