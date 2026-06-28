@@ -104,14 +104,59 @@ class OpenAIEmbedder(Embedder):
         return self._model
 
 
-def get_embedder() -> Embedder:
+class FallbackEmbedder(Embedder):
+    """Local zero-vector fallback when no embedding service is available.
+
+    Returns a zero vector of configurable dimension. Downstream systems
+    (ContextEngine._text_retrieval) use pure text matching (CJK bigrams /
+    word split) which does not depend on vector similarity, so retrieval
+    still works — just without semantic ranking.
+    """
+
+    def __init__(self, dim: int = 1024) -> None:
+        self._dim = dim
+        self._model = "fallback-zero"
+
+    def embed(self, text: str) -> list[float]:
+        return [0.0] * self._dim
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] * self._dim for _ in texts]
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+
+def get_embedder(fallback_on_error: bool = True) -> Embedder:
     """Factory: returns embedder based on EMBEDDER_PROVIDER env var.
+
+    When fallback_on_error=True and the primary embedder is unreachable,
+    returns a FallbackEmbedder (zero vectors) so retrieval degrades to
+    pure text matching instead of crashing.
 
     Returns:
         OllamaEmbedder by default (mxbai-embed-large).
         OpenAIEmbedder if EMBEDDER_PROVIDER=openai.
+        FallbackEmbedder if primary is unreachable and fallback_on_error=True.
     """
     provider = os.getenv("EMBEDDER_PROVIDER", "ollama").lower()
+
     if provider == "openai":
-        return OpenAIEmbedder()
-    return OllamaEmbedder()
+        try:
+            return OpenAIEmbedder()
+        except Exception:
+            if fallback_on_error:
+                return FallbackEmbedder(dim=1536)
+            raise
+
+    try:
+        return OllamaEmbedder()
+    except Exception:
+        if fallback_on_error:
+            return FallbackEmbedder(dim=1024)
+        raise

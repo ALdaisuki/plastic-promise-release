@@ -41,13 +41,17 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                  "query": query[:100]},
                 ensure_ascii=False))]
 
-        from plastic_promise.embedder import get_embedder
+        from plastic_promise.embedder import get_embedder, FallbackEmbedder
         task_type = args.get("task_type", "general")
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
 
-        embedder = get_embedder()
-        vec = embedder.embed(query)
+        try:
+            embedder = get_embedder(fallback_on_error=False)
+            vec = embedder.embed(query)
+        except Exception:
+            embedder = FallbackEmbedder()
+            vec = embedder.embed(query)
         pack = engine.supply(query, vec, task_type, scope)
 
         return [TextContent(type="text", text=json.dumps({
@@ -116,9 +120,13 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         stored_id = engine.store_memory(record)
 
         # Embed and prepare for vector indexing (embedding computed for future use)
-        from plastic_promise.embedder import get_embedder
-        embedder = get_embedder()
-        vec = embedder.embed(content)
+        from plastic_promise.embedder import get_embedder, FallbackEmbedder
+        try:
+            embedder = get_embedder(fallback_on_error=False)
+            vec = embedder.embed(content)
+        except Exception:
+            embedder = FallbackEmbedder()
+            vec = embedder.embed(content)
 
         return [TextContent(type="text", text=json.dumps({
             "stored": True,

@@ -26,13 +26,20 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
-        from plastic_promise.embedder import get_embedder
+        from plastic_promise.embedder import get_embedder, FallbackEmbedder
         task_description = args["task_description"]
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
 
-        embedder = get_embedder()
-        task_vector = embedder.embed(task_description)
+        try:
+            embedder = get_embedder(fallback_on_error=False)
+            task_vector = embedder.embed(task_description)
+        except Exception:
+            # Embedding service unavailable — use zero-vector fallback.
+            # ContextEngine._text_retrieval uses pure text matching
+            # (CJK bigrams / word split) which works without embeddings.
+            embedder = FallbackEmbedder()
+            task_vector = embedder.embed(task_description)
 
         pack = engine.supply(task_description, task_vector, task_type, scope)
 
