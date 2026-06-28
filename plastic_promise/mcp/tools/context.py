@@ -190,3 +190,28 @@ async def handle_context_graph(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "context_graph"}, ensure_ascii=False))]
+
+
+async def handle_context_ready(engine: Any, args: dict) -> list[TextContent]:
+    """Return or refresh the context-ready cache. 预备参考——供查阅，非强制."""
+    try:
+        task_hint = args.get("task_hint", "general")
+        ready = getattr(engine, '_context_ready', {})
+        if task_hint in ready:
+            pack = ready[task_hint]
+            # Check TTL
+            import datetime
+            ts = getattr(pack, '_ts', None)
+            if ts and (datetime.datetime.now() - ts).total_seconds() < 300:
+                return [TextContent(type="text", text=pack.to_prompt())]
+        # Not ready — do a fresh supply
+        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
+        try:
+            vec = get_embedder(fallback_on_error=False).embed(task_hint)
+        except Exception:
+            vec = FallbackEmbedder().embed(task_hint)
+        pack = engine.supply(task_hint, vec, "general", "global")
+        return [TextContent(type="text", text=pack.to_prompt())]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "context_ready"}, ensure_ascii=False))]

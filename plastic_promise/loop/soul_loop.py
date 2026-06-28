@@ -206,6 +206,23 @@ class SoulLoop:
         except Exception as e:
             result["cei"] = {"error": str(e)}
 
+        # 7. 上下文预备 — 预取下次上下文到预备区
+        try:
+            self._engine._context_ready = getattr(self._engine, '_context_ready', {})
+            now = datetime.datetime.now()
+            # Clean expired entries (TTL 5 min)
+            expired = [k for k, v in self._engine._context_ready.items()
+                       if (now - getattr(v, '_ts', now)).total_seconds() > 300]
+            for k in expired:
+                del self._engine._context_ready[k]
+            # Pre-fetch context for common task types
+            task_vector = [0.0] * 1024
+            pack = self._engine.supply(task_description, task_vector, "general", "global")
+            self._engine._context_ready["general"] = pack
+            self._engine._context_ready["general"]._ts = now
+        except Exception:
+            pass
+
         return result
 
     def _resolve_principle_id(self, name: str) -> int:

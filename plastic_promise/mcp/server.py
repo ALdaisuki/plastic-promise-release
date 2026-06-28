@@ -293,6 +293,16 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="context_ready",
+            description="返回或刷新上下文预备区缓存。预备参考——供查阅，非强制。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_hint": {"type": "string", "description": "任务类型提示词 (默认 general)"},
+                },
+            },
+        ),
     ])
 
     # === 审计与防线 ===
@@ -544,6 +554,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "context_graph":
             from plastic_promise.mcp.tools.context import handle_context_graph
             return await handle_context_graph(engine, arguments)
+        elif name == "context_ready":
+            from plastic_promise.mcp.tools.context import handle_context_ready
+            return await handle_context_ready(engine, arguments)
 
         # Audit and defense
         elif name == "audit_run":
