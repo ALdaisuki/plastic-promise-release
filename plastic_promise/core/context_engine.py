@@ -420,6 +420,69 @@ class ContextEngine:
 
         return pack
 
+    # ========== 实体注册 ==========
+
+    def register_entity(
+        self,
+        entity_type: str,
+        entity_id: str,
+        entity_name: str,
+        entity_description: str = "",
+        related_entities: list[str] = None,
+    ) -> dict:
+        """Register an entity node and optionally create edges to related entities.
+
+        Args:
+            entity_type: One of "principle", "task", "memory", "code_module".
+            entity_id: Unique identifier for this entity.
+            entity_name: Human-readable name.
+            entity_description: Optional description text.
+            related_entities: Optional list of entity IDs to link to.
+
+        Returns:
+            dict with keys: node_id, type, edges_created
+        """
+        # Validate entity_type
+        valid_types = {"principle", "task", "memory", "code_module"}
+        if entity_type not in valid_types:
+            raise ValueError(
+                f"Unknown entity_type '{entity_type}'. "
+                f"Valid: {', '.join(sorted(valid_types))}"
+            )
+
+        node_id = f"{entity_type}:{entity_id}"
+        is_new = node_id not in self._graph_nodes
+
+        # Create or update node
+        self._graph_nodes[node_id] = {
+            "type": entity_type,
+            "name": entity_name,
+            "description": entity_description or "",
+        }
+
+        # Create edges to related entities
+        edges_created = 0
+        if related_entities:
+            for related_id in related_entities:
+                edge = {
+                    "from": node_id,
+                    "to": related_id,
+                    "relation": "supports",
+                    "weight": PRINCIPLE_INHERITANCE_DECAY,
+                }
+                # Avoid exact duplicate edges
+                if edge not in self._graph_edges:
+                    self._graph_edges.append(edge)
+                    edges_created += 1
+
+        return {
+            "node_id": node_id,
+            "type": entity_type,
+            "name": entity_name,
+            "is_new": is_new,
+            "edges_created": edges_created,
+        }
+
     # ========== 内部方法 ==========
 
     def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
