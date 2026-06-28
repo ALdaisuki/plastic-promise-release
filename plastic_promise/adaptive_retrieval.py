@@ -26,7 +26,7 @@ AFFIRMATIONS = ["ok", "okay", "好", "行", "可以", "thanks", "谢谢", "thx",
 def should_retrieve(query: str) -> bool:
     """Return True if the query warrants memory retrieval.
 
-    Priority: force keywords → skip patterns → greetings → length check.
+    Priority: skip patterns → force keywords → greetings → length check.
 
     Args:
         query: Raw user query text.
