@@ -409,71 +409,101 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """路由 MCP 工具调用到对应处理器"""
+    """Route MCP tool calls to handler modules.
+
+    Each tool domain is delegated to its own module under
+    plastic_promise.mcp.tools.* for clean separation of concerns.
+    Handlers are lazily imported on first call.
+    """
     engine = get_engine()
 
     try:
-        # 记忆域
+        # Memory domain
         if name == "memory_recall":
-            return await _handle_memory_recall(engine, arguments)
+            from plastic_promise.mcp.tools.memory import handle_memory_recall
+            return await handle_memory_recall(engine, arguments)
         elif name == "memory_store":
-            return await _handle_memory_store(engine, arguments)
+            from plastic_promise.mcp.tools.memory import handle_memory_store
+            return await handle_memory_store(engine, arguments)
         elif name == "memory_update":
-            return await _handle_memory_update(engine, arguments)
+            from plastic_promise.mcp.tools.memory import handle_memory_update
+            return await handle_memory_update(engine, arguments)
         elif name == "memory_forget":
-            return await _handle_memory_forget(engine, arguments)
+            from plastic_promise.mcp.tools.memory import handle_memory_forget
+            return await handle_memory_forget(engine, arguments)
         elif name == "memory_stats":
-            return await _handle_memory_stats(engine, arguments)
+            from plastic_promise.mcp.tools.memory import handle_memory_stats
+            return await handle_memory_stats(engine, arguments)
         elif name == "memory_list":
-            return await _handle_memory_list(engine, arguments)
+            from plastic_promise.mcp.tools.memory import handle_memory_list
+            return await handle_memory_list(engine, arguments)
         elif name == "memory_gc":
-            return await _handle_memory_gc(engine, arguments)
+            from plastic_promise.mcp.tools.memory import handle_memory_gc
+            return await handle_memory_gc(engine, arguments)
 
-        # 原则域
+        # Principle domain
         elif name == "principle_activate":
-            return await _handle_principle_activate(engine, arguments)
+            from plastic_promise.mcp.tools.principles import handle_principle_activate
+            return await handle_principle_activate(engine, arguments)
         elif name == "principle_inherit":
-            return await _handle_principle_inherit(engine, arguments)
+            from plastic_promise.mcp.tools.principles import handle_principle_inherit
+            return await handle_principle_inherit(engine, arguments)
         elif name == "principle_diffuse":
-            return await _handle_principle_diffuse(engine, arguments)
+            from plastic_promise.mcp.tools.principles import handle_principle_diffuse
+            return await handle_principle_diffuse(engine, arguments)
         elif name == "principle_evaluate":
-            return await _handle_principle_evaluate(engine, arguments)
+            from plastic_promise.mcp.tools.principles import handle_principle_evaluate
+            return await handle_principle_evaluate(engine, arguments)
 
-        # 上下文域
+        # Context domain
         elif name == "context_supply":
-            return await _handle_context_supply(engine, arguments)
+            from plastic_promise.mcp.tools.context import handle_context_supply
+            return await handle_context_supply(engine, arguments)
         elif name == "context_inject":
-            return await _handle_context_inject(engine, arguments)
+            from plastic_promise.mcp.tools.context import handle_context_inject
+            return await handle_context_inject(engine, arguments)
         elif name == "context_graph":
-            return await _handle_context_graph(engine, arguments)
+            from plastic_promise.mcp.tools.context import handle_context_graph
+            return await handle_context_graph(engine, arguments)
 
-        # 审计与防线
+        # Audit and defense
         elif name == "audit_run":
-            return await _handle_audit_run(engine, arguments)
+            from plastic_promise.mcp.tools.audit_defense import handle_audit_run
+            return await handle_audit_run(engine, arguments)
         elif name == "audit_pre_check":
-            return await _handle_audit_pre_check(engine, arguments)
+            from plastic_promise.mcp.tools.audit_defense import handle_audit_pre_check
+            return await handle_audit_pre_check(engine, arguments)
         elif name == "audit_report":
-            return await _handle_audit_report(engine, arguments)
+            from plastic_promise.mcp.tools.audit_defense import handle_audit_report
+            return await handle_audit_report(engine, arguments)
         elif name == "defense_trust":
-            return await _handle_defense_trust(engine, arguments)
+            from plastic_promise.mcp.tools.audit_defense import handle_defense_trust
+            return await handle_defense_trust(engine, arguments)
         elif name == "defense_status":
-            return await _handle_defense_status(engine, arguments)
+            from plastic_promise.mcp.tools.audit_defense import handle_defense_status
+            return await handle_defense_status(engine, arguments)
 
-        # 自省
+        # Reflection
         elif name == "scarf_reflect":
-            return await _handle_scarf_reflect(engine, arguments)
+            from plastic_promise.mcp.tools.reflection import handle_scarf_reflect
+            return await handle_scarf_reflect(engine, arguments)
         elif name == "inertia_check":
-            return await _handle_inertia_check(engine, arguments)
+            from plastic_promise.mcp.tools.reflection import handle_inertia_check
+            return await handle_inertia_check(engine, arguments)
         elif name == "feedback_apply":
-            return await _handle_feedback_apply(engine, arguments)
+            from plastic_promise.mcp.tools.reflection import handle_feedback_apply
+            return await handle_feedback_apply(engine, arguments)
 
-        # 管理
+        # Management
         elif name == "system_stats":
-            return await _handle_system_stats(engine, arguments)
+            from plastic_promise.mcp.tools.management import handle_system_stats
+            return await handle_system_stats(engine, arguments)
         elif name == "system_backup":
-            return await _handle_system_backup(engine, arguments)
+            from plastic_promise.mcp.tools.management import handle_system_backup
+            return await handle_system_backup(engine, arguments)
         elif name == "system_migrate":
-            return await _handle_system_migrate(engine, arguments)
+            from plastic_promise.mcp.tools.management import handle_system_migrate
+            return await handle_system_migrate(engine, arguments)
 
         else:
             return [TextContent(type="text", text=json.dumps(
@@ -482,97 +512,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         logging.exception(f"Tool {name} failed")
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": name}, ensure_ascii=False))]
-
-
-# ===================================================================
-# 工具处理函数 (stub — 待各模块实现后替换为 import)
-# ===================================================================
-
-import datetime
-
-async def _handle_memory_recall(engine, args):
-    query = args["query"]
-    task_type = args.get("task_type", "general")
-    max_results = args.get("max_results", 20)
-    include_principles = args.get("include_principles", True)
-
-    # 调用 ContextEngine.supply()
-    pack = engine.supply(query, task_type)
-    return [TextContent(type="text", text=json.dumps({
-        "core": [{"id": item.id, "content": item.content[:200], "relevance": item.relevance}
-                 for item in pack.core[:max_results]],
-        "related": [{"id": item.id, "content": item.content[:200], "relevance": item.relevance}
-                    for item in pack.related[:max_results]],
-        "divergent": [{"id": item.id, "content": item.content[:200], "relevance": item.relevance}
-                      for item in pack.divergent[:max_results]],
-        "activated_principles": pack.activated_principles,
-        "audit": pack.audit_metadata,
-    }, ensure_ascii=False, indent=2))]
-
-async def _handle_memory_store(engine, args):
-    from plastic_promise.constants import MEMORY_TIERS
-    memory_id = f"mem_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-    return [TextContent(type="text", text=json.dumps({
-        "stored": True, "memory_id": memory_id,
-        "content": args["content"][:100] + "...",
-        "memory_type": args.get("memory_type", "experience"),
-        "tier": "L1",
-    }, ensure_ascii=False))]
-
-async def _handle_memory_update(engine, args): pass
-async def _handle_memory_forget(engine, args): pass
-async def _handle_memory_stats(engine, args): pass
-async def _handle_memory_list(engine, args): pass
-async def _handle_memory_gc(engine, args): pass
-
-async def _handle_principle_activate(engine, args):
-    task_type = args["task_type"]
-    from plastic_promise.constants import CORE_PRINCIPLES
-    # Simplified: match by recommended principles
-    recommendations = {
-        "code_generation": [1, 3, 8, 10],
-        "code_review": [1, 5, 6, 9],
-        "debugging": [1, 5, 10],
-        "architecture": [2, 7, 8],
-        "refactoring": [5, 6, 7],
-        "learning": [1, 10, 11],
-        "collaboration": [2, 7, 9],
-        "general": [1, 2, 3, 4],
-    }
-    ids = recommendations.get(task_type, [1, 2, 3, 4])
-    principles = [p for p in CORE_PRINCIPLES if p["id"] in ids]
-    return [TextContent(type="text", text=json.dumps({
-        "task_type": task_type,
-        "activated": [{"id": p["id"], "name": p["name"], "content": p["content"]}
-                      for p in principles],
-        "count": len(principles),
-    }, ensure_ascii=False, indent=2))]
-
-async def _handle_principle_inherit(engine, args): pass
-async def _handle_principle_diffuse(engine, args): pass
-async def _handle_principle_evaluate(engine, args): pass
-
-async def _handle_context_supply(engine, args):
-    task_description = args["task_description"]
-    task_type = args.get("task_type", "general")
-    pre_context = args.get("pre_context", "")
-
-    pack = engine.supply(task_description, task_type, pre_context if pre_context else None)
-    return [TextContent(type="text", text=pack.to_prompt())]
-
-async def _handle_context_inject(engine, args): pass
-async def _handle_context_graph(engine, args): pass
-async def _handle_audit_run(engine, args): pass
-async def _handle_audit_pre_check(engine, args): pass
-async def _handle_audit_report(engine, args): pass
-async def _handle_defense_trust(engine, args): pass
-async def _handle_defense_status(engine, args): pass
-async def _handle_scarf_reflect(engine, args): pass
-async def _handle_inertia_check(engine, args): pass
-async def _handle_feedback_apply(engine, args): pass
-async def _handle_system_stats(engine, args): pass
-async def _handle_system_backup(engine, args): pass
-async def _handle_system_migrate(engine, args): pass
 
 
 # ===================================================================
