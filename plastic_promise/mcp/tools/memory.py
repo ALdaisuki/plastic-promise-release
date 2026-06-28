@@ -121,10 +121,13 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
 
         # Embed — fall back to fuzzy buffer if service unavailable
         from plastic_promise.embedder import get_embedder, FallbackEmbedder
+        vector_dim = 0
         try:
             embedder = get_embedder(fallback_on_error=False)
             vec = embedder.embed(content)
             vector_dim = len(vec)
+            # Store vector for _vector_retrieval (细匹配)
+            engine._memories[stored_id]["_vector"] = vec
         except Exception:
             # Embedding unavailable: store in fuzzy buffer for later processing
             fb = _get_fuzzy_buffer(engine)

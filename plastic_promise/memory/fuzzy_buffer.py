@@ -209,11 +209,16 @@ class FuzzyBuffer:
         for mid, record in items:
             try:
                 if self.rec_mem is not None:
-                    self.rec_mem.store(
+                    stored = self.rec_mem.store(
                         content=record["content"],
                         memory_type=record["memory_type"],
                         source=record["source"],
                     )
+                    # Save vector for _vector_retrieval (细匹配)
+                    vec = record.get("vector")
+                    if vec and hasattr(self.rec_mem, '_engine'):
+                        engine = self.rec_mem._engine
+                        engine._memories[stored.memory_id]["_vector"] = vec
                 del self._buffer[mid]
                 count += 1
             except Exception:

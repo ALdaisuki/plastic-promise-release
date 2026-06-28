@@ -369,12 +369,18 @@ class ContextEngine:
         if self.enable_principles:
             self._inject_activated_to_graph(activated, task_type)
 
-        # Phase 1: 双路检索
-        text_results = self._text_retrieval(task_description)
+        # Phase 1: 三路分层检索 — 细→类→粗
+        # 细 (graph): 原则关联图谱 — 最精确的信号
         graph_results = self._graph_traversal(task_type)
 
-        # Phase 2: 简单融合 (取交集/并集，按 score 降序)
-        all_results = self._simple_fuse(text_results, graph_results)
+        # 类 (tier): 文本匹配 + L1 工作记忆优先级提升
+        text_results = self._text_retrieval(task_description)
+
+        # 粗 (vector): 语义向量相关性 (零向量时跳过)
+        vector_results = self._vector_retrieval(task_vector) if any(v != 0.0 for v in task_vector) else []
+
+        # Phase 2: 分层融合 — 细权重最高，粗作为补充
+        all_results = self._layered_fuse(graph_results, text_results, vector_results)
 
         # Phase 3: 符号规则调整
         all_results = self._apply_symbol_rules(all_results, task_description)
@@ -675,13 +681,12 @@ class ContextEngine:
         return result
 
     def _text_retrieval(self, task: str) -> List[tuple]:
+        """粗匹配: CJK bigram / word split + L1 tier boost (大类优先)."""
         results = []
-        # CJK-friendly: character bigrams for Chinese, word split for ASCII
         import re
         has_cjk = bool(re.search(r'[一-鿿]', task))
 
         if has_cjk:
-            # Generate character bigrams from the task
             task_bigrams = set()
             for i in range(len(task) - 1):
                 bigram = task[i:i+2]
@@ -696,7 +701,6 @@ class ContextEngine:
         for mid, mem in self._memories.items():
             content = mem["content"]
             if has_cjk:
-                # Count how many task bigrams appear in the memory content
                 hits = sum(1.0 for bg in task_bigrams if bg in content)
                 score = hits / len(task_bigrams)
             else:
@@ -704,12 +708,37 @@ class ContextEngine:
                 score = hits / len(task_bigrams) if task_bigrams else 0
 
             if score > 0:
+                # 大类优先: L1 working memory gets 1.5× boost
+                tier = mem.get("tier", "L2")
+                if tier == "L1":
+                    score = min(score * 1.5, 1.0)
+                elif tier == "L3":
+                    score = score * 0.8  # long-term slightly de-prioritized
                 results.append((mid, min(score, 1.0), content[:300], mem["source"]))
         return results
 
-    def _graph_traversal(self, task_type: str) -> List[tuple]:
+    def _vector_retrieval(self, task_vector: list[float]) -> List[tuple]:
+        """细匹配: cosine similarity against stored records (if vectors available)."""
         results = []
-        # 简化版：匹配节点
+        for mid, mem in self._memories.items():
+            vec = mem.get("_vector")
+            if not vec or len(vec) != len(task_vector):
+                continue
+            try:
+                dot = sum(a * b for a, b in zip(task_vector, vec))
+                norm_a = sum(a * a for a in task_vector) ** 0.5
+                norm_b = sum(b * b for b in vec) ** 0.5
+                if norm_a > 0 and norm_b > 0:
+                    sim = dot / (norm_a * norm_b)
+                    if sim > 0.3:
+                        results.append((mid, sim, mem["content"][:300], mem["source"]))
+            except Exception:
+                pass
+        return results
+
+    def _graph_traversal(self, task_type: str) -> List[tuple]:
+        """细匹配: principle association graph traversal."""
+        results = []
         target = f"task_type:{task_type}"
         for edge in self._graph_edges:
             if edge.get("from") == target:
@@ -720,19 +749,29 @@ class ContextEngine:
                                 "graph"))
         return results
 
-    def _simple_fuse(self, text_results, graph_results) -> List[tuple]:
+    def _layered_fuse(self, graph_results, text_results, vector_results) -> List[tuple]:
+        """分层融合: 细(graph ×1.0) > 类(text+L1 ×0.8) > 粗(vector ×0.6)."""
         combined = {}
-        for item_id, score, content, source in text_results:
-            combined[item_id] = (score, content, source)
+        # 细: graph results — highest weight
         for item_id, score, content, source in graph_results:
+            combined[item_id] = (score * 1.0, content, source, "graph")
+
+        # 类: text with L1 tier boost already applied — medium weight
+        for item_id, score, content, source in text_results:
+            w = score * 0.8
             if item_id in combined:
-                combined[item_id] = (
-                    max(combined[item_id][0], score),
-                    combined[item_id][1],
-                    combined[item_id][2],
-                )
+                combined[item_id] = (max(combined[item_id][0], w), combined[item_id][1], combined[item_id][2], combined[item_id][3])
             else:
-                combined[item_id] = (score, content, source)
+                combined[item_id] = (w, content, source, "text")
+
+        # 粗: vector similarity — lowest weight
+        for item_id, score, content, source in vector_results:
+            w = score * 0.6
+            if item_id in combined:
+                combined[item_id] = (max(combined[item_id][0], w), combined[item_id][1], combined[item_id][2], combined[item_id][3])
+            else:
+                combined[item_id] = (w, content, source, "vector")
+
         return [(k, v[0], v[1], v[2]) for k, v in
                 sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
 
