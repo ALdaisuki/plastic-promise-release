@@ -718,24 +718,30 @@ async def run_sse(port: int = 9020):
     import uvicorn
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import Response
     from starlette.routing import Route
 
-    transport = SseServerTransport("/messages")
+    logger = logging.getLogger("plastic-promise-sse")
 
-    async def handle_sse(request):
-        async with transport.connect_sse(
+    sse = SseServerTransport("/messages")
+
+    async def handle_sse(request: Request):
+        async with sse.connect_sse(
             request.scope, request.receive, request._send
-        ) as streams:
+        ) as (read_stream, write_stream):
             init_options = server.create_initialization_options()
             await server.run(
-                streams[0], streams[1], init_options, raise_exceptions=False
+                read_stream, write_stream, init_options, raise_exceptions=False
             )
+        return Response()
 
-    async def handle_messages(request):
-        await transport.handle_post_message(request.scope, request.receive, request._send)
+    async def handle_messages(request: Request):
+        await sse.handle_post_message(request.scope, request.receive, request._send)
+        return Response()
 
     app = Starlette(routes=[
-        Route("/sse", endpoint=handle_sse),
+        Route("/sse", endpoint=handle_sse, methods=["GET"]),
         Route("/messages", endpoint=handle_messages, methods=["POST"]),
     ])
 

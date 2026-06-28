@@ -98,6 +98,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         entity_ids = args.get("entity_ids", [])
 
         memory_id = f"mem_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        owner = args.get("owner", "")
 
         # Create MemoryRecord — Rust PyO3 first, Python fallback
         try:
@@ -111,6 +112,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
                 memory_id, content, memory_type, source
             )
         record.scope = scope
+        record.owner = owner
         record.category = "other"
         record.importance = 0.7
         # Auto-extract entity links from content (原则 #6 数据流驱动)

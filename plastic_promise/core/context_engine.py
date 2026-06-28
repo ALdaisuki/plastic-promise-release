@@ -8,6 +8,7 @@
 
 import datetime
 import json
+import os
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
@@ -109,11 +110,13 @@ class MemoryRecord:
     """
 
     def __init__(self, id: str = "", content: str = "",
-                 memory_type: str = "experience", source: str = "user"):
+                 memory_type: str = "experience", source: str = "user",
+                 owner: str = ""):
         self.id = id
         self.content = content
         self.memory_type = memory_type
         self.source = source
+        self.owner: str = owner or os.environ.get("AGENT_OWNER", "")
         self.scope: str = "global"
         self.category: str = "other"
         self.importance: float = 0.7
@@ -197,6 +200,7 @@ class ContextEngine:
             "content": record.get("content", ""),
             "memory_type": record.get("memory_type", "experience"),
             "source": record.get("source", "user"),
+            "owner": record.get("owner", os.environ.get("AGENT_OWNER", "")),
             "tier": record.get("tier", "L1"),
             "worth_success": record.get("worth_success", 0),
             "worth_failure": record.get("worth_failure", 0),
@@ -246,6 +250,7 @@ class ContextEngine:
             "access_count": record.access_count,
             "worth_success": record.worth_success,
             "worth_failure": record.worth_failure,
+            "owner": record.owner,
             "tier": record.tier,
         }
         return mid
@@ -263,6 +268,7 @@ class ContextEngine:
         )
         record.scope = mem.get("scope", "global")
         record.category = mem.get("category", "other")
+        record.owner = mem.get("owner", "")
         record.importance = mem.get("importance", 0.7)
         record.entity_ids = mem.get("entity_ids", [])
         record.created_at = mem.get("created_at", "")
@@ -718,7 +724,14 @@ class ContextEngine:
         if not task_bigrams:
             return results
 
+        current_owner = os.environ.get("AGENT_OWNER", "")
+
         for mid, mem in self._memories.items():
+            # Owner filter: only own memories + shared (owner="shared" or owner="")
+            mem_owner = mem.get("owner", "")
+            if current_owner and mem_owner not in (current_owner, "shared", ""):
+                continue
+
             content = mem["content"]
             if has_cjk:
                 hits = sum(1.0 for bg in task_bigrams if bg in content)
