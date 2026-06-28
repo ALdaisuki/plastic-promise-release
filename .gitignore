@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.so
+*.pyd
+
+# Rust
+rust/context-engine-core/target/
+rust/**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project
+.env
+*.db
+*.sqlite3
+data/
+logs/
+
+# Claude
+.claude/
