@@ -1,37 +1,75 @@
-"""MCP Management 工具 — 管理域 3 个工具
+"""MCP Management tool handlers — 3 tools for system administration.
 
 工具列表:
 - system_stats   : 获取 Plastic Promise 系统整体统计
-- system_backup  : 导出 Plastic Promise 完整状态
-- system_migrate : 从其他记忆系统迁移数据到 Plastic Promise
+- system_backup  : 导出 Plastic Promise 完整状态 (stub)
+- system_migrate : 从其他记忆系统迁移数据到 Plastic Promise (stub)
 """
 
 import json
 from typing import Any
 
+from mcp.types import TextContent
 
-async def handle_system_stats(engine: Any, args: dict) -> Any:
-    """Handle system_stats tool call.
 
-    Retrieves overall Plastic Promise system statistics:
-    nine-system health / CEI index / memory pool status /
-    trust score trend / graph scale.
+# ---------------------------------------------------------------------------
+# system_stats
+# ---------------------------------------------------------------------------
+
+async def handle_system_stats(engine: Any, args: dict) -> list[TextContent]:
+    """Aggregate system-wide statistics.
+
+    Retrieves overall Plastic Promise system statistics: memory pool status,
+    entity graph scale, and nine-system digital-body health snapshot.
 
     Args:
-        engine: ContextEngine instance.
+        engine: ContextEngine instance (must provide memory_stats_json + get_graph).
         args: {} (no arguments required).
 
     Returns:
-        list[TextContent]: MCP response.
+        list[TextContent]: MCP response with memory, graph, and system stats.
     """
-    pass
+    try:
+        from plastic_promise.core.constants import DIGITAL_BODY_SYSTEMS
+
+        # Memory stats
+        mem_stats_str = engine.memory_stats_json()
+        mem_stats = (
+            json.loads(mem_stats_str) if isinstance(mem_stats_str, str) else {}
+        )
+
+        # EntityGraph stats
+        graph = engine.get_graph()
+        graph_stats = {
+            "nodes": graph.node_count,
+            "edges": graph.edge_count,
+        }
+
+        # Digital body system snapshot
+        systems = {}
+        for key, sys in DIGITAL_BODY_SYSTEMS.items():
+            systems[key] = {
+                "name": sys["name"],
+                "maturity": sys["maturity"],
+            }
+
+        return [TextContent(type="text", text=json.dumps({
+            "memory": mem_stats,
+            "graph": graph_stats,
+            "digital_body_systems": systems,
+            "engine_version": "0.1.0",
+        }, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "system_stats"}, ensure_ascii=False))]
 
 
-async def handle_system_backup(engine: Any, args: dict) -> Any:
-    """Handle system_backup tool call.
+# ---------------------------------------------------------------------------
+# system_backup (stub)
+# ---------------------------------------------------------------------------
 
-    Exports complete Plastic Promise state:
-    memory pool / principle graph / trust score / audit history.
+async def handle_system_backup(engine: Any, args: dict) -> list[TextContent]:
+    """Export complete Plastic Promise state (stub).
 
     Args:
         engine: ContextEngine instance.
@@ -40,14 +78,23 @@ async def handle_system_backup(engine: Any, args: dict) -> Any:
     Returns:
         list[TextContent]: MCP response.
     """
-    pass
+    try:
+        return [TextContent(type="text", text=json.dumps({
+            "tool": "system_backup",
+            "status": "not_implemented",
+            "message": "System backup/export is not yet wired.",
+        }, ensure_ascii=False))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "system_backup"}, ensure_ascii=False))]
 
 
-async def handle_system_migrate(engine: Any, args: dict) -> Any:
-    """Handle system_migrate tool call.
+# ---------------------------------------------------------------------------
+# system_migrate (stub)
+# ---------------------------------------------------------------------------
 
-    Migrates data from another memory system into Plastic Promise
-    (compatible with memory-lancedb / memory-lancedb-pro format).
+async def handle_system_migrate(engine: Any, args: dict) -> list[TextContent]:
+    """Migrate data from another memory system into Plastic Promise (stub).
 
     Args:
         engine: ContextEngine instance.
@@ -56,4 +103,12 @@ async def handle_system_migrate(engine: Any, args: dict) -> Any:
     Returns:
         list[TextContent]: MCP response.
     """
-    pass
+    try:
+        return [TextContent(type="text", text=json.dumps({
+            "tool": "system_migrate",
+            "status": "not_implemented",
+            "message": "System migration is not yet wired.",
+        }, ensure_ascii=False))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "system_migrate"}, ensure_ascii=False))]
