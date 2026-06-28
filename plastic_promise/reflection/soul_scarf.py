@@ -213,19 +213,20 @@ class SCARFReflector:
                 dim_key, context_lower
             )
 
-        # Build aggregate summary
+        # Build result as flat {dimension: {...}, summary: ..., timestamp: ...}
         scores = [d["score"] for d in dim_results.values()]
         overall = round(sum(scores) / len(scores), 4) if scores else _DEFAULT_SCORE
 
-        result: Dict[str, Any] = {
-            "dimensions": dim_results,
-            "summary": {
-                "overall_score": overall,
-                "dimensions_evaluated": list(dim_results.keys()),
-                "score_range": (round(min(scores), 4), round(max(scores), 4)) if scores else (_DEFAULT_SCORE, _DEFAULT_SCORE),
-            },
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        result: Dict[str, Any] = dict(dim_results)
+        result["summary"] = {
+            "overall_score": overall,
+            "dimensions_evaluated": list(dim_results.keys()),
+            "score_range": (
+                round(min(scores), 4) if scores else _DEFAULT_SCORE,
+                round(max(scores), 4) if scores else _DEFAULT_SCORE,
+            ),
         }
+        result["timestamp"] = datetime.datetime.utcnow().isoformat() + "Z"
 
         self.history.append(result)
         return result
@@ -254,7 +255,12 @@ class SCARFReflector:
             }
 
         latest: Dict[str, Any] = self.history[-1]
-        dims: Dict[str, Any] = latest.get("dimensions", {})
+        # Extract dimension entries from flat record (exclude meta keys)
+        _META_KEYS = {"summary", "timestamp"}
+        dims: Dict[str, Any] = {
+            k: v for k, v in latest.items()
+            if k not in _META_KEYS and isinstance(v, dict) and "score" in v
+        }
 
         if not dims:
             return {
@@ -314,7 +320,13 @@ class SCARFReflector:
         # Window of recent records excluding the latest
         recent = self.history[-window - 1 : -1]
         latest_record = self.history[-1]
-        latest_dims: Dict[str, Any] = latest_record.get("dimensions", {})
+
+        # Extract dimension entries from flat record (exclude meta keys)
+        _META_KEYS = {"summary", "timestamp"}
+        latest_dims: Dict[str, Any] = {
+            k: v for k, v in latest_record.items()
+            if k not in _META_KEYS and isinstance(v, dict) and "score" in v
+        }
 
         if not recent or not latest_dims:
             return {
@@ -330,10 +342,13 @@ class SCARFReflector:
         dim_keys = list(latest_dims.keys())
 
         for dk in dim_keys:
-            hist_scores = [
-                rec.get("dimensions", {}).get(dk, {}).get("score", _DEFAULT_SCORE)
-                for rec in recent
-            ]
+            hist_scores: List[float] = []
+            for rec in recent:
+                dim_val = rec.get(dk)
+                if isinstance(dim_val, dict) and "score" in dim_val:
+                    hist_scores.append(dim_val["score"])
+                else:
+                    hist_scores.append(_DEFAULT_SCORE)
             hist_avgs[dk] = sum(hist_scores) / len(hist_scores) if hist_scores else _DEFAULT_SCORE
 
         # Determine trend per dimension
