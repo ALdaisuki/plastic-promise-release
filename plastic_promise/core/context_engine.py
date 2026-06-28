@@ -483,6 +483,115 @@ class ContextEngine:
             "edges_created": edges_created,
         }
 
+    def query_graph(
+        self,
+        query_type: str,
+        start_node: str = None,
+        max_hops: int = 3,
+    ) -> dict:
+        """Query the entity association graph.
+
+        Args:
+            query_type: "node_info" | "traverse" | "full_graph" | "neighbors"
+            start_node: Node ID for node_info/traverse/neighbors queries.
+            max_hops: Max traversal depth (clamped to [1, 10]).
+
+        Returns:
+            dict with nodes, edges, and optional traversal_path.
+        """
+        max_hops = max(1, min(max_hops, 10))
+
+        if query_type == "full_graph":
+            return {
+                "nodes": dict(self._graph_nodes),
+                "edges": list(self._graph_edges),
+            }
+
+        if query_type == "node_info":
+            if not start_node or start_node not in self._graph_nodes:
+                return {
+                    "error": f"Node '{start_node}' not found",
+                    "nodes": {},
+                    "edges": [],
+                }
+            node = self._graph_nodes[start_node]
+            in_edges = [e for e in self._graph_edges if e.get("to") == start_node]
+            out_edges = [e for e in self._graph_edges if e.get("from") == start_node]
+            return {
+                "nodes": {start_node: node},
+                "edges": in_edges + out_edges,
+                "in_degree": len(in_edges),
+                "out_degree": len(out_edges),
+            }
+
+        if query_type == "neighbors":
+            if not start_node or start_node not in self._graph_nodes:
+                return {
+                    "error": f"Node '{start_node}' not found",
+                    "nodes": {},
+                    "edges": [],
+                }
+            neighbor_ids = set()
+            edges = []
+            for e in self._graph_edges:
+                if e.get("from") == start_node:
+                    neighbor_ids.add(e.get("to"))
+                    edges.append(e)
+                elif e.get("to") == start_node:
+                    neighbor_ids.add(e.get("from"))
+                    edges.append(e)
+            nodes = {
+                nid: self._graph_nodes[nid]
+                for nid in neighbor_ids
+                if nid in self._graph_nodes
+            }
+            return {"nodes": nodes, "edges": edges, "neighbor_count": len(nodes)}
+
+        if query_type == "traverse":
+            if not start_node or start_node not in self._graph_nodes:
+                return {
+                    "error": f"Node '{start_node}' not found",
+                    "nodes": {},
+                    "edges": [],
+                    "traversal_path": [],
+                }
+            # BFS traversal
+            visited = set()
+            queue = [(start_node, 0)]
+            traversal_path = []
+            all_nodes = {}
+            all_edges = []
+
+            from collections import deque
+            q = deque([(start_node, 0)])
+            while q:
+                current, depth = q.popleft()
+                if current in visited or depth > max_hops:
+                    continue
+                visited.add(current)
+                traversal_path.append(current)
+                if current in self._graph_nodes:
+                    all_nodes[current] = self._graph_nodes[current]
+                # Follow outgoing edges
+                for e in self._graph_edges:
+                    if e.get("from") == current:
+                        all_edges.append(e)
+                        target = e.get("to")
+                        if target and target not in visited:
+                            q.append((target, depth + 1))
+
+            return {
+                "nodes": all_nodes,
+                "edges": all_edges,
+                "traversal_path": traversal_path,
+                "hops": max_hops,
+            }
+
+        return {
+            "error": f"Unknown query_type '{query_type}'. "
+                     f"Valid: node_info, traverse, full_graph, neighbors"
+        }
+
     # ========== 内部方法 ==========
 
     def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
