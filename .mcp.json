@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "plastic-promise": {
+      "command": "python",
+      "args": ["-m", "plastic_promise.mcp.server"],
+      "env": {
+        "PYTHONPATH": "F:/Agent/plastic-promise"
+      }
+    }
+  }
+}

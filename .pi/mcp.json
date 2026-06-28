@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "plastic-promise": {
+      "lifecycle": "lazy",
+      "description": "Plastic Promise - AI governance with shared memory, principle engine, 7-dimension audit"
+    }
+  },
+  "imports": ["claude-code"],
+  "settings": {
+    "toolResultRenderers": {
+      "plastic-promise": {
+        "memory_recall": "panel",
+        "context_supply": "panel",
+        "audit_run": "panel",
+        "scarf_reflect": "panel"
+      }
+    }
+  }
+}

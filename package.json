@@ -1,0 +1,13 @@
+{
+  "name": "agent-interop",
+  "version": "2.0.0",
+  "description": "Pi-Claude-N.E.K.O three-way interop bridge (WebSocket + MCP)",
+  "type": "module",
+  "scripts": {
+    "bus": "npx tsx bridge/event-bus.ts",
+    "client": "python bridge/bus_client.py"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

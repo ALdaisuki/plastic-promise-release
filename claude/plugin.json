@@ -1,0 +1,7 @@
+{
+  "name": "agent-interop",
+  "description": "Pi ↔ Claude 互通层 — 共享 Plastic Promise 记忆与原则引擎",
+  "version": "0.1.0",
+  "author": "ALdai",
+  "license": "MIT"
+}
