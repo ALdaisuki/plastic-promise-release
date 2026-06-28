@@ -136,11 +136,23 @@ class ContextEngine:
     def supply(
         self,
         task_description: str,
+        task_vector: list[float],
         task_type: str = "general",
-        pre_context: str = None,
+        scope: str = "global",
     ) -> ContextPack:
-        """供应上下文"""
-        pre_context = pre_context or ""
+        """供应上下文
+
+        Args:
+            task_description: 当前任务的完整自然语言描述。
+                (调用方应将 pre_context 内容追加到 task_description 后再传入)
+            task_vector: 由 Python embedder 生成的 embedding 向量 (list[float])。
+                Rust 端通过此参数接收向量，不自行调用 embedding API。
+            task_type: 任务类型标签，用于原则匹配和图遍历。
+            scope: 检索范围 — "global" 搜索全部记忆，或限定特定 domain。
+
+        Returns:
+            ContextPack: 三层上下文包 (core / related / divergent)
+        """
 
         # Phase 0: 原则注入
         activated = self._activate_principles(task_type, task_description)
