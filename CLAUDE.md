@@ -13,12 +13,13 @@
 4. `memory_store(content="会话启动：<本会话目标任务>", memory_type="experience")` — **记录会话启动记忆**（可溯源）
 5. 信任分检查：`defense_trust(action="get")` — 了解当前自主权级别
 
-**每次会话结束前**，记录关键决策和教训：
-- `memory_store(content="<关键发现/教训>", memory_type="reflection")`
-- `post_task("<本会话摘要>", "<最后一个git_commit>")` — 触发六联闭环
-- `audit_run` — 七维审计检查
+**会话收尾约定**（Agent 自主选择——不是强制门禁）：
+- 如果本次有值得沉淀的经验 → `memory_store(content="<关键发现>", memory_type="reflection")`
+- 如果想了解系统自演化状态 → `post_task("<摘要>", "<git_commit>")` 触发六联闭环
+- 如果想检查约定健康度 → `audit_run` 七维审计
+- 如果记忆池臃肿 → `memory_gc(dry_run=false)` 清理衰退记忆
 
-**每日**：`memory_gc(dry_run=false)` — 清理衰退记忆
+这些不是必须完成的检查单。它们是工具——你用，系统就演化；不用，系统保持现状。约定，是比约束更深的力量。
 
 ## 可用 MCP 工具（32 个）
 
