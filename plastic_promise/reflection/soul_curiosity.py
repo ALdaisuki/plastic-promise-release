@@ -8,9 +8,33 @@
 提供模块级便捷函数 `curiosity_explore` 以及可实例化的 `CuriosityExplorer` 类。
 """
 
-from typing import Any, Dict
+import random
+from typing import Any, Dict, List, Optional
 
 from plastic_promise.core.constants import CURIOSITY_EXPLORE_RATE
+
+# 好奇心探索覆盖的八个主题类别
+_ALL_TOPIC_CATEGORIES: List[str] = [
+    "code_patterns",
+    "architecture",
+    "testing",
+    "performance",
+    "security",
+    "tools",
+    "collaboration",
+    "learning",
+]
+
+_RATIONALE_TEMPLATES: Dict[str, str] = {
+    "code_patterns": "发现新的设计模式或编码实践，提高代码可维护性",
+    "architecture": "探索系统架构的改进点或模式，增强模块间协同",
+    "testing": "寻找未被覆盖的测试场景或新的测试策略",
+    "performance": "识别潜在的性能瓶颈或优化机会",
+    "security": "主动探查安全边界，发现潜在风险面",
+    "tools": "探索新工具或自动化手段，提升工作效率",
+    "collaboration": "寻找团队协作中的改善点，增强信息透明度",
+    "learning": "接触陌生知识领域，拓宽系统认知边界",
+}
 
 
 class CuriosityExplorer:
@@ -35,7 +59,10 @@ class CuriosityExplorer:
             explore_rate: epsilon-greedy 探索率，取值范围 0.0 ~ 1.0。
                           默认使用 CURIOSITY_EXPLORE_RATE 常量。
         """
-        pass
+        self.explore_rate = explore_rate
+        self.explored_topics: set = set()
+        self._exploration_history: list = []
+        self._explore_count: int = 0
 
     def should_explore(self) -> bool:
         """基于 epsilon-greedy 策略判断本次是否应进行探索。
@@ -46,7 +73,7 @@ class CuriosityExplorer:
         Returns:
             bool: True 表示应进行探索，False 表示应利用已知策略。
         """
-        pass
+        return random.random() < self.explore_rate
 
     def get_exploration_suggestion(
         self,
@@ -62,12 +89,36 @@ class CuriosityExplorer:
 
         Returns:
             Dict[str, Any]: 探索建议，包含：
-                - should_explore: 是否建议探索
-                - suggested_direction: 建议的探索方向
+                - suggested_topic: 建议探索的主题类别
                 - rationale: 建议理由
-                - risk_level: 探索风险级别（low/medium/high）
+                - expected_value: 探索的预期价值
         """
-        pass
+        unexplored = [
+            cat for cat in _ALL_TOPIC_CATEGORIES
+            if cat not in self.explored_topics
+        ]
+
+        if unexplored:
+            suggested_topic = random.choice(unexplored)
+            rationale = _RATIONALE_TEMPLATES.get(
+                suggested_topic,
+                "拓展系统认知，增强应对未知情境的能力",
+            )
+            expected_value = "发现新的知识领域与改进方向"
+        else:
+            # 所有类别均已探索过，随机建议一个深入探索
+            suggested_topic = random.choice(_ALL_TOPIC_CATEGORIES)
+            rationale = (
+                f"已覆盖所有类别，建议深入探索 {suggested_topic} "
+                "以巩固或发掘更深层次的洞察"
+            )
+            expected_value = "在已知领域进行更深层次的挖掘"
+
+        return {
+            "suggested_topic": suggested_topic,
+            "rationale": rationale,
+            "expected_value": expected_value,
+        }
 
     def record_exploration(
         self,
@@ -83,23 +134,41 @@ class CuriosityExplorer:
             topic: 探索主题描述。
             result: 探索结果详情，包含收获、发现、评估等信息。
         """
-        pass
+        self.explored_topics.add(topic)
+        self._exploration_history.append({
+            "topic": topic,
+            "result": result,
+        })
+        self._explore_count += 1
 
     def get_exploration_stats(self) -> Dict[str, Any]:
         """获取探索统计信息。
 
         汇总历次探索的统计数据，包括探索次数、
-        各方向分布、平均收获等指标。
+        盲点分析、覆盖比例等指标。
 
         Returns:
             Dict[str, Any]: 探索统计，包含：
                 - total_explorations: 总探索次数
-                - topics: 探索过的主题分布
-                - avg_reward: 探索的平均收获评分
-                - explore_utilize_ratio: 探索/利用的实际比例
-                - most_valuable_topic: 最有价值的探索主题
+                - topics_covered: 已探索覆盖的主题列表
+                - blind_spots: 尚未探索的主题盲区
+                - explore_ratio: 已探索主题占比（0.0 ~ 1.0）
         """
-        pass
+        blind_spots = [
+            cat for cat in _ALL_TOPIC_CATEGORIES
+            if cat not in self.explored_topics
+        ]
+        explore_ratio = (
+            len(self.explored_topics) / len(_ALL_TOPIC_CATEGORIES)
+            if _ALL_TOPIC_CATEGORIES
+            else 0.0
+        )
+        return {
+            "total_explorations": self._explore_count,
+            "topics_covered": sorted(self.explored_topics),
+            "blind_spots": blind_spots,
+            "explore_ratio": explore_ratio,
+        }
 
 
 def curiosity_explore(current_context: str) -> Dict[str, Any]:
