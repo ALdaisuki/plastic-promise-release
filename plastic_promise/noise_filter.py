@@ -7,7 +7,7 @@ English and Chinese patterns supported.
 import re
 
 DENIAL_PATTERNS = [
-    r"i don'?t have.*(information|data|memory|record)",
+    r"i (do ?n[o\']?t|don'?t) have.*(information|data|memory|record)",
     r"我没有(任何)?(相关)?(信息|数据|记忆|记录)",
     r"无法提供",
     r"cannot (provide|find|locate)",
