@@ -35,8 +35,9 @@
   内化约定（原则遵守历史量化） ← Phase 3
 
 基础设施
-  永久记忆存储（SQLite） ← Phase 2
-  依赖关系管理 ← Phase 2
+  永久记忆存储（SQLite 写穿透） ← Phase 2 ✅
+  依赖关系管理（blocks/blockedBy + 循环检测） ← Phase 2 ✅
+  Issue 生命周期（open→in_progress→resolved→closed） ← Phase 2 ✅
   多 Agent 联动 ← Phase 4
 ```
 
@@ -64,7 +65,6 @@
 - 无
 
 ### 待做
-- Phase 2: SQLite 持久化 + Issue 生命周期 + 依赖关系管理
 - Phase 3: worth 反馈闭环 + 行为模式学习 + curiosity 闭环 + 原则遵守历史可视化
 - Phase 4: 上下文预备 hook + Bridge TODO + SSE 生产化
 
