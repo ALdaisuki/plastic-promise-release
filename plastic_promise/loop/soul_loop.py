@@ -270,7 +270,12 @@ class SoulLoop:
 
         层级影响系统的自主权策略和约束衰减系数。
         """
-        pass
+        from plastic_promise.core.constants import CEI_THRESHOLDS
+        cei = self.calculate_cei()
+        for tier_name, (low, high) in CEI_THRESHOLDS.items():
+            if low <= cei < high:
+                return tier_name
+        return "mature"  # fallback for cei >= 1.0 or edge cases
 
 
 # ============================================================

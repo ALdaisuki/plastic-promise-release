@@ -184,4 +184,5 @@ def curiosity_explore(current_context: str) -> Dict[str, Any]:
         Dict[str, Any]: 探索结果，格式与
             CuriosityExplorer.get_exploration_suggestion() 返回值一致。
     """
-    pass
+    explorer = CuriosityExplorer()
+    return explorer.get_exploration_suggestion(current_context)
