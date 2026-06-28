@@ -215,21 +215,25 @@ class ContextEngine:
     def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
         from plastic_promise.core.constants import CORE_PRINCIPLES
 
+        # All 3 core principles apply to every task type
         recommendations = {
-            "code_generation": [1, 3, 8, 10],
-            "code_review": [1, 5, 6, 9],
-            "debugging": [1, 5, 10],
-            "architecture": [2, 7, 8],
-            "refactoring": [5, 6, 7],
-            "learning": [1, 10, 11],
-            "collaboration": [2, 7, 9],
+            "code_generation": [1, 2, 3],
+            "code_review": [1, 2, 3],
+            "debugging": [1, 2, 3],
+            "architecture": [1, 2, 3],
+            "refactoring": [1, 2, 3],
+            "learning": [1, 2, 3],
+            "collaboration": [1, 2, 3],
         }
-        ids = recommendations.get(task_type, [1, 2, 3, 4])
+        ids = recommendations.get(task_type, [1, 2, 3])
 
         # 关键词额外匹配
         for p in CORE_PRINCIPLES:
             if p["id"] not in ids:
-                for kw in p.get("keywords", "").split(","):
+                keywords = p.get("keywords", [])
+                if isinstance(keywords, str):
+                    keywords = [k.strip() for k in keywords.split(",")]
+                for kw in keywords:
                     if kw.strip() in task_description:
                         ids.append(p["id"])
                         break
@@ -242,14 +246,35 @@ class ContextEngine:
 
     def _text_retrieval(self, task: str) -> List[tuple]:
         results = []
-        task_words = [w for w in task.replace("，", " ").replace("。", " ").split() if len(w) >= 2]
-        if not task_words:
+        # CJK-friendly: character bigrams for Chinese, word split for ASCII
+        import re
+        has_cjk = bool(re.search(r'[一-鿿]', task))
+
+        if has_cjk:
+            # Generate character bigrams from the task
+            task_bigrams = set()
+            for i in range(len(task) - 1):
+                bigram = task[i:i+2]
+                if not re.search(r'[\s，。！？、；：,.!?;:\s]', bigram):
+                    task_bigrams.add(bigram)
+        else:
+            task_bigrams = set(task.lower().split())
+
+        if not task_bigrams:
             return results
 
         for mid, mem in self._memories.items():
-            score = sum(1.0 for w in task_words if w in mem["content"]) / len(task_words)
+            content = mem["content"]
+            if has_cjk:
+                # Count how many task bigrams appear in the memory content
+                hits = sum(1.0 for bg in task_bigrams if bg in content)
+                score = hits / len(task_bigrams)
+            else:
+                hits = sum(1.0 for w in task_bigrams if w.lower() in content.lower())
+                score = hits / len(task_bigrams) if task_bigrams else 0
+
             if score > 0:
-                results.append((mid, min(score, 1.0), mem["content"][:300], mem["source"]))
+                results.append((mid, min(score, 1.0), content[:300], mem["source"]))
         return results
 
     def _graph_traversal(self, task_type: str) -> List[tuple]:
