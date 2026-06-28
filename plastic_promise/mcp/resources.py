@@ -62,11 +62,11 @@ def read_resource(uri: str) -> str:
         JSON 字符串格式的资源数据。
     """
     if uri == "plastic-promise://principles":
-        from plastic_promise.constants import CORE_PRINCIPLES
+        from plastic_promise.core.constants import CORE_PRINCIPLES
         return json.dumps(CORE_PRINCIPLES, ensure_ascii=False, indent=2)
 
     elif uri == "plastic-promise://systems":
-        from plastic_promise.constants import DIGITAL_BODY_SYSTEMS
+        from plastic_promise.core.constants import DIGITAL_BODY_SYSTEMS
         return json.dumps(DIGITAL_BODY_SYSTEMS, ensure_ascii=False, indent=2)
 
     elif uri == "plastic-promise://trust-history":

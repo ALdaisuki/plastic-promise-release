@@ -23,7 +23,6 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationCapabilities
 from mcp.server.stdio import stdio_server
 from mcp.types import (
     Tool,
@@ -34,7 +33,7 @@ from mcp.types import (
     GetPromptResult,
 )
 
-from plastic_promise.constants import (
+from plastic_promise.core.constants import (
     CORE_PRINCIPLES,
     DEFENSE_LAYERS,
     AUDIT_DIMENSIONS,
@@ -60,7 +59,7 @@ def get_engine():
         logging.info("ContextEngine: Rust 核心已加载")
     except ImportError:
         logging.warning("ContextEngine: Rust 不可用，使用 Python Mock")
-        from plastic_promise.context_engine import ContextEngine as PyEngine
+        from plastic_promise.core.context_engine import ContextEngine as PyEngine
         _engine = PyEngine()
     return _engine
 
@@ -561,7 +560,7 @@ async def read_resource(uri: str) -> str:
     if uri == "plastic-promise://principles":
         return json.dumps(CORE_PRINCIPLES, ensure_ascii=False, indent=2)
     elif uri == "plastic-promise://systems":
-        from plastic_promise.constants import DIGITAL_BODY_SYSTEMS
+        from plastic_promise.core.constants import DIGITAL_BODY_SYSTEMS
         return json.dumps(DIGITAL_BODY_SYSTEMS, ensure_ascii=False, indent=2)
     elif uri == "plastic-promise://trust-history":
         return json.dumps({"trust_history": [], "current_trust": 0.60}, ensure_ascii=False)
@@ -653,15 +652,17 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
 
 async def main():
     """MCP Server 启动入口"""
+    from mcp.server.models import InitializationOptions, ServerCapabilities
+
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
             write_stream,
-            InitializationCapabilities(
-                sampling={},
-                experimental={},
+            InitializationOptions(
+                server_name="plastic-promise",
+                capabilities=ServerCapabilities(),
             ),
-            NotificationOptions(),
+            raise_exceptions=False,
         )
 
 

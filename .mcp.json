@@ -4,7 +4,7 @@
       "command": "python",
       "args": ["-m", "plastic_promise.mcp.server"],
       "env": {
-        "PYTHONPATH": "F:/Agent/plastic-promise"
+        "PYTHONPATH": "F:/Agent/Memory system"
       }
     }
   }
