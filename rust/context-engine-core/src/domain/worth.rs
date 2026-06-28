@@ -10,18 +10,23 @@ pub struct WilsonWorthCalculator {
 }
 
 impl Default for WilsonWorthCalculator {
-    fn default() -> Self { Self { z: 1.96 } }
+    fn default() -> Self {
+        Self { z: 1.96 }
+    }
 }
 
 impl WorthCalculator for WilsonWorthCalculator {
     fn calculate(&self, success: u32, failure: u32, min_obs: u32) -> f64 {
         let n = success + failure;
-        if n < min_obs { return 0.5; }
+        if n < min_obs {
+            return 0.5;
+        }
         let n_f = n as f64;
         let p = success as f64 / n_f;
         let z2 = self.z * self.z;
         let center = (p + z2 / (2.0 * n_f)) / (1.0 + z2 / n_f);
-        let margin = self.z * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt() / (1.0 + z2 / n_f);
+        let margin =
+            self.z * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt() / (1.0 + z2 / n_f);
         ((center - margin).max(0.0) * 2.5 - 0.5).clamp(-1.5, 1.0)
     }
 
@@ -29,7 +34,7 @@ impl WorthCalculator for WilsonWorthCalculator {
         match ft {
             FeedbackType::Adopted => *success += 1,
             FeedbackType::Rejected => *failure += 1,
-            FeedbackType::Ignored => {},
+            FeedbackType::Ignored => {}
         }
     }
 }
@@ -39,11 +44,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_insufficient_neutral() { assert_eq!(WilsonWorthCalculator::default().calculate(1, 0, 5), 0.5); }
+    fn test_insufficient_neutral() {
+        assert_eq!(WilsonWorthCalculator::default().calculate(1, 0, 5), 0.5);
+    }
     #[test]
-    fn test_all_success_high() { assert!(WilsonWorthCalculator::default().calculate(20, 0, 5) > 0.8); }
+    fn test_all_success_high() {
+        assert!(WilsonWorthCalculator::default().calculate(20, 0, 5) > 0.8);
+    }
     #[test]
-    fn test_all_failure_low() { assert!(WilsonWorthCalculator::default().calculate(0, 20, 5) < 0.2); }
+    fn test_all_failure_low() {
+        assert!(WilsonWorthCalculator::default().calculate(0, 20, 5) < 0.2);
+    }
     #[test]
     fn test_record_feedback() {
         let c = WilsonWorthCalculator::default();

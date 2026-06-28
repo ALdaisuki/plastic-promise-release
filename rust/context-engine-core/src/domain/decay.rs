@@ -5,8 +5,8 @@
 //!
 //! Access reinforcement: effective_half_life = base * min(1 + rf * access_count, max_mult).
 
-use chrono::{DateTime, Utc};
 use crate::domain::{DecayModel, Tier};
+use chrono::{DateTime, Utc};
 
 pub struct WeibullDecay {
     pub reinforcement_factor: f64,
@@ -15,17 +15,33 @@ pub struct WeibullDecay {
 
 impl Default for WeibullDecay {
     fn default() -> Self {
-        Self { reinforcement_factor: 0.5, max_half_life_multiplier: 3.0 }
+        Self {
+            reinforcement_factor: 0.5,
+            max_half_life_multiplier: 3.0,
+        }
     }
 }
 
 impl DecayModel for WeibullDecay {
-    fn compute(&self, tier: Tier, created_at: &DateTime<Utc>, last_accessed: &DateTime<Utc>,
-               access_count: u32, importance: f64) -> f64 {
+    fn compute(
+        &self,
+        tier: Tier,
+        created_at: &DateTime<Utc>,
+        last_accessed: &DateTime<Utc>,
+        access_count: u32,
+        importance: f64,
+    ) -> f64 {
         let now = Utc::now();
         let age_days = (now - *created_at).num_hours() as f64 / 24.0;
-        if age_days < 0.0 { return 1.0; }
-        let half_life = self.effective_half_life(tier, access_count, self.reinforcement_factor, self.max_half_life_multiplier);
+        if age_days < 0.0 {
+            return 1.0;
+        }
+        let half_life = self.effective_half_life(
+            tier,
+            access_count,
+            self.reinforcement_factor,
+            self.max_half_life_multiplier,
+        );
         let beta = tier.decay_beta();
         let lambda = half_life / (2.0_f64.ln().powf(1.0 / beta));
         let decay = (-(age_days / lambda).powf(beta)).exp();

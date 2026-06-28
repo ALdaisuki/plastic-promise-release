@@ -82,3 +82,28 @@ impl std::fmt::Display for Tier {
         write!(f, "{}", self.as_str())
     }
 }
+
+use crate::domain::TierManager;
+use crate::memory_worth::MemoryRecord;
+
+/// Default tier classification based on access_count + worth_score thresholds.
+pub struct DefaultTierManager;
+
+impl TierManager for DefaultTierManager {
+    fn classify(&self, record: &MemoryRecord) -> Tier {
+        if record.tier == Tier::Principle.as_str() {
+            return Tier::Principle;
+        }
+        let worth = record.worth_score();
+        if record.tier == Tier::Recent.as_str() && record.access_count >= 10 && worth >= 0.80 {
+            return Tier::Core;
+        }
+        if record.tier == Tier::Working.as_str() && record.access_count >= 2 && worth >= 0.50 {
+            return Tier::Recent;
+        }
+        if record.tier == Tier::Core.as_str() && worth < 0.15 {
+            return Tier::Recent;
+        }
+        Tier::from_str(&record.tier).unwrap_or_default()
+    }
+}
