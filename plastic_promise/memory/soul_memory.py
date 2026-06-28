@@ -228,12 +228,18 @@ class MemoryTierManager:
     根据 worth_score、激活频率和容量上限自动执行晋升/降级/驱逐。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, rec_mem: Optional[Any] = None) -> None:
         """初始化分层管理器。
 
         加载 MEMORY_TIERS 配置中的 L1/L3 容量上限和 TTL 策略。
+
+        Args:
+            rec_mem: 可选的 RecMem 实例，用于 promote/demote 时检查容量。
         """
-        pass
+        from plastic_promise.core.constants import MEMORY_TIERS
+        self.l1_config = MEMORY_TIERS.get("L1", {"max_items": 200, "ttl_hours": 24})
+        self.l3_config = MEMORY_TIERS.get("L3", {"max_items": 2000, "ttl_hours": None})
+        self.rec_mem = rec_mem
 
     def classify_tier(self, record: MemoryRecord) -> str:
         """判断一条记忆应归属的层位。
@@ -247,7 +253,14 @@ class MemoryTierManager:
         Returns:
             "L1" 或 "L3"。
         """
-        pass
+        if record is None:
+            return "L1"
+        try:
+            if record.worth_score >= 0.5 and record.access_count >= 3:
+                return "L3"
+        except Exception:
+            pass
+        return "L1"
 
     def promote_to_l3(self, record: MemoryRecord) -> None:
         """将记忆从 L1 晋升到 L3 长期记忆。
@@ -258,7 +271,19 @@ class MemoryTierManager:
         Args:
             record: 待晋升的记忆记录。
         """
-        pass
+        if record is None:
+            return
+        l3_max = self.l3_config.get("max_items", 2000)
+        # If RecMem available, check L3 count and evict lowest if full
+        if self.rec_mem is not None:
+            try:
+                l3_records = [r for r in self.rec_mem._records.values() if r.tier == "L3"]
+                if len(l3_records) >= l3_max:
+                    l3_records.sort(key=lambda r: r.worth_score)
+                    self.demote_to_l1(l3_records[0])
+            except Exception:
+                pass
+        record.tier = "L3"
 
     def demote_to_l1(self, record: MemoryRecord) -> None:
         """将记忆从 L3 降级到 L1 工作记忆。
@@ -268,7 +293,8 @@ class MemoryTierManager:
         Args:
             record: 待降级的记忆记录。
         """
-        pass
+        if record is not None:
+            record.tier = "L1"
 
     def evict_l1_overflow(self, records: List[MemoryRecord]) -> List[str]:
         """处理 L1 工作记忆溢出，驱逐超出容量上限的低价值记忆。
@@ -282,7 +308,22 @@ class MemoryTierManager:
         Returns:
             被驱逐记忆的 memory_id 列表。
         """
-        pass
+        if not records:
+            return []
+        l1_max = self.l1_config.get("max_items", 200)
+        if len(records) <= l1_max:
+            return []
+        sorted_records = sorted(records, key=lambda r: r.worth_score)
+        overflow = len(sorted_records) - l1_max
+        evicted = []
+        for r in sorted_records[:overflow]:
+            evicted.append(r.memory_id)
+            if self.rec_mem is not None:
+                try:
+                    self.rec_mem.forget(r.memory_id, reason="L1 overflow eviction")
+                except Exception:
+                    pass
+        return evicted
 
 
 # ============================================================
