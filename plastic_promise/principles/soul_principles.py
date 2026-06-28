@@ -336,6 +336,9 @@ class PrincipleManager:
             11: "Without principle inheritance: each new agent instance starts from scratch, "
                 "core values are lost across generations, and the system forgets its foundational "
                 "commitments — the consequence is generational amnesia that erodes the culture.",
+            12: "Without code as documentation: maintenance costs grow exponentially, "
+                "onboarding becomes impossible, and the gap between documentation and reality "
+                "widens until the codebase becomes unmaintainable.",
         }
 
         consequence = consequences.get(

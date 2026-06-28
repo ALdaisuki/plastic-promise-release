@@ -72,6 +72,7 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
             9: "自主权错配：高分时过于冒险，低分时寸步难行",
             10: "反馈信号丢失，系统行为逐渐漂移偏离约定",
             11: "核心约定无法跨代传递，新Agent需从零训练",
+            12: "代码腐化，维护成本指数增长，新人无法上手",
         }
         recommendations = {
             1: "坚持每步只做最必要的事，删除任何可证明不必要的实体",
@@ -85,6 +86,7 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
             9: "信任分驱动约束动态调整：高分时高效，低分时安全优先",
             10: "每次交互都是一个训练样本，每个错误都是一个改进机会",
             11: "核心约定通过单向扩散跨代传递，新Agent继承已有原则体系",
+            12: "命名自解释、结构即叙事、类型即契约——让代码自己说话",
         }
 
         return [TextContent(type="text", text=json.dumps({
@@ -248,6 +250,7 @@ async def handle_principle_evaluate(engine: Any, args: dict) -> list[TextContent
             9: "自主权错配：高分时过于冒险，低分时寸步难行",
             10: "反馈信号丢失，系统行为逐渐漂移偏离约定",
             11: "核心约定无法跨代传递，新Agent需从零训练",
+            12: "代码腐化，维护成本指数增长，新人无法上手",
         }
 
         consequence = consequences.get(principle_id, "未知后果")

@@ -70,7 +70,8 @@ class ContextPack:
                                 f"**⚠️ 违反后果**：LLM失去感官，退化为纯文本补全" if match["id"] == 8 else
                                 f"**⚠️ 违反后果**：自主权错配，高分冒险低分难行" if match["id"] == 9 else
                                 f"**⚠️ 违反后果**：反馈信号丢失，行为漂移偏离约定" if match["id"] == 10 else
-                                f"**⚠️ 违反后果**：约定无法跨代传递，新Agent从零训练")
+                                f"**⚠️ 违反后果**：约定无法跨代传递，新Agent从零训练" if match["id"] == 11 else
+                                f"**⚠️ 违反后果**：代码腐化，维护成本指数增长，新人无法上手")
                 else:
                     lines.append(f"- {name}")
             lines.append("")
