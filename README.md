@@ -1,50 +1,65 @@
 # Plastic Promise
 
-> 塑性灵魂：记忆是可塑的，灵魂因记忆存在、因约定成长。
+> 记忆是可塑的，灵魂因记忆存在、因约定成长。
 
-**Plastic Promise** 是一个以「约定工程」(Commitment Engineering) 替代「约束工程」的 AI 行为治理系统。LLM 是神经中枢，Plastic Promise 是它的完整数字身体。
+**Plastic Promise** 是以「约定工程」(Commitment Engineering) 替代「约束工程」的 AI 行为治理系统。28 个 MCP 工具覆盖记忆、原则、上下文、审计、反思、系统六大域——原则是决策参考，不是门禁约束。
 
 ---
 
-## 三条核心原则
+## 12 条核心原则
 
-| # | 原则 | 内容 |
-|---|------|------|
-| **1** | **奥卡姆剃刀** | 如无必要，勿增实体。每一步只做当前最必要的事。 |
-| **2** | **全过程可查可透明** | 每步有完整 git 痕迹、可追溯审计日志、可验证中间产物。 |
-| **3** | **自我审计闭环** | 根因分析 → 改良措施 → 教训提炼 → 量化评分 → 驱动信任分和 CEI。 |
+| # | 原则 | 一句话 |
+|---|------|--------|
+| 1 | 奥卡姆剃刀 | 如无必要，勿增实体 |
+| 2 | 全过程可查可透明 | 每步有 git 痕迹、可追溯审计日志 |
+| 3 | 自我审计闭环 | 根因→改良→教训→评分 |
+| 4 | 上下文驱动决策 | 无上下文不行动，不足时标注而非猜测 |
+| 5 | 约定优于约束 | 检验存在不等于有效 |
+| 6 | 数据流驱动 | 追踪真实数据流，非假设架构图 |
+| 7 | 器官互保 | 每个子系统保护整个系统 |
+| 8 | 工具即感官 | LLM 能力边界由工具链决定 |
+| 9 | 信任驱动约束 | 动态信任分调节自主权 |
+| 10 | 自演化闭环 | 评价驱动行为修正 |
+| 11 | 原则遗传 | 核心约定跨 Agent 代际传递 |
+| 12 | 代码即文档 | 代码本身是最权威的文档 |
+
+每条原则激活时返回：名称、内容、违反后果、遵循建议——作为决策参考，非门禁。
 
 ---
 
 ## 架构
 
 ```
-┌─ MCP Server ─────────────────────────────────────┐
-│  25 tools (memory/principles/context/audit/       │
-│  reflection/management) + 5 Resources + 3 Prompts │
-├─ Python 编排层 ───────────────────────────────────┤
-│  core/       constants + ContextEngine wrapper     │
-│  memory/     soul_memory (RecMem + MemoryWorth)    │
-│  loop/       soul_loop (pre_task_v2 + post_task)  │
-│  principles/ soul_principles (activate/inherit)   │
-│  reflection/ soul_scarf + proprioception +        │
-│              soul_curiosity                       │
-│  defense/    soul_enforcer (L0/L1) + soul_audit   │
-│  growth/     soul_hormone + classifier + skill    │
-│  embedder.py Ollama mxbai-embed-large (1024d)     │
-│  step_auditor.py 每步审计 + 评分闭环                │
-├─ Rust 引擎 ───────────────────────────────────────┤
-│  storage/    StorageBackend(SQLite) + VectorIndex │
-│              + FtsIndex (cosine + word-overlap)    │
-│  retrieval/  HybridRetriever + fusion + diversity │
-│  domain/     Tier(4层) + WeibullDecay +           │
-│              WilsonWorth + EvolveRConsolidator     │
-│  context_engine.rs  supply() 6-phase pipeline     │
-│  entity_graph.rs   原则图谱注入                     │
-├─ Bridge ──────────────────────────────────────────┤
-│  bridge/     neko_adapter + soul_bridge +          │
-│              bus_client + http_memory              │
-└────────────────────────────────────────────────────┘
+┌─ MCP Server (28 tools) ────────────────────────────┐
+│  stdio (Claude Code)  +  SSE :9020 (Pi / N.E.K.O) │
+│                                                     │
+│  记忆域 (10): recall store update forget stats      │
+│              list gc fuzzy_status fuzzy_process      │
+│              memory_correct                          │
+│  原则域 (4) : activate inherit diffuse evaluate      │
+│  上下文 (3): supply inject graph                     │
+│  审计域 (5) : run pre_check report trust status      │
+│  反思域 (3) : scarf_reflect inertia_check feedback   │
+│  系统域 (3) : stats backup migrate                   │
+├─────────────────────────────────────────────────────┤
+│  core/                                               │
+│  ├── constants.py      12 原则 + 7 维审计 + 配置      │
+│  ├── context_engine.py 上下文引擎 (6 phase supply)     │
+│  ├── principles.py     原则管理 (激活/继承/扩散/评价)  │
+│  ├── embedder.py       Ollama + OpenAI + Fallback     │
+│  ├── reranker.py       Cross-Encoder 重排序           │
+│  ├── noise_filter.py   噪声过滤                        │
+│  └── step_auditor.py   4 阶段审计 + 信任分联动         │
+│                                                      │
+│  memory/                defense/     reflection/       │
+│  ├── soul_memory.py     soul_audit   soul_scarf        │
+│  └── fuzzy_buffer.py    soul_enforcer soul_curiosity   │
+│                         soul_proprioception            │
+│  growth/                loop/         cron/             │
+│  ├── soul_hormone       soul_loop     health_scan       │
+│  ├── soul_classifier                  audit_daily       │
+│  └── skill_extractor                  closure_guardian  │
+└─────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -52,72 +67,49 @@
 ## 快速开始
 
 ```bash
-# 1. 启动 Ollama（嵌入模型）
-ollama serve
-ollama pull mxbai-embed-large
+# 1. 安装依赖
+pip install mcp uvicorn starlette requests
 
-# 2. 冷启动：注入原则 + 种子记忆
-python bootstrap.py
+# 2. Claude Code 模式 (stdio，自动)
+# .mcp.json 已配置，Claude Code 自动启动
 
-# 3. 验证检索
-python -c "
-from plastic_promise.embedder import get_embedder
-from plastic_promise.core.context_engine import ContextEngine
-e = ContextEngine()
-v = get_embedder().embed('Rust性能优化')
-pack = e.supply('Rust性能优化', v, 'code_generation', 'global')
-print(f'core={len(pack.core)} related={len(pack.related)} divergent={len(pack.divergent)}')
-"
+# 3. 多 Agent SSE 模式 (Pi / N.E.K.O 连接)
+set AGENT_OWNER=pi
+python -m plastic_promise.mcp.server --sse 9020
+# Pi 连接: http://127.0.0.1:9020/sse
 
-# 4. 评分闭环
-python -c "
-from plastic_promise.step_auditor import StepAuditor
-a = StepAuditor()
-r = a.audit_step('实现功能X', 'abc1234', root_cause='用户需要', improvement='提取模式', lesson='解耦')
-print(f'Score: {r.overall_score}, CEI: {a.get_cei()}')
-"
+# 4. 冷启动 (注入种子记忆)
+python scripts/bootstrap.py
 ```
 
 ---
 
-## 项目结构
+## 核心特性
 
+### 分层检索 — 细→类→粗
 ```
-plastic_promise/               # Python (41 files)
-├── core/                      # 基础层
-│   ├── constants.py           # 3原则 + 3维审计 + 九大系统
-│   └── context_engine.py      # Python 回退引擎 (Rust 优先)
-├── memory/soul_memory.py      # RecMem + MemoryWorth + EvolveR
-├── loop/soul_loop.py          # pre_task_v2/post_task + CEI
-├── principles/soul_principles.py  # 原则激活/继承/扩散/评估
-├── reflection/                # SCARF + 本体觉 + 好奇心
-├── defense/                   # 三层防线 + 审计
-├── growth/                    # 激素 + 分类器 + 技能沉淀
-├── mcp/                       # MCP Server + 6 tool files
-├── cron/                      # closure_guardian + health_scan + audit_daily
-├── embedder.py                # Ollama (mxbai-embed-large 1024d)
-├── step_auditor.py            # 每步 4 阶段审计 + 信任分联动
-├── adaptive_retrieval.py      # 自适应检索门控
-├── noise_filter.py            # 噪声过滤
-├── smart_extractor.py         # 6 分类记忆提取
-└── reranker.py                # Cross-Encoder 重排序
+context_supply / memory_recall:
+  细 (graph ×1.0) → 类 (L1 boost ×1.5, tier priority) → 粗 (vector ×0.6)
+  三路结果融合，graph 权重最高
+```
 
-rust/context-engine-core/      # Rust 引擎 (8 files)
-└── src/
-    ├── storage/               # StorageBackend(SQLite) + VectorIndex + FtsIndex
-    ├── retrieval/             # HybridRetriever + fusion + diversity
-    ├── domain/                # Tier + WeibullDecay + WilsonWorth + EvolveR
-    ├── context_engine.rs      # supply() 6-phase pipeline
-    ├── entity_graph.rs        # 原则图谱注入 + 多跳遍历
-    └── lib.rs                 # PyO3 暴露 11 个 Python 类
+### 模糊缓存区 — 先存后补
+```
+Ollama 离线时:
+  memory_store → 打临时标签 → 放入 fuzzy buffer (raw 区)
+  空闲时: raw → tagged → classified(大类) → embedded(细分) → 迁移主池
+```
 
-bridge/                        # N.E.K.O 互操作桥
-├── neko_adapter.py            # WebSocket + file 双通道适配器
-├── soul_bridge.py             # SoulLoop 对接
-├── bus_client.py              # 事件总线客户端
-├── http_memory.py             # HTTP 记忆接口
-├── event-bus.ts               # TypeScript 事件总线
-└── sync-coordinator.ts        # TypeScript 同步协调器
+### 多 Agent 共享域 + 独立域
+```
+共享域 (所有 Agent 可见):  12 原则 + 实体图谱 + 审计引擎
+独立域 (owner 隔离):       记忆检索自动过滤 owner=当前 agent + shared
+```
+
+### 实体自动链接
+```
+memory_store → 自动提取内容中的原则名/实体名 → 写入 entity_ids + 建图边
+memory_recall → 沿实体关系遍历 → 返回关联记忆 (source: "entity-link")
 ```
 
 ---
@@ -126,12 +118,11 @@ bridge/                        # N.E.K.O 互操作桥
 
 | 层 | 技术 |
 |----|------|
-| 嵌入 | Ollama mxbai-embed-large (1024d, 本地) |
-| 引擎 | Rust (PyO3 0.20 + ABI3, rusqlite 0.31, chrono 0.4) |
-| 编排 | Python 3.13 |
-| 存储 | SQLite (WAL) + 内存向量索引 (LanceDB 待接入) |
-| 协议 | MCP (stdio, 25 tools) |
-| 桥接 | WebSocket + file 双通道 (N.E.K.O interop) |
+| 嵌入 | Ollama mxbai-embed-large / OpenAI text-embedding-3-small / FallbackEmbedder |
+| 引擎 | Python 3.10+ 纯 Python (ContextEngine) |
+| 存储 | 内存 dict (生产建议 SQLite / LanceDB) |
+| 协议 | MCP (stdio + SSE, 28 tools) |
+| 多 Agent | SSE transport + owner 字段隔离 |
 
 ---
 
@@ -139,17 +130,20 @@ bridge/                        # N.E.K.O 互操作桥
 
 | 组件 | 状态 |
 |------|------|
-| Rust 引擎 (HybridRetriever + Domain + Storage) | ✅ 完成 |
-| Python 11 模块核心方法 | ✅ 完成 |
-| MCP Server (16/25 handlers) | ✅ 核心可用 |
-| 3 原则 + StepAuditor 评分闭环 | ✅ 完成 |
-| Bridge 设施 (neko + soul) | ✅ 完成 |
-| P1 增强 (adaptive/noise/extract/rerank/cron) | ✅ 完成 |
-| Ollama 嵌入 | ✅ 已接入 |
-| 冷启动 (3 原则 + 18 种子记忆) | ✅ 完成 |
-| LanceDB 实际链接 | 🟡 待 VS BuildTools C++ 工作负载 |
-| 辅助方法填充 | 🟡 骨架就绪 |
-| 系统调度 (cron 定时) | 🟡 模块就绪 |
+| 28 个 MCP 工具 | ✅ 全部可用 |
+| 12 条核心原则 + 后果 + 建议 | ✅ |
+| 7 维审计 | ✅ |
+| 分层检索 (细→类→粗) | ✅ |
+| 模糊缓存区 (raw→tagged→classified→embedded→migrate) | ✅ |
+| 记忆纠正 (人类可编辑) | ✅ |
+| 反思记忆自动存储 | ✅ |
+| 实体自动链接 | ✅ |
+| 多 Agent owner 隔离 | ✅ |
+| SSE 传输 (Pi 连接) | ✅ |
+| L1/L3 分层 + EvolveR + GC | ✅ |
+| Bridge 桥接 (N.E.K.O) | ⚠️ bus_client 有 2 个 TODO |
+| Rust 引擎 | 🟡 未构建 (Python 回退可用) |
+| LanceDB 向量存储 | 🟡 待接入 |
 
 ---
 
