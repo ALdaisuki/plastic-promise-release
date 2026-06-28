@@ -29,12 +29,12 @@ pub struct ScoredItem {
 /// Composes vector search, full-text search, and domain models
 /// into a single `retrieve()` pipeline.
 pub struct HybridRetriever {
-    pub vector: Box<dyn VectorIndex>,
-    pub fts: Box<dyn FtsIndex>,
-    pub decay: Box<dyn DecayModel>,
-    pub worth: Box<dyn WorthCalculator>,
-    pub tier_mgr: Box<dyn TierManager>,
-    pub consolidator: Box<dyn MemoryConsolidator>,
+    pub vector: Box<dyn VectorIndex + Send>,
+    pub fts: Box<dyn FtsIndex + Send>,
+    pub decay: Box<dyn DecayModel + Send>,
+    pub worth: Box<dyn WorthCalculator + Send>,
+    pub tier_mgr: Box<dyn TierManager + Send>,
+    pub consolidator: Box<dyn MemoryConsolidator + Send>,
 
     /// Weight for vector search channel (default 0.7).
     pub vector_weight: f64,
@@ -52,26 +52,43 @@ pub struct HybridRetriever {
 
 impl Default for HybridRetriever {
     fn default() -> Self {
-        // Use empty placeholder trait objects — caller must set real ones after construction.
-        // For now, provide reasonable defaults that will be replaced.
-        // Actually, since we can't create trait objects without impls, we use a builder pattern.
-        // The default creates unusable state — caller MUST use HybridRetriever::builder().
-        panic!("Use HybridRetriever::new() with explicit trait objects");
+        Self::placeholder()
     }
 }
 
 impl HybridRetriever {
     /// Create a new HybridRetriever with the given trait objects and default weights.
     pub fn new(
-        vector: Box<dyn VectorIndex>,
-        fts: Box<dyn FtsIndex>,
-        decay: Box<dyn DecayModel>,
-        worth: Box<dyn WorthCalculator>,
-        tier_mgr: Box<dyn TierManager>,
-        consolidator: Box<dyn MemoryConsolidator>,
+        vector: Box<dyn VectorIndex + Send>,
+        fts: Box<dyn FtsIndex + Send>,
+        decay: Box<dyn DecayModel + Send>,
+        worth: Box<dyn WorthCalculator + Send>,
+        tier_mgr: Box<dyn TierManager + Send>,
+        consolidator: Box<dyn MemoryConsolidator + Send>,
     ) -> Self {
         Self {
             vector, fts, decay, worth, tier_mgr, consolidator,
+            vector_weight: 0.7,
+            bm25_weight: 0.3,
+            hard_min_score: 0.35,
+            length_norm_anchor: 500,
+            mmr_threshold: 0.85,
+            candidate_pool_size: 20,
+        }
+    }
+
+    /// Create a placeholder retriever that returns empty results.
+    ///
+    /// This is used by the Python-facing no-arg constructor. Replace with
+    /// a fully configured retriever via `HybridRetriever::new()` before use.
+    pub fn placeholder() -> Self {
+        Self {
+            vector: Box::new(NoopVectorIndex),
+            fts: Box::new(NoopFtsIndex),
+            decay: Box::new(NoopDecayModel),
+            worth: Box::new(NoopWorthCalculator),
+            tier_mgr: Box::new(NoopTierManager),
+            consolidator: Box::new(NoopConsolidator),
             vector_weight: 0.7,
             bm25_weight: 0.3,
             hard_min_score: 0.35,
@@ -146,5 +163,80 @@ impl HybridRetriever {
             .collect();
 
         Ok(items)
+    }
+}
+
+// ============================================================
+// No-op stub implementations — used by HybridRetriever::placeholder()
+// ============================================================
+
+use crate::domain::{ConsolidatedInsight, FeedbackType};
+use crate::storage::IndexMetadata;
+use chrono::{DateTime, Utc};
+
+struct NoopVectorIndex;
+impl VectorIndex for NoopVectorIndex {
+    fn search(&self, _vector: &[f32], _k: usize, _filter: &SearchFilter) -> Result<Vec<(String, f64)>, String> {
+        Ok(Vec::new())
+    }
+    fn insert(&mut self, _id: &str, _vector: &[f32], _metadata: &IndexMetadata) -> Result<(), String> {
+        Ok(())
+    }
+    fn update(&mut self, _id: &str, _vector: &[f32], _metadata: &IndexMetadata) -> Result<(), String> {
+        Ok(())
+    }
+    fn delete(&mut self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct NoopFtsIndex;
+impl FtsIndex for NoopFtsIndex {
+    fn search(&self, _query: &str, _k: usize, _filter: &SearchFilter) -> Result<Vec<(String, f64)>, String> {
+        Ok(Vec::new())
+    }
+    fn index(&mut self, _id: &str, _text: &str, _metadata: &IndexMetadata) -> Result<(), String> {
+        Ok(())
+    }
+    fn update(&mut self, _id: &str, _text: &str, _metadata: &IndexMetadata) -> Result<(), String> {
+        Ok(())
+    }
+    fn delete(&mut self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct NoopDecayModel;
+impl DecayModel for NoopDecayModel {
+    fn compute(&self, _tier: Tier, _created_at: &DateTime<Utc>, _last_accessed: &DateTime<Utc>, _access_count: u32, _importance: f64) -> f64 {
+        1.0
+    }
+    fn effective_half_life(&self, _tier: Tier, _access_count: u32, _reinforcement_factor: f64, _max_multiplier: f64) -> f64 {
+        30.0
+    }
+}
+
+struct NoopWorthCalculator;
+impl WorthCalculator for NoopWorthCalculator {
+    fn calculate(&self, _success: u32, _failure: u32, _min_obs: u32) -> f64 {
+        0.5
+    }
+    fn record_feedback(&self, _success: &mut u32, _failure: &mut u32, _feedback_type: FeedbackType) {}
+}
+
+struct NoopTierManager;
+impl TierManager for NoopTierManager {
+    fn classify(&self, _record: &crate::memory_worth::MemoryRecord) -> Tier {
+        Tier::Working
+    }
+}
+
+struct NoopConsolidator;
+impl MemoryConsolidator for NoopConsolidator {
+    fn consolidate(&self, _memories: &[crate::memory_worth::MemoryRecord]) -> Option<ConsolidatedInsight> {
+        None
+    }
+    fn interval_hours(&self) -> u32 {
+        0 // never runs
     }
 }

@@ -274,6 +274,17 @@ impl StorageBackend for SqliteStorage {
         Ok(results)
     }
 
+    /// Delete a memory record by id.
+    ///
+    /// Returns `true` if a row was deleted, `false` if no matching id was found.
+    fn delete(&mut self, id: &str) -> Result<bool, String> {
+        let affected = self
+            .conn
+            .execute(SQL_DELETE_BY_ID, params![id])
+            .map_err(|e| format!("delete: {}", e))?;
+        Ok(affected > 0)
+    }
+
     /// Compute aggregate memory statistics, optionally scoped to a single namespace.
     ///
     /// Returns total count, healthy/decaying counts (based on worth_success vs worth_failure),

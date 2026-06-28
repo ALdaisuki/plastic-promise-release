@@ -16,10 +16,11 @@ use std::collections::HashMap;
 
 use crate::association_feedback::AssociationFeedback;
 use crate::entity_graph::EntityGraph;
-use crate::memory_worth::MemoryRecord;
 use crate::principles;
-use crate::rank_fuser::{RankFuser, SearchResult};
+use crate::retrieval::HybridRetriever;
 use crate::source_tracker::SourceTracker;
+use crate::storage::{ListFilter, StorageBackend};
+use chrono::{DateTime, Utc};
 
 // ============================================================
 // Python-visible ContextPack
@@ -192,64 +193,58 @@ impl ContextItem {
 /// 上下文供应引擎主编排器
 ///
 /// # 流程
-/// 1. 文本检索通道：关键词匹配记忆内容
-/// 2. 图遍历通道：EntityGraph 多跳遍历 + 原则注入
-/// 3. RRF 融合双路结果
-/// 4. 符号规则双通道调整
-/// 5. 自演化反馈权重应用
-/// 6. 分层：core (>0.80) / related (>0.50) / divergent (>0.20)
-/// 7. 来源追溯
+/// 1. 原则注入：EntityGraph 按任务类型注入对应原则
+/// 2. 混合检索：HybridRetriever (向量 ANN + BM25 + RRF 融合 + 符号规则)
+/// 3. 图遍历补充：EntityGraph 遍历获取额外原则实体
+/// 4. 自演化反馈权重应用
+/// 5. 分层：core (>0.80) / related (>0.50) / divergent (>0.20)
+/// 6. 来源追溯 + 审计
+/// 7. 定期内存合并 (MemoryConsolidator)
 #[pyclass]
 pub struct ContextEngine {
     /// 内部 EntityGraph 实例
     graph: EntityGraph,
-    /// RRF 融合器
-    rank_fuser: RankFuser,
     /// 来源追溯
     source_tracker: SourceTracker,
     /// 反馈权重
     feedback: AssociationFeedback,
-    /// 记忆存储（Python 侧可通过 MemoryRecord 管理，此处为引用缓存）
-    memories: HashMap<String, MemoryRecord>,
+    /// 混合检索器 (向量 + BM25 + RRF + 符号规则)
+    retriever: HybridRetriever,
+    /// 持久化存储后端
+    storage: Box<dyn StorageBackend + Send>,
     /// 是否启用原则注入
     pub enable_principles: bool,
     /// 当前时间戳 (ISO 8601)
     current_time: String,
+    /// 上次内存合并时间
+    last_consolidation: DateTime<Utc>,
 }
 
-/// Python-visible methods for ContextEngine: memory registration, supply, and graph management.
+/// Python-visible methods for ContextEngine: configuration, supply, and graph management.
 #[pymethods]
 impl ContextEngine {
-    /// Create a new ContextEngine with default sub-components (empty graph, rank fuser, tracker, feedback).
+    /// Create a new ContextEngine with default sub-components.
+    ///
+    /// For a fully configured engine with storage and retriever backends,
+    /// construct via a Rust factory function or call `configure()` after construction.
     #[new]
     pub fn new() -> Self {
+        // Placeholder retriever and storage — must be configured before use.
+        // In practice, a Rust factory function will construct the full engine
+        // with real SQLite and LanceDB backends, then return it to Python.
         Self {
             graph: EntityGraph::new(),
-            rank_fuser: RankFuser::new(),
             source_tracker: SourceTracker::new(),
             feedback: AssociationFeedback::new(),
-            memories: HashMap::new(),
+            retriever: HybridRetriever::placeholder(),
+            storage: Box::new(
+                crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
+                    .expect("Failed to create in-memory SQLite storage"),
+            ),
             enable_principles: true,
             current_time: String::new(),
+            last_consolidation: Utc::now(),
         }
-    }
-
-    /// 注册一条记忆到引擎（Python 侧 MemoryRecord 的 Rust 副本）
-    pub fn register_memory(&mut self, record: MemoryRecord) {
-        self.memories.insert(record.id.clone(), record);
-    }
-
-    /// 批量注册记忆
-    pub fn register_memories(&mut self, records: Vec<MemoryRecord>) {
-        for record in records {
-            self.register_memory(record);
-        }
-    }
-
-    /// 获取已注册的记忆数量
-    #[getter]
-    pub fn memory_count(&self) -> usize {
-        self.memories.len()
     }
 
     /// 设置当前时间（用于新鲜度计算）
@@ -257,9 +252,13 @@ impl ContextEngine {
         self.current_time = iso_timestamp;
     }
 
-    /// 加载/更新 EntityGraph（从 Python 侧传入）
-    pub fn load_graph(&mut self, graph: EntityGraph) {
-        self.graph = graph;
+    /// 加载/更新 EntityGraph（从 Python 侧传入 JSON 字符串）
+    ///
+    /// The JSON string must deserialize to a valid EntityGraph.
+    pub fn load_graph(&mut self, graph_json: String) -> PyResult<()> {
+        self.graph = serde_json::from_str(&graph_json)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid graph JSON: {}", e)))?;
+        Ok(())
     }
 
     /// 获取 EntityGraph 引用（用于 Python 侧持久化等）
@@ -271,24 +270,26 @@ impl ContextEngine {
     // 核心方法: supply()
     // ============================================================
 
-    /// 供应上下文：输入任务描述和历史快照，返回结构化 ContextPack
+    /// 供应上下文：输入任务描述、向量、类型和范围，返回结构化 ContextPack
     ///
     /// # Arguments
     /// - `task_description`: 当前任务的自然语言描述
+    /// - `task_vector`: 任务描述的嵌入向量 (dim = EMB_DIM)
     /// - `task_type`: 任务类型标签 (code_generation / code_review / debugging / ...)
-    /// - `pre_context`: 已有的前文上下文（可选，用于增强检索）
+    /// - `scope`: 命名空间/范围过滤
     ///
     /// # Returns
     /// 包含三层上下文的 ContextPack
     pub fn supply(
         &mut self,
         task_description: String,
+        task_vector: Vec<f32>,
         task_type: String,
-        pre_context: Option<String>,
+        scope: String,
     ) -> ContextPack {
-        let pre_context = pre_context.unwrap_or_default();
-
-        // === Phase 0: 原则注入 (P0 任务) ===
+        // ============================================================
+        // Phase 0: 原则注入 (P0 任务)
+        // ============================================================
         let mut activated_principle_names = Vec::new();
         if self.enable_principles {
             let core_principles = principles::core_principles();
@@ -314,55 +315,90 @@ impl ContextEngine {
             }
         }
 
-        // === Phase 1: 双路检索 ===
+        // ============================================================
+        // Phase 1: 构建 item_lookup (从 StorageBackend)
+        // ============================================================
+        let filter = ListFilter {
+            scope: Some(scope.clone()),
+            ..Default::default()
+        };
+        let memories = self.storage.list(&filter).unwrap_or_default();
 
-        // 通道 A: 文本检索（关键词匹配 + 内容相似度）
-        let text_channel = self.text_retrieval(&task_description, &pre_context);
-
-        // 通道 B: 图遍历检索
-        let graph_channel = self.graph_traversal(&task_type);
-
-        // === Phase 2: RRF 融合 ===
-        let fused = self.rank_fuser.fuse(vec![text_channel, graph_channel]);
-
-        // === Phase 3: 符号规则双通道 ===
-        let item_contents: HashMap<String, String> = self
-            .memories
+        let mut item_lookup: HashMap<String, (String, String)> = memories
             .iter()
-            .map(|(id, mem)| (id.clone(), mem.content.clone()))
+            .map(|m| (m.id.clone(), (m.content.clone(), m.source.clone())))
             .collect();
 
-        let boosted = self.rank_fuser.apply_symbol_rules(fused, &task_description, &item_contents);
-
-        // === Phase 4: 自演化反馈权重 ===
-        let rankings: Vec<(String, f64)> = boosted
+        // 构建用于内容回溯的完整记忆索引
+        let memory_index: HashMap<String, crate::memory_worth::MemoryRecord> = memories
             .into_iter()
-            .map(|(id, score, _)| (id, score))
+            .map(|m| (m.id.clone(), m))
             .collect();
-        let adjusted = self.feedback.apply_to_ranking(rankings);
 
-        // === Phase 5: 分层 → ContextPack ===
+        // ============================================================
+        // Phase 2: 混合检索 (向量 + BM25 + RRF + 符号规则)
+        // ============================================================
+        let max_results = 30;
+        let scored_items = self
+            .retriever
+            .retrieve(
+                &task_vector,
+                &task_description,
+                &scope,
+                Some(&task_type),
+                &item_lookup,
+                max_results,
+            )
+            .unwrap_or_default();
+
+        // Convert to (id, score) for feedback pipeline
+        let mut all_rankings: Vec<(String, f64)> = scored_items
+            .iter()
+            .map(|item| (item.id.clone(), item.score))
+            .collect();
+
+        // ============================================================
+        // Phase 3: 图遍历补充 (原则相关实体)
+        // ============================================================
+        let graph_items = self.graph_traversal(&task_type);
+        for (gid, gscore, gcontent) in &graph_items {
+            // Add graph principle items to lookup if not already present
+            if !item_lookup.contains_key(gid) {
+                item_lookup.insert(gid.clone(), ("graph".to_string(), gcontent.clone()));
+            }
+            // Add to rankings if not already present (with capped relevance)
+            if !all_rankings.iter().any(|(i, _)| i == gid) {
+                all_rankings.push((gid.clone(), gscore.min(0.85)));
+            }
+        }
+
+        // ============================================================
+        // Phase 4: 自演化反馈权重
+        // ============================================================
+        let adjusted = self.feedback.apply_to_ranking(all_rankings);
+
+        // ============================================================
+        // Phase 5: 分层 → ContextPack
+        // ============================================================
         let mut pack = ContextPack::new();
         pack.activated_principles = activated_principle_names;
 
         for (item_id, score) in &adjusted {
             // 构建 ContextItem
-            let content = self
-                .memories
+            let content = memory_index
                 .get(item_id)
                 .map(|m| m.content.clone())
+                .or_else(|| item_lookup.get(item_id).map(|(c, _)| c.clone()))
                 .unwrap_or_else(|| format!("Item: {}", item_id));
 
-            let worth = self
-                .memories
+            let worth = memory_index
                 .get(item_id)
                 .map(|m| m.worth_score())
                 .unwrap_or(0.0);
 
             let is_principle = item_id.starts_with("principle:");
 
-            let freshness = self
-                .memories
+            let freshness = memory_index
                 .get(item_id)
                 .map(|m| {
                     crate::source_tracker::Freshness::from_timestamps(
@@ -374,10 +410,10 @@ impl ContextEngine {
                 })
                 .unwrap_or_else(|| "valid".into());
 
-            let source = self
-                .memories
+            let source = memory_index
                 .get(item_id)
                 .map(|m| m.source.clone())
+                .or_else(|| item_lookup.get(item_id).map(|(_, s)| s.clone()))
                 .unwrap_or_else(|| "unknown".into());
 
             let mut item = ContextItem::new(item_id.clone(), content, *score);
@@ -400,73 +436,90 @@ impl ContextEngine {
             // score < 0.20 丢弃
         }
 
-        // === Phase 6: 审计元数据 ===
+        // ============================================================
+        // Phase 6: 定期内存合并检查
+        // ============================================================
+        let now = Utc::now();
+        let interval_hours = self.retriever.consolidator.interval_hours();
+        if interval_hours > 0 {
+            let elapsed = now.signed_duration_since(self.last_consolidation);
+            if elapsed.num_hours() >= interval_hours as i64 {
+                // Collect all memories for consolidation
+                let all_memories = self.storage.list(&ListFilter::default()).unwrap_or_default();
+                if let Some(insight) = self.retriever.consolidator.consolidate(&all_memories) {
+                    // Log consolidation for audit (the insight is not auto-stored here;
+                    // the caller can decide whether to persist it via StorageBackend::store)
+                    let _ = insight; // insight available for callers that chain consolidation
+                }
+                self.last_consolidation = now;
+            }
+        }
+
+        // ============================================================
+        // Phase 7: 审计元数据
+        // ============================================================
         let mut audit = HashMap::new();
-        audit.insert("engine_version".into(), "0.1.0".into());
+        audit.insert("engine_version".into(), "0.2.0".into());
         audit.insert("task_type".into(), task_type);
+        audit.insert("scope".into(), scope);
         audit.insert("principle_injection_count".into(),
             pack.activated_principles.len().to_string());
         audit.insert("graph_nodes".into(), self.graph.node_count().to_string());
         audit.insert("graph_edges".into(), self.graph.edge_count().to_string());
-        audit.insert("memory_pool_size".into(), self.memories.len().to_string());
+        if let Ok(count) = self.storage.total_count() {
+            audit.insert("memory_pool_size".into(), count.to_string());
+        }
         audit.insert("timestamp".into(), self.current_time.clone());
         pack.audit_metadata = audit;
 
         pack
+    }
+}
+
+// ============================================================
+// Rust-internal impl block (non-Python)
+// ============================================================
+
+impl ContextEngine {
+    /// Create a fully configured ContextEngine with real storage and retriever backends.
+    ///
+    /// This is the primary constructor for Rust-side factory functions.
+    /// Python users receive a pre-configured engine via a PyO3 factory.
+    pub fn new_configured(
+        storage: Box<dyn StorageBackend + Send>,
+        retriever: HybridRetriever,
+    ) -> Self {
+        Self {
+            graph: EntityGraph::new(),
+            source_tracker: SourceTracker::new(),
+            feedback: AssociationFeedback::new(),
+            retriever,
+            storage,
+            enable_principles: true,
+            current_time: String::new(),
+            last_consolidation: Utc::now(),
+        }
     }
 
     // ============================================================
     // 内部检索方法
     // ============================================================
 
-    /// 通道 A: 文本相似度检索
-    fn text_retrieval(&self, task: &str, pre_context: &str) -> Vec<SearchResult> {
-        let mut results = Vec::new();
-
-        for (id, memory) in &self.memories {
-            // 简化版：关键词重叠度作为相似度
-            let mut score = 0.0_f64;
-
-            // 拆分任务为关键词
-            let task_words: Vec<&str> = task
-                .split(&[' ', '，', '。', '、', '\n', '\t'][..])
-                .filter(|w| w.len() >= 2)
-                .collect();
-
-            for word in &task_words {
-                if memory.content.contains(word) {
-                    score += 1.0 / (task_words.len() as f64);
-                }
-                if pre_context.contains(word) {
-                    score += 0.5 / (task_words.len() as f64);
-                }
-            }
-
-            // 结合 worth_score 作为基础信号
-            let worth = memory.worth_score();
-            score = score * 0.7 + worth.abs().min(1.0) * 0.3;
-
-            if score > 0.0 {
-                results.push((id.clone(), score.clamp(0.0, 1.0)));
-            }
-        }
-
-        RankFuser::as_channel_results(results, "text")
-    }
-
-    /// 通道 B: 图遍历检索
-    fn graph_traversal(&self, task_type: &str) -> Vec<SearchResult> {
+    /// 图遍历检索 — 从 EntityGraph 获取原则相关的补充条目
+    ///
+    /// Returns `Vec<(id, score, source_description)>` for principle entities
+    /// reachable from the task_type node.
+    fn graph_traversal(&self, task_type: &str) -> Vec<(String, f64, String)> {
         let start_id = format!("task_type:{}", task_type);
         let traversed = self.graph.traverse(&start_id, 3);
 
-        let results: Vec<(String, f64)> = traversed
+        traversed
             .into_iter()
             .map(|(id, weight, _hops)| {
-                // 距离越远权重越低，已在 traverse 中体现
-                (id, weight.clamp(0.0, 1.0))
+                // Attempt to fetch entity name/description from graph for context
+                let description = format!("Entity from graph: {}", id);
+                (id, weight.clamp(0.0, 1.0), description)
             })
-            .collect();
-
-        RankFuser::as_channel_results(results, "graph")
+            .collect()
     }
 }

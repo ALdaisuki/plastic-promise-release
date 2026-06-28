@@ -2,15 +2,16 @@
 //!
 //! 上下文供应引擎的核心实现：
 //! - EntityGraph: 实体关联图谱 + 原则注入
-//! - RankFuser: RRF 融合 + 双通道符号规则
+//! - HybridRetriever: 向量 ANN + BM25 + RRF 融合 + 符号规则
 //! - SourceTracker: 来源追溯 + 时间有效性
 //! - AssociationFeedback: 自演化反馈权重
 //! - MemoryWorth: 双计数器计算 (ρ ≈ 0.89)
+//! - StorageBackend: SQLite 持久化存储
+//! - Domain: 衰减模型 + Worth 计算 + Tier 管理 + 内存合并
 //! - ContextEngine: 主编排器 → supply() 返回 ContextPack
 
 pub mod domain;
 pub mod entity_graph;
-pub mod rank_fuser;
 pub mod source_tracker;
 pub mod association_feedback;
 pub mod memory_worth;
@@ -28,7 +29,6 @@ use pyo3::prelude::*;
 /// - EntityGraph: 实体关联图谱
 /// - Entity: 实体节点
 /// - MemoryRecord: 含双计数器的记忆记录
-/// - RankFuser: RRF 融合器
 /// - SourceTracker: 来源追溯
 /// - AssociationFeedback: 反馈权重
 /// - ContextPack: 三层上下文包
@@ -48,7 +48,6 @@ fn context_engine_core(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<memory_worth::MemoryRecord>()?;
 
     // Pipeline components
-    m.add_class::<rank_fuser::RankFuser>()?;
     m.add_class::<source_tracker::SourceTracker>()?;
     m.add_class::<association_feedback::AssociationFeedback>()?;
 
