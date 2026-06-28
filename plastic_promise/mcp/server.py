@@ -690,20 +690,63 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
 # ===================================================================
 
 async def main():
-    """MCP Server 启动入口"""
-    async with stdio_server() as (read_stream, write_stream):
-        # create_initialization_options() 自动检测已注册的 handler
-        # (list_tools/list_prompts/list_resources) 并设置对应 capabilities
-        init_options = server.create_initialization_options()
-        await server.run(
-            read_stream,
-            write_stream,
-            init_options,
-            raise_exceptions=False,
-        )
+    """MCP Server 启动入口 — 支持 stdio 和 SSE 双模式"""
+    import sys
+
+    if len(sys.argv) >= 3 and sys.argv[1] == "--sse":
+        # SSE 模式 — 供 Pi 和其他 Agent 通过 HTTP 连接
+        port = int(sys.argv[2])
+        await run_sse(port)
+    else:
+        # stdio 模式 — 供 Claude Code 本地调用
+        async with stdio_server() as (read_stream, write_stream):
+            init_options = server.create_initialization_options()
+            await server.run(
+                read_stream,
+                write_stream,
+                init_options,
+                raise_exceptions=False,
+            )
+
+
+async def run_sse(port: int = 9020):
+    """启动 SSE (Server-Sent Events) 传输 — 多 Agent 共享记忆入口。
+
+    Pi、N.E.K.O 等外部 Agent 通过 HTTP SSE 连接到这个端口，
+    共享同一个 Plastic Promise 记忆池。
+    """
+    import uvicorn
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    transport = SseServerTransport("/messages")
+
+    async def handle_sse(request):
+        async with transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            init_options = server.create_initialization_options()
+            await server.run(
+                streams[0], streams[1], init_options, raise_exceptions=False
+            )
+
+    async def handle_messages(request):
+        await transport.handle_post_message(request.scope, request.receive, request._send)
+
+    app = Starlette(routes=[
+        Route("/sse", endpoint=handle_sse),
+        Route("/messages", endpoint=handle_messages, methods=["POST"]),
+    ])
+
+    logger.info(f"Plastic Promise MCP Server starting on http://127.0.0.1:{port}")
+    logger.info(f"  SSE endpoint: http://127.0.0.1:{port}/sse")
+    logger.info(f"  Messages:     http://127.0.0.1:{port}/messages")
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info")
+    await uvicorn.Server(config).serve()
 
 
 if __name__ == "__main__":
     import asyncio
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
     asyncio.run(main())
