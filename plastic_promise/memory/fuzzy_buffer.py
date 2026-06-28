@@ -150,7 +150,7 @@ class FuzzyBuffer:
         items = [(mid, r) for mid, r in self._buffer.items() if r["stage"] == "raw"]
         for mid, record in items:
             try:
-                from plastic_promise.noise_filter import is_noise
+                from plastic_promise.core.noise_filter import is_noise
                 if is_noise(record["content"]):
                     del self._buffer[mid]
                     continue

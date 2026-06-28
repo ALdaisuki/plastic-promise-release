@@ -85,7 +85,7 @@ class SoulLoop:
             task_description = f"{task_description}\n{pre_context}"
 
         # Step 2: Embed the task description into a vector
-        from plastic_promise.embedder import get_embedder
+        from plastic_promise.core.embedder import get_embedder
 
         embedder = get_embedder()
         vector = embedder.embed(task_description)

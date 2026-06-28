@@ -26,7 +26,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
-        from plastic_promise.embedder import get_embedder, FallbackEmbedder
+        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
         task_description = args["task_description"]
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
@@ -44,7 +44,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         pack = engine.supply(task_description, task_vector, task_type, scope)
 
         try:
-            from plastic_promise.reranker import cross_encode_rerank
+            from plastic_promise.core.reranker import cross_encode_rerank
             if pack.core:
                 candidates = [(i.id, i.content, i.relevance) for i in pack.core]
                 reranked = cross_encode_rerank(task_description, candidates)

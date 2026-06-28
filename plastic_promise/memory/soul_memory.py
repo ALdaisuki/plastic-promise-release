@@ -400,7 +400,7 @@ class RecMem:
 
             # Try embedding + storing vector
             try:
-                from plastic_promise.embedder import get_embedder
+                from plastic_promise.core.embedder import get_embedder
                 embedder = get_embedder()
                 vec = embedder.embed(content)
                 _ = vec  # Vector stored via engine internals
@@ -453,7 +453,7 @@ class RecMem:
             分层上下文包，包含 core/related/divergent 三层 ContextItem。
         """
         try:
-            from plastic_promise.embedder import get_embedder
+            from plastic_promise.core.embedder import get_embedder
             embedder = get_embedder()
             vec = embedder.embed(query)
             self._engine.enable_principles = include_principles

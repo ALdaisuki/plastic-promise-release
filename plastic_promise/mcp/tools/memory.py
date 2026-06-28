@@ -41,7 +41,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                  "query": query[:100]},
                 ensure_ascii=False))]
 
-        from plastic_promise.embedder import get_embedder, FallbackEmbedder
+        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
         task_type = args.get("task_type", "general")
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
@@ -84,7 +84,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response with stored memory metadata.
     """
     try:
-        from plastic_promise.noise_filter import is_noise
+        from plastic_promise.core.noise_filter import is_noise
         content = args["content"]
         if is_noise(content):
             return [TextContent(type="text", text=json.dumps(
@@ -125,7 +125,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         stored_id = engine.store_memory(record)
 
         # Embed — fall back to fuzzy buffer if service unavailable
-        from plastic_promise.embedder import get_embedder, FallbackEmbedder
+        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
         vector_dim = 0
         final_id = stored_id
         try:
@@ -398,13 +398,13 @@ def _get_fuzzy_buffer(engine: Any):
     if not hasattr(engine, '_fuzzy_buffer') or engine._fuzzy_buffer is None:
         from plastic_promise.memory.fuzzy_buffer import FuzzyBuffer
         from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
-        from plastic_promise.embedder import get_embedder
+        from plastic_promise.core.embedder import get_embedder
 
         rec_mem = engine._rec_mem if hasattr(engine, '_rec_mem') else RecMem(engine)
         try:
             embedder = get_embedder()
         except Exception:
-            from plastic_promise.embedder import FallbackEmbedder
+            from plastic_promise.core.embedder import FallbackEmbedder
             embedder = FallbackEmbedder()
         tier_mgr = MemoryTierManager(rec_mem)
         engine._fuzzy_buffer = FuzzyBuffer(rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr)
