@@ -38,7 +38,9 @@
   永久记忆存储（SQLite 写穿透） ← Phase 2 ✅
   依赖关系管理（blocks/blockedBy + 循环检测） ← Phase 2 ✅
   Issue 生命周期（open→in_progress→resolved→closed） ← Phase 2 ✅
-  多 Agent 联动 ← Phase 4
+  上下文预备（post_task 预取 + MCP 工具） ← Phase 4 ✅
+  Bridge TODO（Pi 任务 + N.E.K.O ZMQ） ← Phase 4 ✅
+  SSE 生产化（health + 日志 + 优雅关闭） ← Phase 4 ✅
 ```
 
 ## 三、当前状态
@@ -64,8 +66,8 @@
 ### 进行中
 - 无
 
-### 待做
-- Phase 4: 上下文预备 hook + Bridge TODO + SSE 生产化
+### 已全部完成 ✅
+四阶段路线图全部交付。项目进入维护和深化阶段。
 
 ## 四、12 条核心约定
 
