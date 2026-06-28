@@ -1,0 +1,1 @@
+"""Plastic Promise MCP Prompts 定义"""

@@ -1,0 +1,1 @@
+"""Plastic Promise MCP Resources 定义"""
