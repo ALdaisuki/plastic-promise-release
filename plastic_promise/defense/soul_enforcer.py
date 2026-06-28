@@ -118,7 +118,9 @@ class TrustManager:
         Returns:
             变更记录列表，每条包含 delta, reason, new_value, timestamp 等字段
         """
-        pass
+        if not self._history:
+            return []
+        return self._history[-limit:]
 
     @property
     def tier(self) -> str:
@@ -325,7 +327,12 @@ class SoulEnforcer:
             layer: 违规发生的防线层级 (L0/L1/L2)
             reason: 违规原因描述
         """
-        pass
+        self._violation_log.append({
+            "action": action,
+            "layer": layer,
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
 
     def get_violation_stats(self) -> Dict[str, Any]:
         """获取违规统计数据。
@@ -337,4 +344,21 @@ class SoulEnforcer:
             - today: int — 今日违规次数
             - recent: List[Dict] — 最近违规记录
         """
-        pass
+        total = len(self._violation_log)
+        by_layer: Dict[str, int] = {}
+        today_count = 0
+        today_str = datetime.now(timezone.utc).isoformat()[:10]
+
+        for v in self._violation_log:
+            layer = v.get("layer", "unknown")
+            by_layer[layer] = by_layer.get(layer, 0) + 1
+            ts = v.get("timestamp", "")
+            if ts.startswith(today_str):
+                today_count += 1
+
+        return {
+            "total": total,
+            "by_layer": by_layer,
+            "today": today_count,
+            "recent": self._violation_log[-5:],
+        }
