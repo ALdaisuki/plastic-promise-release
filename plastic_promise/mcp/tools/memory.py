@@ -129,18 +129,21 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
             # Store vector for _vector_retrieval (细匹配)
             engine._memories[stored_id]["_vector"] = vec
         except Exception:
-            # Embedding unavailable: store in fuzzy buffer for later processing
+            # Embedding unavailable: remove from main pool, store in fuzzy buffer instead
+            try:
+                engine.delete_memory(stored_id)
+            except Exception:
+                pass
             fb = _get_fuzzy_buffer(engine)
             fuzzy_id = fb.store_urgent(content, memory_type, source)
             return [TextContent(type="text", text=json.dumps({
                 "stored": True,
-                "memory_id": stored_id,
+                "memory_id": fuzzy_id,
                 "content_preview": content[:200],
                 "memory_type": memory_type,
                 "scope": scope,
-                "fuzzy_id": fuzzy_id,
                 "fuzzy": True,
-                "note": "Stored in fuzzy buffer — embedding deferred to background processing",
+                "note": "Stored in fuzzy buffer — will migrate to main pool after background processing",
             }, ensure_ascii=False))]
 
         return [TextContent(type="text", text=json.dumps({
