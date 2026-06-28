@@ -786,6 +786,9 @@ async def run_sse(port: int = 9020):
     from starlette.routing import Route
 
     logger = logging.getLogger("plastic-promise-sse")
+    import signal
+    import time as _time
+    start_time = _time.time()
 
     sse = SseServerTransport("/messages")
 
@@ -803,14 +806,29 @@ async def run_sse(port: int = 9020):
         await sse.handle_post_message(request.scope, request.receive, request._send)
         return Response()
 
+    async def health(request):
+        import json as _json
+        from starlette.responses import JSONResponse
+        return JSONResponse({
+            "status": "ok",
+            "uptime": round(_time.time() - start_time, 1),
+            "version": "0.1.0",
+            "pid": os.getpid(),
+        })
+
+    async def shutdown():
+        logger.info("Shutting down Plastic Promise SSE server...")
+
     app = Starlette(routes=[
         Route("/sse", endpoint=handle_sse, methods=["GET"]),
         Route("/messages", endpoint=handle_messages, methods=["POST"]),
-    ])
+        Route("/health", endpoint=health),
+    ], on_shutdown=[shutdown])
 
-    logger.info(f"Plastic Promise MCP Server starting on http://127.0.0.1:{port}")
-    logger.info(f"  SSE endpoint: http://127.0.0.1:{port}/sse")
-    logger.info(f"  Messages:     http://127.0.0.1:{port}/messages")
+    logger.info(f"Plastic Promise MCP Server v0.1.0")
+    logger.info(f"SSE endpoint: http://127.0.0.1:{port}/sse")
+    logger.info(f"Health:      http://127.0.0.1:{port}/health")
+    logger.info(f"PID: {os.getpid()}")
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info")
     await uvicorn.Server(config).serve()
 
