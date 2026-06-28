@@ -427,6 +427,47 @@ async def list_tools() -> list[Tool]:
                 "required": ["source_path", "source_type"],
             },
         ),
+        Tool(
+            name="issue_create",
+            description="创建新 Issue，关联原则和依赖关系。服务实践层：约定→任务→追踪。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Issue 标题"},
+                    "description": {"type": "string", "description": "详细描述"},
+                    "principle_id": {"type": "integer", "description": "关联原则 ID (1-12)"},
+                    "memory_ids": {"type": "array", "items": {"type": "string"}},
+                    "blocks": {"type": "array", "items": {"type": "string"}, "description": "此 Issue 阻塞的 Issue ID 列表"},
+                    "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "阻塞此 Issue 的 Issue ID 列表"},
+                    "owner": {"type": "string", "description": "Agent owner"},
+                },
+                "required": ["title"],
+            },
+        ),
+        Tool(
+            name="issue_transition",
+            description="推进 Issue 状态: open→in_progress→resolved→closed。自动检查依赖。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "issue_id": {"type": "string"},
+                    "state": {"type": "string", "description": "目标状态: in_progress/resolved/closed"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["issue_id", "state"],
+            },
+        ),
+        Tool(
+            name="issue_list",
+            description="列出 Issue，支持按状态和 owner 筛选。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "state": {"type": "string", "description": "筛选状态: open/in_progress/resolved/closed"},
+                    "owner": {"type": "string", "description": "筛选 owner"},
+                },
+            },
+        ),
     ])
 
     return tools
@@ -542,6 +583,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "system_migrate":
             from plastic_promise.mcp.tools.management import handle_system_migrate
             return await handle_system_migrate(engine, arguments)
+        elif name == "issue_create":
+            from plastic_promise.mcp.tools.management import handle_issue_create
+            return await handle_issue_create(engine, arguments)
+        elif name == "issue_transition":
+            from plastic_promise.mcp.tools.management import handle_issue_transition
+            return await handle_issue_transition(engine, arguments)
+        elif name == "issue_list":
+            from plastic_promise.mcp.tools.management import handle_issue_list
+            return await handle_issue_list(engine, arguments)
 
         else:
             return [TextContent(type="text", text=json.dumps(

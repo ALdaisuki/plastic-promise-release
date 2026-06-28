@@ -187,3 +187,66 @@ async def handle_system_migrate(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "system_migrate"}, ensure_ascii=False))]
+
+
+# ---- issue_create ----
+async def handle_issue_create(engine: Any, args: dict) -> list[TextContent]:
+    """Create a new Issue with optional principle and dependency links."""
+    try:
+        from plastic_promise.issue import IssueManager
+        if not hasattr(engine, '_issue_manager'):
+            engine._issue_manager = IssueManager()
+        im = engine._issue_manager
+        iid = im.create(
+            title=args.get("title", "Untitled"),
+            description=args.get("description", ""),
+            principle_id=args.get("principle_id"),
+            memory_ids=args.get("memory_ids", []),
+            blocks=args.get("blocks", []),
+            blocked_by=args.get("blocked_by", []),
+            owner=args.get("owner", ""),
+        )
+        return [TextContent(type="text", text=json.dumps(
+            {"created": True, "issue_id": iid}, ensure_ascii=False))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "issue_create"}, ensure_ascii=False))]
+
+
+# ---- issue_transition ----
+async def handle_issue_transition(engine: Any, args: dict) -> list[TextContent]:
+    """Transition an Issue to a new state."""
+    try:
+        from plastic_promise.issue import IssueManager
+        if not hasattr(engine, '_issue_manager'):
+            engine._issue_manager = IssueManager()
+        im = engine._issue_manager
+        result = im.transition(
+            iid=args["issue_id"],
+            new_state=args["state"],
+            reason=args.get("reason", ""),
+        )
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "issue_transition"}, ensure_ascii=False))]
+
+
+# ---- issue_list ----
+async def handle_issue_list(engine: Any, args: dict) -> list[TextContent]:
+    """List Issues, optionally filtered by state or owner."""
+    try:
+        from plastic_promise.issue import IssueManager
+        if not hasattr(engine, '_issue_manager'):
+            engine._issue_manager = IssueManager()
+        im = engine._issue_manager
+        issues = im.list(
+            state=args.get("state"),
+            owner=args.get("owner"),
+        )
+        return [TextContent(type="text", text=json.dumps({
+            "issues": issues, "count": len(issues),
+        }, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "issue_list"}, ensure_ascii=False))]
