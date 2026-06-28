@@ -79,6 +79,79 @@ class ContextPack:
 
 
 # ============================================================
+# MemoryRecord — Python 实现 (与 Rust context_engine_core.MemoryRecord 接口一致)
+# ============================================================
+
+class MemoryRecord:
+    """Python MemoryRecord — mirrors context_engine_core.MemoryRecord interface.
+
+    Used as fallback when the Rust core is unavailable. Provides the same
+    attributes and methods so tool handlers work transparently.
+    """
+
+    def __init__(self, id: str = "", content: str = "",
+                 memory_type: str = "experience", source: str = "user"):
+        self.id = id
+        self.content = content
+        self.memory_type = memory_type
+        self.source = source
+        self.scope: str = "global"
+        self.category: str = "other"
+        self.importance: float = 0.7
+        self.entity_ids: list[str] = []
+        self.created_at: str = ""
+        self.access_count: int = 0
+        self.worth_success: int = 0
+        self.worth_failure: int = 0
+        self.tier: str = "L2"
+
+    def worth_score(self) -> float:
+        """Calculate worth score from success/failure observations.
+
+        Uses a Bayesian-like smoothing: (success + 1) / (total + 2).
+        Returns 0.5 when no observations exist.
+        """
+        total = self.worth_success + self.worth_failure
+        if total == 0:
+            return 0.5
+        return (self.worth_success + 1.0) / (total + 2.0)
+
+    def record_adopted(self):
+        """Record a positive adoption observation."""
+        self.worth_success += 1
+
+    def record_rejected(self):
+        """Record a negative rejection observation."""
+        self.worth_failure += 1
+
+    def record_ignored(self):
+        """Record a neutral ignore observation (weak negative)."""
+        self.worth_failure += 0.5
+
+    @property
+    def total_observations(self) -> float:
+        return self.worth_success + self.worth_failure
+
+
+class GraphInfo:
+    """Lightweight graph info object with node_count/edge_count attributes."""
+
+    def __init__(self, nodes: dict, edges: list):
+        self.node_count = len(nodes)
+        self.edge_count = len(edges)
+        self._nodes = nodes
+        self._edges = edges
+
+    def get(self, key: str):
+        """Dict-like access for backward compatibility."""
+        if key == "nodes":
+            return self._nodes
+        if key == "edges":
+            return self._edges
+        return None
+
+
+# ============================================================
 # ContextEngine — Python 实现
 # ============================================================
 
@@ -128,8 +201,145 @@ class ContextEngine:
         self._graph_nodes = graph_data.get("nodes", {})
         self._graph_edges = graph_data.get("edges", [])
 
-    def get_graph(self) -> Dict[str, Any]:
-        return {"nodes": self._graph_nodes, "edges": self._graph_edges}
+    def get_graph(self) -> GraphInfo:
+        return GraphInfo(self._graph_nodes, self._graph_edges)
+
+    # ========== Memory CRUD (Python fallback) ==========
+
+    def store_memory(self, record: MemoryRecord) -> str:
+        """Store a MemoryRecord into the in-memory pool.
+
+        Returns the memory id (generates one if record.id is empty).
+        """
+        mid = record.id or f"mem_{len(self._memories):08d}"
+        record.id = mid
+        self._memories[mid] = {
+            "id": mid,
+            "content": record.content,
+            "memory_type": record.memory_type,
+            "source": record.source,
+            "scope": record.scope,
+            "category": record.category,
+            "importance": record.importance,
+            "entity_ids": record.entity_ids,
+            "created_at": record.created_at or datetime.datetime.now().isoformat(),
+            "access_count": record.access_count,
+            "worth_success": record.worth_success,
+            "worth_failure": record.worth_failure,
+            "tier": record.tier,
+        }
+        return mid
+
+    def get_memory(self, memory_id: str):
+        """Retrieve a single MemoryRecord by id. Returns None if not found."""
+        mem = self._memories.get(memory_id)
+        if mem is None:
+            return None
+        record = MemoryRecord(
+            id=mem["id"],
+            content=mem["content"],
+            memory_type=mem.get("memory_type", "experience"),
+            source=mem.get("source", "user"),
+        )
+        record.scope = mem.get("scope", "global")
+        record.category = mem.get("category", "other")
+        record.importance = mem.get("importance", 0.7)
+        record.entity_ids = mem.get("entity_ids", [])
+        record.created_at = mem.get("created_at", "")
+        record.access_count = mem.get("access_count", 0)
+        record.worth_success = mem.get("worth_success", 0)
+        record.worth_failure = mem.get("worth_failure", 0)
+        record.tier = mem.get("tier", "L2")
+        return record
+
+    def update_memory(self, memory_id: str, content=None,
+                      importance=None, category=None) -> bool:
+        """Update a memory's fields. Returns True if the memory exists."""
+        mem = self._memories.get(memory_id)
+        if mem is None:
+            return False
+        if content is not None:
+            mem["content"] = content
+        if importance is not None:
+            mem["importance"] = importance
+        if category is not None:
+            mem["category"] = category
+        return True
+
+    def delete_memory(self, memory_id: str) -> bool:
+        """Delete a memory by id. Returns True if it existed."""
+        if memory_id in self._memories:
+            del self._memories[memory_id]
+            return True
+        return False
+
+    def list_memories(self, memory_type=None, source=None,
+                      min_worth=None, limit=50, scope=None) -> list:
+        """List memories with optional filters.
+
+        Returns a list of MemoryRecord objects matching the filter criteria.
+        """
+        results = []
+        for mid, mem in self._memories.items():
+            if memory_type and mem.get("memory_type") != memory_type:
+                continue
+            if source and mem.get("source") != source:
+                continue
+            if scope and mem.get("scope") != scope:
+                continue
+            if min_worth is not None:
+                s = mem.get("worth_success", 0)
+                f = mem.get("worth_failure", 0)
+                total = s + f
+                ws = (s + 1.0) / (total + 2.0) if total > 0 else 0.5
+                if ws < min_worth:
+                    continue
+            results.append(self.get_memory(mid))
+            if len(results) >= limit:
+                break
+        return results
+
+    def memory_stats_json(self, scope=None) -> str:
+        """Return memory pool statistics as a JSON string.
+
+        Compatible with the Rust ContextEngine.memory_stats_json() interface.
+        """
+        total = len(self._memories)
+        by_type: dict[str, int] = {}
+        by_category: dict[str, int] = {}
+        by_tier: dict[str, int] = {}
+        healthy = 0
+        decaying = 0
+        worth_sum = 0.0
+
+        for mid, mem in self._memories.items():
+            if scope and mem.get("scope") != scope:
+                continue
+            mt = mem.get("memory_type", "unknown")
+            by_type[mt] = by_type.get(mt, 0) + 1
+            mc = mem.get("category", "other")
+            by_category[mc] = by_category.get(mc, 0) + 1
+            mtier = mem.get("tier", "L2")
+            by_tier[mtier] = by_tier.get(mtier, 0) + 1
+            ws = mem.get("worth_success", 0)
+            wf = mem.get("worth_failure", 0)
+            total_obs = ws + wf
+            ws_val = (ws + 1.0) / (total_obs + 2.0) if total_obs > 0 else 0.5
+            worth_sum += ws_val
+            if ws_val >= 0.15:
+                healthy += 1
+            else:
+                decaying += 1
+
+        return json.dumps({
+            "total": total,
+            "healthy": healthy,
+            "decaying": decaying,
+            "by_type": by_type,
+            "by_category": by_category,
+            "by_tier": by_tier,
+            "average_worth": round(worth_sum / total, 3) if total > 0 else 0.0,
+        }, ensure_ascii=False)
 
     # ========== 核心方法: supply() ==========
 

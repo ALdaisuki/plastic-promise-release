@@ -88,7 +88,6 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
                  "content_preview": content[:100]},
                 ensure_ascii=False))]
 
-        import context_engine_core
         memory_type = args.get("memory_type", "experience")
         source = args.get("source", "user")
         scope = args.get("scope", "global")
@@ -96,10 +95,17 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
 
         memory_id = f"mem_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
 
-        # Create Rust MemoryRecord via PyO3
-        record = context_engine_core.MemoryRecord(
-            memory_id, content, memory_type, source
-        )
+        # Create MemoryRecord — Rust PyO3 first, Python fallback
+        try:
+            import context_engine_core
+            record = context_engine_core.MemoryRecord(
+                memory_id, content, memory_type, source
+            )
+        except ImportError:
+            from plastic_promise.core.context_engine import MemoryRecord
+            record = MemoryRecord(
+                memory_id, content, memory_type, source
+            )
         record.scope = scope
         record.category = "other"
         record.importance = 0.7

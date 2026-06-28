@@ -38,12 +38,18 @@ async def handle_system_stats(engine: Any, args: dict) -> list[TextContent]:
             json.loads(mem_stats_str) if isinstance(mem_stats_str, str) else {}
         )
 
-        # EntityGraph stats
+        # EntityGraph stats (handles both Rust object and Python GraphInfo/dict)
         graph = engine.get_graph()
-        graph_stats = {
-            "nodes": graph.node_count,
-            "edges": graph.edge_count,
-        }
+        if isinstance(graph, dict):
+            graph_stats = {
+                "nodes": len(graph.get("nodes", {})),
+                "edges": len(graph.get("edges", [])),
+            }
+        else:
+            graph_stats = {
+                "nodes": getattr(graph, "node_count", 0),
+                "edges": getattr(graph, "edge_count", 0),
+            }
 
         # Digital body system snapshot
         systems = {}

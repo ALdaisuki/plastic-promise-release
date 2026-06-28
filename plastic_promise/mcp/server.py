@@ -22,7 +22,7 @@ from typing import Any
 # 确保项目根在 path 中
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from mcp.server import Server, NotificationOptions
+from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import (
     Tool,
@@ -68,7 +68,7 @@ def get_engine():
 # MCP Server 实例
 # ---------------------------------------------------------------------------
 
-server = Server("plastic-promise")
+server = Server("plastic-promise", version="0.1.0")
 
 # ---------------------------------------------------------------------------
 # 能力声明
@@ -652,17 +652,14 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
 
 async def main():
     """MCP Server 启动入口"""
-    from mcp.server.models import InitializationOptions, ServerCapabilities
-
     async with stdio_server() as (read_stream, write_stream):
+        # create_initialization_options() 自动检测已注册的 handler
+        # (list_tools/list_prompts/list_resources) 并设置对应 capabilities
+        init_options = server.create_initialization_options()
         await server.run(
             read_stream,
             write_stream,
-            InitializationOptions(
-                server_name="plastic-promise",
-                server_version="0.1.0",
-                capabilities=ServerCapabilities(),
-            ),
+            init_options,
             raise_exceptions=False,
         )
 
