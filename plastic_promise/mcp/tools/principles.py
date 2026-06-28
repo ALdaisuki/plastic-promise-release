@@ -59,6 +59,34 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
         ids = list(dict.fromkeys(ids))[:max_p]  # deduplicate, limit
         principles = [p for p in CORE_PRINCIPLES if p["id"] in ids]
 
+        # 违反后果 + 遵循建议（服务于决策参考，非门禁约束）
+        consequences: dict[int, str] = {
+            1: "指标失真，系统健康度不可信，小问题积累成大故障",
+            2: "Agent执行规则失去内在动机，行为退化为最小合规",
+            3: "记忆系统退化为被动档案库，上下文供应枯竭",
+            4: "原则形同虚设，Agent行为与核心约定脱节",
+            5: "虚假安全感，机制存在但不产生实际效果",
+            6: "系统间数据流断裂，各自为战",
+            7: "单点故障扩散，一个模块崩溃引发连锁故障",
+            8: "LLM失去感官输入，决策退化为纯粹的文本补全",
+            9: "自主权错配：高分时过于冒险，低分时寸步难行",
+            10: "反馈信号丢失，系统行为逐渐漂移偏离约定",
+            11: "核心约定无法跨代传递，新Agent需从零训练",
+        }
+        recommendations = {
+            1: "坚持每步只做最必要的事，删除任何可证明不必要的实体",
+            2: "确保每步有 git commit 和可追溯日志，他人在任何时候都能复现",
+            3: "完成四阶段审计：根因→改良→教训→评分，不要跳过任一步",
+            4: "决策前先查 context_supply / memory_recall，上下文不足时标注而非猜测",
+            5: "每个机制必须能回答：如果它不存在，结果会不同吗？",
+            6: "追踪真实数据流而非假设架构图，记录模块间实际耦合",
+            7: "每个模块检测上游异常、保护下游调用方，防线是网状的",
+            8: "不断扩展工具链就是不断扩展能力，工具是LLM的感官",
+            9: "信任分驱动约束动态调整：高分时高效，低分时安全优先",
+            10: "每次交互都是一个训练样本，每个错误都是一个改进机会",
+            11: "核心约定通过单向扩散跨代传递，新Agent继承已有原则体系",
+        }
+
         return [TextContent(type="text", text=json.dumps({
             "task_type": task_type,
             "activated": [
@@ -66,6 +94,8 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
                     "id": p["id"],
                     "name": p["name"],
                     "content": p["content"],
+                    "consequence": consequences.get(p["id"], ""),
+                    "recommendation": recommendations.get(p["id"], ""),
                     "domain": p["domain"],
                 }
                 for p in principles

@@ -52,9 +52,27 @@ class ContextPack:
     def to_prompt(self) -> str:
         lines = []
         if self.activated_principles:
-            lines.append("## 🧬 激活的核心原则")
-            for p in self.activated_principles:
-                lines.append(f"- {p}")
+            lines.append("## 🧬 核心约定参考（约定优于约束——决策前主动查阅）")
+            from plastic_promise.core.constants import CORE_PRINCIPLES
+            for name in self.activated_principles:
+                # Find principle by name and show full reference
+                match = next((p for p in CORE_PRINCIPLES if p["name"] == name), None)
+                if match:
+                    lines.append(f"### {name}")
+                    lines.append(f"> {match['content']}")
+                    lines.append(f"**⚠️ 违反后果**：指标失真，系统健康度不可信" if match["id"] == 1 else
+                                f"**⚠️ 违反后果**：Agent退化为最小合规，失去内在动机" if match["id"] == 2 else
+                                f"**⚠️ 违反后果**：记忆退化为被动档案库，上下文枯竭" if match["id"] == 3 else
+                                f"**⚠️ 违反后果**：原则形同虚设，行为与约定脱节" if match["id"] == 4 else
+                                f"**⚠️ 违反后果**：虚假安全感，机制存在但不产生效果" if match["id"] == 5 else
+                                f"**⚠️ 违反后果**：数据流断裂，系统各自为战" if match["id"] == 6 else
+                                f"**⚠️ 违反后果**：单点故障扩散，连锁崩溃" if match["id"] == 7 else
+                                f"**⚠️ 违反后果**：LLM失去感官，退化为纯文本补全" if match["id"] == 8 else
+                                f"**⚠️ 违反后果**：自主权错配，高分冒险低分难行" if match["id"] == 9 else
+                                f"**⚠️ 违反后果**：反馈信号丢失，行为漂移偏离约定" if match["id"] == 10 else
+                                f"**⚠️ 违反后果**：约定无法跨代传递，新Agent从零训练")
+                else:
+                    lines.append(f"- {name}")
             lines.append("")
         if self.core:
             lines.append("## 🔵 核心上下文（必读）")
