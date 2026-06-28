@@ -19,7 +19,7 @@ use crate::entity_graph::EntityGraph;
 use crate::principles;
 use crate::retrieval::HybridRetriever;
 use crate::source_tracker::SourceTracker;
-use crate::storage::{ListFilter, StorageBackend};
+use crate::storage::{ListFilter, StorageBackend, UpdateFields};
 use chrono::{DateTime, Utc};
 
 // ============================================================
@@ -264,6 +264,82 @@ impl ContextEngine {
     /// 获取 EntityGraph 引用（用于 Python 侧持久化等）
     pub fn get_graph(&self) -> EntityGraph {
         self.graph.clone()
+    }
+
+    // ============================================================
+    // Storage delegation methods (exposed to Python)
+    // ============================================================
+
+    /// Store a memory record into the persistent backend.
+    /// Returns the record's id on success.
+    pub fn store_memory(&mut self, record: crate::memory_worth::MemoryRecord) -> PyResult<String> {
+        self.storage.store(&record)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+    }
+
+    /// Retrieve a memory record by id. Returns None if not found.
+    pub fn get_memory(&self, id: String) -> PyResult<Option<crate::memory_worth::MemoryRecord>> {
+        self.storage.get(&id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+    }
+
+    /// Update specific fields of a memory record.
+    /// Only provided fields are modified; others are left unchanged.
+    #[pyo3(signature = (id, *, content=None, importance=None, category=None))]
+    pub fn update_memory(
+        &mut self,
+        id: String,
+        content: Option<String>,
+        importance: Option<f64>,
+        category: Option<String>,
+    ) -> PyResult<bool> {
+        let updates = UpdateFields {
+            content,
+            importance,
+            category,
+            ..Default::default()
+        };
+        self.storage.update(&id, &updates)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+    }
+
+    /// Delete a memory record by id (hard delete).
+    /// Returns true if a row was deleted.
+    pub fn delete_memory(&mut self, id: String) -> PyResult<bool> {
+        self.storage.delete(&id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+    }
+
+    /// List memory records with optional filters.
+    /// Results are ordered by last_accessed_at DESC.
+    #[pyo3(signature = (memory_type=None, source=None, min_worth=None, limit=50, scope=None))]
+    pub fn list_memories(
+        &self,
+        memory_type: Option<String>,
+        source: Option<String>,
+        min_worth: Option<f64>,
+        limit: usize,
+        scope: Option<String>,
+    ) -> PyResult<Vec<crate::memory_worth::MemoryRecord>> {
+        let filter = ListFilter {
+            memory_type,
+            source,
+            min_worth,
+            limit,
+            scope,
+            ..Default::default()
+        };
+        self.storage.list(&filter)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+    }
+
+    /// Return aggregate memory pool statistics as a JSON string.
+    /// Optionally scoped to a namespace.
+    pub fn memory_stats_json(&self, scope: Option<String>) -> PyResult<String> {
+        let stats = self.storage.stats(scope.as_deref())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        serde_json::to_string(&stats)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
 
     // ============================================================

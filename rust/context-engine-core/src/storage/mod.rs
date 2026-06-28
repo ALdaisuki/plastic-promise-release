@@ -11,6 +11,9 @@ pub mod sqlite_impl;
 pub mod lancedb_impl;
 
 use std::collections::HashMap;
+
+use serde::Serialize;
+
 use crate::domain::Tier;
 use crate::memory_worth::MemoryRecord;
 
@@ -56,7 +59,7 @@ pub struct ListFilter {
 }
 
 /// Aggregate memory statistics.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct MemoryStats {
     pub total: usize,
     pub healthy: usize,
