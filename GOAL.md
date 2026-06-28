@@ -29,10 +29,10 @@
   Issue 生命周期（约定→任务→追踪） ← Phase 2
 
 演化层 — 迭代进步
-  越用越聪明（worth 反馈闭环） ← Phase 3
-  越用越默契（行为模式学习） ← Phase 3
-  主动成长（curiosity→探索→实践） ← Phase 3
-  内化约定（原则遵守历史量化） ← Phase 3
+  越用越聪明（worth 反馈闭环） ← Phase 3 ✅
+  越用越默契（行为模式学习） ← Phase 3 ✅
+  主动成长（curiosity→探索→实践） ← Phase 3 ✅
+  内化约定（原则遵守历史量化） ← Phase 3 ✅
 
 基础设施
   永久记忆存储（SQLite 写穿透） ← Phase 2 ✅
@@ -65,7 +65,6 @@
 - 无
 
 ### 待做
-- Phase 3: worth 反馈闭环 + 行为模式学习 + curiosity 闭环 + 原则遵守历史可视化
 - Phase 4: 上下文预备 hook + Bridge TODO + SSE 生产化
 
 ## 四、12 条核心约定
