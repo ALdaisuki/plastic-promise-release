@@ -145,7 +145,7 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
             {"error": str(e), "tool": "context_inject"}, ensure_ascii=False))]
 
 
-async def handle_context_graph(engine: Any, args: dict) -> Any:
+async def handle_context_graph(engine: Any, args: dict) -> list[TextContent]:
     """Handle context_graph tool call.
 
     Queries entity association graph: node list, edge relationships,
@@ -157,6 +157,29 @@ async def handle_context_graph(engine: Any, args: dict) -> Any:
                "query_type"?: str}.
 
     Returns:
-        list[TextContent]: MCP response.
+        list[TextContent]: MCP response with graph data.
     """
-    pass
+    try:
+        query_type = args.get("query_type", "full_graph")
+        start_node = args.get("start_node")
+        max_hops = args.get("max_hops", 3)
+
+        valid_queries = {"node_info", "traverse", "full_graph", "neighbors"}
+        if query_type not in valid_queries:
+            return [TextContent(type="text", text=json.dumps(
+                {"error": f"Unknown query_type '{query_type}'. "
+                          f"Valid: {', '.join(sorted(valid_queries))}"},
+                ensure_ascii=False))]
+
+        result = engine.query_graph(
+            query_type=query_type,
+            start_node=start_node,
+            max_hops=max_hops,
+        )
+
+        return [TextContent(type="text", text=json.dumps(
+            result, ensure_ascii=False, indent=2))]
+
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "context_graph"}, ensure_ascii=False))]
