@@ -771,7 +771,9 @@ class EvolveR:
             rec_mem: 关联的记忆系统实例。
             decay_threshold: worth_score 低于此值的记忆被标记为衰退候选。
         """
-        pass
+        self.rec_mem = rec_mem
+        self.decay_threshold = decay_threshold
+        self.tier_manager = MemoryTierManager(rec_mem)
 
     def evolve_cycle(self) -> Dict[str, Any]:
         """执行一次完整的演化周期。
@@ -792,7 +794,43 @@ class EvolveR:
             - health_before: 演化前的 health_ratio
             - health_after: 演化后的 health_ratio
         """
-        pass
+        if self.rec_mem is None:
+            return {"promoted": 0, "demoted": 0, "decayed": 0, "evicted": 0,
+                    "health_before": 1.0, "health_after": 1.0}
+        try:
+            health_before = self.rec_mem.health_ratio
+            records = list(self.rec_mem._records.values())
+            promoted = 0
+            demoted = 0
+
+            # Demote L3 low-worth records
+            l3_records = [r for r in records if r.tier == "L3" and r.worth_score < self.decay_threshold]
+            for r in l3_records:
+                self.tier_manager.demote_to_l1(r)
+                demoted += 1
+
+            # Promote L1 high-worth records
+            l1_records = [r for r in records if r.tier == "L1" and r.worth_score >= 0.6]
+            for r in l1_records:
+                self.tier_manager.promote_to_l3(r)
+                promoted += 1
+
+            # Decay stale L1 records
+            decayed = self.decay_stale()
+
+            # Evict L1 overflow
+            l1_after = [r for r in self.rec_mem._records.values() if r.tier == "L1"]
+            evicted = len(self.tier_manager.evict_l1_overflow(l1_after))
+
+            health_after = self.rec_mem.health_ratio
+            return {
+                "promoted": promoted, "demoted": demoted,
+                "decayed": decayed, "evicted": evicted,
+                "health_before": health_before, "health_after": health_after,
+            }
+        except Exception:
+            return {"promoted": 0, "demoted": 0, "decayed": 0, "evicted": 0,
+                    "health_before": 1.0, "health_after": 1.0}
 
     def decay_stale(self, days_threshold: int = MEMORY_GC_INTERVAL_DAYS) -> int:
         """对长期未激活的 L1 记忆执行价值衰减。
@@ -808,7 +846,24 @@ class EvolveR:
         Returns:
             被衰减的记忆数量。
         """
-        pass
+        if self.rec_mem is None:
+            return 0
+        try:
+            cutoff = datetime.datetime.now() - datetime.timedelta(days=days_threshold)
+            decayed = 0
+            for r in self.rec_mem._records.values():
+                if r.tier != "L1":
+                    continue
+                try:
+                    last = datetime.datetime.fromisoformat(r.last_accessed)
+                    if last < cutoff:
+                        r.activation_weight = max(0.0, r.activation_weight * 0.7)
+                        decayed += 1
+                except (ValueError, TypeError):
+                    pass
+            return decayed
+        except Exception:
+            return 0
 
 
 # ============================================================
@@ -828,7 +883,8 @@ class MemoryGC:
         Args:
             rec_mem: 关联的记忆系统实例。
         """
-        pass
+        self.rec_mem = rec_mem
+        self._last_collect: Optional[str] = None
 
     def collect(self, dry_run: bool = True, force: bool = False) -> Dict[str, Any]:
         """执行垃圾回收，清理衰退记忆。
@@ -855,7 +911,51 @@ class MemoryGC:
             - health_after: 回收后的 health_ratio
             - freed_slots: 释放的容量槽位
         """
-        pass
+        try:
+            health_before = self.rec_mem.health_ratio if self.rec_mem else 1.0
+            candidates = self.mark_decaying()
+        except Exception:
+            candidates = []
+
+        result = {
+            "dry_run": dry_run,
+            "candidates_count": len(candidates),
+            "candidates": candidates[:50],
+            "removed": 0,
+            "health_before": health_before if 'health_before' in dir() else 1.0,
+            "health_after": health_before if 'health_before' in dir() else 1.0,
+            "freed_slots": 0,
+        }
+
+        if dry_run or not candidates or self.rec_mem is None:
+            return result
+
+        # Interval check (skip if forced)
+        if not force and self._last_collect is not None:
+            try:
+                last = datetime.datetime.fromisoformat(self._last_collect)
+                interval = datetime.timedelta(days=MEMORY_GC_INTERVAL_DAYS)
+                if datetime.datetime.now() - last < interval:
+                    return result
+            except (ValueError, TypeError):
+                pass
+
+        try:
+            removed = 0
+            for mid in candidates:
+                if self.rec_mem.health_ratio >= MEMORY_HEALTH_THRESHOLD / 100.0:
+                    break
+                self.rec_mem.forget(mid, reason="GC: worth below decay threshold")
+                removed += 1
+
+            self._last_collect = datetime.datetime.now().isoformat()
+            result["removed"] = removed
+            result["health_after"] = self.rec_mem.health_ratio
+            result["freed_slots"] = removed
+        except Exception:
+            pass
+
+        return result
 
     def mark_decaying(self) -> List[str]:
         """扫描记忆池，标记 worth_score 低于衰减阈值的记忆。
@@ -867,4 +967,17 @@ class MemoryGC:
         Returns:
             被标记为衰退的记忆 ID 列表，按 worth_score 升序排列。
         """
-        pass
+        if self.rec_mem is None:
+            return []
+        try:
+            decaying = []
+            for r in self.rec_mem._records.values():
+                try:
+                    if r.worth_score < MEMORY_DECAY_THRESHOLD:
+                        decaying.append((r.memory_id, r.worth_score))
+                except Exception:
+                    pass
+            decaying.sort(key=lambda x: x[1])
+            return [mid for mid, _ in decaying]
+        except Exception:
+            return []
