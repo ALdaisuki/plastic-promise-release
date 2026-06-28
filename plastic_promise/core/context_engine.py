@@ -11,7 +11,7 @@ import json
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
-from plastic_promise.constants import (
+from plastic_promise.core.constants import (
     CONTEXT_LAYERS,
     SYMBOL_RULE_KEYWORDS,
     ASSOCIATION_WEIGHTS,
@@ -201,7 +201,7 @@ class ContextEngine:
     # ========== 内部方法 ==========
 
     def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
-        from plastic_promise.constants import CORE_PRINCIPLES
+        from plastic_promise.core.constants import CORE_PRINCIPLES
 
         recommendations = {
             "code_generation": [1, 3, 8, 10],
