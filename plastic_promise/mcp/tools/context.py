@@ -92,8 +92,6 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
 
         # Route through existing PrincipleManager for principle type
         if entity_type == "principle":
-            from plastic_promise.principles.soul_principles import PrincipleManager
-            pm = PrincipleManager(engine)
             # Build a single-principle inject: reuse inject_to_graph logic
             node_id = f"principle:{entity_id}"
             is_new = node_id not in engine._graph_nodes
