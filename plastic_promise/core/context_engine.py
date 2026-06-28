@@ -183,19 +183,29 @@ class ContextEngine:
     生产环境请使用 Rust 版: from context_engine_core import ContextEngine
     """
 
-    def __init__(self):
-        self._memories: Dict[str, Dict[str, Any]] = {}
+    def __init__(self, use_sqlite: bool = None):
         self._graph_nodes: Dict[str, Dict[str, Any]] = {}
         self._graph_edges: List[Dict[str, Any]] = []
         self._feedback: Dict[str, float] = {}  # item_id -> accumulated delta
         self.enable_principles: bool = True
+        self._current_time: str = ""
+        self._memories: Dict[str, Dict[str, Any]] = {}
+
+        # SQLite write-through — persists every mutation to disk
+        if use_sqlite is None:
+            use_sqlite = os.environ.get("AGENT_USE_SQLITE", "0") == "1"
+        self._sqlite = _SQLiteStorage() if use_sqlite else None
+        if self._sqlite:
+            # Load existing from disk
+            for mid, data in self._sqlite.iter_all():
+                self._memories[mid] = data
         self._current_time: str = ""
 
     # ========== 记忆管理 ==========
 
     def register_memory(self, record: Dict[str, Any]) -> str:
         mid = record.get("id", f"mem_{len(self._memories)}")
-        self._memories[mid] = {
+        data = {
             "id": mid,
             "content": record.get("content", ""),
             "memory_type": record.get("memory_type", "experience"),
@@ -207,6 +217,9 @@ class ContextEngine:
             "activation_weight": record.get("activation_weight", 0.5),
             "created_at": record.get("created_at", datetime.datetime.now().isoformat()),
         }
+        self._memories[mid] = data
+        if self._sqlite:
+            self._sqlite.upsert(mid, data)
         return mid
 
     def register_memories(self, records: List[Dict[str, Any]]) -> List[str]:
@@ -237,7 +250,7 @@ class ContextEngine:
         """
         mid = record.id or f"mem_{len(self._memories):08d}"
         record.id = mid
-        self._memories[mid] = {
+        data = {
             "id": mid,
             "content": record.content,
             "memory_type": record.memory_type,
@@ -253,6 +266,9 @@ class ContextEngine:
             "owner": record.owner,
             "tier": record.tier,
         }
+        self._memories[mid] = data
+        if self._sqlite:
+            self._sqlite.upsert(mid, data)
         return mid
 
     def get_memory(self, memory_id: str):
@@ -290,12 +306,16 @@ class ContextEngine:
             mem["importance"] = importance
         if category is not None:
             mem["category"] = category
+        if self._sqlite:
+            self._sqlite.upsert(memory_id, mem)
         return True
 
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory by id. Returns True if it existed."""
         if memory_id in self._memories:
             del self._memories[memory_id]
+            if self._sqlite:
+                self._sqlite.delete(memory_id)
             return True
         return False
 
@@ -831,6 +851,115 @@ class ContextEngine:
 
         return [(k, v[0], v[1], v[2]) for k, v in
                 sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
+
+
+# ============================================================
+# SQLite 持久化存储 — 写穿透模式
+# ============================================================
+
+class _SQLiteStorage:
+    """SQLite write-through backend for ContextEngine memories.
+
+    Enabled via AGENT_USE_SQLITE=1 env var. Every memory mutation
+    (register/store/update/delete) is persisted to disk immediately.
+    """
+
+    def __init__(self, db_path: str = None):
+        import sqlite3
+        if db_path is None:
+            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+        self._conn = sqlite3.connect(db_path)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS memories ("
+            "  id TEXT PRIMARY KEY,"
+            "  content TEXT,"
+            "  memory_type TEXT,"
+            "  source TEXT,"
+            "  owner TEXT,"
+            "  tier TEXT,"
+            "  scope TEXT,"
+            "  category TEXT,"
+            "  importance REAL,"
+            "  entity_ids TEXT,"
+            "  created_at TEXT,"
+            "  access_count INTEGER,"
+            "  worth_success INTEGER,"
+            "  worth_failure INTEGER,"
+            "  activation_weight REAL"
+            ")"
+        )
+        self._conn.commit()
+
+    def upsert(self, mid: str, data: dict):
+        """Insert or update a memory record."""
+        import json
+        self._conn.execute(
+            "INSERT OR REPLACE INTO memories (id, content, memory_type, source, owner, "
+            "tier, scope, category, importance, entity_ids, created_at, access_count, "
+            "worth_success, worth_failure, activation_weight) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                mid,
+                data.get("content", ""),
+                data.get("memory_type", "experience"),
+                data.get("source", "user"),
+                data.get("owner", ""),
+                data.get("tier", "L1"),
+                data.get("scope", "global"),
+                data.get("category", "other"),
+                data.get("importance", 0.7),
+                json.dumps(data.get("entity_ids", [])),
+                data.get("created_at", ""),
+                data.get("access_count", 0),
+                data.get("worth_success", 0),
+                data.get("worth_failure", 0),
+                data.get("activation_weight", 0.5),
+            ),
+        )
+        self._conn.commit()
+
+    def get(self, mid: str) -> dict | None:
+        """Retrieve a single memory record."""
+        row = self._conn.execute(
+            "SELECT * FROM memories WHERE id = ?", (mid,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(row)
+
+    def delete(self, mid: str):
+        """Delete a memory record."""
+        self._conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
+        self._conn.commit()
+
+    def iter_all(self):
+        """Iterate all memory records."""
+        rows = self._conn.execute("SELECT * FROM memories").fetchall()
+        for row in rows:
+            d = self._row_to_dict(row)
+            yield d["id"], d
+
+    def _row_to_dict(self, row) -> dict:
+        """Convert a SQLite row to a dict matching the in-memory format."""
+        import json
+        return {
+            "id": row[0],
+            "content": row[1],
+            "memory_type": row[2],
+            "source": row[3],
+            "owner": row[4],
+            "tier": row[5],
+            "scope": row[6],
+            "category": row[7],
+            "importance": row[8],
+            "entity_ids": json.loads(row[9]) if row[9] else [],
+            "created_at": row[10],
+            "access_count": row[11] or 0,
+            "worth_success": row[12] or 0,
+            "worth_failure": row[13] or 0,
+            "activation_weight": row[14] or 0.5,
+        }
 
     def _apply_symbol_rules(self, items, task: str) -> List[tuple]:
         result = []
