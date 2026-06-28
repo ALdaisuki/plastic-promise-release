@@ -427,7 +427,7 @@ def principle_activate(
     Returns:
         激活的原则列表
     """
-    pass
+    return PrincipleManager().activate(task_type, task_description, max_principles)
 
 
 def principle_inherit(
@@ -445,7 +445,7 @@ def principle_inherit(
     Returns:
         继承结果字典
     """
-    pass
+    return PrincipleManager().inherit(source_domain, target_domain, principle_ids)
 
 
 def principle_diffuse(
@@ -459,7 +459,7 @@ def principle_diffuse(
     Returns:
         扩散结果字典
     """
-    pass
+    return PrincipleManager().diffuse(principle_id)
 
 
 def principle_evaluate(
@@ -475,4 +475,4 @@ def principle_evaluate(
     Returns:
         评价结果字典
     """
-    pass
+    return PrincipleManager().evaluate(principle_id, scenario)
