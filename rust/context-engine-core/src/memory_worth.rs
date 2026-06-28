@@ -9,6 +9,8 @@
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::Tier;
+
 /// Memory Worth 双计数器 — 嵌入 MemoryRecord
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorthCounters {
@@ -20,7 +22,10 @@ pub struct WorthCounters {
 
 impl Default for WorthCounters {
     fn default() -> Self {
-        Self { success: 0, failure: 0 }
+        Self {
+            success: 0,
+            failure: 0,
+        }
     }
 }
 
@@ -99,6 +104,28 @@ pub struct MemoryRecord {
     #[pyo3(get, set)]
     pub worth_failure: u32,
 
+    /// 记忆分层: working / recent / core / principle (4-tier N.E.K.O-inspired)
+    #[pyo3(get, set)]
+    pub tier: String,
+    /// 作用域命名空间: global / agent:<id> / project:<id>
+    #[pyo3(get, set)]
+    pub scope: String,
+    /// 语义分类: preference / fact / decision / entity / reflection / other
+    #[pyo3(get, set)]
+    pub category: String,
+    /// 重要性评分 [0.0, 1.0]
+    #[pyo3(get, set)]
+    pub importance: f64,
+    /// 累计被检索次数
+    #[pyo3(get, set)]
+    pub access_count: u32,
+    /// 最近一次被检索的时间戳 (ISO 8601)
+    #[pyo3(get, set)]
+    pub last_accessed_at: String,
+    /// 扩展元数据 (JSON 字符串)
+    #[pyo3(get, set)]
+    pub metadata_json: String,
+
     // --- 内部 ---
     /// 关联的实体 ID 列表
     #[pyo3(get, set)]
@@ -126,6 +153,13 @@ impl MemoryRecord {
             worth_failure: 0,
             entity_ids: Vec::new(),
             attributes: std::collections::HashMap::new(),
+            tier: Tier::default().as_str().to_string(),
+            scope: "global".to_string(),
+            category: "other".to_string(),
+            importance: 0.7,
+            access_count: 0,
+            last_accessed_at: String::new(),
+            metadata_json: "{}".to_string(),
         }
     }
 
@@ -173,5 +207,46 @@ impl MemoryRecord {
             self.worth_score(),
             self.total_observations()
         )
+    }
+}
+
+impl MemoryRecord {
+    /// Create a record from SQLite row data (internal use, not #[pymethods]).
+    pub fn from_storage(
+        id: String,
+        content: String,
+        memory_type: String,
+        source: String,
+        tier: String,
+        scope: String,
+        category: String,
+        importance: f64,
+        worth_success: u32,
+        worth_failure: u32,
+        access_count: u32,
+        last_accessed_at: String,
+        created_at: String,
+        metadata_json: String,
+    ) -> Self {
+        Self {
+            id,
+            content,
+            memory_type,
+            source,
+            tier,
+            scope,
+            category,
+            importance,
+            worth_success,
+            worth_failure,
+            access_count,
+            last_accessed_at: last_accessed_at.clone(),
+            last_accessed: last_accessed_at,
+            created_at,
+            activation_weight: 0.5,
+            entity_ids: Vec::new(),
+            attributes: std::collections::HashMap::new(),
+            metadata_json,
+        }
     }
 }

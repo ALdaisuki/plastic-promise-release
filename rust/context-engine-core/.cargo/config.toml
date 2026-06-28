@@ -1,0 +1,3 @@
+# Use rust-lld to avoid Git Bash link.exe shadowing MSVC link.exe
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

@@ -8,6 +8,7 @@
 //! - MemoryWorth: 双计数器计算 (ρ ≈ 0.89)
 //! - ContextEngine: 主编排器 → supply() 返回 ContextPack
 
+pub mod domain;
 pub mod entity_graph;
 pub mod rank_fuser;
 pub mod source_tracker;
