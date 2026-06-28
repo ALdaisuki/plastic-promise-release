@@ -18,6 +18,7 @@ pub enum SourceType {
 }
 
 impl SourceType {
+    /// Return the string representation of this source type.
     pub fn as_str(&self) -> &'static str {
         match self {
             SourceType::User => "user",
@@ -28,6 +29,7 @@ impl SourceType {
         }
     }
 
+    /// Parse a SourceType from its string representation.
     pub fn from_str(s: &str) -> Self {
         match s {
             "user" => SourceType::User,
@@ -54,6 +56,7 @@ pub enum Freshness {
 }
 
 impl Freshness {
+    /// Return the string representation of this freshness level.
     pub fn as_str(&self) -> &'static str {
         match self {
             Freshness::Fresh => "fresh",
@@ -131,8 +134,10 @@ pub struct SourceTracker {
     traces: Vec<SourceTrace>,
 }
 
+/// Python-visible methods for SourceTracker: tracing, expiration checks, and verifiability.
 #[pymethods]
 impl SourceTracker {
+    /// Create an empty SourceTracker.
     #[new]
     pub fn new() -> Self {
         Self { traces: Vec::new() }

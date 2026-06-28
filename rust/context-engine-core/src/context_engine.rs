@@ -50,8 +50,10 @@ pub struct ContextPack {
     pub audit_metadata: HashMap<String, String>,
 }
 
+/// Python-visible methods for ContextPack: construction, prompt rendering, and stats.
 #[pymethods]
 impl ContextPack {
+    /// Create an empty ContextPack with three empty layers (core, related, divergent).
     #[new]
     pub fn new() -> Self {
         Self {
@@ -149,8 +151,10 @@ pub struct ContextItem {
     pub worth_score: f64,
 }
 
+/// Python-visible methods for ContextItem: field access and prompt formatting.
 #[pymethods]
 impl ContextItem {
+    /// Create a new ContextItem with the given id, content, and relevance score.
     #[new]
     pub fn new(id: String, content: String, relevance: f64) -> Self {
         Self {
@@ -213,8 +217,10 @@ pub struct ContextEngine {
     current_time: String,
 }
 
+/// Python-visible methods for ContextEngine: memory registration, supply, and graph management.
 #[pymethods]
 impl ContextEngine {
+    /// Create a new ContextEngine with default sub-components (empty graph, rank fuser, tracker, feedback).
     #[new]
     pub fn new() -> Self {
         Self {

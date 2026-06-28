@@ -38,7 +38,9 @@ pub struct Entity {
 }
 
 #[pymethods]
+/// Python-visible methods for Entity nodes.
 impl Entity {
+    /// Create a new Entity node with the given id, type, name, and description.
     #[new]
     pub fn new(id: String, entity_type: String, name: String, description: String) -> Self {
         Self {
@@ -75,6 +77,7 @@ pub struct EntityEdge {
 }
 
 impl EntityEdge {
+    /// Create a new directed edge between two entity nodes.
     pub fn new(from: String, to: String, relation_type: String, weight: f64) -> Self {
         Self {
             from,
@@ -99,8 +102,10 @@ pub struct EntityGraph {
     adjacency: HashMap<String, Vec<(String, EntityEdge)>>,
 }
 
+/// Python-visible methods for EntityGraph: nodes, edges, traversal, persistence.
 #[pymethods]
 impl EntityGraph {
+    /// Create an empty EntityGraph.
     #[new]
     pub fn new() -> Self {
         Self {
@@ -134,7 +139,7 @@ impl EntityGraph {
         true
     }
 
-    /// 节点数量
+    /// Return the total number of nodes in the graph.
     #[getter]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
@@ -173,7 +178,7 @@ impl EntityGraph {
         }
     }
 
-    /// 边数量
+    /// Return the total number of edges in the graph.
     #[getter]
     pub fn edge_count(&self) -> usize {
         self.adjacency.values().map(|v| v.len()).sum()

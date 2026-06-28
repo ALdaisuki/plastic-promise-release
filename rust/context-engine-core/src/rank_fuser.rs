@@ -20,6 +20,7 @@ pub struct SymbolRule {
 }
 
 impl SymbolRule {
+    /// Return the default set of 6 symbol rule categories with associated keywords and boost factors.
     pub fn default_rules() -> Vec<Self> {
         vec![
             SymbolRule {
@@ -79,8 +80,10 @@ pub struct RankFuser {
     pub dual_channel: bool,
 }
 
+/// Python-visible methods for RankFuser: fusion, symbol rules, and channel helpers.
 #[pymethods]
 impl RankFuser {
+    /// Create a new RankFuser with default symbol rules and dual-channel mode enabled.
     #[new]
     pub fn new() -> Self {
         Self {

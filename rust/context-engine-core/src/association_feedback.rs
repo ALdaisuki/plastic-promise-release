@@ -20,6 +20,7 @@ pub enum FeedbackType {
 }
 
 impl FeedbackType {
+    /// Return the weight adjustment delta: Adopted=+0.10, Ignored=-0.05, Rejected=-0.20.
     pub fn weight_delta(&self) -> f64 {
         match self {
             FeedbackType::Adopted => 0.10,
@@ -28,6 +29,7 @@ impl FeedbackType {
         }
     }
 
+    /// Parse a FeedbackType from its string representation.
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "adopted" => FeedbackType::Adopted,
@@ -59,8 +61,10 @@ pub struct AssociationFeedback {
     accumulated: HashMap<String, f64>,
 }
 
+/// Python-visible methods for AssociationFeedback: recording feedback, querying deltas, and ranking adjustments.
 #[pymethods]
 impl AssociationFeedback {
+    /// Create an empty AssociationFeedback tracker.
     #[new]
     pub fn new() -> Self {
         Self {

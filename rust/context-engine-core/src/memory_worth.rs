@@ -108,8 +108,10 @@ pub struct MemoryRecord {
     pub attributes: std::collections::HashMap<String, String>,
 }
 
+/// Python-visible methods for MemoryRecord: worth scoring and feedback recording.
 #[pymethods]
 impl MemoryRecord {
+    /// Create a new MemoryRecord with the given id, content, type, and source.
     #[new]
     pub fn new(id: String, content: String, memory_type: String, source: String) -> Self {
         Self {
@@ -151,13 +153,13 @@ impl MemoryRecord {
         // 忽略时轻微负面影响
     }
 
-    /// 总观察次数
+    /// Return the total number of observations (success + failure).
     #[getter]
     pub fn total_observations(&self) -> u32 {
         self.worth_success + self.worth_failure
     }
 
-    /// 是否足够观察以启用 worth 信号
+    /// Return true if enough observations have been recorded to enable the worth signal.
     #[getter]
     pub fn worth_ready(&self) -> bool {
         self.total_observations() >= 5
