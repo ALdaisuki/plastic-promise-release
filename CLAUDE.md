@@ -21,16 +21,19 @@
 
 这些不是必须完成的检查单。它们是工具——你用，系统就演化；不用，系统保持现状。约定，是比约束更深的力量。
 
-## 可用 MCP 工具（32 个）
+## 可用 MCP 工具（35 个）
 
 | 域 | 数量 | 工具 |
 |------|------|------|
-| Memory | 10 | memory_recall, memory_store, memory_update, memory_forget, memory_stats, memory_list, memory_gc, fuzzy_status, fuzzy_process, memory_correct |
+| Memory | 7 | memory_recall, memory_store, memory_update, memory_forget, memory_stats, memory_list, memory_gc |
+| Pipeline | 2 | fuzzy_status(流水线状态), fuzzy_process(触发处理) |
+| Correct | 1 | memory_correct(人类纠正) |
 | Principles | 4 | principle_activate, principle_inherit, principle_diffuse, principle_evaluate |
 | Context | 4 | context_supply, context_inject, context_graph, context_ready |
 | Audit | 5 | audit_run, audit_pre_check, audit_report, defense_trust, defense_status |
 | Reflection | 3 | scarf_reflect, inertia_check, feedback_apply |
 | System | 6 | system_stats, system_backup, system_migrate, issue_create, issue_transition, issue_list |
+| Pack | 3 | pack_export, pack_import, pack_recall |
 
 ## 标准工作流
 

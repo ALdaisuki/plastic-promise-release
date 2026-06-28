@@ -2,7 +2,7 @@
 
 > 记忆是可塑的，灵魂因记忆存在、因约定成长。
 
-**Plastic Promise** 是以「约定工程」(Commitment Engineering) 替代「约束工程」的 AI 行为治理系统。32 个 MCP 工具覆盖记忆、原则、上下文、审计、反思、系统六大域。
+**Plastic Promise** 是以「约定工程」(Commitment Engineering) 替代「约束工程」的 AI 行为治理系统。35 个 MCP 工具覆盖记忆、原则、上下文、审计、反思、系统、经验包七大域。
 
 > 📋 完整架构、路线图和当前状态见 **[GOAL.md](GOAL.md)**。
 
@@ -25,43 +25,36 @@
 | 11 | 原则遗传 | 核心约定跨 Agent 代际传递 |
 | 12 | 代码即文档 | 代码本身是最权威的文档 |
 
-每条原则激活时返回：名称、内容、违反后果、遵循建议——作为决策参考，非门禁。
+每条原则激活时返回：名称、内容、违反后果、遵循建议——决策参考，非门禁。
 
 ---
 
 ## 架构
 
 ```
-┌─ MCP Server (28 tools) ────────────────────────────┐
-│  stdio (Claude Code)  +  SSE :9020 (Pi / N.E.K.O) │
-│                                                     │
-│  记忆域 (10): recall store update forget stats      │
-│              list gc fuzzy_status fuzzy_process      │
-│              memory_correct                          │
-│  原则域 (4) : activate inherit diffuse evaluate      │
-│  上下文 (3): supply inject graph                     │
-│  审计域 (5) : run pre_check report trust status      │
-│  反思域 (3) : scarf_reflect inertia_check feedback   │
-│  系统域 (3) : stats backup migrate                   │
-├─────────────────────────────────────────────────────┤
-│  core/                                               │
-│  ├── constants.py      12 原则 + 7 维审计 + 配置      │
-│  ├── context_engine.py 上下文引擎 (6 phase supply)     │
-│  ├── principles.py     原则管理 (激活/继承/扩散/评价)  │
-│  ├── embedder.py       Ollama + OpenAI + Fallback     │
-│  ├── reranker.py       Cross-Encoder 重排序           │
-│  ├── noise_filter.py   噪声过滤                        │
-│  └── step_auditor.py   4 阶段审计 + 信任分联动         │
-│                                                      │
-│  memory/                defense/     reflection/       │
-│  ├── soul_memory.py     soul_audit   soul_scarf        │
-│  └── fuzzy_buffer.py    soul_enforcer soul_curiosity   │
-│                         soul_proprioception            │
-│  growth/                loop/         cron/             │
-│  ├── soul_hormone       soul_loop     health_scan       │
-│  ├── soul_classifier                  audit_daily       │
-│  └── skill_extractor                  closure_guardian  │
-└─────────────────────────────────────────────────────┘
+MCP Server (35 tools)
+├── 记忆域 (7): recall store update forget stats list gc
+├── 流水线 (2):  pipeline_status pipeline_process
+├── 纠正 (1):    memory_correct
+├── 原则域 (4):  activate inherit diffuse evaluate
+├── 上下文 (4):  supply inject graph ready
+├── 审计域 (5):  run pre_check report trust status
+├── 反思域 (3):  scarf_reflect inertia_check feedback
+├── 系统域 (6):  stats backup migrate issue_create/transition/list
+└── 经验包 (3):  pack_export pack_import pack_recall
+
+core/                       memory/               defense/
+├── constants.py             ├── soul_memory.py    ├── soul_audit.py
+├── context_engine.py        └── pipeline.py       └── soul_enforcer.py
+├── principles.py
+├── embedder.py              reflection/           growth/
+├── reranker.py              ├── soul_scarf.py     ├── soul_hormone.py
+├── noise_filter.py          ├── soul_curiosity.py ├── soul_classifier.py
+└── step_auditor.py          └── soul_proprio...   └── skill_extractor.py
+                             loop/                 cron/
+pack.py  issue.py            └── soul_loop.py      ├── health_scan.py
+behavior.py                                          ├── audit_daily.py
+                                                     └── closure_guardian.py
 ```
 
 ---
@@ -69,49 +62,36 @@
 ## 快速开始
 
 ```bash
-# 1. 安装依赖
 pip install mcp uvicorn starlette requests
 
-# 2. Claude Code 模式 (stdio，自动)
-# .mcp.json 已配置，Claude Code 自动启动
+# Claude Code (stdio，自动)
+# .mcp.json 已配置
 
-# 3. 多 Agent SSE 模式 (Pi / N.E.K.O 连接)
+# 多 Agent SSE (Pi / N.E.K.O)
 set AGENT_OWNER=pi
 python -m plastic_promise.mcp.server --sse 9020
-# Pi 连接: http://127.0.0.1:9020/sse
-
-# 4. 冷启动 (注入种子记忆)
-python scripts/bootstrap.py
 ```
 
 ---
 
 ## 核心特性
 
+### 记忆流水线 — 必经之路
+```
+所有记忆: raw → tagged(关键词) → classified(大类L1/L3) → embedded(细分向量) → 主池
+Ollama 在线: 实时嵌入。离线: 零向量标注，待恢复后追补。
+```
+
 ### 分层检索 — 细→类→粗
 ```
-context_supply / memory_recall:
-  细 (graph ×1.0) → 类 (L1 boost ×1.5, tier priority) → 粗 (vector ×0.6)
-  三路结果融合，graph 权重最高
+语义向量(细) → 图谱遍历(细) → L1优先级(类) → 文本匹配(粗)
+三路融合，Ollama mxbai-embed-large 提供语义维度
 ```
 
-### 模糊缓存区 — 先存后补
+### 经验包 — 随插随用
 ```
-Ollama 离线时:
-  memory_store → 打临时标签 → 放入 fuzzy buffer (raw 区)
-  空闲时: raw → tagged → classified(大类) → embedded(细分) → 迁移主池
-```
-
-### 多 Agent 共享域 + 独立域
-```
-共享域 (所有 Agent 可见):  12 原则 + 实体图谱 + 审计引擎
-独立域 (owner 隔离):       记忆检索自动过滤 owner=当前 agent + shared
-```
-
-### 实体自动链接
-```
-memory_store → 自动提取内容中的原则名/实体名 → 写入 entity_ids + 建图边
-memory_recall → 沿实体关系遍历 → 返回关联记忆 (source: "entity-link")
+pack_export → JSON 文件(可 git 分享) → pack_import → 主池
+pack_recall(strict=true) → 只从记忆中提取，0匹配返回空（不瞎编）
 ```
 
 ---
@@ -120,11 +100,10 @@ memory_recall → 沿实体关系遍历 → 返回关联记忆 (source: "entity-
 
 | 层 | 技术 |
 |----|------|
-| 嵌入 | Ollama mxbai-embed-large / OpenAI text-embedding-3-small / FallbackEmbedder |
-| 引擎 | Python 3.10+ 纯 Python (ContextEngine) |
-| 存储 | 内存 dict (生产建议 SQLite / LanceDB) |
-| 协议 | MCP (stdio + SSE, 28 tools) |
-| 多 Agent | SSE transport + owner 字段隔离 |
+| 嵌入 | Ollama mxbai-embed-large (1024d) / OpenAI text-embedding-3-small |
+| 引擎 | Python 3.10+ |
+| 存储 | SQLite 写穿透（默认开启，重启不丢） |
+| 协议 | MCP (stdio + SSE) |
 
 ---
 

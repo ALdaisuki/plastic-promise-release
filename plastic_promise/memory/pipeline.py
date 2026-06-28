@@ -1,8 +1,7 @@
-"""Fuzzy Buffer — deferred memory embedding pipeline.
+"""MemoryPipeline — 所有记忆的必经处理流水线。
 
-When the embedding service is unavailable, memories are stored urgently
-with temporary tags in a buffer. The buffer is processed in the background
-through a 4-stage pipeline: raw → tagged → embedded → classified → migrate.
+raw → tagged(关键词) → classified(大类L1/L3) → embedded(细分向量) → migrate(主池)
+同步处理，从不积压。不是缓存区——是标准流程。
 """
 
 import uuid
@@ -11,14 +10,14 @@ import re
 from typing import Any, Dict, List, Optional
 
 
-class FuzzyBuffer:
-    """Deferred memory processing buffer with 4-stage pipeline.
+class MemoryPipeline:
+    """记忆处理流水线 — 所有记忆的必经之路。
 
     Stages (先大类再细分):
-        raw        — just arrived, basic tags only
-        tagged     — keywords extracted, noise filtered
-        classified — tier (L1/L3) determined (大类)
-        embedded   — vectors generated (细分), ready to migrate
+        raw        — 刚存入，临时标签
+        tagged     — 关键词提取，噪音过滤
+        classified — L1/L3 大类判定
+        embedded   — 向量嵌入（细分），准备入主池
     """
 
     def __init__(self, rec_mem=None, embedder=None, tier_manager=None) -> None:

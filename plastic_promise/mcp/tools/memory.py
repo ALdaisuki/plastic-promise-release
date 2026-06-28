@@ -363,7 +363,7 @@ def _extract_entity_ids(content: str, engine: Any) -> list[str]:
 def _get_fuzzy_buffer(engine: Any):
     """Get or create a FuzzyBuffer attached to the engine."""
     if not hasattr(engine, '_fuzzy_buffer') or engine._fuzzy_buffer is None:
-        from plastic_promise.memory.fuzzy_buffer import FuzzyBuffer
+        from plastic_promise.memory.pipeline import MemoryPipeline
         from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
         from plastic_promise.core.embedder import get_embedder
 
@@ -374,7 +374,7 @@ def _get_fuzzy_buffer(engine: Any):
             from plastic_promise.core.embedder import FallbackEmbedder
             embedder = FallbackEmbedder()
         tier_mgr = MemoryTierManager(rec_mem)
-        engine._fuzzy_buffer = FuzzyBuffer(rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr)
+        engine._fuzzy_buffer = MemoryPipeline(rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr)
         engine._rec_mem = rec_mem
     return engine._fuzzy_buffer
 

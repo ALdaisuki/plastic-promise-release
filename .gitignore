@@ -27,9 +27,20 @@ desktop.ini
 # Project
 .env
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 data/
 logs/
 
 # Claude
 .claude/
+
+# Test artifacts
+experience_packs/test_*.json
+
+# Audit logs (runtime generated)
+step_audit_log.jsonl
+
+# SuperPowers scratch (runtime generated)
+.superpowers/

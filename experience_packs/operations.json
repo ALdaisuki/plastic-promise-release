@@ -1,0 +1,117 @@
+{
+  "pack": {
+    "name": "operations",
+    "version": "1.0.0",
+    "author": "claude",
+    "description": "系统运营化经验——SQLite持久化、记忆存储、审计闭环",
+    "license": "MIT",
+    "quality_score": 0.5,
+    "provenance": [
+      {
+        "action": "exported",
+        "agent": "claude",
+        "timestamp": "2026-06-29T03:45:13.534818"
+      }
+    ],
+    "memory_count": 8,
+    "created": "2026-06-29T03:45:13.534821"
+  },
+  "memories": [
+    {
+      "id": "exp_e2292a46",
+      "content": "会话启动：Plastic Promise 记忆系统正式运营化——SQLite默认开启，记忆跨重启持久化。本次会话目标：验证记忆持久化、启用会话记忆追踪、完成可溯源闭环",
+      "type": "procedure",
+      "tags": [],
+      "source_memory_id": "94270866-da55-482c-8246-f52a71fb4d36",
+      "distilled_by": "claude",
+      "distilled_at": "2026-06-29T03:45:13.534833",
+      "entity_ids": [],
+      "created_at": "2026-06-29T03:29:32.831874",
+      "worth_score": 0.5
+    },
+    {
+      "id": "exp_9a746dfb",
+      "content": "教训：系统功能实现只是第一步，运营化才是关键。SQLite默认关闭导致所有记忆在MCP重连时丢失——违反了原则#5 检验存在不等于有效。修复：SQLite默认开启 + CLAUDE.md强制会话启动检查单",
+      "type": "lesson",
+      "tags": [],
+      "source_memory_id": "a25e4a90-9fdb-4ff4-96d0-4168eedf0051",
+      "distilled_by": "claude",
+      "distilled_at": "2026-06-29T03:45:13.534839",
+      "entity_ids": [],
+      "created_at": "2026-06-29T03:30:29.365715",
+      "worth_score": 0.5
+    },
+    {
+      "id": "exp_67bba165",
+      "content": "SQLite持久化配置：设置AGENT_USE_SQLITE=1，默认开启",
+      "type": "lesson",
+      "tags": [],
+      "source_memory_id": "m1",
+      "distilled_by": "claude",
+      "distilled_at": "2026-06-29T03:45:13.534843",
+      "entity_ids": [],
+      "created_at": "2026-06-29T03:39:48.447477",
+      "worth_score": 0.5
+    },
+    {
+      "id": "exp_94be7b94",
+      "content": "MCP重连后记忆归零——需要SQLite持久化",
+      "type": "procedure",
+      "tags": [],
+      "source_memory_id": "m2",
+      "distilled_by": "claude",
+      "distilled_at": "2026-06-29T03:45:13.534845",
+      "entity_ids": [],
+      "created_at": "2026-06-29T03:39:48.448320",
+      "worth_score": 0.5
+    },
+    {
+      "id": "exp_18b37a85",
+      "content": "会话启动：Plastic Promise 记忆系统正式运营化——SQLite默认开启，记忆跨重启持久化。本次会话目标：验证记忆持久化、启用会话记忆追踪、完成可溯源闭环",
+      "type": "procedure",
+      "tags": [],
+      "source_memory_id": "exp_50f18d19",
+      "distilled_by": "claude",
+      "distilled_at": "2026-06-29T03:45:13.534848",
+      "entity_ids": [],
+      "created_at": "2026-06-29T03:39:48.450905",
+      "worth_score": 0.5
+    },
+    {
+      "id": "exp_30d10a94",
+      "content": "教训：系统功能实现只是第一步，运营化才是关键。SQLite默认关闭导致所有记忆在MCP重连时丢失——违反了原则#5 检验存在不等于有效。修复：SQLite默认开启 + CLAUDE.md强制会话启动检查单",
+      "type": "lesson",
+      "tags": [],
+      "source_memory_id": "exp_be7647b6",
+      "distilled_by": "claude",
+      "distilled_at": "2026-06-29T03:45:13.534853",
+      "entity_ids": [],
+      "created_at": "2026-06-29T03:39:48.451237",
+      "worth_score": 0.5
+    },
+    {
+      "id": "exp_1df1ab23",
+      "content": "SQLite持久化配置：设置AGENT_USE_SQLITE=1，默认开启",
+      "type": "lesson",
+      "tags": [],
+      "source_memory_id": "exp_22ff10df",
+      "distilled_by": "claude",
+      "distilled_at": "2026-06-29T03:45:13.534855",
+      "entity_ids": [],
+      "created_at": "2026-06-29T03:39:48.451478",
+      "worth_score": 0.5
+    },
+    {
+      "id": "exp_ce9b7e92",
+      "content": "MCP重连后记忆归零——需要SQLite持久化",
+      "type": "procedure",
+      "tags": [],
+      "source_memory_id": "exp_7e9c9786",
+      "distilled_by": "claude",
+      "distilled_at": "2026-06-29T03:45:13.534857",
+      "entity_ids": [],
+      "created_at": "2026-06-29T03:39:48.451682",
+      "worth_score": 0.5
+    }
+  ]
+}
