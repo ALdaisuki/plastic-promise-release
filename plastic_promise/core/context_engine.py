@@ -776,6 +776,10 @@ class ContextEngine:
                 elif tier == "L3":
                     score = score * 0.8 * trust_boost  # long-term slightly de-prioritized
                 results.append((mid, min(score, 1.0), content[:300], mem["source"]))
+                # Auto access tracking — 越用越聪明
+                mem["access_count"] = mem.get("access_count", 0) + 1
+                if mem.get("access_count", 0) >= 5:
+                    mem["worth_success"] = mem.get("worth_success", 0) + 1
         return results
 
     def _vector_retrieval(self, task_vector: list[float]) -> List[tuple]:

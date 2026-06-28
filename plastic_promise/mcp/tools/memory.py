@@ -480,6 +480,15 @@ async def handle_memory_correct(engine: Any, args: dict) -> list[TextContent]:
             engine.store_memory(record)
             actions.append("marked_corrected")
 
+        # Trigger EvolveR after correction — 自演化闭环
+        try:
+            from plastic_promise.memory.soul_memory import RecMem, EvolveR
+            rm = RecMem(engine)
+            evolver = EvolveR(rm)
+            evolver.evolve_cycle()
+        except Exception:
+            pass
+
         return [TextContent(type="text", text=json.dumps({
             "corrected": True,
             "memory_id": memory_id,
