@@ -183,6 +183,20 @@ async def list_tools() -> list[Tool]:
                 "properties": {},
             },
         ),
+        Tool(
+            name="memory_correct",
+            description="人类纠正记忆：编辑内容、标记为错误/已废弃/已纠正。服务于原则 2（可查可透明）和原则 3（审计闭环）。",
+            inputSchema={
+                "type": "object",
+                "required": ["memory_id"],
+                "properties": {
+                    "memory_id": {"type": "string", "description": "目标记忆 ID"},
+                    "content": {"type": "string", "description": "纠正后的新内容 (可选)"},
+                    "mark_as": {"type": "string", "description": "质量标记: corrected / deprecated / wrong"},
+                    "reason": {"type": "string", "description": "纠正原因说明"},
+                },
+            },
+        ),
     ])
 
     # === 原则域 ===
@@ -461,6 +475,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "fuzzy_process":
             from plastic_promise.mcp.tools.memory import handle_fuzzy_process
             return await handle_fuzzy_process(engine, arguments)
+        elif name == "memory_correct":
+            from plastic_promise.mcp.tools.memory import handle_memory_correct
+            return await handle_memory_correct(engine, arguments)
 
         # Principle domain
         elif name == "principle_activate":

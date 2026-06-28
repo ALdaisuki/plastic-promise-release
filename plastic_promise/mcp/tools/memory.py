@@ -400,3 +400,59 @@ async def handle_fuzzy_process(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "fuzzy_process"}, ensure_ascii=False))]
+
+
+# ---- memory_correct ----
+async def handle_memory_correct(engine: Any, args: dict) -> list[TextContent]:
+    """Human-in-the-loop memory correction — edit, deprecate, or mark memory quality.
+
+    Serves principles #2 (transparency) and #3 (audit closure) by giving
+    users explicit control over AI memories.
+    """
+    try:
+        memory_id = args["memory_id"]
+        new_content = args.get("content")
+        mark_as = args.get("mark_as")  # "corrected" | "deprecated" | "wrong"
+        reason = args.get("reason", "")
+
+        record = engine.get_memory(memory_id)
+        if record is None:
+            return [TextContent(type="text", text=json.dumps(
+                {"error": f"Memory {memory_id} not found"}, ensure_ascii=False))]
+
+        actions = []
+
+        # Content update
+        if new_content is not None and new_content != record.content:
+            engine.update_memory(memory_id, content=new_content)
+            # Refresh record after update, then reset worth counters
+            record = engine.get_memory(memory_id)
+            if record is not None:
+                record.worth_success = 0
+                record.worth_failure = 0
+                engine.store_memory(record)
+            actions.append("content_updated")
+
+        # Quality marking
+        if mark_as == "wrong":
+            record.record_rejected()
+            engine.store_memory(record)
+            actions.append("marked_wrong")
+        elif mark_as == "deprecated":
+            engine.delete_memory(memory_id)
+            actions.append("deprecated")
+        elif mark_as == "corrected":
+            record.record_adopted()
+            engine.store_memory(record)
+            actions.append("marked_corrected")
+
+        return [TextContent(type="text", text=json.dumps({
+            "corrected": True,
+            "memory_id": memory_id,
+            "actions": actions,
+            "reason": reason,
+            "worth_score": record.worth_score() if hasattr(record, 'worth_score') else None,
+        }, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": str(e), "tool": "memory_correct"}, ensure_ascii=False))]
