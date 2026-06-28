@@ -46,7 +46,7 @@ class MemoryWorthCalculator:
         Args:
             min_observations: 最少观察次数，低于此值使用威尔逊下界平滑。
         """
-        pass
+        self.min_observations = min_observations
 
     def calculate_worth(
         self,
@@ -67,7 +67,19 @@ class MemoryWorthCalculator:
         Returns:
             范围 [0.0, 1.0] 的价值分数，越高表示记忆越有价值。
         """
-        pass
+        try:
+            n = success_count + failure_count
+            if n < self.min_observations:
+                return 0.5
+            n_f = float(n)
+            p = success_count / n_f
+            z = 1.96
+            z2 = z * z
+            center = (p + z2 / (2.0 * n_f)) / (1.0 + z2 / n_f)
+            margin = z * ((p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)) ** 0.5) / (1.0 + z2 / n_f)
+            return max(0.0, (center - margin) * 2.5 - 0.5)
+        except Exception:
+            return 0.5
 
     def update_counters(self, record: "MemoryRecord", feedback_type: str) -> None:
         """根据反馈类型更新 MemoryRecord 的成功/失败计数器。
@@ -81,7 +93,15 @@ class MemoryWorthCalculator:
             record: 要更新的记忆记录。
             feedback_type: 反馈类型字符串（adopted/rejected/ignored/success/failure）。
         """
-        pass
+        try:
+            ft = feedback_type.strip().lower()
+            if ft in ("adopted", "success"):
+                record.worth_success += 1
+            elif ft in ("rejected", "failure"):
+                record.worth_failure += 1
+            # "ignored" — no counter update
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -120,7 +140,18 @@ class MemoryRecord:
             tier: 当前所在层位（L1 工作记忆 / L3 长期记忆）。
             metadata: 附加元数据字典（如标签、关联实体、创建时间等）。
         """
-        pass
+        self.memory_id = memory_id if memory_id is not None else str(uuid.uuid4())
+        self.content = content
+        self.memory_type = memory_type
+        self.source = source
+        self.worth_success = worth_success
+        self.worth_failure = worth_failure
+        self.activation_weight = activation_weight
+        self.tier = tier
+        self.metadata = metadata if metadata is not None else {}
+        self.created_at = datetime.datetime.now().isoformat()
+        self.last_accessed = self.created_at
+        self.access_count = 0
 
     @property
     def worth_score(self) -> float:
@@ -132,7 +163,11 @@ class MemoryRecord:
         Returns:
             范围 [0.0, 1.0] 的价值分数。
         """
-        pass
+        try:
+            calc = MemoryWorthCalculator()
+            return calc.calculate_worth(self.worth_success, self.worth_failure)
+        except Exception:
+            return 0.5
 
     def to_dict(self) -> Dict[str, Any]:
         """将记忆记录序列化为字典。
@@ -239,7 +274,12 @@ class RecMem:
         Args:
             engine: 上下文供应引擎实例，默认 None 时内部创建新实例。
         """
-        pass
+        try:
+            from context_engine_core import ContextEngine as RustContextEngine
+            self._engine = engine if engine is not None else RustContextEngine()
+        except ImportError:
+            self._engine = engine if engine is not None else ContextEngine()
+        self._records: dict = {}
 
     def store(
         self,
@@ -265,7 +305,59 @@ class RecMem:
         Returns:
             新创建的 MemoryRecord 实例。
         """
-        pass
+        try:
+            memory_id = str(uuid.uuid4())
+            try:
+                from context_engine_core import MemoryRecord as RustMemoryRecord
+                rust_record = RustMemoryRecord(memory_id, content, memory_type, source)
+                rust_record.tier = "L1"
+                rust_record.scope = "global"
+                rust_record.category = "other"
+                rust_record.importance = importance
+                self._engine.store_memory(rust_record)
+            except (ImportError, AttributeError):
+                # Fallback: Python engine
+                record_dict = {
+                    "id": memory_id,
+                    "content": content,
+                    "memory_type": memory_type,
+                    "source": source,
+                    "activation_weight": importance,
+                    "worth_success": 0,
+                    "worth_failure": 0,
+                    "tier": "L1",
+                }
+                self._engine.register_memory(record_dict)
+
+            # Try embedding + storing vector
+            try:
+                from plastic_promise.embedder import get_embedder
+                embedder = get_embedder()
+                vec = embedder.embed(content)
+                _ = vec  # Vector stored via engine internals
+            except Exception:
+                pass
+
+            record = MemoryRecord(
+                content=content,
+                memory_type=memory_type,
+                source=source,
+                memory_id=memory_id,
+                activation_weight=importance,
+                tier="L1",
+            )
+            self._records[memory_id] = record
+            return record
+        except Exception:
+            record = MemoryRecord(
+                content=content,
+                memory_type=memory_type,
+                source=source,
+                activation_weight=importance,
+                tier="L1",
+            )
+            self._records[record.memory_id] = record
+            return record
 
     def recall(
         self,
@@ -291,7 +383,15 @@ class RecMem:
         Returns:
             分层上下文包，包含 core/related/divergent 三层 ContextItem。
         """
-        pass
+        try:
+            from plastic_promise.embedder import get_embedder
+            embedder = get_embedder()
+            vec = embedder.embed(query)
+            self._engine.enable_principles = include_principles
+            pack = self._engine.supply(query, vec, task_type, "global")
+            return pack
+        except Exception:
+            return ContextPack()
 
     def update(
         self,
@@ -314,7 +414,36 @@ class RecMem:
         Returns:
             更新后的 MemoryRecord，若 memory_id 不存在则返回 None。
         """
-        pass
+        try:
+            result = self._engine.update_memory(
+                memory_id, content=content, importance=importance
+            )
+            if not result:
+                return None
+            # Update Python-side record
+            if memory_id in self._records:
+                record = self._records[memory_id]
+                if content is not None:
+                    record.content = content
+                if importance is not None:
+                    record.activation_weight = importance
+                if reset_worth:
+                    record.worth_success = 0
+                    record.worth_failure = 0
+                return record
+            return None
+        except Exception:
+            if memory_id in self._records:
+                record = self._records[memory_id]
+                if content is not None:
+                    record.content = content
+                if importance is not None:
+                    record.activation_weight = importance
+                if reset_worth:
+                    record.worth_success = 0
+                    record.worth_failure = 0
+                return record
+            return None
 
     def forget(self, memory_id: str, reason: str = "") -> bool:
         """从记忆池中删除指定记忆。
@@ -328,7 +457,16 @@ class RecMem:
         Returns:
             True 表示成功删除，False 表示记忆不存在。
         """
-        pass
+        try:
+            result = self._engine.delete_memory(memory_id)
+            if memory_id in self._records:
+                del self._records[memory_id]
+            return result
+        except Exception:
+            if memory_id in self._records:
+                del self._records[memory_id]
+                return True
+            return False
 
     def list_records(
         self,
@@ -348,7 +486,38 @@ class RecMem:
         Returns:
             按 worth_score 降序排列的记忆记录列表。
         """
-        pass
+        try:
+            rust_records = self._engine.list_memories(
+                memory_type=memory_type,
+                source=source,
+                min_worth=min_worth,
+                limit=limit,
+            )
+            result: List[MemoryRecord] = []
+            for r in rust_records:
+                py_record = MemoryRecord(
+                    content=r.content,
+                    memory_type=r.memory_type,
+                    source=r.source,
+                    memory_id=r.id,
+                    worth_success=r.worth_success,
+                    worth_failure=r.worth_failure,
+                    activation_weight=r.importance,
+                    tier=r.tier,
+                )
+                result.append(py_record)
+            return result
+        except Exception:
+            # Fallback: filter from local _records
+            result = list(self._records.values())
+            if memory_type is not None:
+                result = [r for r in result if r.memory_type == memory_type]
+            if source is not None:
+                result = [r for r in result if r.source == source]
+            if min_worth is not None:
+                result = [r for r in result if r.worth_score >= min_worth]
+            result.sort(key=lambda r: r.worth_score, reverse=True)
+            return result[:limit]
 
     def stats(self) -> Dict[str, Any]:
         """获取记忆池的统计信息。

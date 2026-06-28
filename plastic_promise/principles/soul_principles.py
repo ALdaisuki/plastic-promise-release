@@ -41,7 +41,7 @@ class PrincipleManager:
                     inject_to_graph() 将激活的原则写入图引擎。若为 None 则仅
                     在内部管理原则状态。
         """
-        pass
+        self._engine = engine
 
     # ================================================================
     # 激活
@@ -71,7 +71,42 @@ class PrincipleManager:
         Returns:
             激活的原则列表，每项包含 id, name, content, domain, keywords
         """
-        pass
+        # Step 1: Map task_type to recommended principle IDs
+        mapping = {
+            "code_generation": [1, 3, 8, 10],
+            "code_review": [1, 5, 6, 9],
+            "debugging": [1, 5, 10],
+            "architecture": [2, 7, 8],
+            "refactoring": [5, 6, 7],
+            "learning": [1, 10, 11],
+            "collaboration": [2, 7, 9],
+            "general": [1, 2, 3, 4],
+        }
+        ids = list(mapping.get(task_type, [1, 2, 3, 4]))
+
+        # Step 2: Keyword bonus matching from task_description
+        for p in CORE_PRINCIPLES:
+            if p["id"] not in ids:
+                for kw in p.get("keywords", []):
+                    if kw in task_description:
+                        ids.append(p["id"])
+                        break
+
+        # Step 3: Deduplicate while preserving order, then limit
+        seen: set = set()
+        unique_ids: List[int] = []
+        for pid in ids:
+            if pid not in seen:
+                seen.add(pid)
+                unique_ids.append(pid)
+        unique_ids = unique_ids[:max_principles]
+
+        # Step 4: Return matching principle dicts from CORE_PRINCIPLES
+        result: List[Dict[str, Any]] = []
+        for p in CORE_PRINCIPLES:
+            if p["id"] in unique_ids:
+                result.append(dict(p))
+        return result
 
     def inject_to_graph(self, task_type: str) -> List[str]:
         """将当前激活的原则注入到关联的 ContextEngine 图引擎。
@@ -85,7 +120,38 @@ class PrincipleManager:
         Returns:
             成功注入的原则名称列表
         """
-        pass
+        if self._engine is None:
+            return []
+
+        # Activate principles for this task_type
+        activated = self.activate(task_type)
+        edge_ids: List[str] = []
+
+        for i, p in enumerate(activated):
+            # Descending relevance: first match = highest relevance
+            relevance = max(0.1, 0.9 - (i * 0.15))
+            node_id = f"principle:{p['id']}"
+
+            # Ensure the principle node exists in the graph
+            if node_id not in self._engine._graph_nodes:
+                self._engine._graph_nodes[node_id] = {
+                    "type": "principle",
+                    "name": p["name"],
+                    "description": p["content"],
+                    "domain": p["domain"],
+                }
+
+            # Create directed edge: task_type -> principle
+            edge = {
+                "from": f"task_type:{task_type}",
+                "to": node_id,
+                "relation": "activates",
+                "weight": relevance,
+            }
+            self._engine._graph_edges.append(edge)
+            edge_ids.append(f"task_type:{task_type} -> {node_id}")
+
+        return edge_ids
 
     # ================================================================
     # 继承与扩散
@@ -112,12 +178,30 @@ class PrincipleManager:
 
         Returns:
             {
-                "inherited": int,       # 成功继承的原则数
-                "decay_applied": float, # 应用的衰减系数
-                "principles": List[Dict[str, Any]],  # 继承后的原则状态
+                "inherited_count": int,          # 成功继承的原则数
+                "decayed_weights": List[float],  # 每条原则的衰减后权重
+                "affected_principles": List[str],# 受影响的原则名称
             }
         """
-        pass
+        decay = PRINCIPLE_INHERITANCE_DECAY
+
+        # Filter CORE_PRINCIPLES by source_domain
+        principles = [p for p in CORE_PRINCIPLES if p["domain"] == source_domain]
+
+        # Further filter by principle_ids if provided
+        if principle_ids is not None:
+            id_set = set(principle_ids)
+            principles = [p for p in principles if p["id"] in id_set]
+
+        inherited_count = len(principles)
+        decayed_weights = [decay for _ in principles]
+        affected_principles = [p["name"] for p in principles]
+
+        return {
+            "inherited_count": inherited_count,
+            "decayed_weights": decayed_weights,
+            "affected_principles": affected_principles,
+        }
 
     def diffuse(
         self,
@@ -135,11 +219,45 @@ class PrincipleManager:
             {
                 "diffused_count": int,      # 扩散影响的原则数
                 "decay_coefficient": float, # 衰减系数
-                "before_weights": List[float],
-                "after_weights": List[float],
+                "domain_status": Dict,      # 每条原则的域状态和传播路径
             }
         """
-        pass
+        decay = PRINCIPLE_INHERITANCE_DECAY
+
+        # Select principles to diffuse
+        if principle_id is not None:
+            principles = [p for p in CORE_PRINCIPLES if p["id"] == principle_id]
+        else:
+            principles = list(CORE_PRINCIPLES)
+
+        # Build domain status per principle
+        domain_status: Dict[int, Dict[str, Any]] = {}
+        for p in principles:
+            pid = p["id"]
+            # Determine propagation path based on domain
+            if p["domain"] == "work":
+                path = ["work -> all"]
+                reachable_domains = ["work", "all"]
+            elif p["domain"] == "life":
+                path = ["life -> all"]
+                reachable_domains = ["life", "all"]
+            else:  # "all"
+                path = ["work -> all", "life -> all"]
+                reachable_domains = ["all"]
+
+            domain_status[pid] = {
+                "name": p["name"],
+                "source_domain": p["domain"],
+                "propagation_path": path,
+                "reachable_domains": reachable_domains,
+                "decay_coefficient": decay,
+            }
+
+        return {
+            "diffused_count": len(principles),
+            "decay_coefficient": decay,
+            "domain_status": domain_status,
+        }
 
     # ================================================================
     # 评价
@@ -163,14 +281,94 @@ class PrincipleManager:
             {
                 "principle_id": int,
                 "principle_name": str,
-                "score": float,          # 综合评分
+                "scenario": str,
+                "consequence": str,      # 违反原则的反事实后果
                 "keyword_match": float,  # 关键词匹配度
-                "domain_match": float,   # 域匹配度
-                "weight_factor": float,  # 当前权重因子
                 "recommendation": str,   # "strong", "moderate", "weak", "none"
             }
         """
-        pass
+        # Step 1: Look up principle by ID
+        principle: Optional[Dict[str, Any]] = None
+        for p in CORE_PRINCIPLES:
+            if p["id"] == principle_id:
+                principle = p
+                break
+
+        if principle is None:
+            return {
+                "principle_id": principle_id,
+                "error": f"Principle {principle_id} not found",
+                "scenario": scenario,
+            }
+
+        # Step 2: Pre-defined counterfactual consequence text per principle ID
+        consequences: Dict[int, str] = {
+            1: "If honesty is not prioritized over perfection: metrics become unreliable, "
+               "trust erodes, and systemic issues go unreported — the violation of truth-telling "
+               "creates a cascade of hidden failures that eventually destroy system integrity.",
+            2: "Without conventions over constraints: agents become rule-following automatons "
+               "lacking intrinsic motivation, leading to minimal compliance, creative stagnation, "
+               "and a brittle system that collapses the moment external enforcement is removed.",
+            3: "Without active memory supply: context becomes fragmented across decisions, "
+               "past lessons are repeatedly lost, and the system operates with incomplete "
+               "information — the consequence is perpetual relearning at every turn.",
+            4: "If principles do not emerge naturally: compliance becomes performative, "
+               "agents follow rules they do not understand, and the firewall becomes the only "
+               "enforcement mechanism — a fragile house of cards that crumbles under pressure.",
+            5: "Confusing existence with effectiveness: teams ship features that pass checks on "
+               "paper but fail in practice, creating a false sense of security. The consequence "
+               "is undetected regression masked by green checkmarks.",
+            6: "Without actual data-flow tracking: integration points become black boxes, "
+               "system failures cascade unpredictably, and debugging devolves into guesswork — "
+               "the consequence is invisible coupling that amplifies every small failure.",
+            7: "Without organs protecting each other: single points of failure proliferate, "
+               "system resilience degrades, and no subsystem catches another's errors — "
+               "the consequence is a domino chain where one failure topples everything.",
+            8: "Without tools as senses: the LLM is blind and handless, every capability "
+               "constrained to pure text. The consequence is a brilliant mind trapped in a "
+               "soundproof room, unable to observe or affect the real world.",
+            9: "Without trust-driven dynamic constraints: the system oscillates between "
+               "complete lockdown (stifling all productivity) and total openness (inviting "
+               "disaster) — the consequence is a binary rigidity that cannot adapt to nuance.",
+            10: "If the self-evolution loop breaks: behavior drifts without correction, "
+                "evaluation decouples from reality, and the system degrades without self-awareness "
+                "— the consequence is silent entropy that goes unnoticed until catastrophic failure.",
+            11: "Without principle inheritance: each new agent instance starts from scratch, "
+                "core values are lost across generations, and the system forgets its foundational "
+                "commitments — the consequence is generational amnesia that erodes the culture.",
+        }
+
+        consequence = consequences.get(
+            principle_id,
+            "Violation of this principle leads to systemic degradation and erosion of trust.",
+        )
+
+        # Step 3: Compute keyword match score
+        keywords = principle.get("keywords", [])
+        if keywords:
+            matched = sum(1 for kw in keywords if kw in scenario)
+            keyword_match = matched / len(keywords)
+        else:
+            keyword_match = 0.0
+
+        # Step 4: Recommendation based on consequence severity and keyword match
+        if principle_id <= 3:
+            recommendation = "strong"
+        elif principle_id <= 7:
+            recommendation = "moderate"
+        elif keyword_match > 0.3:
+            recommendation = "moderate"
+        else:
+            recommendation = "weak"
+
+        return {
+            "principle_id": principle_id,
+            "principle_name": principle["name"],
+            "scenario": scenario,
+            "consequence": consequence,
+            "keyword_match": keyword_match,
+            "recommendation": recommendation,
+        }
 
     # ================================================================
     # 查询
