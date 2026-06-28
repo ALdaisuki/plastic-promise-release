@@ -375,13 +375,14 @@ class PrincipleManager:
     # ================================================================
 
     def get_all_principles(self) -> List[Dict[str, Any]]:
-        """获取所有 11 条核心原则的完整信息。
+        """获取所有核心原则的完整信息。
 
         Returns:
             所有原则列表，每项包含 id, name, content, domain, keywords
-            以及运行时状态 (weight, activation_count, last_activated 等)
+            以及运行时状态。
         """
-        pass
+        from plastic_promise.core.constants import CORE_PRINCIPLES
+        return [dict(p) for p in CORE_PRINCIPLES]
 
     def get_by_domain(self, domain: str) -> List[Dict[str, Any]]:
         """按域筛选原则。
@@ -395,7 +396,16 @@ class PrincipleManager:
         Raises:
             ValueError: 如果 domain 不在 PRINCIPLE_DOMAINS 中
         """
-        pass
+        from plastic_promise.core.constants import (
+            CORE_PRINCIPLES,
+            PRINCIPLE_DOMAINS,
+        )
+        if domain not in PRINCIPLE_DOMAINS:
+            raise ValueError(
+                f"Unknown domain '{domain}'. "
+                f"Valid: {', '.join(PRINCIPLE_DOMAINS)}"
+            )
+        return [dict(p) for p in CORE_PRINCIPLES if p["domain"] == domain]
 
 
 # ================================================================
