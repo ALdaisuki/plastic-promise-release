@@ -222,6 +222,15 @@ class FuzzyBuffer:
                     if vec and hasattr(self.rec_mem, '_engine'):
                         engine = self.rec_mem._engine
                         engine._memories[stored.memory_id]["_vector"] = vec
+                    # Rebuild entity edges from fuzzy buffer to main pool (原则 #6)
+                    entity_ids = record.get("entity_ids", [])
+                    if entity_ids and hasattr(self.rec_mem, '_engine'):
+                        engine = self.rec_mem._engine
+                        for eid in entity_ids:
+                            edge = {"from": stored.memory_id, "to": eid,
+                                    "relation": "references", "weight": 0.5}
+                            if edge not in engine._graph_edges:
+                                engine._graph_edges.append(edge)
                 del self._buffer[mid]
                 count += 1
             except Exception:
