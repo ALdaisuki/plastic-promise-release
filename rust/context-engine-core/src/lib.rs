@@ -17,6 +17,7 @@ pub mod memory_worth;
 pub mod context_engine;
 pub mod principles;
 pub mod storage;
+pub mod retrieval;
 
 use pyo3::prelude::*;
 
