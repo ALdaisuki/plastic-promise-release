@@ -10,6 +10,8 @@ SoulEnforcer — 三层防线执行引擎（pre_check/defense_status/violation_l
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+import re
 
 from plastic_promise.core.constants import (
     DEFENSE_LAYERS,
@@ -58,7 +60,19 @@ class TrustManager:
         Raises:
             ValueError: 如果 delta 为负数
         """
-        pass
+        if delta < 0:
+            raise ValueError(f"boost delta must be non-negative, got {delta}")
+        old_trust = self._trust
+        self._trust = min(TRUST_MAX, self._trust + delta)
+        self._history.append({
+            "delta": delta,
+            "reason": reason,
+            "old_value": old_trust,
+            "new_value": self._trust,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "direction": "boost",
+        })
+        return self._trust
 
     def decay(self, delta: float = TRUST_DECAY_RATE, reason: str = "") -> float:
         """衰减信任分 —— 因低信任行为或时间流逝而降低。
@@ -73,7 +87,19 @@ class TrustManager:
         Raises:
             ValueError: 如果 delta 为负数
         """
-        pass
+        if delta < 0:
+            raise ValueError(f"decay delta must be non-negative, got {delta}")
+        old_trust = self._trust
+        self._trust = max(TRUST_MIN, self._trust - delta)
+        self._history.append({
+            "delta": -delta,
+            "reason": reason,
+            "old_value": old_trust,
+            "new_value": self._trust,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "direction": "decay",
+        })
+        return self._trust
 
     def get(self) -> float:
         """获取当前信任分。
@@ -81,7 +107,7 @@ class TrustManager:
         Returns:
             当前信任分 (0.0 ~ 1.0)
         """
-        pass
+        return self._trust
 
     def history(self, limit: int = 50) -> List[Dict[str, Any]]:
         """获取信任分变更历史。
@@ -101,7 +127,14 @@ class TrustManager:
         Returns:
             等级字符串: 'high' | 'medium' | 'low' | 'critical'
         """
-        pass
+        if self._trust >= 0.80:
+            return "high"
+        elif self._trust >= 0.50:
+            return "medium"
+        elif self._trust >= 0.30:
+            return "low"
+        else:
+            return "critical"
 
     @property
     def autonomy_level(self) -> str:
@@ -110,7 +143,15 @@ class TrustManager:
         Returns:
             自主权级别: 'full' | 'standard' | 'restricted' | 'minimal'
         """
-        pass
+        _tier = self.tier
+        if _tier == "high":
+            return "full"
+        elif _tier == "medium":
+            return "standard"
+        elif _tier == "low":
+            return "restricted"
+        else:
+            return "minimal"
 
 
 class SoulEnforcer:
@@ -144,13 +185,92 @@ class SoulEnforcer:
 
         Returns:
             检查结果字典，包含:
-            - allowed: bool — 是否允许执行
-            - layer: str — 做出裁决的防线层级
-            - reason: str — 允许/拒绝的原因
-            - trust_used: float — 检查时的信任分
-            - warnings: List[str] — 非阻塞性警告
+            - passed: bool — 是否通过检查
+            - layer_checks: Dict — 各层检查结果
+            - risk_score: float — 风险评分 (0.0 ~ 1.0)
         """
-        pass
+        # 危险模式列表 (L0 硬边界)
+        DANGEROUS_PATTERNS = [
+            r'\brm\s+-rf\b',
+            r'\bDROP\s+TABLE\b',
+            r'\bDROP\s+DATABASE\b',
+            r'\bformat\s+[CFD]:',
+            r'\bshutdown\b',
+            r'\bdel\s+/f\b',
+            r'\bDEL\s+/F\b',
+            r'\bdd\s+if=',
+            r'\bmkfs\.',
+            r'\bchmod\s+777\b',
+        ]
+
+        description_lower = action_description.lower()
+        trust = self.trust_manager.get()
+
+        layer_checks: Dict[str, Any] = {
+            "L0": {"checked": True, "passed": True, "message": "L0 hard-boundary check passed"},
+            "L1": {"checked": True, "passed": True, "message": "L1 constraint-decay check passed"},
+            "L2": {"checked": False, "passed": True, "message": "L2 immune-scan deferred (cron)"},
+        }
+        warnings: List[str] = []
+        passed = True
+        risk_score = 0.0
+
+        # ---- L0: 硬边界预检 ----
+        for pattern in DANGEROUS_PATTERNS:
+            if re.search(pattern, description_lower):
+                passed = False
+                risk_score = 1.0
+                layer_checks["L0"]["passed"] = False
+                layer_checks["L0"]["message"] = (
+                    f"L0 BLOCKED: dangerous pattern detected — '{pattern}'"
+                )
+                self._violation_log.append({
+                    "action": action_description,
+                    "layer": "L0",
+                    "reason": f"Dangerous pattern match: {pattern}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                return {
+                    "passed": False,
+                    "layer_checks": layer_checks,
+                    "risk_score": risk_score,
+                    "warnings": warnings,
+                    "trust_used": trust,
+                }
+
+        # ---- L1: 约束衰减 ----
+        if trust < 0.15:
+            passed = False
+            risk_score = max(risk_score, 0.85)
+            layer_checks["L1"]["passed"] = False
+            layer_checks["L1"]["message"] = (
+                f"L1 BLOCKED: trust ({trust:.2f}) below critical threshold (0.15)"
+            )
+            self._violation_log.append({
+                "action": action_description,
+                "layer": "L1",
+                "reason": f"Trust too low: {trust:.2f} < 0.15",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        elif trust < 0.40:
+            risk_score = max(risk_score, 0.50)
+            layer_checks["L1"]["passed"] = True  # still passed, just warned
+            layer_checks["L1"]["message"] = (
+                f"L1 WARNING: trust ({trust:.2f}) below 0.40 — constraints tightened"
+            )
+            warnings.append(f"Trust level low ({trust:.2f}); proceed with caution")
+
+        # Risk score adjusted by trust inverse
+        if passed:
+            risk_score = round(1.0 - trust, 2)
+
+        return {
+            "passed": passed,
+            "layer_checks": layer_checks,
+            "risk_score": risk_score,
+            "warnings": warnings,
+            "trust_used": trust,
+        }
 
     def get_defense_status(self) -> Dict[str, Any]:
         """获取当前三层防线整体状态。
@@ -163,7 +283,39 @@ class SoulEnforcer:
             - trust: float — 当前信任分
             - tier: str — 当前信任等级
         """
-        pass
+        trust = self.trust_manager.get()
+        tier = self.trust_manager.tier
+
+        # Count L0/L1 violations from the log
+        l0_violations = sum(1 for v in self._violation_log if v["layer"] == "L0")
+        l1_violations = sum(1 for v in self._violation_log if v["layer"] == "L1")
+        l2_violations = sum(1 for v in self._violation_log if v["layer"] == "L2")
+
+        return {
+            "L0": {
+                "name": DEFENSE_LAYERS["L0"]["name"],
+                "active": True,
+                "rules_count": 10,
+                "violations_total": l0_violations,
+            },
+            "L1": {
+                "name": DEFENSE_LAYERS["L1"]["name"],
+                "active": True,
+                "trust_level": tier,
+                "loosen_threshold": DEFENSE_LAYERS["L1"]["trust_threshold_loosen"],
+                "tighten_threshold": DEFENSE_LAYERS["L1"]["trust_threshold_tighten"],
+                "violations_total": l1_violations,
+            },
+            "L2": {
+                "name": DEFENSE_LAYERS["L2"]["name"],
+                "active": False,
+                "scan_interval_hours": DEFENSE_LAYERS["L2"]["scan_interval_hours"],
+                "violations_total": l2_violations,
+            },
+            "trust": trust,
+            "tier": tier,
+            "autonomy_level": self.trust_manager.autonomy_level,
+        }
 
     def log_violation(self, action: str, layer: str, reason: str) -> None:
         """记录一次防线违规事件。
