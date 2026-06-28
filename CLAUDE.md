@@ -3,13 +3,22 @@
 > 📋 完整架构、当前状态、路线图见 **[GOAL.md](GOAL.md)** —— 那是唯一真相源。
 > 核心范式：**约定工程** — 内化约定替代外部约束。
 
-## 会话启动
+## 会话启动（每次必须执行）
 
-每次会话开始，先获取上下文：
+每次会话开始，依次执行：
 
 1. `principle_activate(task_type="general")` — 查阅 12 条核心约定
 2. `memory_recall(query="<当前任务关键词>")` — 查阅相关记忆
 3. `fuzzy_status` — 检查模糊缓存区是否有积压（有则 `fuzzy_process`）
+4. `memory_store(content="会话启动：<本会话目标任务>", memory_type="experience")` — **记录会话启动记忆**（可溯源）
+5. 信任分检查：`defense_trust(action="get")` — 了解当前自主权级别
+
+**每次会话结束前**，记录关键决策和教训：
+- `memory_store(content="<关键发现/教训>", memory_type="reflection")`
+- `post_task("<本会话摘要>", "<最后一个git_commit>")` — 触发六联闭环
+- `audit_run` — 七维审计检查
+
+**每日**：`memory_gc(dry_run=false)` — 清理衰退记忆
 
 ## 可用 MCP 工具（32 个）
 

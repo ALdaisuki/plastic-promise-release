@@ -191,9 +191,9 @@ class ContextEngine:
         self._current_time: str = ""
         self._memories: Dict[str, Dict[str, Any]] = {}
 
-        # SQLite write-through — persists every mutation to disk
+        # SQLite write-through — persists every mutation to disk (default ON)
         if use_sqlite is None:
-            use_sqlite = os.environ.get("AGENT_USE_SQLITE", "0") == "1"
+            use_sqlite = os.environ.get("AGENT_USE_SQLITE", "1") != "0"
         self._sqlite = _SQLiteStorage() if use_sqlite else None
         if self._sqlite:
             # Load existing from disk
