@@ -364,8 +364,10 @@ class ContextEngine:
             ContextPack: 三层上下文包 (core / related / divergent)
         """
 
-        # Phase 0: 原则注入
+        # Phase 0: 原则注入 + 图谱自动注入
         activated = self._activate_principles(task_type, task_description)
+        if self.enable_principles:
+            self._inject_activated_to_graph(activated, task_type)
 
         # Phase 1: 双路检索
         text_results = self._text_retrieval(task_description)
@@ -593,6 +595,52 @@ class ContextEngine:
         }
 
     # ========== 内部方法 ==========
+
+    def _inject_activated_to_graph(
+        self, activated_names: List[str], task_type: str
+    ) -> int:
+        """Write activated principles into the entity graph.
+
+        Called automatically during supply() Phase 0. Creates/updates
+        principle nodes and adds task_type -> principle edges so
+        _graph_traversal has data to work with.
+
+        Args:
+            activated_names: List of principle names from _activate_principles().
+            task_type: Task type label for the source edge.
+
+        Returns:
+            Number of edges created.
+        """
+        from plastic_promise.core.constants import CORE_PRINCIPLES
+
+        edges_created = 0
+        for p in CORE_PRINCIPLES:
+            if p["name"] not in activated_names:
+                continue
+
+            node_id = f"principle:{p['id']}"
+            # Ensure principle node exists
+            if node_id not in self._graph_nodes:
+                self._graph_nodes[node_id] = {
+                    "type": "principle",
+                    "name": p["name"],
+                    "description": p["content"],
+                    "domain": p["domain"],
+                }
+
+            # Create edge: task_type -> principle
+            edge = {
+                "from": f"task_type:{task_type}",
+                "to": node_id,
+                "relation": "activates",
+                "weight": 0.85,
+            }
+            if edge not in self._graph_edges:
+                self._graph_edges.append(edge)
+                edges_created += 1
+
+        return edges_created
 
     def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
         from plastic_promise.core.constants import CORE_PRINCIPLES
