@@ -454,6 +454,37 @@ class PrincipleTracker:
         events = self._records.get(principle_id, [])
         return events[-limit:]
 
+    def trends(self, recent_n: int = 10) -> dict:
+        """Return per-principle adherence trends."""
+        stats = self.stats()
+        for pid_str, s in stats.items():
+            pid = int(pid_str)
+            events = self._records.get(pid, [])
+            if len(events) >= 2:
+                recent = events[-recent_n:]
+                recent_total = len(recent)
+                recent_adhered = sum(1 for e in recent if e["adhered"])
+                recent_rate = round(recent_adhered / recent_total, 3) if recent_total > 0 else 0
+                total_rate = s["rate"] or 0
+                if recent_rate > total_rate + 0.1:
+                    trend = "↑上升"
+                elif recent_rate < total_rate - 0.1:
+                    trend = "↓下降"
+                else:
+                    trend = "→稳定"
+                s["recent_rate"] = recent_rate
+                s["trend"] = trend
+        return stats
+
+    def weakest(self, n: int = 3) -> list:
+        """Return the N principles with lowest adherence rates."""
+        stats = self.stats()
+        ranked = sorted(
+            [(pid, s) for pid, s in stats.items() if s["rate"] is not None],
+            key=lambda x: x[1]["rate"]
+        )
+        return [{"id": pid, "name": s["name"], "rate": s["rate"]} for pid, s in ranked[:n]]
+
 
 # ================================================================
 # 模块级便捷函数 (pass-through stubs)
