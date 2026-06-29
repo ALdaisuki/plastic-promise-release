@@ -85,7 +85,22 @@ extension = base_half_life × reinforcement_factor × ln(1 + effective_access)
 effective_half_life = min(base_half_life + extension, base_half_life × max_multiplier)
 ```
 
-### 4.2 配置
+### 4.2 归一化公式
+
+`effective_half_life` 是绝对天数，而三因素融合需要 `reinforcement ∈ [0,1]`。归一化：
+
+```python
+def compute_reinforcement_score(self, base_half_life: float, effective_half_life: float) -> float:
+    """Normalize access reinforcement score to [0,1]."""
+    max_hl = base_half_life * self.max_multiplier  # e.g. 3.0 × 3 = 9 days max
+    raw = (effective_half_life - base_half_life) / (max_hl - base_half_life)
+    return max(0.0, min(1.0, raw))
+```
+
+- `effective_half_life == base_half_life` → `reinforcement = 0.0`（无强化）
+- `effective_half_life == base_half_life × max_multiplier` → `reinforcement = 1.0`（满强化）
+
+### 4.3 配置
 
 ```python
 REINFORCEMENT_CONFIG = {
@@ -95,7 +110,7 @@ REINFORCEMENT_CONFIG = {
 }
 ```
 
-### 4.3 触发规则
+### 4.4 触发规则
 
 - `memory_recall` 主动查询 → 触发 `boost()` → access_count + 1 + 更新 effective_half_life
 - `ContextEngine.supply()` 内部检索 → 设置 `is_auto_recall=True` → `boost()` 检查并跳过
@@ -170,8 +185,26 @@ ALTER TABLE memories ADD COLUMN effective_half_life REAL NOT NULL DEFAULT 3.0;
 
 | 字段 | 更新频率 | 更新者 |
 |------|---------|--------|
-| `decay_multiplier` | GC 周期批量更新 | `WeibullDecayCalculator.evaluate_all()` |
+| `decay_multiplier` | GC 周期批量 + 每次主动 recall 后即时更新 | `WeibullDecayCalculator.evaluate_all()` / `AccessReinforcement.boost()` |
 | `effective_half_life` | 每次主动 recall 实时更新 | `AccessReinforcement.boost()` |
+
+**时序一致性：** `AccessReinforcement.boost()` 在更新 `effective_half_life` 后，立即对该条记忆重新计算并更新 `decay_multiplier`（使用新的 `effective_half_life` 作为半衰期参数，而非原始的 `base_half_life`）。这确保一次主动 recall 后，两个字段始终同步，不会出现"新半衰期 + 旧衰减系数"的错配。
+
+### 6.4 序列化更新
+
+`MemoryRecord.to_dict()` 和 `from_dict()` 必须包含新字段：
+
+```python
+# to_dict() 新增
+"decay_multiplier": self.decay_multiplier,
+"effective_half_life": self.effective_half_life,
+
+# from_dict() 新增
+decay_multiplier=data.get("decay_multiplier", 1.0),
+effective_half_life=data.get("effective_half_life", 3.0),
+```
+
+同步更新 `_SQLiteStorage._row_to_dict()` 读取新列。
 
 ## 7. MemoryTierManager 升级
 
@@ -217,11 +250,17 @@ def should_demote(record, composite_score, decay_multiplier):
 5. composite_score >= 0.5 && access_count >= 3 → promote_to_l3
 ```
 
-## 9. 优雅降级
+## 9. 优雅降级与存量迁移
 
 - `WeibullDecayCalculator` 或 `AccessReinforcement` 初始化失败 → `composite_score` 回退为 `calculate_worth()` 纯 Wilson 值
 - 存量记忆缺少 `decay_multiplier` 字段 → 默认 1.0（视为全新）
 - 存量记忆缺少 `effective_half_life` 字段 → 使用 `DECAY_CONFIG[tier]["half_life_days"]`
+
+### 9.1 存量迁移一次性衰减计算
+
+存量记忆的 `created_at` 可能已有数天到数月的年龄。如果仅靠默认值（`decay_multiplier=1.0`），第一次 GC 之前这些记忆的衰减不会被反映。
+
+**迁移策略：** `_SQLiteStorage` 在添加新列后，立即调用 `WeibullDecayCalculator.evaluate_all()` 对所有存量记忆计算真实的 `decay_multiplier` 和 `effective_half_life`，并通过 SQL UPDATE 写回。这是一次性操作，在 ContextEngine 初始化时完成，不等待 GC 周期。
 
 ## 10. 新增/修改文件清单
 
@@ -241,7 +280,9 @@ def should_demote(record, composite_score, decay_multiplier):
 - [ ] 三因素复合评分：`composite = wilson×0.6 + freshness×0.25 + reinforcement×0.15`
 - [ ] 主动 recall 触发强化，auto_recall 不触发
 - [ ] SQLite 迁移：`decay_multiplier` 和 `effective_half_life` 列自动添加
-- [ ] 存量记忆兼容：缺少新字段时默认值正确（1.0 / 3.0）
+- [ ] 存量记忆兼容：缺少新字段时默认值正确（1.0 / 3.0），且存量迁移时一次性计算真实衰减
+- [ ] 序列化完整性：`to_dict()` 和 `from_dict()` 包含 `decay_multiplier`、`effective_half_life`
+- [ ] 时序一致性：主动 recall 后 `effective_half_life` 和 `decay_multiplier` 同步更新，不出现错配
 - [ ] 优雅降级：Weibull 组件故障时回退到纯 Wilson 评分
 - [ ] GC 周期：EvolveR 使用 composite_score 驱赶衰减记忆
 - [ ] 检索排序：memory_recall 使用 composite_score 排序
