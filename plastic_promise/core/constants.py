@@ -406,6 +406,69 @@ PRINCIPLE_INHERITANCE_DIRECTIONS = [
 PRINCIPLE_INHERITANCE_DECAY = 0.70  # 扩散到新域后权重 × 0.70
 
 # ============================================================
+# P0: 原则↔记忆图谱边 (深层语法)
+# ============================================================
+
+# 创建原则↔记忆边的最低关键词命中数
+PRINCIPLE_EDGE_MIN_KEYWORD_HITS = 1
+
+# 原则↔记忆边的初始权重: base + scale * keyword_ratio
+PRINCIPLE_EDGE_BASE_WEIGHT = 0.30
+PRINCIPLE_EDGE_SCALE_WEIGHT = 0.30
+
+# P2: 反馈边权重自演化 EMA 系数
+FEEDBACK_EDGE_EMA_ALPHA = 0.3       # new_weight = (1-α)*old + α*worth_score
+FEEDBACK_EDGE_WEIGHT_MIN = 0.1
+FEEDBACK_EDGE_WEIGHT_MAX = 1.0
+
+# P2: 反馈对检索分数的乘数影响
+FEEDBACK_SCORE_MULTIPLIER_MIN = 0.7  # worth_score=0 时最低乘数
+FEEDBACK_SCORE_MULTIPLIER_RANGE = 0.3 # worth_score=1 时乘数 = MIN+RANGE = 1.0
+
+# ============================================================
+# P1: 任务意图识别
+# ============================================================
+
+# 意图向量匹配的最低余弦相似度
+PRINCIPLE_INTENT_THRESHOLD = 0.65
+
+# 差异化任务类型→原则映射
+TASK_TYPE_PRINCIPLE_MAP = {
+    "code_generation": [1, 8, 12],     # 剃刀 + 工具即感官 + 代码即文档
+    "refactoring": [1, 5, 6, 7],       # 剃刀 + 检验有效 + 数据流 + 器官互保
+    "debugging": [1, 3, 5, 10],        # 剃刀 + 审计闭环 + 检验有效 + 自演化
+    "architecture": [2, 4, 6, 7],      # 可追溯 + 上下文驱动 + 数据流 + 互保
+    "code_review": [2, 3, 5, 9, 12],   # 可追溯 + 审计 + 检验有效 + 信任 + 代码即文档
+    "learning": [1, 8, 10, 11],        # 剃刀 + 工具即感官 + 自演化 + 遗传
+    "collaboration": [2, 7, 9, 11],    # 可追溯 + 互保 + 信任 + 遗传
+    "general": [1, 2, 3, 4],           # 核心四条
+}
+
+# ============================================================
+# P3a: 发散联想灵感质量
+# ============================================================
+
+DIVERGENT_QUALITY_THRESHOLD = 0.15     # novelty * confidence 最低值
+SOURCE_QUALITY_MAP = {
+    "graph": 0.9,
+    "entity-link": 0.85,
+    "text": 0.7,
+    "vector": 0.5,
+}
+
+# ============================================================
+# P3b: 生命轨迹衰减状态
+# ============================================================
+
+DECAY_STATUS_THRESHOLDS = {
+    "fresh": 0.90,
+    "healthy": 0.60,
+    "stale": 0.30,
+    "decaying": 0.10,
+    # below 0.10 → "expired"
+}
+
+# ============================================================
 # Cron 守护参数
 # ============================================================
 
