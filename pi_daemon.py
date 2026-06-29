@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import json
 import subprocess
 import sys
 import os
@@ -227,8 +228,45 @@ def cleanup_old_memories():
     conn.close()
 
 
+async def inject_context(task_content: str, domain: str, role: str = "", mcp_client=None) -> dict | None:
+    """Call auto_context_inject via MCP before task execution.
+
+    Args:
+        task_content: Task description
+        domain: Agent domain (building/fixing/reflecting)
+        role: Agent role (pi_builder/pi_fixer/pi_reviewer) — included in source
+        mcp_client: Optional MCP SSE client
+    """
+    try:
+        from plastic_promise.core.constants import DOMAIN_TO_TASK_TYPE
+        task_type = DOMAIN_TO_TASK_TYPE.get(domain, "general")
+        source = f"pi_agent:{role}" if role else "pi_agent"
+
+        if mcp_client:
+            result = await mcp_client.call_tool("auto_context_inject", {
+                "task_description": task_content,
+                "task_type": task_type,
+                "source": source,
+            })
+            return json.loads(result[0].text) if result else None
+        else:
+            from plastic_promise.mcp.tools.context import handle_auto_context_inject
+            from plastic_promise.core.context_engine import ContextEngine
+            engine = ContextEngine()
+            result = await handle_auto_context_inject(engine, {
+                "task_description": task_content,
+                "task_type": task_type,
+                "source": source,
+            })
+            return json.loads(result[0].text)
+    except Exception:
+        return None  # Graceful degradation
+
+
 async def _run_and_finish(role: str, cfg: dict, content: str, task_id: str, restriction: str = None):
     """Fire-and-forget: 执行任务 + 标记完成 + 推送通知。"""
+    # Inject context before execution (non-blocking, graceful degradation)
+    await inject_context(content, cfg["domain"], role=role)
     result = await execute_task(role, cfg, content, task_id, restriction)
     print(f"  [{_now()}] {role} DONE: {result.strip()[-150:] or 'ok'}")
     mark_task_accepted(task_id)
