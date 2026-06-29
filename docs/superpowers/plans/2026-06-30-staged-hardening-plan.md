@@ -17,6 +17,12 @@
 - Integration tests use session-level fixtures with dynamic ports; Windows-compatible
 - Benchmark standard dataset: 1024-dim vectors, SMALL=1000 / LARGE=10000, 3 warmup rounds, 10+ iterations
 - `include_ragas=True` on audit_run, callers may explicitly set `False`
+- **New dependencies** (add to pyproject.toml or requirements.txt):
+  - `opentelemetry-api>=1.28.0`
+  - `opentelemetry-sdk>=1.28.0`
+  - `opentelemetry-instrumentation-requests>=0.49b0`
+  - `opentelemetry-exporter-otlp` (optional, production only)
+  - `pytest-benchmark>=5.0.0` (dev dependency)
 
 ---
 
@@ -226,7 +232,7 @@ git commit -m "feat: add tracing.py — OpenTelemetry init with console/otlp exp
 
 **Interfaces:**
 - Consumes: `get_tracer()` from `plastic_promise.core.tracing` (Task 1)
-- Produces: spanned methods on `OllamaEmbedder`, `LanceDBStore`, `_SQLiteStorage` — no new public API
+- Produces: spanned methods on `OllamaEmbedder`, `LanceDBStore`, `_SQLiteStorage` (in context_engine.py) — no new public API
 
 - [ ] **Step 1: Add spans to OllamaEmbedder**
 
@@ -461,7 +467,7 @@ def delete(self, memory_id):
 - [ ] **Step 3: Add spans to _SQLiteStorage**
 
 ```python
-# plastic_promise/memory/soul_memory.py — modify _SQLiteStorage class
+# plastic_promise/core/context_engine.py — modify _SQLiteStorage class (line ~1030)
 # Add import at top of file (if not already present):
 import time
 from plastic_promise.core.tracing import get_tracer
@@ -536,8 +542,8 @@ e.embed("hello")
 - [ ] **Step 6: Commit**
 
 ```bash
-git add plastic_promise/core/embedder.py plastic_promise/core/lancedb_store.py plastic_promise/memory/soul_memory.py
-git commit -m "feat: add OTel spans to OllamaEmbedder, LanceDBStore, _SQLiteStorage"
+git add plastic_promise/core/embedder.py plastic_promise/core/lancedb_store.py plastic_promise/core/context_engine.py
+git commit -m "feat: add OTel spans to OllamaEmbedder, LanceDBStore, _SQLiteStorage (in context_engine.py)"
 ```
 
 ---
@@ -661,6 +667,8 @@ async def handle_skill_session_complete(engine, args):
         if span:
             span.end()
 ```
+
+**Note on skill_session_trace:** The handler should accept an `include_auto_inject` parameter (default `False`). When `False`, sessions whose skill_name starts with `"auto_inject:"` are excluded from chain validation and gap detection — this prevents auto-context-inject records from polluting audit scores.
 
 - [ ] **Step 3: Add span to audit_defense.py handlers**
 
@@ -1087,8 +1095,15 @@ def engine(temp_db_dir):
     from plastic_promise.core.context_engine import ContextEngine
     eng = ContextEngine()
     yield eng
-    # Cleanup: clear test data
-    eng.clear_all()
+    # Cleanup: clear test data from SQLite memory pool
+    # ContextEngine has no clear_all() — manually purge the internal stores
+    eng._memories.clear()
+    if hasattr(eng, '_sqlite') and eng._sqlite:
+        try:
+            eng._sqlite._conn.execute("DELETE FROM memories")
+            eng._sqlite._conn.commit()
+        except Exception:
+            pass  # Table may not exist in test setup
 ```
 
 - [ ] **Step 3: Write issue lifecycle integration test**
@@ -1395,9 +1410,10 @@ class TestSkillTrackingE2E:
             "artifacts": [],
         })
         
-        # Trace the chain
+        # Trace the chain — exclude auto_inject: records from audit scoring
         r5 = await _call_handler(handle_skill_session_trace, engine, {
             "session_scope": "branch",
+            "include_auto_inject": False,  # exclude auto_inject:* sessions from chain validation
         })
         trace_data = _parse_json(r5)
         
@@ -2109,6 +2125,17 @@ def large_dataset(temp_lancedb_dir):
             scope="global",
         )
     return store
+
+
+@pytest.fixture(scope="module")
+def engine(temp_lancedb_dir):
+    """Module-scoped ContextEngine for benchmarks that need memory pool access."""
+    import os
+    from plastic_promise.core.context_engine import ContextEngine
+    os.environ["PP_DB_DIR"] = temp_lancedb_dir
+    os.environ["PP_TRACING_ENABLED"] = "0"
+    os.environ["PP_EMBEDDER_PROVIDER"] = "fallback"
+    return ContextEngine()
 ```
 
 - [ ] **Step 2: Write LanceDB benchmark**
