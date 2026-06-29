@@ -97,12 +97,13 @@ Plastic Promise 的自动化上下文注入能力（SoulBridge.pre_task → Soul
 ### source → skill_name 派生规则
 
 ```
-"pi_agent"     → "auto_inject:pi_agent"
-"claude_code"  → "auto_inject:claude_code"
-"manual"       → "auto_inject:manual"
+"pi_agent"        → "auto_inject:pi_agent"      (role 信息丢失 → Pi Daemon 传入 "pi_agent:{role}")
+"pi_agent:builder" → "auto_inject:pi_agent:builder" (推荐格式，区分三个角色)
+"claude_code"      → "auto_inject:claude_code"
+"manual"           → "auto_inject:manual"
 ```
 
-带 `auto_inject:` 前缀的 skill_name 与 SuperPowers skill 区分，entity_type 仍是 `skill_session`，在 `skill_session_trace` 中可独立筛选。
+带 `auto_inject:` 前缀的 skill_name 与 SuperPowers skill 区分，entity_type 仍是 `skill_session`，在 `skill_session_trace` 中可通过 `include_auto_inject` 参数控制是否显示。
 
 ### 异常处理
 
@@ -205,6 +206,15 @@ tags: ["auto_inject", "source:claude_code", "skill:auto_inject:claude_code",
 可通过以下方式检索注入历史：
 - `memory_list(tags=["auto_inject"])` — 列出所有注入记录
 - `skill_session_trace(skill_name="auto_inject:claude_code")` — 按源头追溯 Claude Code 的注入链
+- `skill_session_trace(include_auto_inject=false)` — 默认过滤 auto_inject 记录，避免 audit 评分被污染
+- `skill_session_trace(include_auto_inject=true)` — 显式包含，用于调试和追溯
+
+### 与 Audit 系统的交互
+
+`auto_inject:` 记录是一次性操作（duration_ms < 2s），在 audit 第八维 `skill_trace` 评分中应被排除：
+- `skill_session_trace` 新增 `include_auto_inject` 参数，默认 `false`
+- `SoulAuditor.run_audit()` 调用 `skill_session_trace(include_auto_inject=false)`，确保评分不受注入记录影响
+- 手动调试时可传入 `include_auto_inject=true` 查看完整注入历史
 
 ## 六、CLAUDE.md 启动序列简化
 
@@ -246,9 +256,9 @@ tags: ["auto_inject", "source:claude_code", "skill:auto_inject:claude_code",
 |------|------|------|
 | `plastic_promise/mcp/tools/context.py` | +90 行 | 新增 `handle_auto_context_inject` handler（含 principle 降级保底 + content 完整原文保留） |
 | `plastic_promise/mcp/server.py` | +15 行 | 注册 `auto_context_inject` 工具 + call_tool 路由 |
-| `plastic_promise/mcp/tools/skill_tracking.py` | +20 行 | `auto_inject:` 前缀: domain→reflecting, 跳过 parent 校验, 孤儿检测自动忽略 |
-| `bridge/soul_bridge.py` | ~15 行替换 | `pre_task()` 改为调用 handler（Python 直接调用） |
-| `pi_daemon.py` | +10 行 | `execute_task()` 前调用 `auto_context_inject` |
+| `plastic_promise/mcp/tools/skill_tracking.py` | +25 行 | `auto_inject:` 前缀: domain→reflecting, 跳过 parent 校验, 孤儿检测忽略; `include_auto_inject` 参数 (默认 false) |
+| `bridge/soul_bridge.py` | ~20 行替换 | `pre_task()` 改为调用 handler（Python 直接调用），返回结构保持向后兼容 |
+| `pi_daemon.py` | +15 行 | `execute_task()` 前调用 `auto_context_inject`，source 包含 role 信息 (`pi_agent:{role}`) |
 | `hooks/session-start` | +3 行 | 追加 `claude mcp call auto_context_inject`（含 scope:"agent:claude"） |
 | `CLAUDE.md` | 替换启动序列 (~10 行) | 5 步 → 3 步 |
 | `tests/test_auto_context_inject.py` | **新增** (~150 行) | 测试 handler + 自反馈循环 + 三条路径 |
