@@ -8,6 +8,7 @@
 
 import datetime
 import json
+import logging
 import os
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
@@ -203,8 +204,14 @@ class ContextEngine:
                 self._memories[mid] = data
 
         # DomainManager for domain-weighted retrieval
-        from plastic_promise.core.domain_manager import DomainManager
-        self._dm = DomainManager()
+        try:
+            from plastic_promise.core.domain_manager import DomainManager
+            self._dm = DomainManager()
+            self._dm_ok = True
+        except Exception as e:
+            logging.error(f"DomainManager init failed: {e} — domain features disabled")
+            self._dm = None
+            self._dm_ok = False
         self._domain_hint: Optional[str] = None
 
         self._current_time: str = ""

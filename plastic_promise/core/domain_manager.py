@@ -12,6 +12,7 @@
 """
 
 import json
+import logging
 import os
 import datetime
 import threading
@@ -152,6 +153,12 @@ class DomainManager:
     all 域不参与记忆分配、不参与融合。
     """
 
+    SCHEMA_VERSION = 2
+
+    MIGRATION_CHAIN = {
+        1: "_migrate_v1_to_v2",
+    }
+
     def __init__(self, db_path: Optional[str] = None):
         self._lock = threading.RLock()
         self.domains: dict[str, DomainInfo] = {}
@@ -165,6 +172,26 @@ class DomainManager:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
         self._load_from_db()
+
+        # Auto-rebuild guard: domains 表空但 memories 有数据 → 自动重建
+        try:
+            row = self._conn.execute("SELECT COUNT(*) FROM domains WHERE status != 'candidate'").fetchone()
+            domain_count = row[0] if row else 0
+            mem_count_row = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()
+            mem_count = mem_count_row[0] if mem_count_row else 0
+
+            if domain_count == 0 and mem_count > 0:
+                import time as _time
+                logging.warning(
+                    f"domains 表为空但 memories 表有 {mem_count} 条记忆。"
+                    f"将在 5 秒后自动重建域图谱。按 Ctrl+C 取消。"
+                )
+                _time.sleep(5)
+                self.rebuild_from_memories(memories_source="sqlite")
+        except Exception:
+            pass
+
+        self._run_migrations()
 
     def _init_schema(self):
         """建表: domains, audit_log"""
@@ -191,8 +218,63 @@ class DomainManager:
                 operation TEXT NOT NULL,
                 detail TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL
+            );
         """)
         self._conn.commit()
+
+    def _run_migrations(self):
+        """检查 schema 版本并执行迁移链。"""
+        try:
+            row = self._conn.execute(
+                "SELECT MAX(version) FROM schema_version"
+            ).fetchone()
+            current = row[0] if row and row[0] else 0
+        except Exception:
+            current = 0  # 表不存在 = v0
+
+        if current == self.SCHEMA_VERSION:
+            return  # 最新，正常启动
+
+        if current > self.SCHEMA_VERSION:
+            raise RuntimeError(
+                f"DB schema version {current} > code version {self.SCHEMA_VERSION}. "
+                f"请升级 Plastic Promise 或使用旧版 DB。"
+            )
+
+        # 依次执行迁移链
+        for v in range(current + 1, self.SCHEMA_VERSION + 1):
+            method_name = self.MIGRATION_CHAIN.get(v)
+            if method_name:
+                getattr(self, method_name)()
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                    (v,)
+                )
+                self._conn.commit()
+
+        # 记录最终 schema 版本
+        self._conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+            (self.SCHEMA_VERSION,)
+        )
+        self._conn.commit()
+
+    def _migrate_v1_to_v2(self):
+        """v1→v2: 添加 tags/domain 列, 建 domains/audit_log 表"""
+        for col, dtype, default in [
+            ("tags", "TEXT", "'[]'"),
+            ("domain", "TEXT", "'uncategorized'"),
+        ]:
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE memories ADD COLUMN {col} {dtype} NOT NULL DEFAULT {default}"
+                )
+            except Exception:
+                pass  # 列已存在
+        # domains 和 audit_log 在 _init_schema 中已用 IF NOT EXISTS 创建
 
     def _load_from_db(self):
         """从 SQLite 加载域和标签索引，预定义域优先。"""
