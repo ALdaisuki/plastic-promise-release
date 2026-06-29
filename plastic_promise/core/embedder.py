@@ -48,7 +48,14 @@ class OllamaEmbedder(Embedder):
         raw = host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
         # 0.0.0.0 is a server bind address — client must connect to localhost
         raw = raw.replace("0.0.0.0", "127.0.0.1")
-        self._host = raw if "://" in raw else f"http://{raw}"
+        if "://" in raw:
+            self._host = raw
+        else:
+            # Plain host[:port] — add scheme and default port if missing
+            if ":" in raw:
+                self._host = f"http://{raw}"
+            else:
+                self._host = f"http://{raw}:11434"
         self._model = model or os.getenv("EMBEDDER_MODEL", "mxbai-embed-large")
 
     def embed(self, text: str) -> list[float]:
