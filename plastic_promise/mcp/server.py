@@ -787,6 +787,17 @@ async def run_sse(port: int = 9020):
 
     sse = SseServerTransport("/messages")
 
+    # Notification queue — issue transitions push here, /events streams
+    import asyncio as _asyncio
+    _notify_queue: _asyncio.Queue = _asyncio.Queue()
+
+    def notify_issue_change(data: dict):
+        """Push issue state change to all SSE event listeners."""
+        try:
+            _notify_queue.put_nowait(data)
+        except Exception:
+            pass
+
     async def handle_sse(request: Request):
         async with sse.connect_sse(
             request.scope, request.receive, request._send
@@ -800,6 +811,22 @@ async def run_sse(port: int = 9020):
     async def handle_messages(request: Request):
         await sse.handle_post_message(request.scope, request.receive, request._send)
         return Response()
+
+    async def handle_events(request: Request):
+        """SSE event stream — push issue transitions to connected clients."""
+        from starlette.responses import StreamingResponse
+        import json as _json
+
+        async def event_generator():
+            yield f"data: {_json.dumps({'type': 'connected', 'message': 'listening for issue changes'})}\n\n"
+            while True:
+                try:
+                    data = await _asyncio.wait_for(_notify_queue.get(), timeout=30)
+                    yield f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
+                except _asyncio.TimeoutError:
+                    yield f"data: {_json.dumps({'type': 'heartbeat'})}\n\n"
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     async def health(request):
         import json as _json
@@ -817,6 +844,7 @@ async def run_sse(port: int = 9020):
     app = Starlette(routes=[
         Route("/sse", endpoint=handle_sse, methods=["GET"]),
         Route("/messages", endpoint=handle_messages, methods=["POST"]),
+        Route("/events", endpoint=handle_events, methods=["GET"]),
         Route("/health", endpoint=health),
     ], on_shutdown=[shutdown])
 
