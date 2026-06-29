@@ -17,7 +17,7 @@ class TestMemoryMerge:
         self.gc = MemoryGC(self.rec_mem)
         yield
 
-    def _make_record(self, mid, content, worth_score=0.5, tier="L3",
+    def _make_record(self, mid, content, tier="L3",
                      created_at="2026-06-30T12:00:00"):
         """Helper: create a MemoryRecord and add to rec_mem._records."""
         record = MemoryRecord(
@@ -36,8 +36,8 @@ class TestMemoryMerge:
     def test_merge_similar_dry_run_reports_candidates(self):
         """dry_run=True should report candidates without modifying records."""
         # Setup: two records with vectors
-        r1 = self._make_record("mem_001", "User likes Rust for backend", worth_score=0.7)
-        r2 = self._make_record("mem_002", "User prefers Rust for server development", worth_score=0.5)
+        r1 = self._make_record("mem_001", "User likes Rust for backend")
+        r2 = self._make_record("mem_002", "User prefers Rust for server development")
 
         # Mock LanceDB — returns high similarity between mem_001 and mem_002
         mock_ldb = MagicMock()
@@ -69,9 +69,9 @@ class TestMemoryMerge:
 
     def test_merge_similar_survivor_keeps_higher_worth(self):
         """Survivor should be the record with higher worth_score."""
-        r1 = self._make_record("mem_high", "Rust is great", worth_score=0.85,
+        r1 = self._make_record("mem_high", "Rust is great",
                                created_at="2026-06-01T00:00:00")  # older but higher score
-        r2 = self._make_record("mem_low", "Rust is excellent", worth_score=0.45,
+        r2 = self._make_record("mem_low", "Rust is excellent",
                                created_at="2026-06-30T00:00:00")   # newer but lower score
         # Force different worth_success/failure so computed worth_score differs
         r1.worth_success = 10

@@ -26,6 +26,8 @@ from plastic_promise.core.constants import (
     WORTH_SUCCESS_WEIGHT,
     WORTH_FAILURE_WEIGHT,
     WORTH_MIN_OBSERVATIONS,
+    MERGE_TOP_K,
+    MERGE_SIMILARITY_THRESHOLD,
 )
 from plastic_promise.core.context_engine import ContextEngine, ContextPack
 
@@ -1100,7 +1102,7 @@ class MemoryGC:
             return []
 
     def merge_similar(
-        self, threshold: float = 0.70, dry_run: bool = True,
+        self, threshold: float = MERGE_SIMILARITY_THRESHOLD, dry_run: bool = True,
     ) -> Dict[str, Any]:
         """Batch-scan the memory pool and merge records with cosine similarity >= threshold.
 
@@ -1165,7 +1167,7 @@ class MemoryGC:
 
             for mid, vec in vec_map.items():
                 try:
-                    similar = ldb.search_similar(vec, k=3)  # MERGE_TOP_K
+                    similar = ldb.search_similar(vec, k=MERGE_TOP_K)  # MERGE_TOP_K
                 except Exception:
                     continue
                 for other_id, sim in similar:
@@ -1196,9 +1198,14 @@ class MemoryGC:
                 py_a = self.rec_mem._records.get(mid_a)
                 py_b = self.rec_mem._records.get(mid_b)
 
-                # Determine survivor
-                score_a = py_a.worth_score if py_a else 0.5
-                score_b = py_b.worth_score if py_b else 0.5
+                # Determine survivor — use Direction A composite_score (wilson+decay+reinforcement)
+                try:
+                    calc = MemoryWorthCalculator()
+                    score_a = calc.calculate_composite_score(py_a) if py_a else 0.5
+                    score_b = calc.calculate_composite_score(py_b) if py_b else 0.5
+                except Exception:
+                    score_a = py_a.worth_score if py_a else 0.5
+                    score_b = py_b.worth_score if py_b else 0.5
 
                 if score_a > score_b:
                     survivor, merged = mid_a, mid_b
