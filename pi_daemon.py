@@ -100,7 +100,7 @@ def mark_task_accepted(task_id: str):
         tags = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or [])
         new_tags = []
         for t in tags:
-            if t in ("task:pending", "task:rejected", "task:active"):
+            if t in ("task:pending", "task:rejected", "task:active", "task:done"):
                 new_tags.append("task:accepted")
             else:
                 new_tags.append(t)
