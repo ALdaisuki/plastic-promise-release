@@ -555,7 +555,7 @@ class ContextEngine:
         """Register an entity node and optionally create edges to related entities.
 
         Args:
-            entity_type: One of "principle", "task", "memory", "code_module".
+            entity_type: One of "principle", "task", "memory", "code_module", "skill_session".
             entity_id: Unique identifier for this entity.
             entity_name: Human-readable name.
             entity_description: Optional description text.
@@ -565,7 +565,7 @@ class ContextEngine:
             dict with keys: node_id, type, edges_created
         """
         # Validate entity_type
-        valid_types = {"principle", "task", "memory", "code_module"}
+        valid_types = {"principle", "task", "memory", "code_module", "skill_session"}
         if entity_type not in valid_types:
             raise ValueError(
                 f"Unknown entity_type '{entity_type}'. "
