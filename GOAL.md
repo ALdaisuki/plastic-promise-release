@@ -63,6 +63,7 @@
 - TODO #6: LanceDB 向量存储 + 混合融合检索 (ANN + FTS + 优雅降级)
 - TODO #7: HTML 仪表盘 (/dashboard, 记忆池 + 身体系统 + 信任分)
 - 方向 A: 记忆生命周期引擎 — Weibull 衰减 (L1 β=1.5/3d, L3 β=0.7/90d) + 访问强化 (间隔重复) + 三因素复合评分 (wilson×0.6 + freshness×0.25 + reinforcement×0.15) + SQLite 迁移 + 存量衰减计算
+- 方向 B: 记忆质量管道 — smart_extractor 接入 pipeline + 向量去重 (cos≥0.85) + QualityGate 四维入池评分 (置信度/相关性/新鲜度/信息密度, 等权0.25) + MemoryGC.merge_similar() 相似合并 (cos≥0.70) + 方向 A-B 全集成 (tier-aware freshness + decay init on store + dedup→AccessReinforcement boost)
 - 存量回填策略 (LanceDB 空时自动从 SQLite 回填)
 
 ### 进行中

@@ -26,6 +26,50 @@
 | System (4) | system(action=stats\|backup\|migrate), issue_create, issue_transition, issue_list |
 | Pack (3) | pack_export(streaming), pack_import(strategy), pack_recall(strict) |
 
+## 记忆质量管道 (方向 A + B)
+
+所有记忆写入自动经过 6 层质量保障：
+
+```
+memory_store(content)
+  └─ store_urgent() → extract_memories() [Dir B: 6类提取 + L0/L1/L2 + LLM fallback]
+       └─ raw → tagged → classified(tier) → embedded → migrate
+            └─ check_duplicate() cos≥0.85 → 去重 (access_count↑, worth_success↑, last_accessed, effective_half_life↑)
+            └─ QualityGate.score(tier) [Dir B: 4维×0.25 等权]:
+                 ≥0.5 → 入库 | 0.3-0.5 → low_quality | <0.3 → 丢弃
+            └─ RecMem.store() → decay_multiplier + effective_half_life 初始化 [Dir A+B]
+            └─ LanceDB 双写
+
+MemoryGC.collect() (~7天)
+  └─ mark_decaying() → Weibull 批量衰减更新 [Dir A]
+  └─ merge_similar() cos≥0.70 → composite_score 选择幸存者 [Dir A+B]
+  └─ forget() → 清理 decayed + merged
+```
+
+### 记忆写入即检查
+
+```python
+# 每个 memory_store 自动触发:
+#   1. smart_extractor 6类提取 (preference/fact/decision/entity/event/pattern)
+#   2. 向量去重 (LanceDB ANN cos≥0.85 → 更新已有记录)
+#   3. QualityGate 四维门控 (等权 0.25: 置信度+相关性+新鲜度+信息密度)
+#   4. Weibull 衰减初始化 (decay_multiplier + effective_half_life)
+#   5. LanceDB 向量双写
+```
+
+### 质量监控命令
+
+```bash
+# 查看记忆池质量分布
+python -c "from plastic_promise.memory.soul_memory import RecMem; r=RecMem(); print(r.stats())"
+
+# 触发 GC (dry run 预览合并候选)
+memory_gc(dry_run=True)  # 查看 merge.candidates_found, merge.merged_pairs
+
+# 真正执行合并
+memory_gc(dry_run=False)
+```
+
 ## 多 Agent 工作流
 
 ### 委派任务
