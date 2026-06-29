@@ -153,7 +153,7 @@ class DomainManager:
     """
 
     def __init__(self, db_path: Optional[str] = None):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.domains: dict[str, DomainInfo] = {}
         self.tag_to_domain: dict[str, set[str]] = {}
 
@@ -325,6 +325,8 @@ class DomainManager:
 
             if best_score > 0.3:
                 dom = self.domains[best_name]
+                dom.access_count += 1
+                dom.last_accessed = datetime.datetime.now().isoformat()
                 dom.memory_count += 1
                 dom.last_active = datetime.datetime.now().isoformat()
                 self._persist_domain(best_name)
@@ -544,7 +546,7 @@ class DomainManager:
         Returns:
             信号摘要字符串，≤200 字符。
         """
-        msg = f"{from_domain} 域检索命中 {context}"
+        msg = f"{from_domain} → {to_domain}: {context}"
         return msg[:200]
 
     def stats(self) -> dict:
