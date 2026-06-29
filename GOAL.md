@@ -41,7 +41,7 @@
 ### 已完成 (2026-06-29)
 
 **内核：**
-- 29 个 MCP 工具（8 域）
+- 33 个 MCP 工具（9 域，含 Skill Tracking）
 - 12 条核心原则（按行为域分布）
 - 7 维审计 + 5 维 SCARF 自省 + 11 维多 Agent 审计
 - 域联邦系统（自演化 + 联邦信号）
@@ -65,6 +65,7 @@
 - 方向 A: 记忆生命周期引擎 — Weibull 衰减 (L1 β=1.5/3d, L3 β=0.7/90d) + 访问强化 (间隔重复) + 三因素复合评分 (wilson×0.6 + freshness×0.25 + reinforcement×0.15) + SQLite 迁移 + 存量衰减计算
 - 方向 B: 记忆质量管道 — smart_extractor 接入 pipeline + 向量去重 (cos≥0.85) + QualityGate 四维入池评分 (置信度/相关性/新鲜度/信息密度, 等权0.25) + MemoryGC.merge_similar() 相似合并 (cos≥0.70) + 方向 A-B 全集成 (tier-aware freshness + decay init on store + dedup→AccessReinforcement boost)
 - 存量回填策略 (LanceDB 空时自动从 SQLite 回填)
+- **Skill Tracking**: SuperPowers 流程可追踪化 — 4 个 MCP 工具 (skill_session_start/complete/trace/audit) + SKILL_CHAIN_MAP (14 技能) + skill_session 实体类型 + audit 第八维 skill_trace (权重 0.10) + CLAUDE.md Skill 调用协议 + 12 测试。MCP 工具总数: 33。
 
 ### 进行中
 - 无。所有已交付。
