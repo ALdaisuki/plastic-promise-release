@@ -1,25 +1,35 @@
-# Pi Worker — 轮询 Issue 表并自动执行任务 (PowerShell)
-# 用法: .\pi_worker.ps1 pi_builder building
-#       .\pi_worker.ps1 pi_fixer fixing
-#       .\pi_worker.ps1 pi_reviewer reflecting
-
+# Pi Worker — SuperPowers Pipeline mode-based dispatch
 param(
-    [string]$Role = "pi_builder",
-    [string]$Domain = "building",
+    [string]$Mode = "builder",
     [int]$Interval = 30
 )
 
-$host.UI.RawUI.WindowTitle = "Pi Worker: $Role ($Domain)"
+$modeMap = @{
+    "planner"  = @{ Role="pi_planner";  Domain="designing";  Query="tag:spec domain:designing";       OutputTags="task:plan", "assignee:pi_builder", "domain:building" }
+    "builder"  = @{ Role="pi_builder";  Domain="building";   Query="tag:plan domain:building";        OutputTags="task:active", "owner:pi_builder", "domain:building" }
+    "fixer"    = @{ Role="pi_fixer";    Domain="fixing";     Query="tag:rejected domain:fixing";      OutputTags="task:fixed", "owner:pi_fixer", "domain:fixing" }
+    "reviewer" = @{ Role="pi_reviewer"; Domain="reflecting"; Query="tag:active domain:building";      OutputTags="task:review", "owner:pi_reviewer", "domain:reflecting" }
+}
+
+$cfg = $modeMap[$Mode]
+if (-not $cfg) {
+    Write-Error "Unknown mode: $Mode. Valid: planner, builder, fixer, reviewer"
+    exit 1
+}
+
+$host.UI.RawUI.WindowTitle = "Pi Worker: $Mode ($($cfg.Domain))"
 Write-Host "============================================================"
-Write-Host " Pi Worker: $Role (domain: $Domain, poll: ${Interval}s)"
+Write-Host " Pi Worker: $Mode ($($cfg.Role), domain=$($cfg.Domain))"
+Write-Host " Query: $($cfg.Query)"
+Write-Host " Output: $($cfg.OutputTags -join ', ')"
 Write-Host "============================================================"
 
 while ($true) {
     $ts = Get-Date -Format "HH:mm:ss"
-    Write-Host "[$ts] $Role checking tasks..."
+    Write-Host "[$ts] $Mode searching..."
 
-    pi --print "You are $Role, domain $Domain. You are a member of the Plastic Promise multi-agent dev team. Claude is your project manager.`n`nSteps:`n1. Call issue_list(owner='$Role', state='open') to find your tasks. Extract Issue ID from returned JSON (format: issue_<hex12>).`n2. If new task found: call issue_transition('<id>', 'in_progress', reason='$Role accepted')`n3. Call memory_recall(domain_hint='$Domain', query='<keywords from Issue context.files>') to load context`n4. Execute the task using write/edit tools. When done, call issue_transition('<id>', 'review', reason='delivery:<files>') AND memory_store(content='<summary>', memory_type='experience', domain='$Domain')`n5. If no tasks found or no tasks assigned to you with state=open, just reply IDLE.`n`nTeam Protocol: No idle chat. All communication must include Issue ID and file paths. If context is insufficient, transition to NEEDS_CONTEXT — do not guess." `
-        --session-id "${Role}_worker" 2>&1 | Select-Object -Last 5
+    pi --print "You are $($cfg.Role), domain $($cfg.Domain), mode=$Mode.`n`nSuperPowers pipeline stage: $Mode.`n`n1. Call memory_recall(domain_hint='$($cfg.Domain)', query='$($cfg.Query)') to find your input.`n2. Process it according to your pipeline stage.`n3. When done, call memory_store(content='<summary>', memory_type='experience', domain='$($cfg.Domain)', tags=[$($cfg.OutputTags | ForEach-Object { "'$_'" } | Join-String -Separator ',')]).`n`nIf no matching memories found, reply IDLE." `
+        --session-id "${Mode}_worker" 2>&1 | Select-Object -Last 5
 
     Start-Sleep -Seconds $Interval
 }
