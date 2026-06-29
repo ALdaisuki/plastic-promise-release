@@ -64,6 +64,22 @@ async def execute_task(task_content: str, task_id: str):
     return output.strip()
 
 
+def mark_task_done(task_id: str):
+    """将原始 task:pending 标签替换为 task:done。"""
+    import sqlite3, json
+    conn = sqlite3.connect(
+        os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    )
+    row = conn.execute("SELECT tags FROM memories WHERE id = ?", (task_id,)).fetchone()
+    if row:
+        tags = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or [])
+        new_tags = ["task:done" if t == "task:pending" else t for t in tags]
+        conn.execute("UPDATE memories SET tags = ? WHERE id = ?",
+                     (json.dumps(new_tags), task_id))
+        conn.commit()
+    conn.close()
+
+
 def _now():
     return time.strftime("%H:%M:%S")
 
@@ -79,6 +95,7 @@ async def main():
             print(f"[{_now()}] TASK {task_id[:20]}... → executing")
             result = await execute_task(content, task_id)
             print(result or "DONE")
+            mark_task_done(task_id)  # 防止重复执行
         else:
             print(f"[{_now()}] idle.", end="\r")
         await asyncio.sleep(INTERVAL)
