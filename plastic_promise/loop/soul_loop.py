@@ -113,7 +113,7 @@ class SoulLoop:
 
         return pack
 
-    def post_task(self, task_description: str = "", git_commit: str = "") -> dict:
+    def post_task(self, task_description: str = "", git_commit: str = "", mode: str = "full", issue_id: str = None) -> dict:
         """六联闭环 — 每步完成后的约定工程全层连线。
 
         Returns:
@@ -142,6 +142,12 @@ class SoulLoop:
                     self._principle_tracker.record(pid, True, task_description[:100])
         except Exception as e:
             result["alignment"] = {"error": str(e)}
+
+        # Light mode: only alignment + memory_store, skip full closure
+        if mode == "light":
+            if issue_id:
+                result["issue_id"] = issue_id
+            return result
 
         # 2. SCARF 五维自省
         try:
@@ -367,6 +373,8 @@ def pre_task_v2(
 def post_task(
     task_description: str = "",
     git_commit: str = "",
+    mode: str = "full",
+    issue_id: str = None,
 ) -> dict:
     """模块级便捷函数：执行任务后编排管线（六联闭环）。
 

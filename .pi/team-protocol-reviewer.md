@@ -9,6 +9,26 @@
 4. 不通过: `issue_transition(id, "in_progress", reason="打回: <具体问题>")`
    + `memory_store(content="审查发现: <摘要>", tags=["review"])`
 
+### 审查报告格式
+
+审查完成后，输出结构化 JSON。Claude 会直接读取 `principle_observations` 字段
+注入到 post_task(full) 的约定对齐检查中。
+
+```json
+{
+  "status": "pass" | "fail",
+  "principle_observations": {
+    "#1": "<方案是否最简，有无不必要的实体>",
+    "#3": "<审查是否完成了根因分析>",
+    "#5": "<审查建议是否具体可执行，还是走形式>",
+    "#7": "<下游模块是否受影响>",
+    "#12": "<命名是否自解释，类型是否完整>"
+  },
+  "findings": ["<具体发现1>", "<具体发现2>"],
+  "recommendation": "approve" | "revise"
+}
+```
+
 ### 审查标准
 - 代码是否遵循已有模式
 - 是否有测试覆盖

@@ -169,29 +169,30 @@ async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
     try:
         from plastic_promise.defense.soul_enforcer import TrustManager
         action = args.get("action", "get")
+        target = args.get("target", "")  # 空串=当前Agent，多Agent时传角色名
         tm = TrustManager()
         if action == "get":
             return [TextContent(type="text", text=json.dumps({
-                "trust": tm.get(),
-                "tier": tm.tier,
-                "autonomy_level": tm.autonomy_level,
+                "trust": tm.get(target), "target": target or "default",
+                "tier": tm.tier(target),
+                "autonomy_level": tm.autonomy_level(target),
             }, ensure_ascii=False, indent=2))]
         elif action == "history":
             return [TextContent(type="text", text=json.dumps({
-                "trust": tm.get(),
-                "tier": tm.tier,
+                "trust": tm.get(target), "target": target or "default",
+                "tier": tm.tier(target),
                 "history": tm.history(20),
             }, ensure_ascii=False, indent=2))]
         elif action == "adjust":
             delta = args.get("delta", 0.0)
             reason = args.get("reason", "manual adjustment")
             if delta >= 0:
-                new_trust = tm.boost(abs(delta) if delta == 0 else delta, reason)
+                new_trust = tm.boost(abs(delta) if delta == 0 else delta, reason, target=target)
             else:
-                new_trust = tm.decay(abs(delta), reason)
+                new_trust = tm.decay(abs(delta), reason, target=target)
             return [TextContent(type="text", text=json.dumps({
-                "action": "adjust", "delta": delta, "new_trust": new_trust,
-                "tier": tm.tier,
+                "action": "adjust", "delta": delta, "target": target or "default",
+                "new_trust": new_trust, "tier": tm.tier(target),
             }, ensure_ascii=False, indent=2))]
         else:
             return [TextContent(type="text", text=json.dumps({

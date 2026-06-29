@@ -28,132 +28,81 @@ from plastic_promise.core.constants import (
 
 
 class TrustManager:
-    """信任分管理器 —— 数字内分泌系统的核心引擎。
+    """信任分管理器 — 数字内分泌系统的核心引擎，支持多 Agent。
 
     管理信任分的增长、衰减、历史追溯，并根据当前信任分推导
     信任等级 (tier) 和自主权级别 (autonomy_level)。
 
+    target="" 表示默认 Agent (Claude 自己)。target="pi_builder" 等
+    为多 Agent 场景的独立信任分追踪。
+
     Attributes:
-        _trust: 当前信任分 (0.0 ~ 1.0)
-        _history: 信任分变更记录，每条记录包含 (delta, reason, new_value, timestamp)
+        _trusts: Dict[str, float] — agent_id → trust (0.0 ~ 1.0)
+        _history: 信任分变更记录
     """
 
     def __init__(self, initial_trust: float = TRUST_INITIAL) -> None:
-        """初始化信任分管理器。
-
-        Args:
-            initial_trust: 初始信任分，默认使用 TRUST_INITIAL (0.60)
-        """
-        self._trust: float = initial_trust
+        self._trusts: Dict[str, float] = {}
         self._history: List[Dict[str, Any]] = []
 
-    def boost(self, delta: float, reason: str = "") -> float:
-        """增加信任分 —— 因高信任行为而奖励。
+    def _trust(self, target: str = "") -> float:
+        return self._trusts.get(target, TRUST_INITIAL)
 
-        Args:
-            delta: 增加量，默认使用 TRUST_BOOST_RATE
-            reason: 加分原因的简短描述
+    def _set_trust(self, target: str, value: float):
+        self._trusts[target] = max(TRUST_MIN, min(TRUST_MAX, value))
 
-        Returns:
-            更新后的信任分
-
-        Raises:
-            ValueError: 如果 delta 为负数
-        """
+    def boost(self, delta: float, reason: str = "", target: str = "") -> float:
         if delta < 0:
             raise ValueError(f"boost delta must be non-negative, got {delta}")
-        old_trust = self._trust
-        self._trust = min(TRUST_MAX, self._trust + delta)
+        old = self._trust(target)
+        new = min(TRUST_MAX, old + delta)
+        self._set_trust(target, new)
         self._history.append({
-            "delta": delta,
-            "reason": reason,
-            "old_value": old_trust,
-            "new_value": self._trust,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "direction": "boost",
+            "delta": delta, "reason": reason, "target": target,
+            "old_value": old, "new_value": new,
+            "timestamp": datetime.now(timezone.utc).isoformat(), "direction": "boost",
         })
-        return self._trust
+        return new
 
-    def decay(self, delta: float = TRUST_DECAY_RATE, reason: str = "") -> float:
-        """衰减信任分 —— 因低信任行为或时间流逝而降低。
-
-        Args:
-            delta: 衰减量，默认使用 TRUST_DECAY_RATE
-            reason: 减分原因的简短描述
-
-        Returns:
-            更新后的信任分
-
-        Raises:
-            ValueError: 如果 delta 为负数
-        """
+    def decay(self, delta: float = TRUST_DECAY_RATE, reason: str = "", target: str = "") -> float:
         if delta < 0:
             raise ValueError(f"decay delta must be non-negative, got {delta}")
-        old_trust = self._trust
-        self._trust = max(TRUST_MIN, self._trust - delta)
+        old = self._trust(target)
+        new = max(TRUST_MIN, old - delta)
+        self._set_trust(target, new)
         self._history.append({
-            "delta": -delta,
-            "reason": reason,
-            "old_value": old_trust,
-            "new_value": self._trust,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "direction": "decay",
+            "delta": -delta, "reason": reason, "target": target,
+            "old_value": old, "new_value": new,
+            "timestamp": datetime.now(timezone.utc).isoformat(), "direction": "decay",
         })
-        return self._trust
+        return new
 
-    def get(self) -> float:
-        """获取当前信任分。
+    def adjust(self, delta: float, reason: str = "", target: str = "") -> float:
+        if delta >= 0:
+            return self.boost(delta, reason, target)
+        return self.decay(-delta, reason, target)
 
-        Returns:
-            当前信任分 (0.0 ~ 1.0)
-        """
-        return self._trust
+    def get(self, target: str = "") -> float:
+        return self._trusts.get(target, TRUST_INITIAL)
 
     def history(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """获取信任分变更历史。
-
-        Args:
-            limit: 返回的最大条数，默认 50
-
-        Returns:
-            变更记录列表，每条包含 delta, reason, new_value, timestamp 等字段
-        """
         if not self._history:
             return []
         return self._history[-limit:]
 
-    @property
-    def tier(self) -> str:
-        """当前信任等级。
+    def tier(self, target: str = "") -> str:
+        t = self._trust(target)
+        if t >= 0.80: return "high"
+        elif t >= 0.50: return "medium"
+        elif t >= 0.30: return "low"
+        return "critical"
 
-        Returns:
-            等级字符串: 'high' | 'medium' | 'low' | 'critical'
-        """
-        if self._trust >= 0.80:
-            return "high"
-        elif self._trust >= 0.50:
-            return "medium"
-        elif self._trust >= 0.30:
-            return "low"
-        else:
-            return "critical"
-
-    @property
-    def autonomy_level(self) -> str:
-        """当前自主权级别。
-
-        Returns:
-            自主权级别: 'full' | 'standard' | 'restricted' | 'minimal'
-        """
-        _tier = self.tier
-        if _tier == "high":
-            return "full"
-        elif _tier == "medium":
-            return "standard"
-        elif _tier == "low":
-            return "restricted"
-        else:
-            return "minimal"
+    def autonomy_level(self, target: str = "") -> str:
+        _t = self.tier(target)
+        if _t == "high": return "full"
+        elif _t == "medium": return "standard"
+        elif _t == "low": return "restricted"
+        return "minimal"
 
     def get_retrieval_boost(self) -> float:
         """Return retrieval weight multiplier based on current trust tier.

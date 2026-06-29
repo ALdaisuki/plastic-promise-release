@@ -73,6 +73,13 @@
 定期:   memory_gc → 清理衰退记忆
         audit_run → 七维审计 + 域重叠度检测
         domain(action="stats") → 域健康度
+
+多 Agent 委派 (Pi Team):
+  委派时: validate_issue_context → issue_create → post_task(mode="light")
+          → bash("pi --print 'exec Issue #N'")
+  验收时: memory_recall → issue_transition("closed")
+          → defense(action="adjust", delta=±0.02, target="pi_xxx")
+          → post_task(mode="full", issue_id="#N")
 ```
 
 ## 关键约定
@@ -84,6 +91,7 @@
 - **信任动态** — 信任分影响检索范围（high=1.3×, critical=0.5×），不是二元开关
 - **域联邦** — 同名域（如 building 在原则和记忆中）自动融合，信号 ≤200 字符不深入细节
 - **快速失败** — DomainManager 不可用时降级为全量检索 + uncategorized，Agent 主任务不受影响
+- **多 Agent 委派** — 委派 Pi 任务后 post_task(mode="light")；验收后 post_task(mode="full") + defense(adjust, target="pi_xxx")
 
 ## 多 Agent
 
