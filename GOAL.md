@@ -59,6 +59,11 @@
 - 定时记忆清理（7 天 GC）
 - SuperPowers 流水线映射（planner→builder→fixer→reviewer）
 
+### 已完成 (2026-06-30)
+- TODO #6: LanceDB 向量存储 + 混合融合检索 (ANN + FTS + 优雅降级)
+- TODO #7: HTML 仪表盘 (/dashboard, 记忆池 + 身体系统 + 信任分)
+- 存量回填策略 (LanceDB 空时自动从 SQLite 回填)
+
 ### 进行中
 - 无。所有已交付。
 
