@@ -9,6 +9,7 @@ Public tools:
 
 import json
 import datetime
+import threading
 from typing import Any
 
 from mcp.types import TextContent
@@ -21,6 +22,15 @@ from plastic_promise.core.constants import (
     MAX_STILL_IN_PROGRESS_RENEWALS,
     SKILL_COMPLETE_WORTH_DELTA,
 )
+
+
+# ---------------------------------------------------------------------------
+# Module-level state — hook 调用间保持调用链
+# ---------------------------------------------------------------------------
+
+_skill_state_lock = threading.Lock()
+_current_skill: str | None = None
+_parent_entity_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -952,4 +962,68 @@ async def handle_skill_session_audit(
 
     return [TextContent(type="text", text=json.dumps(
         response, ensure_ascii=False, indent=2,
+    ))]
+
+
+# ---------------------------------------------------------------------------
+# skill_auto_track — hook 调用的自动 Skill 追踪
+# ---------------------------------------------------------------------------
+
+async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
+    """Auto-track Skill calls via Claude Code PreToolUse/PostToolUse hooks.
+
+    Called by mcp_tool hook type — no manual invocation needed.
+    Manages a linear skill chain via module-level state.
+
+    Args:
+        engine: ContextEngine instance.
+        args: {"phase": "start"|"complete", "skill_name": str}
+
+    Returns:
+        list[TextContent]: tracking status
+    """
+    global _current_skill, _parent_entity_id
+    phase = args.get("phase", "start")
+    skill_name = args.get("skill_name", "")
+
+    if phase == "start":
+        with _skill_state_lock:
+            try:
+                result = await handle_skill_session_start(engine, {
+                    "skill_name": skill_name,
+                    "task_description": f"auto-tracked: {skill_name}",
+                    "parent_entity_id": _parent_entity_id,
+                })
+                data = json.loads(result[0].text)
+                _current_skill = data.get("entity_id")
+            except Exception:
+                _current_skill = None
+        return [TextContent(type="text", text=json.dumps({
+            "entity_id": _current_skill,
+            "status": "tracking",
+            "phase": "start",
+        }, ensure_ascii=False))]
+
+    elif phase == "complete":
+        eid = _current_skill
+        with _skill_state_lock:
+            if eid:
+                try:
+                    await handle_skill_session_complete(engine, {
+                        "entity_id": eid,
+                        "outcome": "auto-tracked",
+                        "artifacts": [],
+                    })
+                except Exception:
+                    pass
+            _parent_entity_id = eid
+            _current_skill = None
+        return [TextContent(type="text", text=json.dumps({
+            "status": "tracked",
+            "phase": "complete",
+            "next_parent": _parent_entity_id,
+        }, ensure_ascii=False))]
+
+    return [TextContent(type="text", text=json.dumps(
+        {"error": f"Unknown phase: {phase!r}"}, ensure_ascii=False
     ))]

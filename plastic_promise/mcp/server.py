@@ -549,6 +549,18 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="skill_auto_track",
+            description="Hook 调用的自动 Skill 追踪（PreToolUse/PostToolUse → mcp_tool），零摩擦追踪每次 Skill 调用。",
+            inputSchema={
+                "type": "object",
+                "required": ["phase", "skill_name"],
+                "properties": {
+                    "phase": {"type": "string", "description": "'start' | 'complete'"},
+                    "skill_name": {"type": "string", "description": "Skill 名称"},
+                },
+            },
+        ),
     ])
 
     return tools
@@ -686,6 +698,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "skill_session_audit":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_audit
             return await handle_skill_session_audit(engine, arguments)
+        elif name == "skill_auto_track":
+            from plastic_promise.mcp.tools.skill_tracking import handle_skill_auto_track
+            return await handle_skill_auto_track(engine, arguments)
 
         else:
             return [TextContent(type="text", text=json.dumps(
