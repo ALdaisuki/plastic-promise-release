@@ -220,6 +220,8 @@ class ContextEngine:
             "source": record.get("source", "user"),
             "owner": record.get("owner", os.environ.get("AGENT_OWNER", "")),
             "tier": record.get("tier", "L1"),
+            "scope": record.get("scope", "global"),       # deprecated — use domain
+            "category": record.get("category", "other"),  # deprecated — use domain
             "tags": record.get("tags", []),
             "domain": record.get("domain", "uncategorized"),
             "worth_success": record.get("worth_success", 0),
@@ -442,6 +444,7 @@ class ContextEngine:
         graph_results = self._graph_traversal(task_type)
 
         # 类 (tier): 文本匹配 + L1 工作记忆优先级提升
+        self._domain_hint = scope if scope and scope != "global" else None
         text_results = self._text_retrieval(task_description, trust_boost)
 
         # 粗 (vector): 语义向量相关性 (零向量时跳过)
