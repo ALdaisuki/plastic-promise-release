@@ -29,37 +29,46 @@
 **Interfaces:**
 - Produces: `_store_skill_start` handles `auto_inject:` prefix with domain="reflecting", no parent validation, no orphan detection
 
-- [ ] **Step 1: Add auto_inject domain fallback and parent-skip logic**
+- [ ] **Step 1: Add auto_inject domain fallback, parent-skip, orphan-skip, and include_auto_inject parameter**
 
-In `plastic_promise/mcp/tools/skill_tracking.py`, find the `_store_skill_start` function (~line 406). Before the `domain = SKILL_DOMAIN_MAP.get(...)` line, add:
+In `plastic_promise/mcp/tools/skill_tracking.py`:
+
+**A. Domain fallback in `_store_skill_start`:** Find `domain = SKILL_DOMAIN_MAP.get(...)` (~line 406), add before it:
 
 ```python
-    domain = SKILL_DOMAIN_MAP.get(skill_name, "general")
     # auto_inject:* prefix → "reflecting" domain (context audit snapshot)
     if skill_name.startswith("auto_inject:"):
         domain = "reflecting"
+    else:
+        domain = SKILL_DOMAIN_MAP.get(skill_name, "general")
 ```
 
-In `_validate_parent` (~line 357), add early return:
+**B. Parent validation skip in `_validate_parent`:** (~line 357) add early return:
 
 ```python
-def _validate_parent(skill_name: str, parent_entity_id: str | None, engine: Any) -> str | None:
     # auto_inject: sessions have no parent chain — skip validation
     if skill_name.startswith("auto_inject:"):
         return None
-    if not parent_entity_id:
-        return None
-    ...
 ```
 
-In `handle_skill_session_trace` orphan detection (~line that checks `orphan_active`), add skip:
+**C. Orphan detection skip in `handle_skill_session_trace`:** In the sessions loop:
 
 ```python
-for s in sessions:
     # auto_inject: sessions are instant — skip orphan detection
     if s["skill_name"].startswith("auto_inject:"):
         continue
-    # 1. Orphan active: ...
+```
+
+**D. Add `include_auto_inject` parameter to `handle_skill_session_trace`:**
+
+```python
+async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextContent]:
+    # ... existing args parsing ...
+    include_auto_inject = args.get("include_auto_inject", False)
+    
+    # After collecting all sessions, filter if needed:
+    if not include_auto_inject:
+        sessions = [s for s in sessions if not s["skill_name"].startswith("auto_inject:")]
 ```
 
 - [ ] **Step 2: Run existing skill_tracking tests to verify no regression**
@@ -240,6 +249,155 @@ class TestAutoContextInject:
         assert len(stored_content) == 1
         assert task_desc in stored_content[0]
         assert "[AUTO INJECT]" in stored_content[0]
+
+    def test_inject_principle_fallback_when_supply_fails(self):
+        """When pre_task_v2 fails, principle_activate is called as safety net."""
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
+        engine = MagicMock()
+        engine.register_entity.return_value = {"node_id": "x", "type": "skill_session", "is_new": True}
+
+        with patch('plastic_promise.mcp.tools.context.SoulLoop') as mock_loop_class:
+            mock_loop = MagicMock()
+            # Simulate pre_task_v2 failure
+            mock_loop.pre_task_v2.side_effect = Exception("Embedding service down")
+            mock_loop_class.return_value = mock_loop
+
+            fallback_principles = [{"id": 1, "name": "奥卡姆剃刀"}, {"id": 2, "name": "全过程可查可透明"}]
+            with patch('plastic_promise.mcp.tools.principles.handle_principle_activate') as mock_pa:
+                mock_pa.return_value = [TextContent(
+                    type="text",
+                    text=json.dumps({"activated": fallback_principles})
+                )]
+
+                with patch('plastic_promise.mcp.tools.context.handle_memory_store') as mock_store:
+                    mock_store.return_value = [TextContent(
+                        type="text",
+                        text=json.dumps({"memory_id": "mem_fallback", "stored": True})
+                    )]
+                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+                        mock_start.return_value = [TextContent(type="text", text=json.dumps({
+                            "entity_id": "skill:auto_inject:manual:2026-07-01T18:00:00",
+                            "skill_name": "auto_inject:manual",
+                            "status": "active",
+                            "domain": "reflecting",
+                            "activated_principles": [],
+                            "chain_warning": None,
+                        }))]
+                        with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                            mock_complete.return_value = [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+                            result = handle_auto_context_inject(engine, {
+                                "task_description": "修复 bug",
+                                "source": "manual",
+                            })
+
+        data = json.loads(result[0].text)
+        # Should have fallback principles
+        assert "奥卡姆剃刀" in str(data["principles"])
+        assert "errors" in data or "partial" in str(data)
+
+    def test_inject_memory_store_failure_does_not_block(self):
+        """memory_store failure returns context_pack anyway."""
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
+        engine = MagicMock()
+        engine.register_entity.return_value = {"node_id": "x", "type": "skill_session", "is_new": True}
+
+        with patch('plastic_promise.mcp.tools.context.SoulLoop') as mock_loop_class:
+            mock_loop = MagicMock()
+            mock_pack = MagicMock()
+            mock_pack.core = []
+            mock_pack.related = []
+            mock_pack.divergent = []
+            mock_pack.to_prompt.return_value = "# Context"
+            mock_loop.pre_task_v2.return_value = mock_pack
+            mock_loop_class.return_value = mock_loop
+
+            with patch('plastic_promise.mcp.tools.context.handle_memory_store',
+                       side_effect=Exception("Memory store down")) as mock_store:
+                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+                    mock_start.return_value = [TextContent(type="text", text=json.dumps({
+                        "entity_id": "skill:auto_inject:manual:2026-07-01T18:00:00",
+                        "skill_name": "auto_inject:manual",
+                        "status": "active",
+                        "domain": "reflecting",
+                        "activated_principles": [],
+                        "chain_warning": None,
+                    }))]
+                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                        mock_complete.return_value = [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+                        result = handle_auto_context_inject(engine, {
+                            "task_description": "修复 bug",
+                            "source": "manual",
+                        })
+
+        data = json.loads(result[0].text)
+        # Should still have context_pack even though store failed
+        assert data.get("partial") == True
+        assert data["inject_memory_id"] is None
+
+    def test_self_feedback_loop_second_inject_hits_first(self):
+        """Second inject with similar task_description retrieves first inject record."""
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
+        engine = MagicMock()
+        engine.register_entity.return_value = {"node_id": "x", "type": "skill_session", "is_new": True}
+
+        # Simulate existing inject memory in the pool
+        first_inject_memory = {
+            "id": "mem_first",
+            "content": "[AUTO INJECT] 修复 JWT 认证 bug\ncore_items: 3\nactivated_principles: 奥卡姆剃刀, 全过程可查可透明",
+            "memory_type": "experience",
+            "tags": ["auto_inject", "source:manual", "task:done"],
+            "worth_score": 0.72,
+        }
+        engine._memories = {"mem_first": first_inject_memory}
+
+        # The supply() should find the first inject record
+        pack_with_hit = MagicMock()
+        core_item = MagicMock()
+        core_item.id = "mem_first"
+        core_item.content = first_inject_memory["content"]
+        core_item.relevance = 0.85
+        pack_with_hit.core = [core_item]
+        pack_with_hit.related = []
+        pack_with_hit.divergent = []
+        pack_with_hit.to_prompt.return_value = "# Context with hit"
+
+        with patch('plastic_promise.mcp.tools.context.SoulLoop') as mock_loop_class:
+            mock_loop = MagicMock()
+            mock_loop.pre_task_v2.return_value = pack_with_hit
+            mock_loop_class.return_value = mock_loop
+
+            with patch('plastic_promise.mcp.tools.context.handle_memory_store') as mock_store:
+                mock_store.return_value = [TextContent(
+                    type="text",
+                    text=json.dumps({"memory_id": "mem_second", "stored": True})
+                )]
+                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+                    mock_start.return_value = [TextContent(type="text", text=json.dumps({
+                        "entity_id": "skill:auto_inject:manual:2026-07-01T18:02:00",
+                        "skill_name": "auto_inject:manual",
+                        "status": "active",
+                        "domain": "reflecting",
+                        "related_memories": ["mem_first"],  # Self-feedback hit!
+                        "activated_principles": [],
+                        "chain_warning": None,
+                    }))]
+                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                        mock_complete.return_value = [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+                        result = handle_auto_context_inject(engine, {
+                            "task_description": "修复 OAuth 认证 bug",  # Similar task
+                            "source": "manual",
+                        })
+
+        data = json.loads(result[0].text)
+        # Second inject's context_pack should have the first inject record in core
+        assert data["context_pack"]["core"][0]["id"] == "mem_first"
+        assert "JWT" in data["context_pack"]["core"][0]["content"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -247,7 +405,12 @@ class TestAutoContextInject:
 Run: `python -m pytest tests/test_auto_context_inject.py -v`
 Expected: FAIL — `ImportError: cannot import name 'handle_auto_context_inject'`
 
-- [ ] **Step 3: Implement handle_auto_context_inject**
+- [ ] **Step 3: Run tests again (still fail — handler not yet implemented)**
+
+Run: `python -m pytest tests/test_auto_context_inject.py -v`
+Expected: 6 tests collect, all FAIL with `ImportError`
+
+- [ ] **Step 5: Implement handle_auto_context_inject**
 
 Append to `plastic_promise/mcp/tools/context.py`:
 
@@ -390,9 +553,9 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_auto_context_inject.py -v`
-Expected: 3 PASSED
+Expected: 6 PASSED
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add plastic_promise/mcp/tools/context.py tests/test_auto_context_inject.py
@@ -448,7 +611,7 @@ Expected: `Total tools: 34` then `OK`
 - [ ] **Step 4: Run all tests to verify no regression**
 
 Run: `python -m pytest tests/test_auto_context_inject.py tests/test_skill_tracking.py -v`
-Expected: 15 PASSED (3 new + 12 existing)
+Expected: 18 PASSED (6 new + 12 existing)
 
 - [ ] **Step 5: Commit**
 
@@ -525,15 +688,20 @@ In `soul_bridge.py`, replace the existing `pre_task()` method body (lines 83-151
                 "source": "pi_agent",
             })
             data = json.loads(inject_result[0].text)
+            # Backward compatibility: return context_pack dict (not ContextPack object)
+            # Existing callers (neko_adapter.py) expect a dict with "summary" key
             if data.get("context_pack"):
-                result["context"] = {"summary": str(data["context_pack"])[:200]}
+                result["context"] = {
+                    "summary": str(data["context_pack"])[:200],
+                    "inject_memory_id": data.get("inject_memory_id"),
+                }
         except Exception:
             result["context"] = None
 
         return result
 ```
 
-Note: the old code directly called `self._soul_loop.pre_task_v2(task, task_type)`. The new code calls `handle_auto_context_inject` which internally calls `SoulLoop.pre_task_v2()`, so the dependency on `self._soul_loop` can be removed or kept for backward compatibility.
+Note: the old code called `self._soul_loop.pre_task_v2(task, task_type)` which returned a `ContextPack` object. The new code calls `handle_auto_context_inject` which returns a dict. The `result["context"]` field is now `{"summary": str, "inject_memory_id": str}` — backward compatible because existing callers access `result["context"]["summary"]` for display purposes.
 
 - [ ] **Step 2: Verify SoulBridge imports cleanly**
 
@@ -567,18 +735,25 @@ git commit -m "refactor: SoulBridge.pre_task() → auto_context_inject handler (
 In `pi_daemon.py`, add the helper function:
 
 ```python
-async def inject_context(task_content: str, domain: str, mcp_client=None) -> dict | None:
-    """Call auto_context_inject via MCP before task execution."""
+async def inject_context(task_content: str, domain: str, role: str = "", mcp_client=None) -> dict | None:
+    """Call auto_context_inject via MCP before task execution.
+    
+    Args:
+        task_content: Task description
+        domain: Agent domain (building/fixing/reflecting)
+        role: Agent role (pi_builder/pi_fixer/pi_reviewer) — included in source for traceability
+    """
     try:
         from plastic_promise.core.constants import DOMAIN_TO_TASK_TYPE
         task_type = DOMAIN_TO_TASK_TYPE.get(domain, "general")
+        source = f"pi_agent:{role}" if role else "pi_agent"
         
         if mcp_client:
             # Path A: Pi Daemon has an MCP SSE client
             result = await mcp_client.call_tool("auto_context_inject", {
                 "task_description": task_content,
                 "task_type": task_type,
-                "source": "pi_agent",
+                "source": source,
             })
             return json.loads(result[0].text) if result else None
         else:
@@ -589,7 +764,7 @@ async def inject_context(task_content: str, domain: str, mcp_client=None) -> dic
             result = await handle_auto_context_inject(engine, {
                 "task_description": task_content,
                 "task_type": task_type,
-                "source": "pi_agent",
+                "source": source,
             })
             return json.loads(result[0].text)
     except Exception:
@@ -600,7 +775,8 @@ Then in the `_run_and_finish` function or main poll loop, add before `execute_ta
 
 ```python
 # Inject context (non-blocking, graceful degradation)
-await inject_context(task_content, domain, mcp_client)
+# role is passed so source becomes "pi_agent:builder" / "pi_agent:reviewer" etc.
+await inject_context(task_content, domain, role=role, mcp_client=mcp_client)
 ```
 
 - [ ] **Step 2: Verify pi_daemon.py imports cleanly**
@@ -675,7 +851,7 @@ git commit -m "feat: Claude Code — auto_context_inject in hook + simplified st
 - [ ] **Step 1: Run full test suite**
 
 Run: `python -m pytest tests/test_auto_context_inject.py tests/test_skill_tracking.py tests/test_quality_gate.py tests/test_decay_engine.py tests/test_lancedb_store.py -v`
-Expected: 63 PASSED (3 + 12 + 27 + 15 + 6)
+Expected: 66 PASSED (6 + 12 + 27 + 15 + 6)
 
 - [ ] **Step 2: Verify tool count and uniqueness**
 
