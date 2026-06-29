@@ -181,13 +181,19 @@ class DomainManager:
             mem_count = mem_count_row[0] if mem_count_row else 0
 
             if domain_count == 0 and mem_count > 0:
-                import time as _time
-                logging.warning(
-                    f"domains 表为空但 memories 表有 {mem_count} 条记忆。"
-                    f"将在 5 秒后自动重建域图谱。按 Ctrl+C 取消。"
-                )
-                _time.sleep(5)
-                self.rebuild_from_memories(memories_source="sqlite")
+                if hasattr(self, 'rebuild_from_memories'):
+                    import time as _time
+                    logging.warning(
+                        f"domains 表为空但 memories 表有 {mem_count} 条记忆。"
+                        f"将在 5 秒后自动重建域图谱。按 Ctrl+C 取消。"
+                    )
+                    _time.sleep(5)
+                    self.rebuild_from_memories(memories_source="sqlite")
+                else:
+                    logging.warning(
+                        f"domains 表为空但 memories 表有 {mem_count} 条记忆，"
+                        f"但 rebuild_from_memories 不可用 — 跳过自动重建"
+                    )
         except Exception:
             pass
 
