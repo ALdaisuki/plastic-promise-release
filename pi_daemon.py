@@ -21,18 +21,17 @@ async def listen_and_work():
     print(f"Listening: {SSE_URL}")
 
     _busy = False
-    _last_event = asyncio.get_event_loop().time()
+    _last_event = [asyncio.get_event_loop().time()]  # mutable to share across closures
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(300)) as client:
         # SSE listener task
         async def sse_listen():
-            nonlocal _last_event
             while True:
                 try:
                     async with client.stream("GET", SSE_URL) as response:
                         print(f"Connected. Waiting for tasks...")
                         async for line in response.aiter_lines():
-                            _last_event = asyncio.get_event_loop().time()
+                            _last_event[0] = asyncio.get_event_loop().time()
                             if not line.startswith("data:"):
                                 continue
                             data_str = line[5:].strip()
@@ -64,12 +63,12 @@ async def listen_and_work():
                 await asyncio.sleep(10)
                 if _busy:
                     continue
-                elapsed = asyncio.get_event_loop().time() - _last_event
+                elapsed = asyncio.get_event_loop().time() - _last_event[0]
                 if elapsed < 10:
                     continue  # SSE is working, skip poll
                 print(f"[{_now()}] SSE silent for {elapsed:.0f}s → polling fallback...")
                 await execute_task()
-                _last_event = asyncio.get_event_loop().time()
+                _last_event[0] = asyncio.get_event_loop().time()
 
         await asyncio.gather(sse_listen(), poll_fallback())
 
