@@ -288,6 +288,8 @@ async def main():
         _cleanup_counter += 1
         if _cleanup_counter >= 360:  # ~每小时 (360 * 10s = 3600s)
             cleanup_old_memories()
+            from audit_daemon import run_audit
+            await run_audit()
             _cleanup_counter = 0
         await asyncio.sleep(INTERVAL)
 
