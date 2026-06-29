@@ -206,7 +206,8 @@ class ContextEngine:
         # DomainManager for domain-weighted retrieval
         try:
             from plastic_promise.core.domain_manager import DomainManager
-            self._dm = DomainManager()
+            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+            self._dm = DomainManager(db_path=db_path)
             self._dm_ok = True
         except Exception as e:
             logging.error(f"DomainManager init failed: {e} — domain features disabled")

@@ -6,6 +6,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class TestResilienceE2E:
     def test_rebuild_and_recover(self):
+        """Full-stack integration: requires shared file DB (not :memory:)"""
+        import os
+        # Must use real DB file — :memory: creates separate DBs per connection
+        os.environ["PLASTIC_DB_PATH"] = "plastic_memory.db"
         from plastic_promise.core.context_engine import ContextEngine
         e = ContextEngine()
 
