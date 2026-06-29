@@ -89,12 +89,34 @@ def _hybrid_fuse(vector_results, text_results, vector_weight=0.7):
 | `plastic_promise/memory/pipeline.py` | `_process_embedded_to_migrate()` 写入 LanceDB 替代 `_vector` 内存字段 |
 | `plastic_promise/mcp/server.py` | `memory_recall` 向量通道始终启用 |
 
-### 2.6 不做的
+### 2.6 存量记忆回填
+
+`register_memory()` 在 6 处被直接调用（audit_daemon、bootstrap、pack、soul_memory、step_auditor、management），全部绕过 MemoryPipeline，不会写入 LanceDB。
+
+**回填策略：** LanceDBStore 初始化时自动检测：
+
+```python
+def _backfill_if_needed(self, engine):
+    """LanceDB 表为空但 SQLite 有记录 → 自动回填。"""
+    ldb_count = self.table.count_rows()
+    sqlite_count = engine.memory_count
+    if ldb_count == 0 and sqlite_count > 0:
+        records = engine.list_memories(limit=10000)
+        for r in records:
+            if not self._has_vector(r.id):
+                vec = self.embedder.embed(r.content)
+                self.insert(r.id, vec, r.content, r.tier, r.category, r.scope)
+```
+
+- 只在 LanceDB 表为空时触发（一次性迁移）
+- 每条记忆独立 embed，单条失败不影响其他
+- 回填完成后记录日志
+
+### 2.7 不做的
 
 - IVF_PQ 索引 — 当前 28 条记忆，brute-force 足够
 - Cross-encoder reranking — 需要外部 API，留到未来
 - Tantivy FTS — LanceDB 内置 FTS 足够
-- 存量记忆回填 — 当前 28 条全部经过 pipeline，已有向量
 
 ---
 
