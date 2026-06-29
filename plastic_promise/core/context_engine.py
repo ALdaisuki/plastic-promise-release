@@ -129,6 +129,8 @@ class MemoryRecord:
         self.worth_success: int = 0
         self.worth_failure: int = 0
         self.tier: str = "L2"
+        self.decay_multiplier: float = 1.0
+        self.effective_half_life: float = 3.0
 
     def worth_score(self) -> float:
         """Calculate worth score from success/failure observations.
@@ -255,6 +257,8 @@ class ContextEngine:
             "worth_failure": record.get("worth_failure", 0),
             "activation_weight": record.get("activation_weight", 0.5),
             "created_at": record.get("created_at", datetime.datetime.now().isoformat()),
+            "decay_multiplier": record.get("decay_multiplier", 1.0),
+            "effective_half_life": record.get("effective_half_life", 3.0),
         }
         self._memories[mid] = data
         if self._sqlite:
@@ -306,6 +310,8 @@ class ContextEngine:
             "tier": record.tier,
             "tags": record.tags,
             "domain": record.domain,
+            "decay_multiplier": getattr(record, "decay_multiplier", 1.0),
+            "effective_half_life": getattr(record, "effective_half_life", 3.0),
         }
         self._memories[mid] = data
         if self._sqlite:
@@ -335,6 +341,8 @@ class ContextEngine:
         record.tier = mem.get("tier", "L2")
         record.tags = mem.get("tags", [])
         record.domain = mem.get("domain", "uncategorized")
+        record.decay_multiplier = mem.get("decay_multiplier", 1.0)
+        record.effective_half_life = mem.get("effective_half_life", 3.0)
         return record
 
     def update_memory(self, memory_id: str, content=None,
@@ -1079,6 +1087,31 @@ class _SQLiteStorage:
         except Exception:
             pass  # 列已存在
         self._conn.commit()
+
+        # 存量迁移: 对已有记忆一次性计算真实衰减值
+        try:
+            from plastic_promise.core.decay_engine import WeibullDecayCalculator
+            decay_calc = WeibullDecayCalculator()
+            now = datetime.datetime.now().isoformat()
+            rows = self._conn.execute(
+                "SELECT id, tier, created_at FROM memories WHERE decay_multiplier = 1.0"
+            ).fetchall()
+            if rows:
+                for row in rows:
+                    mid, tier, created_at = row
+                    dm = decay_calc.compute_decay(
+                        tier=tier or "L1",
+                        created_at=created_at or now,
+                        current_time_str=now,
+                    )
+                    self._conn.execute(
+                        "UPDATE memories SET decay_multiplier = ? WHERE id = ?",
+                        (dm, mid)
+                    )
+                self._conn.commit()
+                logging.info("Bulk decay migration: %d memories updated", len(rows))
+        except Exception as e:
+            logging.warning("Bulk decay migration skipped: %s", e)
 
     def upsert(self, mid: str, data: dict):
         """Insert or update a memory record."""
