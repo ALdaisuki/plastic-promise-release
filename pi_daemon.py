@@ -40,7 +40,7 @@ def get_pending_task():
     )
     rows = conn.execute(
         "SELECT id, content, tags FROM memories "
-        "WHERE tags LIKE '%task:pending%' OR tags LIKE '%task:rejected%' OR tags LIKE '%task:active%'"
+        "WHERE tags LIKE '%task:%'"
     ).fetchall()
     conn.close()
 
