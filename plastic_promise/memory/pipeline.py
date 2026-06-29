@@ -35,7 +35,7 @@ class MemoryPipeline:
 
     def store_urgent(
         self, content: str, memory_type: str = "experience", source: str = "user",
-        entity_ids: list[str] = None,
+        entity_ids: list[str] = None, custom_tags: list[str] = None,
     ) -> str:
         """Store a memory urgently with temporary tags, skipping embedding.
 
@@ -50,6 +50,8 @@ class MemoryPipeline:
         """
         mid = f"fuzzy_{uuid.uuid4().hex[:12]}"
         tags = self._extract_semantic_tags(content)
+        if custom_tags:
+            tags = list(set(tags + custom_tags))
         self._buffer[mid] = {
             "memory_id": mid,
             "content": content,

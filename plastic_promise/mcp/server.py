@@ -106,6 +106,7 @@ async def list_tools() -> list[Tool]:
                     "memory_type": {"type": "string", "description": "类型: task/experience/principle/code"},
                     "source": {"type": "string", "description": "来源: user/system/previous_output"},
                     "entity_ids": {"type": "array", "items": {"type": "string"}, "description": "关联实体 ID 列表"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "自定义标签 (task:pending, assignee:pi_builder 等)"},
                 },
                 "required": ["content", "memory_type"],
             },

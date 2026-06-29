@@ -132,6 +132,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         source = args.get("source", "user")
         scope = args.get("scope", "global")
         entity_ids = args.get("entity_ids", [])
+        custom_tags = args.get("tags", [])  # 用户指定的标签 (task:pending 等)
 
         owner = args.get("owner", "")
 
@@ -143,7 +144,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         #   raw → tagged(关键词) → classified(大类分L1/L3) → embedded(细分向量) → 迁移主池
         # This is the standard path, not a fallback. (原则 #4 上下文驱动, #10 自演化闭环)
         fb = _get_fuzzy_buffer(engine)
-        fuzzy_id = fb.store_urgent(content, memory_type, source, entity_ids=all_entities)
+        fuzzy_id = fb.store_urgent(content, memory_type, source, entity_ids=all_entities, custom_tags=custom_tags)
 
         # Auto-link extracted entities to graph immediately
         for eid in all_entities:
