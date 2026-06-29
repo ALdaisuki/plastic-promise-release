@@ -59,23 +59,28 @@ Plastic Promise 的自动化上下文注入能力（SoulBridge.pre_task → Soul
   task_description: string (必填) — 当前任务描述
   task_type:        string — 任务类型 (默认 "general")
   source:           string — "pi_agent" | "claude_code" | "manual" (默认 "manual")
+  scope:            string — 检索范围 (默认 "global")。Claude Code Hook 传入 "agent:claude" 防止与 Pi Agent 记忆互污
 
 内部步骤:
   1. skill_session_start(skill_name=derive_from(source), task_description)
-     → entity_id = "skill:auto_inject:pi:2026-07-01T..." 
+     → entity_id = "skill:auto_inject:pi_agent:2026-07-01T..." 
      → 原则激活 + 记忆召回 + entity 图谱注册
+     → domain fallback: auto_inject:* → "reflecting" (审计快照本质)
   2. SoulLoop.pre_task_v2(task_description, task_type)
      → ContextPack (core/related/divergent + activated_principles)
+     → 异常降级时: 调用 principle_activate(task_type="general") 作为保底，确保原则不空
   3. memory_store(
-       content="[AUTO INJECT] {task_description} | core_items: {len(core)} | principles: {names}",
+       content="[AUTO INJECT] {task_description}\ncore_items: {len(core)}\nactivated_principles: {names}",
        memory_type="experience",
        source="auto_inject",
        entity_ids=[entity_id],
        tags=["auto_inject", f"source:{source}", f"skill:auto_inject:{source}"]
      )
-     → 注入记录沉淀为记忆，下次类似任务可检索
+     → content 保留完整 task_description 原文，确保下次检索可命中
+     → 注入记录沉淀为记忆，形成自反馈循环
   4. skill_session_complete(entity_id, outcome="注入完成", artifacts=[])
      → 自动完成追踪实体（auto_inject 是一次性操作，注入即完成）
+     → duration_ms 极短（<2s）是预期行为；审计时孤儿检测自动跳过 auto_inject: 前缀
   5. 返回聚合结果
 
 返回值:
@@ -141,8 +146,9 @@ async def pre_task(self, task: str, task_type: str = "general"):
 # hooks/session-start — 在现有注入 using-superpowers/SKILL.md 代码之后追加
 
 # 调用 auto_context_inject (MCP 工具统一入口)
+# scope: "agent:claude" 防止 Pi Agent 记忆与 Claude Code 记忆互相污染
 claude mcp call plastic-promise auto_context_inject \
-  '{"task_description":"会话启动","task_type":"general","source":"claude_code"}' \
+  '{"task_description":"会话启动","task_type":"general","scope":"agent:claude","source":"claude_code"}' \
   2>/dev/null || true  # 优雅降级: 失败不阻塞会话启动
 ```
 
@@ -238,12 +244,12 @@ tags: ["auto_inject", "source:claude_code", "skill:auto_inject:claude_code",
 
 | 文件 | 改动 | 说明 |
 |------|------|------|
-| `plastic_promise/mcp/tools/context.py` | +80 行 | 新增 `handle_auto_context_inject` handler |
+| `plastic_promise/mcp/tools/context.py` | +90 行 | 新增 `handle_auto_context_inject` handler（含 principle 降级保底 + content 完整原文保留） |
 | `plastic_promise/mcp/server.py` | +15 行 | 注册 `auto_context_inject` 工具 + call_tool 路由 |
-| `plastic_promise/mcp/tools/skill_tracking.py` | +15 行 | `_store_skill_start` 对 `auto_inject:` 前缀 skill_name 不做 parent 校验 |
+| `plastic_promise/mcp/tools/skill_tracking.py` | +20 行 | `auto_inject:` 前缀: domain→reflecting, 跳过 parent 校验, 孤儿检测自动忽略 |
 | `bridge/soul_bridge.py` | ~15 行替换 | `pre_task()` 改为调用 handler（Python 直接调用） |
 | `pi_daemon.py` | +10 行 | `execute_task()` 前调用 `auto_context_inject` |
-| `hooks/session-start` | +3 行 | 追加 `claude mcp call auto_context_inject` |
+| `hooks/session-start` | +3 行 | 追加 `claude mcp call auto_context_inject`（含 scope:"agent:claude"） |
 | `CLAUDE.md` | 替换启动序列 (~10 行) | 5 步 → 3 步 |
 | `tests/test_auto_context_inject.py` | **新增** (~150 行) | 测试 handler + 自反馈循环 + 三条路径 |
 
