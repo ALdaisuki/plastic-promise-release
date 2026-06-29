@@ -42,7 +42,7 @@ async def handle_audit_run(engine: Any, args: dict) -> list[TextContent]:
         scope = args.get("scope", "global")
         time_range_hours = args.get("time_range_hours", 24)
         auditor = SoulAuditor()
-        report = auditor.run_audit()
+        report = await auditor.run_audit()
         return [TextContent(type="text", text=json.dumps({
             "tool": "audit_run",
             "scope": scope,

@@ -50,7 +50,7 @@ DIGITAL_BODY_SYSTEMS = {
         "name": "免疫系统",
         "analogy": "免疫细胞、抗体",
         "modules": ["soul_audit"],
-        "subsystems": ["七维度审计", "每日cron", "回顾审计"],
+        "subsystems": ["八维度审计", "每日cron", "回顾审计"],
         "maturity": 0.70,
         "description": "检测和修复系统异常",
     },
@@ -126,52 +126,58 @@ TRUST_TIER_LOW = 0.30           # 低信任：收紧约束
 TRUST_TIER_CRITICAL = 0.15      # 临界：几乎全部约束
 
 # ============================================================
-# 审计维度权重（七维度）
+# 审计维度权重（八维度）
 # ============================================================
-# 维度映射自 SCARF 五维度扩展为七维度审计框架
+# 维度映射自 SCARF 五维度扩展为八维度审计框架
 
 AUDIT_DIMENSIONS = {
     "simplicity": {
         "name": "奥卡姆剃刀",
-        "weight": 0.15,
+        "weight": 0.13,
         "description": "方案是否最简洁？是否存在不必要的实体或步骤？每一步只做当前最必要的事。",
         "principle_id": 1,
     },
     "transparency": {
         "name": "全过程可查可透明",
-        "weight": 0.15,
+        "weight": 0.16,
         "description": "每步是否有完整 git 痕迹？审计日志是否可追溯？中间产物是否可验证？",
         "principle_id": 2,
     },
     "audit_closure": {
         "name": "自我审计闭环",
-        "weight": 0.15,
+        "weight": 0.13,
         "description": "是否有根因分析？是否有改良措施？是否提炼了可迁移教训？量化评分是否准确？",
         "principle_id": 3,
     },
     "principle_activation": {
         "name": "原则激活率",
-        "weight": 0.15,
+        "weight": 0.13,
         "description": "每次任务是否自动激活了相关原则？激活的原则是否被实际遵循？是否存在原则\"休眠\"？",
         "principle_id": 4,
     },
     "memory_supply": {
         "name": "记忆供给质量",
-        "weight": 0.15,
+        "weight": 0.13,
         "description": "上下文供给是否充分？记忆召回的相关性和时效性如何？三层上下文包的比例是否合理？",
         "principle_id": 4,
     },
     "constraint_compliance": {
         "name": "约束合规度",
-        "weight": 0.15,
+        "weight": 0.13,
         "description": "L0 硬边界是否有违规？L1 动态约束是否按信任分正确调整？L2 免疫巡检是否按时执行？",
         "principle_id": 9,
     },
     "feedback_closure": {
         "name": "反馈闭环率",
-        "weight": 0.10,
+        "weight": 0.09,
         "description": "每次交互是否产生了反馈信号？adopted/rejected/ignored 的分布是否健康？反馈是否驱动了行为修正？",
         "principle_id": 10,
+    },
+    "skill_trace": {
+        "name": "Skill 执行可追溯",
+        "weight": 0.10,
+        "description": "SuperPowers skill 执行是否有完整的 session 记录？调用链是否完整闭环？是否存在孤儿 active 或链断裂？",
+        "principle_id": 2,
     },
 }
 
@@ -496,3 +502,61 @@ DEDUP_SIMILARITY_THRESHOLD = 0.85      # cosine similarity >= this → duplicate
 MERGE_SIMILARITY_THRESHOLD = 0.70      # cosine similarity >= this → merge candidate
 MERGE_TOP_K = 3                        # top-k similar to check per memory during merge
 MERGE_AUDIT_RETENTION_DAYS = 7         # merged records kept in SQLite before permanent GC
+
+# ============================================================
+# Skill Tracking — SuperPowers 流程可追踪化
+# ============================================================
+
+SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
+    # 起点 skills (无强制前驱)
+    "brainstorming":               {"predecessors": [],           "successors": ["writing-plans"]},
+    "systematic-debugging":        {"predecessors": [],           "successors": ["test-driven-development"]},
+    "requesting-code-review":      {"predecessors": [],           "successors": ["receiving-code-review"]},
+    "writing-skills":              {"predecessors": [],           "successors": []},
+
+    # 中间 skills
+    "writing-plans":               {"predecessors": ["brainstorming"],  "successors": ["subagent-driven-development", "executing-plans"]},
+    "test-driven-development":     {"predecessors": ["systematic-debugging"], "successors": ["verification-before-completion"]},
+    "subagent-driven-development": {"predecessors": ["writing-plans"], "successors": ["finishing-a-development-branch"]},
+    "executing-plans":             {"predecessors": ["writing-plans"], "successors": ["verification-before-completion"]},
+    "verification-before-completion": {"predecessors": ["test-driven-development", "executing-plans"], "successors": ["finishing-a-development-branch"]},
+    "receiving-code-review":       {"predecessors": ["requesting-code-review"], "successors": []},
+
+    # 终端 skills
+    "finishing-a-development-branch": {"predecessors": ["subagent-driven-development", "verification-before-completion"], "successors": []},
+
+    # 辅助 skills (松散约束)
+    "using-git-worktrees":         {"predecessors": [], "successors": []},
+    "dispatching-parallel-agents": {"predecessors": [], "successors": []},
+    "using-superpowers":           {"predecessors": [], "successors": ["brainstorming", "systematic-debugging", "requesting-code-review"]},
+}
+
+SKILL_DOMAIN_MAP: dict[str, str] = {
+    "brainstorming":                  "designing",
+    "writing-plans":                  "designing",
+    "executing-plans":                "building",
+    "subagent-driven-development":    "building",
+    "dispatching-parallel-agents":     "building",
+    "using-git-worktrees":             "building",
+    "test-driven-development":        "building",
+    "verification-before-completion": "reflecting",
+    "requesting-code-review":         "reflecting",
+    "receiving-code-review":          "reflecting",
+    "systematic-debugging":           "fixing",
+    "finishing-a-development-branch": "governing",
+    "writing-skills":                 "designing",
+    "using-superpowers":              "governing",
+}
+
+DOMAIN_TO_TASK_TYPE: dict[str, str] = {
+    "designing":   "architecture",
+    "building":    "code_generation",
+    "reflecting":  "code_review",
+    "fixing":      "debugging",
+    "governing":   "general",
+}
+
+# Skill tracking thresholds
+ORPHAN_THRESHOLD_MINUTES: int = 30
+MAX_STILL_IN_PROGRESS_RENEWALS: int = 3
+SKILL_COMPLETE_WORTH_DELTA: float = 0.02
