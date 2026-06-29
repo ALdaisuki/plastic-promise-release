@@ -16,37 +16,26 @@ DOMAIN = os.environ.get("PI_DOMAIN", sys.argv[2] if len(sys.argv) > 2 else "buil
 INTERVAL = int(os.environ.get("PI_INTERVAL", "10"))
 PI_CMD = shutil.which("pi") or shutil.which("pi.cmd") or r"D:\npm-global\pi.cmd"
 
-# 引擎共享——与 SSE 服务器使用相同的 plastic_memory.db
+# Daemon shares plastic_memory.db with SSE server — reads tags via sqlite3
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plastic_promise.core.context_engine import ContextEngine
-
-_engine = None
-
-def get_engine():
-    global _engine
-    if _engine is None:
-        _engine = ContextEngine()
-    return _engine
 
 
-def has_pending_task(role: str, domain: str) -> bool:
-    """零 LLM 检查——直读 SQLite memories 表查 task:pending 标签。"""
+def get_pending_task(role: str) -> tuple[str, str] | None:
+    """零 LLM — 直读 SQLite 返回 (task_content, task_id) 或 None。"""
     import sqlite3, json
     conn = sqlite3.connect(
         os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
     )
-    rows = conn.execute("SELECT tags FROM memories").fetchall()
+    rows = conn.execute("SELECT id, content, tags FROM memories WHERE tags LIKE '%task:pending%'").fetchall()
     conn.close()
-    for (tags_raw,) in rows:
+    for (mid, content, tags_raw) in rows:
         try:
             tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
         except Exception:
             continue
         if "task:pending" in tags and f"assignee:{role}" in tags:
-            return True
-        if "task:pending" in tags and "assignee:any" in tags:
-            return True
-    return False
+            return content, mid
+    return None
 
 
 def mark_active(role: str, task_tags: list[str]) -> list[str]:
@@ -59,17 +48,14 @@ def mark_active(role: str, task_tags: list[str]) -> list[str]:
     return new_tags
 
 
-async def execute_task():
+async def execute_task(task_content: str, task_id: str):
     proc = await asyncio.create_subprocess_exec(
         PI_CMD, "--print",
         f"You are {ROLE}, domain {DOMAIN}. "
-        f"1. Call memory_recall(domain_hint='{DOMAIN}', query='task:active AND owner:{ROLE}') "
-        f"   to find your claimed task. If none found, check task:pending. "
-        f"2. Execute using write/edit/bash. "
-        f"3. Call memory_store(content='{ROLE} DONE: <summary>', memory_type='experience', "
-        f"   domain='{DOMAIN}', tags=['task:done','owner:{ROLE}','domain:{DOMAIN}']) "
-        f"   AND also mark the original task memory with task:done. "
-        f"4. If no tasks found, just reply IDLE.",
+        f"Task: {task_content}. "
+        f"Execute it using write/edit/bash. "
+        f"When done, call memory_store(content='{ROLE} DONE: <summary>', memory_type='experience', "
+        f"domain='{DOMAIN}', tags=['task:done','owner:{ROLE}','domain:{DOMAIN}']).",
         "--session-id", f"{ROLE}_daemon",
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
@@ -87,13 +73,12 @@ async def main():
     print(f"Mode: zero-LLM tag check (task:pending + assignee:{ROLE})")
 
     while True:
-        if has_pending_task(ROLE, DOMAIN):
-            print(f"[{_now()}] TASK FOUND → waking {ROLE}")
-            result = await execute_task()
+        task = get_pending_task(ROLE)
+        if task:
+            content, task_id = task
+            print(f"[{_now()}] TASK {task_id[:20]}... → executing")
+            result = await execute_task(content, task_id)
             print(result or "DONE")
-            # Reload engine to pick up new memories
-            global _engine
-            _engine = None
         else:
             print(f"[{_now()}] idle.", end="\r")
         await asyncio.sleep(INTERVAL)
