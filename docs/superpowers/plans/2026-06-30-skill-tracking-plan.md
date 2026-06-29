@@ -339,6 +339,21 @@ def _parse_skill_from_entity_id(entity_id: str) -> str | None:
     return None
 
 
+def _get_current_branch() -> str:
+    """Detect current git branch name, or return empty string."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _validate_parent(skill_name: str, parent_entity_id: str | None, engine: Any) -> str | None:
     """Check parent is a legal predecessor. Returns warning string or None."""
     if not parent_entity_id:
@@ -395,16 +410,20 @@ async def _store_skill_start(
     try:
         from plastic_promise.mcp.tools.memory import handle_memory_store
         content = f"[SKILL START] {skill_name}: {task_description}"
+        branch = _get_current_branch()
+        tags = [
+            "task:active",
+            f"skill:{skill_name}",
+            f"domain:{domain}",
+        ]
+        if branch:
+            tags.append(f"branch:{branch}")
         result = await handle_memory_store(engine, {
             "content": content,
             "memory_type": "experience",
             "source": "superpowers",
             "entity_ids": [entity_id],
-            "tags": [
-                "task:active",
-                f"skill:{skill_name}",
-                f"domain:{domain}",
-            ],
+            "tags": tags,
         })
         data = json.loads(result[0].text)
         return data.get("memory_id", "?")
@@ -736,22 +755,26 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
         }, ensure_ascii=False))]
 
     # Find existing memory record for this session
+    # entity_id is "skill:brainstorming:2026-06-30T14:23:01.123456"
+    # entity_ids stored in memory is [entity_id, ...] (no "skill_session:" prefix)
     existing_memory = None
     for mid, mem in engine._memories.items():
-        if entity_id in mem.get("entity_ids", []) or mid == getattr(mem, "id", None):
+        mem_dict = mem if isinstance(mem, dict) else {
+            "id": getattr(mem, "id", mid),
+            "content": getattr(mem, "content", ""),
+            "tags": list(getattr(mem, "tags", [])),
+            "worth_score": getattr(mem, "worth_score", 0.5),
+            "worth_success": getattr(mem, "worth_success", 0),
+            "worth_failure": getattr(mem, "worth_failure", 0),
+            "created_at": getattr(mem, "created_at", ""),
+            "last_accessed": getattr(mem, "last_accessed", ""),
+        }
+        mem_entity_ids = mem_dict.get("entity_ids", [])
+        if entity_id in mem_entity_ids:
             # Check if this memory is the start record
-            content = mem.get("content", "") if isinstance(mem, dict) else getattr(mem, "content", "")
+            content = mem_dict.get("content", "")
             if "[SKILL START]" in str(content):
-                existing_memory = mem if isinstance(mem, dict) else {
-                    "id": getattr(mem, "id", mid),
-                    "content": getattr(mem, "content", ""),
-                    "tags": list(getattr(mem, "tags", [])),
-                    "worth_score": getattr(mem, "worth_score", 0.5),
-                    "worth_success": getattr(mem, "worth_success", 0),
-                    "worth_failure": getattr(mem, "worth_failure", 0),
-                    "created_at": getattr(mem, "created_at", ""),
-                    "last_accessed": getattr(mem, "last_accessed", ""),
-                }
+                existing_memory = mem_dict
                 break
 
     domain = SKILL_DOMAIN_MAP.get(skill_name, "all")
@@ -1127,14 +1150,15 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
                     except (ValueError, IndexError):
                         pass
 
-        # Find child sessions (entities that reference this as parent)
-        child_skills = []
-        for other_id, other_node in engine._graph_edges if hasattr(engine._graph_edges, 'items') else []:
-            pass
-        # Check edges for parent relationships
+        # Find child sessions via graph edges
+        child_skills: list[str] = []
         for edge in engine._graph_edges:
-            if edge.get("from") == entity_id and edge.get("relation") == "parent_of":
-                child_skills.append(edge.get("to", ""))
+            # _graph_edges is list[dict] with keys: from, to, relation, weight
+            if isinstance(edge, dict):
+                if edge.get("from") == f"skill_session:{entity_id}" and edge.get("relation") == "parent_of":
+                    child_id = edge.get("to", "")
+                    if child_id.startswith("skill_session:"):
+                        child_skills.append(child_id.replace("skill_session:", "", 1))
 
         sessions.append({
             "entity_id": entity_id,
@@ -1193,11 +1217,15 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
 
     # Build parent relationships from edges
     for edge in engine._graph_edges:
-        for s in sessions:
-            if edge.get("to") == f"skill_session:{s['entity_id']}":
-                parent_id = edge.get("from", "")
-                if parent_id.startswith("skill_session:"):
-                    s["parent_skill"] = parent_id.replace("skill_session:", "", 1)
+        if not isinstance(edge, dict):
+            continue
+        if edge.get("relation") == "parent_of":
+            child_full_id = edge.get("to", "")
+            for s in sessions:
+                if f"skill_session:{s['entity_id']}" == child_full_id:
+                    parent_full_id = edge.get("from", "")
+                    if parent_full_id.startswith("skill_session:"):
+                        s["parent_skill"] = parent_full_id.replace("skill_session:", "", 1)
 
     response = {
         "sessions": sessions,
@@ -1363,7 +1391,13 @@ async def handle_skill_session_audit(engine: Any, args: dict) -> list[TextConten
                 })
 
                 # Auto-fix: create the missing session record
-                if auto_fix:
+                # GUARD: skip if ANY session exists for this skill (prevents duplicates
+                # when a skill is mentioned in multiple memories)
+                skill_has_any_session = any(
+                    node.get("name") == skill_name
+                    for node in skill_sessions.values()
+                )
+                if auto_fix and not skill_has_any_session:
                     try:
                         description = f"[事后补录] {content[:200]}"
                         fix_result = await handle_skill_session_start(engine, {
@@ -1773,6 +1807,18 @@ In `GOAL.md`, update the TODO/completion status section to reflect the new skill
 git add GOAL.md
 git commit -m "docs: update GOAL.md — skill tracking implementation complete"
 ```
+
+---
+
+### Implementation Notes (非阻塞)
+
+1. **`_activate_skill_principles` 工具调用链**: 当前通过 MCP handler 间接调用 `handle_principle_activate`。实施时如遇循环依赖，可改为直接调用 `plastic_promise.core.principles` 中的关键词匹配函数，减少跨工具序列化开销。
+
+2. **续期计数健壮性**: `still_in_progress` 续期计数基于 content 字符串匹配 `[still_in_progress]`。如需更健壮的实现，可在 metadata 中维护 `renewal_count` 字段。
+
+3. **`chain_valid` 语义**: `chain_valid` 表示"无链违规 warning"，而非"完全符合推荐调用链"。辅助 skills（如 `using-git-worktrees`）的父节点关系宽松，不会产生 warning。
+
+4. **审计第八维权重**: `0.13 * 6 + 0.09 + 0.10 = 0.97`。需在实施时精确调整至总和 1.0——建议将 `simplicity`/`transparency`/`audit_closure`/`principle_activation`/`memory_supply`/`constraint_compliance` 调整为 `0.13`（各减 0.02），`feedback_closure` 减为 `0.09`，`skill_trace` 为 `0.10`，总和 `0.13*6 + 0.09 + 0.10 = 0.97`... 需精确计算：原七维总和 `0.15+0.15+0.15+0.15+0.15+0.15+0.10=1.00`，调整为八维 `0.13+0.13+0.13+0.13+0.13+0.13+0.09+0.10=0.97`（差 0.03）。实施时重新计算：将其中一个 0.13 调整为 0.16 即可。或直接设置为 `0.135*6 + 0.09 + 0.10 = 1.00`。
 
 ---
 
