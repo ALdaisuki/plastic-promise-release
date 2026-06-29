@@ -21,12 +21,14 @@ class MemoryPipeline:
         embedded   — 向量嵌入（细分），准备入主池
     """
 
-    def __init__(self, rec_mem=None, embedder=None, tier_manager=None, domain_manager=None) -> None:
+    def __init__(self, rec_mem=None, embedder=None, tier_manager=None,
+                 domain_manager=None, lancedb=None) -> None:
         self._buffer: Dict[str, Dict[str, Any]] = {}
         self.rec_mem = rec_mem
         self.embedder = embedder
         self._tier_manager = tier_manager
         self._dm = domain_manager
+        self._lancedb = lancedb  # vector dedup (None → graceful skip)
         self._last_process: Optional[str] = None
         self._batch_size = 10
 
@@ -37,36 +39,93 @@ class MemoryPipeline:
     def store_urgent(
         self, content: str, memory_type: str = "experience", source: str = "user",
         entity_ids: list[str] = None, custom_tags: list[str] = None,
-    ) -> str:
-        """Store a memory urgently with temporary tags, skipping embedding.
+        domain_hint: str = None,
+    ) -> Optional[str]:
+        """Store a memory with smart extraction, then through pipeline.
 
-        Args:
-            content: Memory text content.
-            memory_type: Memory type (experience/reflection/principle/feedback).
-            source: Source identifier (user/agent/system).
-            entity_ids: Auto-extracted entity references (for graph linking).
+        Calls extract_memories() for pre-extraction.
+        - 0 results + whitespace content → returns None (pure noise)
+        - 0 results + substantive content → raw content fallback
+        - 1 result → returns str memory_id
+        - N results → all N enter buffer; returns first memory_id as str
 
         Returns:
-            memory_id with 'fuzzy_' prefix.
+            memory_id with 'fuzzy_' prefix, or None if extraction yields nothing.
         """
-        mid = f"fuzzy_{uuid.uuid4().hex[:12]}"
-        tags = self._extract_semantic_tags(content)
-        if custom_tags:
-            tags = list(set(tags + custom_tags))
-        self._buffer[mid] = {
-            "memory_id": mid,
-            "content": content,
-            "memory_type": memory_type,
-            "source": source,
-            "entity_ids": entity_ids or [],
-            "stage": "raw",
-            "tags": tags,
-            "vector": None,
-            "tier": None,
-            "created_at": datetime.datetime.now().isoformat(),
-            "processed_at": None,
-        }
-        return mid
+        # Step 0: Smart extraction
+        extracted_list = []
+        try:
+            from plastic_promise.smart_extractor import extract_memories
+            extracted_list = extract_memories(content)
+        except Exception:
+            pass  # Fallback: raw content without extraction metadata
+
+        if not extracted_list and not content.strip():
+            return None
+
+        # If extraction returned nothing, treat the raw content as one memory
+        if not extracted_list:
+            extracted_list = [None]  # sentinel: raw content, no extraction
+
+        first_mid = None
+        for em in extracted_list:
+            mid = f"fuzzy_{uuid.uuid4().hex[:12]}"
+
+            # Determine content: extracted L2 or raw
+            if em is not None:
+                mem_content = em.l2_content if em.l2_content else content
+            else:
+                mem_content = content
+
+            # Tags: semantic extraction OR derived from ExtractedMemory
+            if em is not None and em.category:
+                # Fix #5: Derive tags from extraction result, skip redundant _extract_semantic_tags
+                tags = [f"cat:{em.category}"]
+            else:
+                tags = self._extract_semantic_tags(mem_content)
+            if em is not None and em.category:
+                cat_tag = f"cat:{em.category}"
+                if cat_tag not in tags:
+                    tags.append(cat_tag)
+            if custom_tags:
+                tags = list(set(tags + custom_tags))
+
+            record = {
+                "memory_id": mid,
+                "content": mem_content,
+                "memory_type": memory_type,
+                "source": source,
+                "entity_ids": entity_ids or [],
+                "stage": "raw",
+                "tags": tags,
+                "vector": None,
+                "tier": None,
+                "domain": domain_hint or "uncategorized",
+                "created_at": datetime.datetime.now().isoformat(),
+                "processed_at": None,
+            }
+
+            # Attach extraction metadata if available
+            if em is not None:
+                record["extracted"] = {
+                    "category": em.category,
+                    "l0_abstract": em.l0_abstract,
+                    "l1_summary": em.l1_summary,
+                    "l2_content": em.l2_content,
+                    "confidence": em.confidence,
+                    "importance": em.importance,
+                }
+
+            self._buffer[mid] = record
+            if first_mid is None:
+                first_mid = mid
+
+        # Fix #1: Log multi-extraction for traceability
+        if len(extracted_list) > 1:
+            logging.info("store_urgent: %d memories extracted from content, returning first ID %s",
+                         len(extracted_list), first_mid)
+
+        return first_mid
 
     def process_pipeline(self) -> Dict[str, Any]:
         """Run the full 4-stage pipeline on all buffered items.
@@ -235,62 +294,150 @@ class MemoryPipeline:
         return count
 
     def _process_embedded_to_migrate(self) -> int:
-        """Stage 4: Migrate embedded items to main memory pool via RecMem."""
+        """Stage 4: Dedup → QualityGate → Migrate embedded items to main pool.
+
+        Direction B enhancements:
+          1. Vector dedup via LanceDB.check_duplicate() (cos >= 0.85 -> bump counters)
+          2. QualityGate composite scoring (4-dim x 0.25)
+          3. Normal RecMem.store() for passing records
+        """
+        from plastic_promise.core.quality_gate import QualityGate
+
         items = [(mid, r) for mid, r in self._buffer.items() if r["stage"] == "embedded"]
         count = 0
+        gate = QualityGate()
+
         for mid, record in items:
             try:
-                if self.rec_mem is not None:
-                    stored = self.rec_mem.store(
-                        content=record["content"],
-                        memory_type=record["memory_type"],
-                        source=record["source"],
-                        tags=record.get("tags", []),
-                        domain=record.get("domain", "uncategorized"),
-                    )
-                    # Save vector for _vector_retrieval (细匹配)
-                    vec = record.get("vector")
-                    if hasattr(self.rec_mem, '_engine'):
-                        engine = self.rec_mem._engine
-                        if vec:
-                            engine._memories[stored.memory_id]["_vector"] = vec
-                            # Dual-write to LanceDB for persistent vector storage
-                            try:
-                                ldb = getattr(engine, '_ldb', None)
-                                if ldb is not None:
-                                    ldb.insert(
-                                        memory_id=stored.memory_id,
-                                        vector=vec,
-                                        text=record.get("content", ""),
-                                        tier=record.get("tier", "L1"),
-                                        category=record.get("category", "other"),
-                                        scope=record.get("scope", "global"),
+                if self.rec_mem is None:
+                    del self._buffer[mid]
+                    continue
+
+                engine = getattr(self.rec_mem, '_engine', None)
+                vec = record.get("vector")
+
+                # ---- Step 4a: Vector dedup ----
+                if vec and self._lancedb is not None:
+                    try:
+                        dup_id = self._lancedb.check_duplicate(
+                            vec, threshold=0.85  # DEDUP_SIMILARITY_THRESHOLD
+                        )
+                        if dup_id and engine is not None:
+                            now_iso = datetime.datetime.now().isoformat()
+                            # Increment access_count + worth_success on existing record
+                            # Fix #2: Guard against dup_id missing from engine._memories (SQLite-only memory)
+                            if dup_id in getattr(engine, '_memories', {}):
+                                engine._memories[dup_id]["access_count"] = (
+                                    engine._memories[dup_id].get("access_count", 0) + 1
+                                )
+                                engine._memories[dup_id]["worth_success"] = (
+                                    engine._memories[dup_id].get("worth_success", 0) + 1
+                                )
+                                # Fix #6: Update last_accessed so Direction A reinforcement isn't broken
+                                engine._memories[dup_id]["last_accessed"] = now_iso
+                            if dup_id in getattr(self.rec_mem, '_records', {}):
+                                py_rec = self.rec_mem._records[dup_id]
+                                py_rec.access_count += 1
+                                py_rec.worth_success += 1
+                                py_rec.last_accessed = now_iso
+                            # SQLite incremental update — includes last_accessed (Fix #6)
+                            sqlite = getattr(engine, '_sqlite', None)
+                            if sqlite is not None:
+                                try:
+                                    sqlite._conn.execute(
+                                        "UPDATE memories SET access_count = access_count + 1, "
+                                        "worth_success = worth_success + 1, "
+                                        "last_accessed = ? WHERE id = ?",
+                                        (now_iso, dup_id)
                                     )
+                                    sqlite._conn.commit()
+                                except Exception:
+                                    pass
+                            del self._buffer[mid]
+                            logging.info("Dedup: %s -> merged into %s (similarity >= 0.85)", mid, dup_id)
+                            continue  # skip store
+                    except Exception as e:
+                        logging.warning("Dedup check failed for %s: %s -- proceeding with store", mid, e)
+
+                # ---- Step 4b: QualityGate scoring ----
+                extracted = record.get("extracted", {})
+                tags = record.get("tags", [])
+                domain_hint = record.get("domain", "uncategorized")
+                created_at = record.get("created_at")
+
+                gate_score = gate.score(
+                    extracted=extracted,
+                    tags=tags,
+                    domain_hint=domain_hint,
+                    created_at=created_at,
+                )
+                decision = QualityGate.decide(gate_score)
+
+                if decision == "discard":
+                    del self._buffer[mid]
+                    logging.info("QualityGate: %s discarded (score=%.3f < %.2f)",
+                                 mid, gate_score, QualityGate.THRESHOLD_LOW)
+                    continue
+
+                # ---- Step 4c: Store ----
+                stored = self.rec_mem.store(
+                    content=record["content"],
+                    memory_type=record["memory_type"],
+                    source=record["source"],
+                    tags=tags,
+                    domain=domain_hint,
+                )
+
+                # Attach quality metadata
+                if decision == "low_quality":
+                    if hasattr(self.rec_mem, '_records') and stored.memory_id in self.rec_mem._records:
+                        py_rec = self.rec_mem._records[stored.memory_id]
+                        py_rec.metadata["quality"] = "low_quality"
+                        py_rec.metadata["gate_score"] = round(gate_score, 4)
+                    logging.info("QualityGate: %s stored with low_quality tag (score=%.3f)",
+                                 stored.memory_id, gate_score)
+
+                # ---- Existing: vector + tags + domain persistence ----
+                if engine is not None:
+                    if vec:
+                        engine._memories[stored.memory_id]["_vector"] = vec
+                        ldb = getattr(engine, '_ldb', None)
+                        if ldb is not None:
+                            try:
+                                ldb.insert(
+                                    memory_id=stored.memory_id,
+                                    vector=vec,
+                                    text=record.get("content", ""),
+                                    tier=record.get("tier", "L1"),
+                                    category=record.get("category", "other"),
+                                    scope=record.get("scope", "global"),
+                                )
                             except Exception as e:
                                 logging.warning("LanceDB dual-write failed for %s: %s", stored.memory_id, e)
-                        tags = record.get("tags", [])
-                        domain = record.get("domain", "uncategorized")
-                        engine._memories[stored.memory_id]["tags"] = tags
-                        engine._memories[stored.memory_id]["domain"] = domain
-                        # Persist tags and domain to SQLite (targeted UPDATE, not upsert)
-                        if engine._sqlite:
-                            import json
-                            engine._sqlite._conn.execute(
-                                "UPDATE memories SET tags = ?, domain = ? WHERE id = ?",
-                                (json.dumps(tags), domain, stored.memory_id)
-                            )
-                            engine._sqlite._conn.commit()
-                    # Rebuild entity edges from fuzzy buffer to main pool (原则 #6)
-                    entity_ids = record.get("entity_ids", [])
-                    if entity_ids and hasattr(self.rec_mem, '_engine'):
-                        engine = self.rec_mem._engine
-                        for eid in entity_ids:
-                            edge = {"from": stored.memory_id, "to": eid,
-                                    "relation": "references", "weight": 0.5}
-                            if edge not in engine._graph_edges:
-                                engine._graph_edges.append(edge)
+                    engine._memories[stored.memory_id]["tags"] = tags
+                    engine._memories[stored.memory_id]["domain"] = domain_hint
+                    sqlite = getattr(engine, '_sqlite', None)
+                    if sqlite is not None:
+                        import json
+                        sqlite._conn.execute(
+                            "UPDATE memories SET tags = ?, domain = ? WHERE id = ?",
+                            (json.dumps(tags), domain_hint, stored.memory_id)
+                        )
+                        sqlite._conn.commit()
+
+                # Rebuild entity edges
+                entity_ids = record.get("entity_ids", [])
+                if entity_ids and engine is not None:
+                    for eid in entity_ids:
+                        edge = {"from": stored.memory_id, "to": eid,
+                                "relation": "references", "weight": 0.5}
+                        graph_edges = getattr(engine, '_graph_edges', [])
+                        if edge not in graph_edges:
+                            graph_edges.append(edge)
+
                 del self._buffer[mid]
                 count += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning("Migrate failed for %s: %s", mid, e)
+
         return count
