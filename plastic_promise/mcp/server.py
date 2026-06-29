@@ -937,6 +937,122 @@ async def run_sse(port: int = 9020):
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    async def dashboard(request):
+        """Serve the monitoring dashboard HTML page."""
+        from starlette.responses import HTMLResponse
+        html = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plastic Promise Dashboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#c9d1d9;padding:24px}
+h1{font-size:20px;margin-bottom:4px}
+.status{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px}
+.status-ok{background:#3fb950}.status-err{background:#f85149}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-top:20px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
+.card h3{font-size:13px;color:#8b949e;margin-bottom:8px;text-transform:uppercase}
+.card .value{font-size:28px;font-weight:700}
+.bar{margin-top:8px;height:6px;border-radius:3px;background:#21262d;overflow:hidden}
+.bar-fill{height:100%;border-radius:3px;transition:width .5s}
+.bar-high{background:#3fb950}.bar-mid{background:#d29922}.bar-low{background:#f85149}
+.section{margin-top:24px}
+.section h2{font-size:16px;border-bottom:1px solid #30363d;padding-bottom:8px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #21262d;font-size:13px}
+th{color:#8b949e}
+.tag{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px}
+.tag-ok{background:#1b3823;color:#3fb950}.tag-warn{background:#332b00;color:#d29922}
+.footer{color:#484f58;font-size:12px;margin-top:32px}
+</style>
+</head>
+<body>
+<h1><span class="status status-ok" id="status-dot"></span>Plastic Promise Dashboard <small style="color:#8b949e">v0.1.0</small></h1>
+
+<div class="grid" id="stats-grid">
+  <div class="card"><h3>Memories</h3><div class="value" id="mem-total">-</div></div>
+  <div class="card"><h3>Decaying</h3><div class="value" id="mem-decaying">-</div></div>
+  <div class="card"><h3>Trust Score</h3><div class="value" id="trust-score">-</div></div>
+  <div class="card"><h3>Active Issues</h3><div class="value" id="issues-count">-</div></div>
+</div>
+
+<div class="section"><h2>Body Systems</h2>
+<div id="body-systems"></div>
+</div>
+
+<div class="section"><h2>Defense</h2>
+<div id="defense-info"></div>
+</div>
+
+<div class="section"><h2>Audit</h2>
+<div id="audit-info"></div>
+</div>
+
+<div class="footer">Auto-refreshes every 5s &middot; Plastic Promise</div>
+
+<script>
+async function fetchJSON(url) {
+  try { const r = await fetch(url); return r.ok ? r.json() : null; }
+  catch { return null; }
+}
+
+function barColor(v) { return v>=0.7?'bar-high':v>=0.5?'bar-mid':'bar-low'; }
+
+async function refresh() {
+  const [stats, issues, trust] = await Promise.all([
+    fetchJSON('/api/stats'), fetchJSON('/api/issues'), fetchJSON('/api/trust')
+  ]);
+
+  if (!stats) { document.getElementById('status-dot').className='status status-err'; return; }
+  document.getElementById('status-dot').className='status status-ok';
+
+  document.getElementById('mem-total').textContent = stats.memory?.total || 0;
+  document.getElementById('mem-decaying').textContent = stats.memory?.decaying || 0;
+
+  // Body systems
+  const systems = stats.body_systems || {};
+  let sysHTML = '';
+  for (const [key, s] of Object.entries(systems)) {
+    const pct = Math.round(s.maturity*100);
+    sysHTML += `<div style="display:flex;align-items:center;margin-bottom:6px">
+      <span style="width:140px;font-size:13px">${s.name}</span>
+      <div class="bar" style="flex:1"><div class="bar-fill ${barColor(s.maturity)}" style="width:${pct}%"></div></div>
+      <span style="width:40px;text-align:right;font-size:13px">${pct}%</span></div>`;
+  }
+  document.getElementById('body-systems').innerHTML = sysHTML;
+
+  // Trust
+  if (trust) {
+    document.getElementById('trust-score').textContent = (trust.trust||0).toFixed(2);
+    const tier = trust.tier || 'unknown';
+    document.getElementById('defense-info').innerHTML = `
+      <span class="tag tag-${tier==='high'?'ok':'warn'}">${tier} tier</span>
+      <span style="margin-left:12px">Target: ${trust.target||'default'}</span>`;
+  }
+
+  // Issues
+  if (issues) {
+    const count = issues.count || issues.issues?.length || 0;
+    document.getElementById('issues-count').textContent = count;
+  }
+
+  // Audit
+  if (trust?.audit_summary) {
+    document.getElementById('audit-info').innerHTML = '<pre style="font-size:12px;color:#8b949e">' +
+      JSON.stringify(trust.audit_summary, null, 2).slice(0, 500) + '</pre>';
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>"""
+        return HTMLResponse(html)
+
     async def shutdown():
         logger.info("Shutting down Plastic Promise SSE server...")
 
@@ -949,6 +1065,7 @@ async def run_sse(port: int = 9020):
         Route("/api/stats", endpoint=api_stats),
         Route("/api/issues", endpoint=api_issues),
         Route("/api/trust", endpoint=api_trust),
+        Route("/dashboard", endpoint=dashboard),
     ], on_shutdown=[shutdown])
 
     logger.info(f"Plastic Promise MCP Server v0.1.0")
