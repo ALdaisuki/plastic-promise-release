@@ -224,22 +224,31 @@ class ContextEngine:
             self._dm_ok = False
         self._domain_hint: Optional[str] = None
 
+        # P1: Store embedder for principle anchor computation and intent matching
+        self._embedder = None
+        try:
+            from plastic_promise.core.embedder import get_embedder
+            self._embedder = get_embedder(fallback_on_error=True)
+        except Exception:
+            logging.warning("ContextEngine: embedder unavailable — intent matching disabled")
+
         # Initialize LanceDB vector store
         self._ldb: Optional[object] = None
         try:
             from plastic_promise.core.lancedb_store import LanceDBStore
-            from plastic_promise.core.embedder import get_embedder
             ldb_path = os.environ.get("PLASTIC_LANCEDB_PATH",
                                        os.path.join(os.path.dirname(db_path or "plastic_memory.db"),
                                                     "plastic_memory.lancedb"))
-            embedder = get_embedder(fallback_on_error=True)
-            self._ldb = LanceDBStore(ldb_path, embedder)
+            self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
             # Backfill any memories that bypassed the pipeline
             self._ldb.backfill(self)
             logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
         except Exception as e:
             logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
             self._ldb = None
+
+        # P1: Build principle anchor embeddings for intent matching
+        self._build_principle_anchors()
 
         self._current_time: str = ""
 
@@ -380,6 +389,50 @@ class ContextEngine:
                 edges_created += 1
 
         return edges_created
+
+    def _build_principle_anchors(self):
+        """P1: Pre-compute embedding vectors for each principle's content.
+
+        Called once at engine init. Stores results in self._principle_anchors
+        as {principle_id: list[float]}. If the embedder is unavailable, the
+        dict is left empty and intent matching gracefully degrades to
+        keyword-only mode.
+        """
+        if self._embedder is None:
+            self._principle_anchors = {}
+            return
+
+        from plastic_promise.core.constants import CORE_PRINCIPLES
+
+        anchors: Dict[int, List[float]] = {}
+        try:
+            for p in CORE_PRINCIPLES:
+                vec = self._embedder.embed(p["content"])
+                if vec and any(v != 0.0 for v in vec):
+                    anchors[p["id"]] = vec
+            if anchors:
+                logging.info("_build_principle_anchors: computed %d/%d principle anchors",
+                            len(anchors), len(CORE_PRINCIPLES))
+        except Exception as e:
+            logging.warning("_build_principle_anchors failed: %s — intent matching disabled", e)
+            anchors = {}
+
+        self._principle_anchors = anchors
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        """Compute cosine similarity between two vectors.
+
+        Returns 0.0 if either vector is zero-length.
+        """
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return dot / (norm_a * norm_b)
 
     # ========== 图管理 ==========
 
@@ -870,34 +923,63 @@ class ContextEngine:
         return edges_created
 
     def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
-        from plastic_promise.core.constants import CORE_PRINCIPLES
+        """P1: Three-channel principle activation.
 
-        # All 3 core principles apply to every task type
-        recommendations = {
-            "code_generation": [1, 2, 3],
-            "code_review": [1, 2, 3],
-            "debugging": [1, 2, 3],
-            "architecture": [1, 2, 3],
-            "refactoring": [1, 2, 3],
-            "learning": [1, 2, 3],
-            "collaboration": [1, 2, 3],
-        }
-        ids = recommendations.get(task_type, [1, 2, 3])
+        Channel 1 — Static task-type mapping: differentiated principle
+        recommendations per task type (from TASK_TYPE_PRINCIPLE_MAP).
 
-        # 关键词额外匹配
+        Channel 2 — Keyword matching: literal keyword overlap between
+        task description and principle keywords (preserved from v1).
+
+        Channel 3 — Intent vector matching: cosine similarity between
+        task embedding and pre-computed principle anchor embeddings.
+        Surfaces principles whose intent aligns with the task even when
+        no keyword matches (e.g., "拆成小类" → Occam's Razor).
+
+        Falls back to channels 1+2 when embedder is unavailable.
+        """
+        from plastic_promise.core.constants import (
+            CORE_PRINCIPLES,
+            TASK_TYPE_PRINCIPLE_MAP,
+            PRINCIPLE_INTENT_THRESHOLD,
+        )
+
+        activated_ids: set[int] = set()
+
+        # Channel 1: Static task-type mapping (differentiated per task type)
+        static_ids = TASK_TYPE_PRINCIPLE_MAP.get(task_type, [1, 2, 3])
+        activated_ids.update(static_ids)
+
+        # Channel 2: Keyword matching (literal)
         for p in CORE_PRINCIPLES:
-            if p["id"] not in ids:
-                keywords = p.get("keywords", [])
-                if isinstance(keywords, str):
-                    keywords = [k.strip() for k in keywords.split(",")]
-                for kw in keywords:
-                    if kw.strip() in task_description:
-                        ids.append(p["id"])
-                        break
+            if p["id"] in activated_ids:
+                continue
+            keywords = p.get("keywords", [])
+            if isinstance(keywords, str):
+                keywords = [k.strip() for k in keywords.split(",")]
+            for kw in keywords:
+                if kw.strip() in task_description:
+                    activated_ids.add(p["id"])
+                    break
 
+        # Channel 3: Intent vector matching (semantic)
+        if self._principle_anchors and self._embedder is not None:
+            try:
+                task_vec = self._embedder.embed(task_description)
+                if task_vec and any(v != 0.0 for v in task_vec):
+                    for pid, anchor_vec in self._principle_anchors.items():
+                        if pid in activated_ids:
+                            continue
+                        sim = self._cosine_similarity(task_vec, anchor_vec)
+                        if sim >= PRINCIPLE_INTENT_THRESHOLD:
+                            activated_ids.add(pid)
+            except Exception:
+                pass  # Intent matching is best-effort; degrade gracefully
+
+        # Resolve IDs to names
         result = []
         for p in CORE_PRINCIPLES:
-            if p["id"] in ids:
+            if p["id"] in activated_ids:
                 result.append(p["name"])
         return result
 
