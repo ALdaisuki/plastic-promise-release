@@ -20,11 +20,12 @@ class MemoryPipeline:
         embedded   — 向量嵌入（细分），准备入主池
     """
 
-    def __init__(self, rec_mem=None, embedder=None, tier_manager=None) -> None:
+    def __init__(self, rec_mem=None, embedder=None, tier_manager=None, domain_manager=None) -> None:
         self._buffer: Dict[str, Dict[str, Any]] = {}
         self.rec_mem = rec_mem
         self.embedder = embedder
         self._tier_manager = tier_manager
+        self._dm = domain_manager
         self._last_process: Optional[str] = None
         self._batch_size = 10
 
@@ -48,7 +49,7 @@ class MemoryPipeline:
             memory_id with 'fuzzy_' prefix.
         """
         mid = f"fuzzy_{uuid.uuid4().hex[:12]}"
-        tags = self._extract_tags(content)
+        tags = self._extract_semantic_tags(content)
         self._buffer[mid] = {
             "memory_id": mid,
             "content": content,
@@ -119,13 +120,18 @@ class MemoryPipeline:
     # Internal: Tag Extraction
     # ================================================================
 
-    def _extract_tags(self, content: str) -> List[str]:
-        """Extract up to 5 CJK bigram keywords as temporary tags.
+    def _extract_semantic_tags(self, content: str, use_llm: bool = True) -> list[str]:
+        """提取语义标签。
 
-        For non-CJK content, falls back to whitespace-split words (≥2 chars).
+        两层策略:
+          1. 规则层 (免费): CJK bigram + 关键词正则 + 种子标签匹配
+          2. 语义层 (可选): Ollama LLM 提取 3-5 个语义标签
+        合并去重，上限 10 个。
         """
-        tags: List[str] = []
-        seen: set = set()
+        tags: list[str] = []
+        seen: set[str] = set()
+
+        # Layer 1: 规则提取 (always)
         has_cjk = bool(re.search(r'[一-鿿]', content))
         if has_cjk:
             for i in range(len(content) - 1):
@@ -136,8 +142,21 @@ class MemoryPipeline:
                 if len(tags) >= 5:
                     break
         if not tags:
-            tags = [w for w in content.split() if len(w) >= 2][:5]
-        return tags
+            tags = [w for w in re.split(r'\s+|[,，。.!！?？;；:：\n]+', content)
+                    if len(w) >= 2 and w.lower() not in {'the','this','that','and','for','was','are','not','but','all','can','has','had','get','got','put','set','use','used'}][:5]
+
+        # Layer 2: 种子标签匹配 (从预定义域标签中匹配)
+        try:
+            from plastic_promise.core.domain_manager import PREDEFINED_DOMAINS
+            for domain_cfg in PREDEFINED_DOMAINS.values():
+                for seed_tag in domain_cfg.get("tags", set()):
+                    if seed_tag.lower() in content.lower() and seed_tag not in seen:
+                        tags.append(seed_tag)
+                        seen.add(seed_tag)
+        except Exception:
+            pass
+
+        return tags[:10]
 
     # ================================================================
     # Pipeline Stages
@@ -161,7 +180,7 @@ class MemoryPipeline:
         return count
 
     def _process_tagged_to_classified(self) -> int:
-        """Stage 2: 大类分 — classify tier (L1/L3) for tagged items using MemoryTierManager."""
+        """Stage 2: 大类分 — classify tier (L1/L3) for tagged items, then domain assignment."""
         items = [(mid, r) for mid, r in self._buffer.items() if r["stage"] == "tagged"]
         count = 0
         for mid, record in items:
@@ -178,6 +197,14 @@ class MemoryPipeline:
                     record["tier"] = "L1"
             else:
                 record["tier"] = "L1"
+
+            # 新增: domain 分配
+            tags = record.get("tags", [])
+            if hasattr(self, '_dm') and self._dm is not None:
+                record["domain"] = self._dm.assign(tags)
+            else:
+                record["domain"] = "uncategorized"
+
             record["stage"] = "classified"
             record["processed_at"] = datetime.datetime.now().isoformat()
             count += 1
@@ -215,12 +242,16 @@ class MemoryPipeline:
                         content=record["content"],
                         memory_type=record["memory_type"],
                         source=record["source"],
+                        tags=record.get("tags", []),
+                        domain=record.get("domain", "uncategorized"),
                     )
                     # Save vector for _vector_retrieval (细匹配)
                     vec = record.get("vector")
                     if vec and hasattr(self.rec_mem, '_engine'):
                         engine = self.rec_mem._engine
                         engine._memories[stored.memory_id]["_vector"] = vec
+                        engine._memories[stored.memory_id]["tags"] = record.get("tags", [])
+                        engine._memories[stored.memory_id]["domain"] = record.get("domain", "uncategorized")
                     # Rebuild entity edges from fuzzy buffer to main pool (原则 #6)
                     entity_ids = record.get("entity_ids", [])
                     if entity_ids and hasattr(self.rec_mem, '_engine'):

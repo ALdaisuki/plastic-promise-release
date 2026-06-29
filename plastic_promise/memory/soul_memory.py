@@ -126,6 +126,8 @@ class MemoryRecord:
         activation_weight: float = 0.5,
         tier: str = "L1",
         metadata: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+        domain: str = "uncategorized",
     ) -> None:
         """初始化一条记忆记录。
 
@@ -139,6 +141,8 @@ class MemoryRecord:
             activation_weight: 激活权重 [0.0, 1.0]，控制检索时的初始偏置。
             tier: 当前所在层位（L1 工作记忆 / L3 长期记忆）。
             metadata: 附加元数据字典（如标签、关联实体、创建时间等）。
+            tags: 语义标签列表。
+            domain: 分配的语义域名称。
         """
         self.memory_id = memory_id if memory_id is not None else str(uuid.uuid4())
         self.content = content
@@ -149,6 +153,8 @@ class MemoryRecord:
         self.activation_weight = activation_weight
         self.tier = tier
         self.metadata = metadata if metadata is not None else {}
+        self.tags = tags if tags is not None else []
+        self.domain = domain
         self.created_at = datetime.datetime.now().isoformat()
         self.last_accessed = self.created_at
         self.access_count = 0
@@ -185,6 +191,8 @@ class MemoryRecord:
             "activation_weight": self.activation_weight,
             "tier": self.tier,
             "metadata": dict(self.metadata),
+            "tags": list(self.tags),
+            "domain": self.domain,
             "created_at": self.created_at,
             "last_accessed": self.last_accessed,
             "access_count": self.access_count,
@@ -211,6 +219,8 @@ class MemoryRecord:
             activation_weight=data.get("activation_weight", 0.5),
             tier=data.get("tier", "L1"),
             metadata=data.get("metadata", {}),
+            tags=data.get("tags", []),
+            domain=data.get("domain", "uncategorized"),
         )
         record.created_at = data.get("created_at", record.created_at)
         record.last_accessed = data.get("last_accessed", record.last_accessed)
@@ -357,6 +367,8 @@ class RecMem:
         source: str = "user",
         importance: float = 0.7,
         entity_ids: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        domain: str = "uncategorized",
     ) -> MemoryRecord:
         """存储一条新记忆。
 
@@ -370,6 +382,8 @@ class RecMem:
             source: 记忆来源（user/agent/system）。
             importance: 初始重要性 [0.0, 1.0]，影响 activation_weight。
             entity_ids: 关联的实体 ID 列表（可选）。
+            tags: 语义标签列表（可选）。
+            domain: 分配的语义域名称。
 
         Returns:
             新创建的 MemoryRecord 实例。
@@ -414,6 +428,8 @@ class RecMem:
                 memory_id=memory_id,
                 activation_weight=importance,
                 tier="L1",
+                tags=tags or [],
+                domain=domain or "uncategorized",
             )
             self._records[memory_id] = record
             return record
@@ -424,6 +440,8 @@ class RecMem:
                 source=source,
                 activation_weight=importance,
                 tier="L1",
+                tags=tags or [],
+                domain=domain or "uncategorized",
             )
             self._records[record.memory_id] = record
             return record
