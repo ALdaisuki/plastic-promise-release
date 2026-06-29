@@ -342,6 +342,25 @@ class MemoryPipeline:
                                 py_rec.access_count += 1
                                 py_rec.worth_success += 1
                                 py_rec.last_accessed = now_iso
+                                # ---- Gap 1 fix: Recompute effective_half_life via AccessReinforcement ----
+                                try:
+                                    from plastic_promise.core.decay_engine import AccessReinforcement
+                                    from plastic_promise.core.constants import DECAY_CONFIG
+                                    tier = getattr(py_rec, 'tier', 'L1')
+                                    base_hl = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])["half_life_days"]
+                                    reinforcer = AccessReinforcement()
+                                    _, new_hl = reinforcer.compute_boost(
+                                        access_count=py_rec.access_count,
+                                        last_accessed=now_iso,
+                                        base_half_life=base_hl,
+                                        is_auto_recall=False,
+                                        current_time_str=now_iso,
+                                    )
+                                    py_rec.effective_half_life = new_hl
+                                    if dup_id in engine._memories:
+                                        engine._memories[dup_id]["effective_half_life"] = new_hl
+                                except Exception:
+                                    pass  # Graceful: boost is a quality improvement, not a hard gate
                             # SQLite incremental update — includes last_accessed (Fix #6)
                             sqlite = getattr(engine, '_sqlite', None)
                             if sqlite is not None:

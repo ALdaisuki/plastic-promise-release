@@ -132,3 +132,48 @@ class TestPipelineQuality:
         assert mid not in self.pipeline._buffer
         # rec_mem.store should NOT have been called
         self.rec_mem.store.assert_not_called()
+
+    def test_migrate_dedup_updates_effective_half_life(self):
+        """Gap 1 fix: Dedup hit recomputes effective_half_life via AccessReinforcement."""
+        self.lancedb.check_duplicate.return_value = "existing_002"
+
+        mid = "fuzzy_testboost"
+        self.pipeline._buffer[mid] = {
+            "memory_id": mid, "content": "reinforced duplicate",
+            "memory_type": "experience", "source": "user",
+            "stage": "embedded", "tags": [], "domain": "uncategorized",
+            "vector": [0.5] * 1024, "entity_ids": [],
+            "extracted": {"category": "fact", "confidence": 0.8},
+            "created_at": "2026-06-30T12:00:00",
+        }
+
+        # Create a Python-side record with known tier and baseline half-life
+        from plastic_promise.memory.soul_memory import MemoryRecord
+        py_rec = MemoryRecord(
+            content="existing content", memory_type="experience",
+            source="user", memory_id="existing_002", tier="L3",
+        )
+        py_rec.access_count = 2
+        py_rec.last_accessed = "2026-06-25T00:00:00"
+        original_hl = py_rec.effective_half_life  # should be default 90.0 for L3
+
+        self.pipeline.rec_mem._records["existing_002"] = py_rec
+        self.pipeline.rec_mem._engine = MagicMock()
+        self.pipeline.rec_mem._engine._memories = {
+            "existing_002": {"access_count": 2, "worth_success": 1, "last_accessed": "2026-06-25T00:00:00"}
+        }
+        self.pipeline.rec_mem._engine._sqlite = None
+
+        with patch('plastic_promise.memory.pipeline.datetime') as mock_dt:
+            mock_dt.datetime.now.return_value = __import__('datetime').datetime.fromisoformat(
+                "2026-06-30T12:00:00"
+            )
+            mock_dt.datetime.now.isoformat = lambda: "2026-06-30T12:00:00"
+            self.pipeline._process_embedded_to_migrate()
+
+        # Buffer entry removed (dedup skip)
+        assert mid not in self.pipeline._buffer
+        # access_count incremented
+        assert py_rec.access_count == 3
+        # effective_half_life should be recomputed (boosted from access + recency)
+        assert py_rec.effective_half_life != original_hl
