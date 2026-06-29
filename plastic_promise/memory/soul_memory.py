@@ -1030,7 +1030,12 @@ class MemoryGC:
             "health_before": health_before if 'health_before' in dir() else 1.0,
             "health_after": health_before if 'health_before' in dir() else 1.0,
             "freed_slots": 0,
+            "merge": {},  # populated below
         }
+
+        # ---- Direction B: Similar memory merge ----
+        merge_result = self.merge_similar(threshold=0.70, dry_run=dry_run)
+        result["merge"] = merge_result
 
         if dry_run or not candidates or self.rec_mem is None:
             return result
@@ -1086,3 +1091,188 @@ class MemoryGC:
             return [mid for mid, _ in decaying]
         except Exception:
             return []
+
+    def merge_similar(
+        self, threshold: float = 0.70, dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Batch-scan the memory pool and merge records with cosine similarity >= threshold.
+
+        Algorithm:
+          1. For each memory with a vector, query LanceDB for top-k similar
+          2. Filter pairs with similarity >= threshold, skip self-matches and already-merged
+          3. Survivor = max(worth_score, ties broken by most recent created_at)
+          4. Append merged record's content_abstract to survivor.metadata["merged_from"]
+          5. Tag merged record with metadata["merged_into"] = survivor_id
+          6. Remove merged record from engine._memories (retrieval layer)
+          7. Keep merged record in SQLite for audit trail (cleaned next GC cycle)
+
+        Args:
+            threshold: Cosine similarity threshold for merge (default 0.70).
+            dry_run: If True, only report -- no records are modified.
+
+        Returns:
+            dict with:
+                dry_run, candidates_found, would_merge, would_free, merged_pairs, error
+        """
+        result: Dict[str, Any] = {
+            "dry_run": dry_run,
+            "candidates_found": 0,
+            "would_merge": 0,
+            "would_free": 0,
+            "merged_pairs": [],
+            "error": None,
+        }
+
+        if self.rec_mem is None:
+            return result
+
+        try:
+            engine = getattr(self.rec_mem, '_engine', None)
+            if engine is None:
+                return result
+
+            ldb = getattr(engine, '_ldb', None)
+            if ldb is None:
+                result["error"] = "lancedb_unavailable"
+                return result
+
+            memories = getattr(engine, '_memories', {})
+            if not memories:
+                return result
+
+            # Gather all memories with vectors
+            vec_map: Dict[str, list] = {}
+            for mid, mem in memories.items():
+                vec = mem.get("_vector")
+                if vec and not any(v != 0.0 for v in vec):
+                    continue  # skip zero vectors (fallback embedder)
+                if vec:
+                    vec_map[mid] = vec
+
+            if len(vec_map) < 2:
+                return result
+
+            # Scan: for each memory, find similar neighbors
+            seen_pairs: set = set()
+            candidates: list = []  # list of (mid_a, mid_b, similarity)
+
+            for mid, vec in vec_map.items():
+                try:
+                    similar = ldb.search_similar(vec, k=3)  # MERGE_TOP_K
+                except Exception:
+                    continue
+                for other_id, sim in similar:
+                    if other_id == mid:
+                        continue  # self-match
+                    if sim < threshold:
+                        continue
+                    pair_key = tuple(sorted([mid, other_id]))
+                    if pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+                    candidates.append((mid, other_id, sim))
+
+            result["candidates_found"] = len(candidates)
+
+            if not candidates:
+                return result
+
+            # Determine survivors and merged records
+            already_merged: set = set()
+            merged_pairs = []
+
+            for mid_a, mid_b, sim in candidates:
+                if mid_a in already_merged or mid_b in already_merged:
+                    continue
+
+                # Get Python records for worth_score comparison
+                py_a = self.rec_mem._records.get(mid_a)
+                py_b = self.rec_mem._records.get(mid_b)
+
+                # Determine survivor
+                score_a = py_a.worth_score if py_a else 0.5
+                score_b = py_b.worth_score if py_b else 0.5
+
+                if score_a > score_b:
+                    survivor, merged = mid_a, mid_b
+                elif score_b > score_a:
+                    survivor, merged = mid_b, mid_a
+                else:
+                    # Tiebreaker: most recent created_at
+                    time_a = py_a.created_at if py_a else ""
+                    time_b = py_b.created_at if py_b else ""
+                    if time_a >= time_b:
+                        survivor, merged = mid_a, mid_b
+                    else:
+                        survivor, merged = mid_b, mid_a
+
+                # Build merged_from entry
+                merged_content = ""
+                merged_worth = 0.0
+                if merged in self.rec_mem._records:
+                    mr = self.rec_mem._records[merged]
+                    merged_content = mr.content[:80]
+                    merged_worth = mr.worth_score
+
+                merge_entry = {
+                    "memory_id": merged,
+                    "content_abstract": merged_content,
+                    "merged_at": datetime.datetime.now().isoformat(),
+                    "worth_score": round(merged_worth, 4),
+                }
+
+                merged_pairs.append({
+                    "survivor": survivor,
+                    "merged": [merged],
+                    "similarity": round(sim, 4),
+                })
+
+                if not dry_run:
+                    # Append to survivor metadata
+                    if survivor in self.rec_mem._records:
+                        surv_rec = self.rec_mem._records[survivor]
+                        if "merged_from" not in surv_rec.metadata:
+                            surv_rec.metadata["merged_from"] = []
+                        surv_rec.metadata["merged_from"].append(merge_entry)
+
+                    # Tag merged record
+                    if merged in self.rec_mem._records:
+                        self.rec_mem._records[merged].metadata["merged_into"] = survivor
+
+                    # Remove from engine._memories (retrieval layer)
+                    if merged in memories:
+                        # Fix #3: Persist merged_into to SQLite metadata for audit trail
+                        sqlite = getattr(engine, '_sqlite', None)
+                        if sqlite is not None:
+                            try:
+                                mem_data = dict(memories[merged])
+                                mem_data["merged_into"] = survivor
+                                # Ensure metadata dict exists and carries merged_into
+                                if "metadata" not in mem_data:
+                                    mem_data["metadata"] = {}
+                                if isinstance(mem_data["metadata"], dict):
+                                    mem_data["metadata"]["merged_into"] = survivor
+                                else:
+                                    mem_data["metadata"] = {"merged_into": survivor}
+                                sqlite.upsert(merged, mem_data)
+                            except Exception:
+                                pass
+                        del memories[merged]
+
+                    already_merged.add(merged)
+
+            # Deduplicate: count unique merged records
+            all_merged = set()
+            for pair in merged_pairs:
+                for m in pair["merged"]:
+                    all_merged.add(m)
+
+            result["would_merge"] = len(merged_pairs)
+            result["would_free"] = len(all_merged)
+            result["merged_pairs"] = merged_pairs[:20]  # cap preview at 20 pairs
+
+            return result
+
+        except Exception as e:
+            result["error"] = str(e)
+            return result
