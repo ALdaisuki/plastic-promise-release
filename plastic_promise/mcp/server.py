@@ -289,6 +289,20 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="auto_context_inject",
+            description="统一自动化上下文注入：skill_session_start→SoulLoop.pre_task_v2→memory_store→skill_session_complete。优雅降级，绝不阻塞。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_description": {"type": "string", "description": "当前任务的完整自然语言描述"},
+                    "task_type": {"type": "string", "description": "任务类型标签 (默认 general)"},
+                    "source": {"type": "string", "description": "来源: pi_agent|claude_code|manual (默认 manual)"},
+                    "scope": {"type": "string", "description": "检索范围: global (默认) 或 domain 限定"},
+                },
+                "required": ["task_description"],
+            },
+        ),
     ])
 
     # === 审计与防线 ===
@@ -608,6 +622,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "context_ready":
             from plastic_promise.mcp.tools.context import handle_context_ready
             return await handle_context_ready(engine, arguments)
+        elif name == "auto_context_inject":
+            from plastic_promise.mcp.tools.context import handle_auto_context_inject
+            return await handle_auto_context_inject(engine, arguments)
 
         # Audit and defense
         elif name == "audit_run":

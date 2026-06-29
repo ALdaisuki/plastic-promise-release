@@ -215,3 +215,138 @@ async def handle_context_ready(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "context_ready"}, ensure_ascii=False))]
+
+
+# ---------------------------------------------------------------------------
+# auto_context_inject — 统一自动化上下文注入
+# ---------------------------------------------------------------------------
+
+async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextContent]:
+    """Unified automated context injection across Pi Agent, Claude Code, and SoulBridge.
+
+    Chains: skill_session_start → SoulLoop.pre_task_v2 → memory_store → skill_session_complete.
+    Graceful degradation: any internal failure returns partial data, never blocks.
+
+    Args:
+        engine: ContextEngine instance.
+        args:
+            task_description: str (required) — Current task description
+            task_type: str — Task type (default "general")
+            source: str — "pi_agent" | "claude_code" | "manual" (default "manual")
+            scope: str — Retrieval scope (default "global")
+
+    Returns:
+        list[TextContent]: entity_id, context_pack, principles, inject_memory_id, stats
+    """
+    task_description = args.get("task_description", "")
+    task_type = args.get("task_type", "general")
+    source = args.get("source", "manual")
+    scope = args.get("scope", "global")
+
+    skill_name = f"auto_inject:{source}"
+    entity_id = None
+    context_pack = None
+    principles: list[dict] = []
+    inject_memory_id = None
+    errors: list[str] = []
+
+    # ── Step 1: skill_session_start ──
+    try:
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
+        start_result = await handle_skill_session_start(engine, {
+            "skill_name": skill_name,
+            "task_description": task_description,
+            "parent_entity_id": None,
+        })
+        start_data = json.loads(start_result[0].text)
+        entity_id = start_data.get("entity_id")
+        principles = start_data.get("activated_principles", [])
+    except Exception as e:
+        errors.append(f"skill_session_start: {e}")
+
+    # ── Step 2: SoulLoop.pre_task_v2 → ContextEngine.supply() ──
+    try:
+        from plastic_promise.loop.soul_loop import SoulLoop
+        loop = SoulLoop(engine=engine)
+        pack = loop.pre_task_v2(task_description, task_type)
+        context_pack = {
+            "core": [{"id": i.id, "content": i.content[:200], "relevance": i.relevance}
+                     for i in getattr(pack, 'core', [])],
+            "related": [{"id": i.id, "content": i.content[:200], "relevance": i.relevance}
+                        for i in getattr(pack, 'related', [])],
+            "divergent": [{"id": i.id, "content": i.content[:200], "relevance": i.relevance}
+                          for i in getattr(pack, 'divergent', [])],
+        }
+        # Extract principles from pack if not already populated
+        if not principles:
+            pack_principles = getattr(pack, 'activated_principles', [])
+            if pack_principles:
+                principles = pack_principles
+    except Exception as e:
+        errors.append(f"pre_task_v2: {e}")
+        # Fallback: call principle_activate directly as safety net
+        try:
+            from plastic_promise.mcp.tools.principles import handle_principle_activate
+            pa_result = await handle_principle_activate(engine, {
+                "task_type": task_type,
+                "task_description": task_description,
+            })
+            pa_data = json.loads(pa_result[0].text)
+            principles = pa_data.get("activated", [])
+        except Exception:
+            pass
+
+    # ── Step 3: memory_store — inject record into memory pool ──
+    try:
+        from plastic_promise.mcp.tools.memory import handle_memory_store
+        core_count = len(context_pack.get("core", [])) if context_pack else 0
+        principle_names = ", ".join(p.get("name", "?") for p in principles[:5])
+        content = (
+            f"[AUTO INJECT] {task_description}\n"
+            f"core_items: {core_count}\n"
+            f"activated_principles: {principle_names}"
+        )
+        tags = [
+            "auto_inject",
+            f"source:{source}",
+            f"skill:{skill_name}",
+            "task:done",
+        ]
+        if entity_id:
+            tags.append(f"entity:{entity_id}")
+        store_result = await handle_memory_store(engine, {
+            "content": content,
+            "memory_type": "experience",
+            "source": "auto_inject",
+            "entity_ids": [entity_id] if entity_id else [],
+            "tags": tags,
+        })
+        store_data = json.loads(store_result[0].text)
+        inject_memory_id = store_data.get("memory_id")
+    except Exception as e:
+        errors.append(f"memory_store: {e}")
+
+    # ── Step 4: skill_session_complete — auto-complete (inject is instant) ──
+    if entity_id:
+        try:
+            from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
+            await handle_skill_session_complete(engine, {
+                "entity_id": entity_id,
+                "outcome": "注入完成",
+                "artifacts": [],
+            })
+        except Exception as e:
+            errors.append(f"skill_session_complete: {e}")
+
+    # ── Build response ──
+    response = {
+        "entity_id": entity_id,
+        "skill_name": skill_name,
+        "context_pack": context_pack,
+        "principles": principles,
+        "inject_memory_id": inject_memory_id,
+        "errors": errors if errors else None,
+        "partial": len(errors) > 0,
+    }
+
+    return [TextContent(type="text", text=json.dumps(response, ensure_ascii=False, indent=2))]
