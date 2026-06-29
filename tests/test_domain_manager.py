@@ -20,7 +20,7 @@ class TestDomainManager:
 
     def test_assign_matching_domain(self):
         dm = DomainManager(db_path=":memory:")
-        result = dm.assign({"debug", "fix", "crash"})
+        result = dm.assign(["debug", "fix", "crash"])
         assert result == "fixing"
 
     def test_assign_uncategorized(self):
@@ -29,14 +29,16 @@ class TestDomainManager:
         assert result == "uncategorized"
 
     def test_assign_to_candidate_then_promote(self):
+        import time
         dm = DomainManager(db_path=":memory:")
+        unique = f"ztag_{int(time.time() * 1000) % 100000}"
         # 第一次: 返回 uncategorized, 但候选域已创建
-        r1 = dm.assign({"quantum", "compute"})
+        r1 = dm.assign([unique, "compute"])
         # 第二次: 再加标签
-        r2 = dm.assign({"quantum", "simulate"})
-        # 候选域 quantum 应累积
-        assert "quantum" in dm.domains
-        assert dm.domains["quantum"].status == "candidate"
+        r2 = dm.assign([unique, "simulate"])
+        # 候选域应累积 (用唯一标签避免DB残留干扰)
+        assert unique in dm.domains, f"Expected '{unique}' in {list(dm.domains.keys())}"
+        assert dm.domains[unique].status == "candidate"
 
     def test_merge_domains(self):
         dm = DomainManager(db_path=":memory:")
