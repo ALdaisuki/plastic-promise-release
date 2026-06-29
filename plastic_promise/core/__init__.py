@@ -5,6 +5,8 @@
 - context_engine: ContextEngine 上下文供应引擎（Python回退版 + Rust PyO3桥接）
 """
 
+from plastic_promise.core.lancedb_store import LanceDBStore, EMB_DIM, TABLE_NAME
+
 from plastic_promise.core.constants import (
     DIGITAL_BODY_SYSTEMS,
     DEFENSE_LAYERS,
@@ -32,6 +34,7 @@ from plastic_promise.core.context_engine import (
 )
 
 __all__ = [
+    "LanceDBStore", "EMB_DIM", "TABLE_NAME",
     "DIGITAL_BODY_SYSTEMS",
     "DEFENSE_LAYERS",
     "TRUST_INITIAL", "TRUST_DECAY_RATE", "TRUST_BOOST_RATE", "TRUST_MIN", "TRUST_MAX",
