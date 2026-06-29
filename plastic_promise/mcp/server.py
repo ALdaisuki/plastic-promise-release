@@ -813,20 +813,49 @@ async def run_sse(port: int = 9020):
         return Response()
 
     async def handle_events(request: Request):
-        """SSE event stream — push issue transitions to connected clients."""
-        from starlette.responses import StreamingResponse
+        """SSE event stream — push notifications to connected clients.
+
+        Uses raw ASGI send to avoid Starlette StreamingResponse lifecycle conflicts.
+        """
         import json as _json
 
-        async def event_generator():
-            yield f"data: {_json.dumps({'type': 'connected', 'message': 'listening for issue changes'})}\n\n"
-            while True:
-                try:
-                    data = await _asyncio.wait_for(_notify_queue.get(), timeout=30)
-                    yield f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
-                except _asyncio.TimeoutError:
-                    yield f"data: {_json.dumps({'type': 'heartbeat'})}\n\n"
+        # Send SSE headers manually
+        await request._send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                (b"content-type", b"text/event-stream"),
+                (b"cache-control", b"no-cache"),
+                (b"connection", b"keep-alive"),
+            ],
+        })
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        # Send initial connected event
+        body = f"data: {_json.dumps({'type': 'connected'})}\n\n".encode()
+        await request._send({"type": "http.response.body", "body": body, "more_body": True})
+
+        # Event loop — exits on client disconnect
+        while True:
+            disconnected = await request.is_disconnected()
+            if disconnected:
+                break
+            try:
+                data = await _asyncio.wait_for(_notify_queue.get(), timeout=1)
+                body = f"data: {_json.dumps(data, ensure_ascii=False)}\n\n".encode()
+                await request._send({"type": "http.response.body", "body": body, "more_body": True})
+            except _asyncio.TimeoutError:
+                # Send heartbeat to keep connection alive
+                body = b"data: {\"type\":\"heartbeat\"}\n\n"
+                try:
+                    await request._send({"type": "http.response.body", "body": body, "more_body": True})
+                except Exception:
+                    break
+
+        # Clean shutdown
+        try:
+            await request._send({"type": "http.response.body", "body": b"", "more_body": False})
+        except Exception:
+            pass
 
     async def health(request):
         import json as _json
