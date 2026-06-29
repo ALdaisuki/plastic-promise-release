@@ -14,6 +14,7 @@ CLI 用法:
   python bridge/soul_bridge.py scarf               # SCARF 自省
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -80,15 +81,15 @@ class SoulBridge:
             print(f"[SoulBridge] Failed to init soul modules: {e}", file=sys.stderr)
             return False
 
-    def pre_task(self, task: str, task_type: str = "general") -> Dict[str, Any]:
-        """任务执行前管线。
+    async def pre_task(self, task: str, task_type: str = "general") -> Dict[str, Any]:
+        """任务执行前管线 — 统一走 auto_context_inject handler。
 
         Returns:
             {
                 ok: bool,                    # 是否通过防线
                 blocked: bool,              # 是否被拦截
                 block_reason: str | None,   # 拦截原因
-                context: dict | None,       # 上下文包
+                context: dict | None,       # 上下文包 {summary, inject_memory_id}
                 scarf: dict | None,         # SCARF 自省结果
                 trust: float,               # 当前信任分
                 layer: str | None,          # 触发拦截的防线层级
@@ -127,7 +128,7 @@ class SoulBridge:
                 result["block_reason"] = defense.get("reason", "Defense blocked")
                 result["layer"] = defense.get("layer", "L0")
                 return result
-        except Exception as e:
+        except Exception:
             # 防线检查失败不阻塞任务
             pass
 
@@ -138,12 +139,29 @@ class SoulBridge:
         except Exception:
             result["scarf"] = None
 
-        # 4. 上下文供应
+        # 4. Unified context injection via auto_context_inject handler
         try:
-            context = self._soul_loop.pre_task_v2(task, task_type)
-            if hasattr(context, '__dict__'):
+            from plastic_promise.mcp.tools.context import handle_auto_context_inject
+            from plastic_promise.core.context_engine import ContextEngine
+
+            # Ensure engine is initialized (SoulLoop lazy-inits it on pre_task_v2)
+            engine = getattr(self._soul_loop, '_engine', None)
+            if engine is None:
+                engine = ContextEngine()
+                self._soul_loop._engine = engine
+
+            inject_result = await handle_auto_context_inject(engine, {
+                "task_description": task,
+                "task_type": task_type,
+                "source": "pi_agent",
+            })
+            data = json.loads(inject_result[0].text)
+            # Backward compatibility: return context_pack dict (not ContextPack object)
+            # Existing callers (neko_adapter.py) expect a dict with "summary" key
+            if data.get("context_pack"):
                 result["context"] = {
-                    "summary": str(context)[:200],
+                    "summary": str(data["context_pack"])[:200],
+                    "inject_memory_id": data.get("inject_memory_id"),
                 }
         except Exception:
             result["context"] = None
@@ -304,7 +322,7 @@ if __name__ == "__main__":
     bridge = get_bridge()
 
     if args.command == "pre_task":
-        result = bridge.pre_task(args.task, args.task_type)
+        result = asyncio.run(bridge.pre_task(args.task, args.task_type))
     elif args.command == "post_task":
         result = bridge.post_task(args.result, args.task_type, args.success)
     elif args.command == "status":
