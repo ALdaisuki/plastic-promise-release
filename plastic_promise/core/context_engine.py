@@ -27,7 +27,7 @@ from plastic_promise.core.constants import (
 
 @dataclass
 class ContextItem:
-    """上下文包中的单个条目"""
+    """上下文包中的单个条目 — 含完整生命轨迹 (P3a + P3b)"""
     id: str
     content: str
     relevance: float
@@ -37,10 +37,25 @@ class ContextItem:
     is_principle: bool = False
     worth_score: float = 0.0
     is_auto_recall: bool = True  # True = internal retrieval, False = user-initiated
+    # P3a: 发散联想灵感质量
+    novelty_score: float = 0.0       # 与检索集中其他项的不相似度 [0,1]
+    confidence: float = 0.5           # 检索置信度（来源质量+worth+相关性）
+    inspiration_score: float = 0.0    # novelty * confidence（灵感综合分）
+    # P3b: 生命轨迹
+    adoption_count: int = 0           # 被采纳次数 (← worth_success)
+    rejection_count: int = 0          # 被拒绝次数 (← worth_failure)
+    times_retrieved: int = 0          # 被检索次数 (← access_count)
+    decay_status: str = "healthy"     # fresh|healthy|stale|decaying|expired
 
     def to_prompt_line(self) -> str:
+        """Render one context item with life-trajectory annotations (P3b)."""
         mark = " 🧬" if self.is_principle else ""
-        return f"- [{self.relevance:.2f}]{mark} [{self.source}] {self.content[:200]}"
+        traj = ""
+        if self.adoption_count > 0 or self.rejection_count > 0:
+            traj = f" [✓{self.adoption_count}✗{self.rejection_count}]"
+        if self.decay_status in ("stale", "decaying", "expired"):
+            traj += f" ⚠{self.decay_status}"
+        return f"- [{self.relevance:.2f}]{mark}{traj} [{self.source}] {self.content[:200]}"
 
 
 @dataclass
@@ -663,12 +678,13 @@ class ContextEngine:
         # P2: Evolve edge weights based on feedback patterns
         self._apply_edge_feedback()
 
-        # Phase 5: 分层
+        # Phase 5: 分层 + 生命轨迹 (P3a + P3b)
         pack = ContextPack(activated_principles=activated)
 
         for item_id, score, content, source in all_results:
             is_principle = item_id.startswith("principle:")
-            worth = self._memories.get(item_id, {}).get("worth_score", 0.0)
+            mem = self._memories.get(item_id, {})
+            worth = mem.get("worth_score", 0.0)
             freshness = self._calc_freshness(item_id)
 
             item = ContextItem(
@@ -679,6 +695,15 @@ class ContextEngine:
                 freshness=freshness,
                 is_principle=is_principle,
                 worth_score=worth,
+                # P3a: defaults (computed below for divergent layer)
+                novelty_score=0.0,
+                confidence=0.5,
+                inspiration_score=0.0,
+                # P3b: life trajectory from MemoryRecord
+                adoption_count=mem.get("worth_success", 0),
+                rejection_count=int(mem.get("worth_failure", 0)),
+                times_retrieved=mem.get("access_count", 0),
+                decay_status=self._calc_decay_status(item_id, mem),
             )
 
             if score >= CONTEXT_LAYERS["core"]["min_relevance"]:
@@ -690,6 +715,13 @@ class ContextEngine:
             elif score >= CONTEXT_LAYERS["divergent"]["min_relevance"]:
                 item.layer = "divergent"
                 pack.divergent.append(item)
+
+        # P3a: Compute divergent quality and filter low-inspiration items
+        if pack.divergent:
+            all_retrieved = pack.core + pack.related + pack.divergent
+            pack.divergent = self._compute_divergent_quality(
+                pack.divergent, all_retrieved
+            )
 
         # Phase 6: 审计元数据
         pack.audit_metadata = {
@@ -1331,6 +1363,103 @@ class ContextEngine:
         except (ValueError, IndexError):
             pass
         return "valid"
+
+    def _calc_decay_status(self, item_id: str, mem: dict) -> str:
+        """P3b: Compute decay status label from memory age and tier.
+
+        Uses a simplified Weibull-inspired decay model:
+          fresh: created today or decay_multiplier >= 0.90
+          healthy: decay >= 0.60
+          stale: decay >= 0.30
+          decaying: decay >= 0.10
+          expired: below 0.10
+        """
+        from plastic_promise.core.constants import DECAY_STATUS_THRESHOLDS, DECAY_CONFIG
+
+        created = mem.get("created_at", "")
+        tier = mem.get("tier", "L1")
+        if not created or not self._current_time:
+            return "healthy"
+
+        try:
+            created_date = created[:10]
+            now_date = self._current_time[:10]
+            created_parts = created_date.split("-")
+            now_parts = now_date.split("-")
+            if len(created_parts) != 3 or len(now_parts) != 3:
+                return "healthy"
+
+            created_days = int(created_parts[0]) * 365 + int(created_parts[1]) * 30 + int(created_parts[2])
+            now_days = int(now_parts[0]) * 365 + int(now_parts[1]) * 30 + int(now_parts[2])
+            age_days = max(0, now_days - created_days)
+
+            tier_config = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])
+            half_life = tier_config.get("half_life_days", 14)
+            # Simple exponential decay: decay = 2^(-age/half_life)
+            decay = 2.0 ** (-age_days / half_life) if half_life > 0 else 1.0
+
+            for label, threshold in sorted(DECAY_STATUS_THRESHOLDS.items(),
+                                           key=lambda x: x[1], reverse=True):
+                if decay >= threshold:
+                    return label
+            return "expired"
+        except (ValueError, IndexError):
+            return "healthy"
+
+    def _compute_divergent_quality(
+        self,
+        divergent_items: List[ContextItem],
+        all_retrieved: List[ContextItem],
+    ) -> List[ContextItem]:
+        """P3a: Score divergent items on novelty + confidence, filter noise.
+
+        For each divergent item:
+          novelty = 1.0 - max_content_similarity (via embedder or fallback)
+          confidence = 0.4*worth_score + 0.3*source_quality + 0.3*relevance
+          inspiration = novelty * confidence
+
+        Items with inspiration < DIVERGENT_QUALITY_THRESHOLD are removed.
+        Surviving items get their novelty/confidence/inspiration fields populated.
+        """
+        from plastic_promise.core.constants import (
+            DIVERGENT_QUALITY_THRESHOLD,
+            SOURCE_QUALITY_MAP,
+        )
+
+        if not divergent_items:
+            return divergent_items
+
+        for item in divergent_items:
+            # Confidence: blend worth_score, source quality, relevance
+            source_quality = SOURCE_QUALITY_MAP.get(item.source, 0.5)
+            confidence = 0.4 * item.worth_score + 0.3 * source_quality + 0.3 * item.relevance
+            item.confidence = confidence
+
+            # Novelty: compute via embedder if available, else fallback
+            if self._embedder is not None and len(all_retrieved) > 1:
+                try:
+                    item_vec = self._embedder.embed(item.content)
+                    max_sim = 0.0
+                    for other in all_retrieved:
+                        if other.id == item.id:
+                            continue
+                        other_vec = self._embedder.embed(other.content) if self._embedder else None
+                        if other_vec:
+                            sim = self._cosine_similarity(item_vec, other_vec)
+                            max_sim = max(max_sim, sim)
+                    item.novelty_score = 1.0 - max_sim
+                except Exception:
+                    # Fallback: domain-based heuristic — different source = more novel
+                    item.novelty_score = 0.3 if item.source not in ("graph", "entity-link") else 0.6
+            else:
+                # No embedder: heuristic — vector-sourced items are more novel
+                item.novelty_score = 0.4 if item.source in ("graph", "text") else 0.6
+
+            item.inspiration_score = item.novelty_score * item.confidence
+
+        # Filter: keep only items above quality threshold
+        return [item for item in divergent_items
+                if item.inspiration_score >= DIVERGENT_QUALITY_THRESHOLD]
 
 
 # ============================================================
