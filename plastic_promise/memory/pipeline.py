@@ -249,11 +249,22 @@ class MemoryPipeline:
                     )
                     # Save vector for _vector_retrieval (细匹配)
                     vec = record.get("vector")
-                    if vec and hasattr(self.rec_mem, '_engine'):
+                    if hasattr(self.rec_mem, '_engine'):
                         engine = self.rec_mem._engine
-                        engine._memories[stored.memory_id]["_vector"] = vec
-                        engine._memories[stored.memory_id]["tags"] = record.get("tags", [])
-                        engine._memories[stored.memory_id]["domain"] = record.get("domain", "uncategorized")
+                        if vec:
+                            engine._memories[stored.memory_id]["_vector"] = vec
+                        tags = record.get("tags", [])
+                        domain = record.get("domain", "uncategorized")
+                        engine._memories[stored.memory_id]["tags"] = tags
+                        engine._memories[stored.memory_id]["domain"] = domain
+                        # Persist tags and domain to SQLite (targeted UPDATE, not upsert)
+                        if engine._sqlite:
+                            import json
+                            engine._sqlite._conn.execute(
+                                "UPDATE memories SET tags = ?, domain = ? WHERE id = ?",
+                                (json.dumps(tags), domain, stored.memory_id)
+                            )
+                            engine._sqlite._conn.commit()
                     # Rebuild entity edges from fuzzy buffer to main pool (原则 #6)
                     entity_ids = record.get("entity_ids", [])
                     if entity_ids and hasattr(self.rec_mem, '_engine'):
