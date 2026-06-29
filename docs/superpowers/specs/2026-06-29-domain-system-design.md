@@ -1,6 +1,6 @@
 # Domain System — 记忆与原则的域联邦设计
 
-> 状态: 已评审修订 | 日期: 2026-06-29 | 评审轮次: 1
+> 状态: 已评审修订 | 日期: 2026-06-29 | 评审轮次: 2 (原则冲突修正)
 
 ## 一、问题
 
@@ -92,27 +92,20 @@ ALTER TABLE memories ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE memories ADD COLUMN domain TEXT NOT NULL DEFAULT 'uncategorized';
 -- scope 和 category 列保留但标记 deprecated，不删除（向后兼容）
 
--- 域注册表
+-- 域注册表（复用于候选域 + 别名）
 CREATE TABLE domains (
     name TEXT PRIMARY KEY,
     score REAL NOT NULL DEFAULT 0.3,
-    tags TEXT NOT NULL DEFAULT '[]',       -- JSON array
-    merged_from TEXT NOT NULL DEFAULT '[]',-- JSON array，谱系追溯
-    parent TEXT,                            -- 被合并到的目标域
-    status TEXT NOT NULL DEFAULT 'active', -- active / merged / atrophied
+    tags TEXT NOT NULL DEFAULT '[]',         -- JSON array；candidate 状态时存 {"code":3,"build":2} 标签计数
+    aliases TEXT NOT NULL DEFAULT '[]',      -- JSON array of {alias, expires_at}，旧标签别名
+    merged_from TEXT NOT NULL DEFAULT '[]',  -- JSON array，谱系追溯
+    parent TEXT,                              -- 被合并到的目标域
+    status TEXT NOT NULL DEFAULT 'active',   -- active / candidate / merged / atrophied
+    memory_count INTEGER NOT NULL DEFAULT 0, -- 候选域的记忆累积计数
     access_count INTEGER NOT NULL DEFAULT 0,
     last_accessed TEXT,
     created_at TEXT NOT NULL,
     last_active TEXT NOT NULL
-);
-
--- 联邦信号
-CREATE TABLE domain_signals (
-    source_domain TEXT NOT NULL,
-    target_domain TEXT NOT NULL,
-    signal TEXT NOT NULL,                   -- ≤200 字符摘要
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (source_domain, target_domain)
 );
 
 -- 审计日志
@@ -124,17 +117,21 @@ CREATE TABLE audit_log (
 );
 ```
 
-### 标签索引（纯内存）
+> **原则 #1 奥卡姆剃刀决策**: 不建独立的 `domain_signals` 表和 `candidate_domains` 结构。
+> 信号是瞬时数据（3 周前的信号无意义），检索时实时生成、实时注入结果、不持久化。
+> 候选域复用 `domains` 表（`status='candidate'`），别名复用 `aliases` 列。
+> 结果是 2 张新表（domains + audit_log），不是 4 张。
+
+### 标签索引（内存 + SQLite 备份）
 
 ```python
 # 启动时从 SQLite 重建，O(n) 一次性扫描
 tag_index: dict[str, set[str]]       # tag → set[memory_id]
 # 例: {"coding": {m1,m3}, "pipeline": {m5,m7}}
 
-# 别名映射（旧标签保留 30 天）
-alias_map: dict[str, tuple[str, float]]
-# key=旧标签, value=(主标签, 过期时间戳)
-# 定期清理过期项
+# 别名映射 — 从 domains.aliases 列加载，重启不丢失
+# 内存中为: dict[旧标签, (主标签, 过期时间戳)]
+# 定期检查过期项并清理（每次 audit_run 触发）
 ```
 
 ### DomainManager
@@ -145,11 +142,12 @@ import threading
 class DomainInfo:
     name: str
     score: float           # 0.0-1.0，动态
-    tags: set[str]         # 域下所有标签
+    tags: set[str] | dict[str, int]  # active域=标签集合；candidate域=标签计数{"code":3}
+    aliases: list[dict]    # [{"alias":"old_name","expires_at":"..."}]
     merged_from: list[str] # 合并谱系
     parent: str | None     # 被合并到的目标域
-    status: str            # active / merged / atrophied
-    memory_count: int
+    status: str            # active / candidate / merged / atrophied
+    memory_count: int      # 候选域的记忆累积计数
     principle_ids: list[int]
     access_count: int
     last_accessed: str
@@ -158,33 +156,35 @@ class DomainInfo:
 
 class DomainManager:
     _lock: threading.Lock              # 保护所有写操作
-    domains: dict[str, DomainInfo]     # 域注册表（含预定义域）
+    domains: dict[str, DomainInfo]     # 域注册表（含预定义域 + 候选域，status区分）
     tag_to_domain: dict[str, set[str]] # 标签→域集合（一对多）
-    candidate_domains: dict[str, Counter]
-    # candidate_domains["<新域名>"] = Counter({"coding":3, "build":2})
+    # candidate_domains 不复存在 — 候选域直接写入 domains 表 (status='candidate')
 
     def assign(self, tags: list[str]) -> str:
-        """线程安全。返回域名字符串。"""
+        """线程安全。返回域名字符串。候选域复用 domains 表。"""
         ...
 
     def merge(self, source: str, target: str) -> None:
-        """线程安全。合并后 source.status='merged', target.merged_from 追加。"""
+        """线程安全。合并后 source.status='merged'。
+           写入 audit_log。"""
         ...
 
     def unmerge(self, source: str) -> None:
-        """线程安全。从 merged_from 谱系恢复。"""
+        """线程安全。从 merged_from 谱系恢复。写入 audit_log。"""
         ...
 
     def rename(self, old: str, new: str) -> None:
-        """线程安全。更新所有记忆和原则的 domain 字段。"""
+        """线程安全。更新所有记忆+原则的domain字段。
+           旧名→aliases 保留30天。写入 audit_log。"""
         ...
 
     def decay(self) -> list[str]:
-        """线程安全。返回萎缩的域列表。"""
+        """线程安全。返回萎缩的域列表。写入 audit_log。"""
         ...
 
-    def signal(self, from_d: str, to_d: str, msg: str) -> None:
-        """线程安全。更新联邦信号。"""
+    def generate_signal(self, from_d: str, to_d: str, context: str) -> str:
+        """无状态。基于当前检索上下文生成信号摘要（≤200字符）。
+           不持久化 — 瞬时数据，3周前的信号无意义。"""
         ...
 
     def stats(self) -> dict:
@@ -223,16 +223,16 @@ def _assign_domain(self, tags: list[str]) -> str:
     #    c) 域创建时间最早
     # 4. 最高分 >0.3 → 归入该域
     # 5. 最高分 ≤0.3 → 进入候选新域流程:
-    #    - candidate_domains 中累积标签计数
-    #    - 候选域标签数 ≥2 且关联记忆数 ≥3 → 进入观察期
-    #    - 观察期内记忆数 ≥5 → 转正为正式域 (score=0.5)
-    #    - 新域名称: 取出现最多的标签作为域名
+    #    - 候选域存入 domains 表 (status='candidate', tags={"<tag>":count})
+    #    - 候选域标签种类 ≥2 且 memory_count ≥3 → 进入观察期
+    #    - 观察期内 memory_count ≥5 → 转正 (status='active', score=0.5)
+    #    - 新域名称: tags 中出现最多的标签
     # 6. 完全无法匹配 → 返回 "uncategorized"
 ```
 
 ### 标签索引同步
 
-classified 阶段处理每条记录后，同步更新 `tag_index`、`tag_to_domain` 和 `candidate_domains`。全内存操作，无 SQL 开销。每次 `process_pipeline` 调用后即时更新候选域计数器。
+classified 阶段处理每条记录后，同步更新 `tag_index`（内存）和 `domains` 表的候选域记录（SQLite）。每次 `process_pipeline` 调用后即时更新。
 
 ## 七、检索层
 
@@ -263,7 +263,7 @@ query → 提取 tags
 
 ### 联邦信号生成与注入
 
-信号在检索时自动生成（非周期任务）：
+信号在检索时**实时生成，不持久化**（瞬时数据，旧信号无意义）：
 
 ```
 检索 domain="building" 时:
@@ -271,9 +271,9 @@ query → 提取 tags
   ├─ 1. 返回 building 域记忆（优先）
   ├─ 2. 返回 building 域原则（来自 constants.py）
   ├─ 3. 若检索结果中包含跨域记忆（如 fixing 域的记忆被命中）:
-  │       → 自动生成信号: "building 检索命中 fixing 记忆 3 条"
-  │       → 写入 domain_signals 表
+  │       → 实时生成信号: "building 检索命中 fixing 记忆 3 条"
   │       → 检索结果末尾追加一条 signal 类型记录（摘要≤200字符，不影响排序权重）
+  │       → 不写入数据库 — 原则 #1 奥卡姆剃刀
   └─ 4. 同名域联邦融合:
          若指定 domain="building":
            返回 building 域记忆 + building 域原则
@@ -303,10 +303,13 @@ query → 提取 tags
 ### 第一层：流水线微进化
 
 每次 `process_pipeline` 处理完成后触发：
-- 新标签自动加入 `tag_index`（内存）
-- 各域标签与候选新域标签重叠度检测
-- `candidate_domains` 计数器更新（跨记忆状态，内存 Counter）
-- 候选域达到转正条件（≥2 标签 + ≥5 记忆，含观察期）→ 创建正式域 (score=0.5)
+- 新标签自动加入 `tag_index`（内存，启动时从 memories 表重建）
+- 各域标签与候选域标签重叠度检测
+- 候选域通过 `domains` 表追踪（status='candidate'，跨重启持久）:
+  - `tags` 列存标签计数 JSON（如 `{"code":3,"build":2}`）
+  - `memory_count` 列存关联记忆累计数
+  - ≥2 标签种类 + memory_count≥3 → 进入观察期
+  - memory_count≥5 → 转正 (status='active', score=0.5)
 - 每次处理单条记忆，开销可控
 
 ### 第二层：周期审计结构进化
@@ -343,7 +346,8 @@ query → 提取 tags
   ├─ 域合并 → merged_from 保留谱系（可 unmerge），audit_log 写入记录
   ├─ 域萎缩 → 记忆迁入兄弟域，不删除，audit_log 写入记录
   ├─ 域重命名 → domain_rename 自动更新所有关联记忆和原则
-  ├─ 标签变更 → alias_map 保留旧标签 30 天作为别名，定期清理过期项
+  ├─ 标签变更 → domains.aliases 持久化旧标签（JSON含过期时间），重启不丢失
+  ├─ 候选域 → domains 表 status='candidate'，跨重启持久
   └─ 所有变更写入 audit_log（原则 #2: 全过程可查可透明）
 ```
 
@@ -358,8 +362,9 @@ query → 提取 tags
 
 ## 十、线程安全与高并发
 
-- **DomainManager**: `threading.Lock` 保护所有写操作（assign / merge / unmerge / rename / decay / signal）
+- **DomainManager**: `threading.Lock` 保护所有写操作（assign / merge / unmerge / rename / decay）
 - **读操作**: 不加锁（Python dict 读是线程安全的），仅在 `stats()` 时做快照复制
+- **信号生成**: 无状态函数，检索时实时生成，无锁竞争
 - **定期审计**: 异步执行（`threading.Thread` 或 `audit_run` 钩子内），不阻塞主流程
 - **标签索引**: 纯内存 HashMap，单机可支撑万级记忆
 - **扩展预留**: 若规模扩大到十万级以上，tag_index 可迁移至 Redis（接口一致，替换实现即可）。SQLite WAL 模式已开启，读写不互斥
@@ -379,13 +384,63 @@ query → 提取 tags
 | `mcp/server.py` | 注册 4 个新 domain 工具 |
 | `mcp/tools/__init__.py` | 导出 domain 模块 |
 | `core/step_auditor.py` | audit_run 钩子触发域重叠度检测 + 衰减检测 |
-| 迁移脚本 | SQLite ALTER TABLE + domains/domain_signals/audit_log 建表 |
+| 迁移脚本 | SQLite ALTER TABLE + domains/audit_log 建表 |
 
 ## 十二、不做什么
 
-- 不建独立的信号总线/消息队列（domain_signals 表足够）
+- 不建独立的信号存储（信号瞬时生成，不持久化 — 原则 #1）
 - 不迁 Rust（DomainManager 是协调逻辑，非计算密集）
 - 不删 scope/category 列（保留向后兼容，标记 deprecated）
 - 不给 fixing 和 connecting 强行分配原则
 - 不做硬标签过滤（只做软加权 + 高/低置信分层）
+- 不建独立的 candidate_domains 结构（复用 domains 表 status='candidate' — 原则 #1）
 - 记忆永远不会被自动分配进 "all" 域
+
+---
+
+## 十三、设计教训
+
+> 本次设计过程中发现并修正的原则冲突，作为后续设计的参考约束。
+
+### 教训 1: 瞬时数据不要建表
+
+```
+❌ 建 domain_signals 表存跨域检索信号
+✅ 检索时实时生成 signal，追加结果末尾，不持久化
+
+根因: 信号是瞬时数据 — "3 周前 building 检索命中 2 条 fixing 记忆"
+      毫无意义。建表 = schema + 写入 + GC + 查询。全是不必要的实体。
+
+原则: #1 奥卡姆剃刀 — 每次想新建表时问"这个数据 3 天后还有意义吗？"
+```
+
+### 教训 2: 纯内存状态必须持久化
+
+```
+❌ candidate_domains: dict[str, Counter] 纯内存
+❌ alias_map: dict[str, tuple] 纯内存
+✅ 候选域写入 domains 表 (status='candidate', tags存计数JSON)
+✅ 别名写入 domains.aliases 列 (JSON, 含过期时间)
+
+根因: MCP 重连 / 进程重启 → 所有内存状态归零。
+      候选域累积 3 条记忆只差 2 条转正 → 重启归零 → 前功尽弃。
+      别名丢失 → 旧查询突然找不到结果。
+
+原则: #2 全过程可查可透明 — 重启后系统状态必须可复现。
+      ALTER TABLE 加一列的成本远低于数据丢失。
+```
+
+### 教训 3: 设计评审先自检原则冲突
+
+```
+本次评审发现 3 个冲突，全部集中在 2 条原则:
+  原则 #1 (奥卡姆剃刀) — domain_signals 不必要实体
+  原则 #2 (可查可透明) — candidate_domains/alias_map 不可追溯
+
+其余 10 条原则零冲突。3:10 的比例说明应先自检再外审。
+
+建议: 每次设计完成后，提交评审前:
+  1. principle_activate(task_type="architecture") 激活相关原则
+  2. 逐条对照设计，标注潜在冲突
+  3. 修正后再提交评审 — 降低人力评审的冲突发现率
+```
