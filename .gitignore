@@ -49,3 +49,9 @@ step_audit_log.jsonl
 pi_daemon.pid
 nul
 .pi_worker_test
+
+# LanceDB (runtime generated)
+plastic_memory.lancedb/
+
+# Telemetry (runtime generated)
+.interop/
