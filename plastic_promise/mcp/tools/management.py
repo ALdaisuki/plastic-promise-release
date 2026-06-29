@@ -309,17 +309,14 @@ async def handle_issue_list(engine: Any, args: dict) -> list[TextContent]:
 
 # ---- pack_export ----
 async def handle_pack_export(engine: Any, args: dict) -> list[TextContent]:
-    """Export memories as a shareable JSON experience pack."""
+    """Export memories as a shareable JSON experience pack (streaming gzip)."""
     try:
-        from plastic_promise.pack import export_pack
-        path = export_pack(
-            engine, name=args["name"],
-            tags=args.get("tags"), memory_ids=args.get("memory_ids"),
-            author=args.get("author", "claude"),
-            description=args.get("description", ""),
-        )
-        return [TextContent(type="text", text=json.dumps(
-            {"exported": True, "path": path}, ensure_ascii=False))]
+        from plastic_promise.core.pack_index import pack_export_streaming
+        name = args["name"]
+        path = args.get("path", f"{name}.json.gz")
+        tags = args.get("tags")
+        result = pack_export_streaming(name, path, engine, tags)
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "pack_export"}, ensure_ascii=False))]
@@ -327,10 +324,13 @@ async def handle_pack_export(engine: Any, args: dict) -> list[TextContent]:
 
 # ---- pack_import ----
 async def handle_pack_import(engine: Any, args: dict) -> list[TextContent]:
-    """Import a JSON experience pack into the memory pool."""
+    """Import a JSON experience pack into the memory pool with optional strategy."""
     try:
-        from plastic_promise.pack import import_pack
-        result = import_pack(engine, path=args["path"], owner=args.get("owner", ""))
+        from plastic_promise.core.pack_index import pack_import_with_strategy
+        path = args["path"]
+        strategy = args.get("strategy", "skip")
+        owner = args.get("owner", "")
+        result = pack_import_with_strategy(path, engine, strategy, owner)
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
