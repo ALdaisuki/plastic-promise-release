@@ -292,7 +292,10 @@ def _now():
 
 
 async def main():
-    print(f"Pi Daemon: Autonomous Pipeline (poll={INTERVAL}s)")
+    # Write PID file for watchdog
+    with open("pi_daemon.pid", "w") as f:
+        f.write(str(os.getpid()))
+    print(f"Pi Daemon: Autonomous Pipeline (poll={INTERVAL}s, PID={os.getpid()})")
     print(f"Roles: {', '.join(AGENT_ROLES.keys())}")
     print(f"Auto-chain: {', '.join(f'{k}→{v}' for k,v in AUTO_CHAIN.items())}")
 

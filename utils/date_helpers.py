@@ -1,93 +1,62 @@
-"""Date helper utilities using the datetime module."""
+"""Date utility helpers built on datetime.date.
+
+Provides simple date math: days between two dates, weekend detection,
+and next business day calculation.
+"""
+
+from __future__ import annotations
 
 import datetime
 
 
 def days_between(date1: datetime.date, date2: datetime.date) -> int:
-    """Return the absolute number of days between two dates.
+    """Return the absolute number of calendar days between *date1* and *date2*.
 
-    Args:
-        date1: The first date.
-        date2: The second date.
-
-    Returns:
-        A non-negative integer representing the number of days
-        between date1 and date2 (inclusive of one endpoint).
-
-    Example:
-        >>> from datetime import date
-        >>> days_between(date(2026, 1, 1), date(2026, 1, 5))
-        4
+    The result is always non-negative regardless of argument order.
     """
     return abs((date2 - date1).days)
 
 
-def is_weekend(d: datetime.date) -> bool:
-    """Check whether a date falls on a weekend (Saturday or Sunday).
+def is_weekend(date: datetime.date) -> bool:
+    """Return ``True`` when *date* falls on a Saturday or Sunday."""
+    return date.weekday() >= 5  # Monday=0 … Sunday=6
 
-    Args:
-        d: The date to check.
 
-    Returns:
-        True if the date is Saturday (weekday 5) or Sunday (weekday 6).
+def get_next_business_day(date: datetime.date) -> datetime.date:
+    """Return the earliest business day strictly after *date*.
 
-    Example:
-        >>> from datetime import date
-        >>> is_weekend(date(2026, 6, 27))  # Saturday
-        True
-        >>> is_weekend(date(2026, 6, 29))  # Monday
-        False
+    If *date* itself is a business day (Mon–Fri) the result is the next
+    calendar day.  If *date* falls on a weekend the function advances to
+    the following Monday.
     """
-    return d.weekday() >= 5
-
-
-def get_next_business_day(d: datetime.date) -> datetime.date:
-    """Return the next business day on or after the given date.
-
-    If the date is a weekday (Mon-Fri), it is returned unchanged.
-    If it is a weekend, the following Monday is returned.
-
-    Args:
-        d: The reference date.
-
-    Returns:
-        A date object representing the next business day.
-
-    Example:
-        >>> from datetime import date
-        >>> get_next_business_day(date(2026, 6, 26))  # Friday
-        datetime.date(2026, 6, 26)
-        >>> get_next_business_day(date(2026, 6, 27))  # Saturday
-        datetime.date(2026, 6, 29)
-    """
-    while d.weekday() >= 5:
-        d += datetime.timedelta(days=1)
-    return d
+    one_day = datetime.timedelta(days=1)
+    next_day = date + one_day
+    while is_weekend(next_day):
+        next_day += one_day
+    return next_day
 
 
 if __name__ == "__main__":
-    from datetime import date
+    # -- quick smoke tests ---------------------------------------------------
+    d1 = datetime.date(2026, 1, 1)
+    d2 = datetime.date(2026, 1, 10)
 
-    print("Testing date_helpers...")
+    assert days_between(d1, d2) == 9
+    assert days_between(d2, d1) == 9, "order independence"
 
-    # days_between
-    assert days_between(date(2026, 1, 1), date(2026, 1, 5)) == 4
-    assert days_between(date(2026, 1, 5), date(2026, 1, 1)) == 4
-    assert days_between(date(2026, 6, 29), date(2026, 6, 29)) == 0
-    print("  days_between: OK")
+    mon = datetime.date(2026, 6, 29)  # Monday
+    fri = datetime.date(2026, 7, 3)   # Friday
+    sat = datetime.date(2026, 7, 4)   # Saturday
+    sun = datetime.date(2026, 7, 5)   # Sunday
 
-    # is_weekend
-    assert is_weekend(date(2026, 6, 27)) is True   # Saturday
-    assert is_weekend(date(2026, 6, 28)) is True   # Sunday
-    assert is_weekend(date(2026, 6, 29)) is False  # Monday
-    assert is_weekend(date(2026, 6, 30)) is False  # Tuesday
-    print("  is_weekend: OK")
+    assert not is_weekend(mon)
+    assert not is_weekend(fri)
+    assert is_weekend(sat)
+    assert is_weekend(sun)
 
-    # get_next_business_day
-    assert get_next_business_day(date(2026, 6, 26)) == date(2026, 6, 26)  # Fri → Fri
-    assert get_next_business_day(date(2026, 6, 27)) == date(2026, 6, 29)  # Sat → Mon
-    assert get_next_business_day(date(2026, 6, 28)) == date(2026, 6, 29)  # Sun → Mon
-    assert get_next_business_day(date(2026, 6, 29)) == date(2026, 6, 29)  # Mon → Mon
-    print("  get_next_business_day: OK")
+    assert get_next_business_day(mon) == datetime.date(2026, 6, 30)  # Tue
+    assert get_next_business_day(fri) == datetime.date(2026, 7, 6)   # Mon
+    assert get_next_business_day(sat) == datetime.date(2026, 7, 6)   # Mon
+    assert get_next_business_day(sun) == datetime.date(2026, 7, 6)   # Mon
 
-    print("All tests passed!")
+    print("All tests passed.")
