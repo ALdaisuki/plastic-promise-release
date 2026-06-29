@@ -18,6 +18,9 @@ PI_CMD = shutil.which("pi") or shutil.which("pi.cmd") or r"D:\npm-global\pi.cmd"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from plastic_promise.defense.soul_enforcer import TrustManager
+_TRUST_MGR = TrustManager()  # 进程级单例，跨循环保持信任分
+
 # 角色注册表 — 定义流水线阶段衔接
 AGENT_ROLES = {
     "pi_builder":  {"domain": "building",   "trigger": ["task:pending"], "output": "task:active"},
@@ -76,11 +79,12 @@ def get_pending_task():
     return None
 
 
-def get_trust_tier(role: str) -> dict:
+def get_trust_tier(role: str, tm=None) -> dict:
     """返回 Agent 的信任分 + 自由度等级 + 权限。"""
     from plastic_promise.core.issue_validator import get_tier, check_permission, get_tier_info
     from plastic_promise.defense.soul_enforcer import TrustManager
-    tm = TrustManager()
+    if tm is None:
+        tm = TrustManager()
     trust = tm.get(role)
     tier_info = get_tier_info(trust)
     tier = tier_info["tier"]
@@ -278,7 +282,7 @@ async def main():
         task = get_pending_task()
         if task:
             role, cfg, content, task_id = task
-            tier = get_trust_tier(role)
+            tier = get_trust_tier(role, tm=_TRUST_MGR)
 
             if tier["tier"] == "readonly":
                 print(f"  [BLOCKED] {role} trust={tier['trust']:.2f} readonly — cannot execute")
