@@ -240,15 +240,18 @@ async def execute_task(role: str, cfg: dict, task_content: str, task_id: str, re
             f"If the task requires write/bash, respond 'NEEDS_APPROVAL' instead. "
         )
 
+    session_id = f"{role}_{int(time.time())}"
     proc = await asyncio.create_subprocess_exec(
         PI_CMD, "--print",
         f"You are {role}, domain {domain}. {restriction_prompt}"
+        f"FRESH SESSION — ignore all previous context. "
         f"Task: {task_content}. "
-        f"Execute it. "
-        f"When done, call memory_store(content='{role} DONE: <summary>', memory_type='experience', "
-        f"domain='{domain}', tags=['{output_tag}','owner:{role}','domain:{domain}']). "
-        f"IMPORTANT: use exactly the tag '{output_tag}' (NOT 'task:done').",
-        "--session-id", f"{role}_daemon",
+        f"Execute it using write/edit/bash. "
+        f"When done, you MUST call memory_store with EXACTLY these tags: "
+        f"['{output_tag}','owner:{role}','domain:{domain}']. "
+        f"CRITICAL: use '{output_tag}' — do NOT use 'task:done' or any other task tag. "
+        f"The pipeline auto-chaining depends on this exact tag.",
+        "--session-id", session_id,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
