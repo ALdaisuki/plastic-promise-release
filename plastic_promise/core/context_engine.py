@@ -268,6 +268,8 @@ class ContextEngine:
         self._memories[mid] = data
         if self._sqlite:
             self._sqlite.upsert(mid, data)
+        # P0: Auto-create principle↔memory graph edges for new memories
+        self._build_principle_edges_for_memory(mid, data)
         return mid
 
     def register_memories(self, records: List[Dict[str, Any]]) -> List[str]:
@@ -279,6 +281,105 @@ class ContextEngine:
 
     def set_current_time(self, iso_timestamp: str):
         self._current_time = iso_timestamp
+
+    # ========== P0: 原则↔记忆图谱边 (深层语法) ==========
+
+    def _rebuild_graph_from_memories(self):
+        """Rebuild principle↔memory graph edges from all persisted memories.
+
+        Called once at engine init after SQLite load. Scans every memory
+        and creates bidirectional principle↔memory edges where keyword
+        overlap exists. This ensures the graph survives restarts without
+        a separate graph-cache table.
+        """
+        if not self._memories:
+            return
+        total_edges = 0
+        for mid, mem in self._memories.items():
+            total_edges += self._build_principle_edges_for_memory(mid, mem)
+        if total_edges > 0:
+            logging.info("_rebuild_graph_from_memories: created %d principle↔memory edges from %d memories",
+                         total_edges, len(self._memories))
+
+    def _build_principle_edges_for_memory(
+        self, memory_id: str, memory_data: dict
+    ) -> int:
+        """Create bidirectional principle↔memory edges based on keyword overlap.
+
+        For each of the 12 core principles, computes the overlap between
+        the principle's keywords and the memory content. If at least
+        PRINCIPLE_EDGE_MIN_KEYWORD_HITS keywords match, creates two edges:
+
+            principle:{id} → memory:{id}  (relation="governs")
+            memory:{id} → principle:{id}  (relation="embodies")
+
+        Edge weight = PRINCIPLE_EDGE_BASE_WEIGHT + PRINCIPLE_EDGE_SCALE_WEIGHT * keyword_ratio
+        capped at 1.0. Edges already existing are skipped (dedup).
+
+        Returns:
+            Number of new edges created.
+        """
+        from plastic_promise.core.constants import (
+            CORE_PRINCIPLES,
+            PRINCIPLE_EDGE_MIN_KEYWORD_HITS,
+            PRINCIPLE_EDGE_BASE_WEIGHT,
+            PRINCIPLE_EDGE_SCALE_WEIGHT,
+        )
+
+        content = memory_data.get("content", "")
+        if not content:
+            return 0
+
+        edges_created = 0
+        for p in CORE_PRINCIPLES:
+            keywords = p.get("keywords", [])
+            if isinstance(keywords, str):
+                keywords = [k.strip() for k in keywords.split(",")]
+            if not keywords:
+                continue
+
+            # Count keyword hits in memory content
+            hits = sum(1 for kw in keywords if kw in content)
+            if hits < PRINCIPLE_EDGE_MIN_KEYWORD_HITS:
+                continue
+
+            keyword_ratio = min(hits / len(keywords), 1.0)
+            weight = min(PRINCIPLE_EDGE_BASE_WEIGHT + PRINCIPLE_EDGE_SCALE_WEIGHT * keyword_ratio, 1.0)
+            principle_node = f"principle:{p['id']}"
+            memory_node = memory_id
+
+            # Ensure principle node exists in graph
+            if principle_node not in self._graph_nodes:
+                self._graph_nodes[principle_node] = {
+                    "type": "principle",
+                    "name": p["name"],
+                    "description": p["content"],
+                    "domain": p.get("domain", "all"),
+                }
+
+            # Edge 1: principle → memory (governs)
+            edge_g = {
+                "from": principle_node,
+                "to": memory_node,
+                "relation": "governs",
+                "weight": weight,
+            }
+            if edge_g not in self._graph_edges:
+                self._graph_edges.append(edge_g)
+                edges_created += 1
+
+            # Edge 2: memory → principle (embodies)
+            edge_e = {
+                "from": memory_node,
+                "to": principle_node,
+                "relation": "embodies",
+                "weight": weight,
+            }
+            if edge_e not in self._graph_edges:
+                self._graph_edges.append(edge_e)
+                edges_created += 1
+
+        return edges_created
 
     # ========== 图管理 ==========
 
@@ -921,9 +1022,17 @@ class ContextEngine:
                 sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
 
     def _graph_traversal(self, task_type: str) -> List[tuple]:
-        """细匹配: principle association + entity link traversal."""
+        """Fine-grained: principle association + entity link + deep-grammar traversal.
+
+        P0 enhancement — follows three edge types:
+          1. task_type → principle (activates): direct principle activation
+          2. memory → entity (references): data-flow driven entity links
+          3. principle → memory (governs): deep-grammar — principles surface
+             the memories they govern, even without keyword match in the query
+        """
         results = []
         visited = set()
+        principle_nodes = set()
 
         # 1. Task type → principles (direct activation edges)
         target = f"task_type:{task_type}"
@@ -931,22 +1040,37 @@ class ContextEngine:
             if edge.get("from") == target:
                 node_id = edge["to"]
                 visited.add(node_id)
+                if node_id.startswith("principle:"):
+                    principle_nodes.add(node_id)
                 node = self._graph_nodes.get(node_id, {})
                 results.append((node_id, edge.get("weight", 0.5),
                                 node.get("description", node_id),
                                 "graph"))
 
-        # 2. Memory → entity (auto-extracted references) — 数据流驱动的关联遍历
+        # 2. Memory → entity (auto-extracted references) — data-flow driven
         for edge in self._graph_edges:
             if edge.get("relation") == "references":
                 memory_id = edge.get("from", "")
                 entity_id = edge.get("to", "")
-                # If this entity was already found via principles, pull in the memory
                 if entity_id in visited and memory_id in self._memories:
                     mem = self._memories[memory_id]
                     results.append((memory_id, 0.6,
                                     mem.get("content", "")[:300],
                                     "entity-link"))
+
+        # 3. P0: Principle → memory (governs) — deep grammar traversal
+        # When a principle is activated, surface all memories it governs
+        for edge in self._graph_edges:
+            if edge.get("relation") == "governs":
+                principle_id = edge.get("from", "")
+                memory_id = edge.get("to", "")
+                if principle_id in principle_nodes and memory_id in self._memories:
+                    mem = self._memories[memory_id]
+                    edge_weight = edge.get("weight", 0.3)
+                    results.append((memory_id, edge_weight,
+                                    mem.get("content", "")[:300],
+                                    "graph"))
+
         return results
 
     def _layered_fuse(self, graph_results, text_results, vector_results) -> List[tuple]:
