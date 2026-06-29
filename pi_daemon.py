@@ -21,44 +21,57 @@ async def listen_and_work():
     print(f"Listening: {SSE_URL}")
 
     _busy = False
+    _last_event = asyncio.get_event_loop().time()
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(300)) as client:
-        while True:
-            try:
-                async with client.stream("GET", SSE_URL) as response:
-                    print(f"Connected. Waiting for tasks...")
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if not data_str or data_str == '{"type":"heartbeat"}':
-                            continue
+        # SSE listener task
+        async def sse_listen():
+            nonlocal _last_event
+            while True:
+                try:
+                    async with client.stream("GET", SSE_URL) as response:
+                        print(f"Connected. Waiting for tasks...")
+                        async for line in response.aiter_lines():
+                            _last_event = asyncio.get_event_loop().time()
+                            if not line.startswith("data:"):
+                                continue
+                            data_str = line[5:].strip()
+                            if not data_str or data_str == '{"type":"heartbeat"}':
+                                continue
 
-                        import json
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
+                            import json
+                            try:
+                                event = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
 
-                        etype = event.get("type", "")
-                        # 监听 memory_store 事件（TASK 发布）
-                        if etype == "memory_stored":
-                            content = event.get("content_preview", "")
-                            if f"TASK for {ROLE}" in content and not _busy:
-                                _busy = True
-                                print(f"\n[{_now()}] TASK detected → waking {ROLE}")
-                                await execute_task()
-                                _busy = False
-                                print(f"[{_now()}] Done. Listening...")
-                        # 也监听 issue_transition
-                        elif etype == "issue_transition":
-                            owner = event.get("owner", "")
-                            if owner == ROLE and not _busy:
-                                _busy = True
-                                print(f"\n[{_now()}] Issue transition → waking {ROLE}")
-                                await execute_task()
-                                _busy = False
-                                print(f"[{_now()}] Done. Listening...")
+                            etype = event.get("type", "")
+                            if (etype == "memory_stored" and f"TASK for {ROLE}" in event.get("content_preview", "")) or \
+                               (etype == "issue_transition" and event.get("owner") == ROLE):
+                                if not _busy:
+                                    _busy = True
+                                    print(f"\n[{_now()}] SSE event → waking {ROLE}")
+                                    await execute_task()
+                                    _busy = False
+                                    print(f"[{_now()}] Done. Listening...")
+                except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:
+                    print(f"SSE disconnected: {e}. Reconnecting in 5s...")
+                    await asyncio.sleep(5)
+
+        # Polling fallback: if no SSE event for 10s, poll directly
+        async def poll_fallback():
+            while True:
+                await asyncio.sleep(10)
+                if _busy:
+                    continue
+                elapsed = asyncio.get_event_loop().time() - _last_event
+                if elapsed < 10:
+                    continue  # SSE is working, skip poll
+                print(f"[{_now()}] SSE silent for {elapsed:.0f}s → polling fallback...")
+                await execute_task()
+                _last_event = asyncio.get_event_loop().time()
+
+        await asyncio.gather(sse_listen(), poll_fallback())
 
             except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:
                 print(f"SSE disconnected: {e}. Reconnecting in 5s...")
