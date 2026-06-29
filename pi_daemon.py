@@ -227,6 +227,22 @@ def cleanup_old_memories():
     conn.close()
 
 
+async def _run_and_finish(role: str, cfg: dict, content: str, task_id: str, restriction: str = None):
+    """Fire-and-forget: 执行任务 + 标记完成 + 推送通知。"""
+    result = await execute_task(role, cfg, content, task_id, restriction)
+    print(f"  [{_now()}] {role} DONE: {result.strip()[-150:] or 'ok'}")
+    mark_task_accepted(task_id)
+    await notify_state_change({
+        "type": "tag_transition",
+        "from_tag": "task:active",
+        "to_tag": cfg["output"],
+        "agent": role,
+        "domain": cfg["domain"],
+        "task_id": task_id,
+        "tags": [cfg["output"], f"owner:{role}", f"domain:{cfg['domain']}"],
+    })
+
+
 async def execute_task(role: str, cfg: dict, task_content: str, task_id: str, restriction: str = None):
     domain = cfg["domain"]
     output_tag = cfg["output"]
@@ -302,9 +318,11 @@ async def main():
 
             print(f"[{_now()}] {role}({cfg['domain']}) trust={tier['trust']:.2f} [{tier['tier']}] ← {task_id[:20]}...")
             mark_task_active(task_id, role)
-            result = await execute_task(role, cfg, content, task_id, restriction)
-            print(result.strip()[-200:] or "DONE")
-            mark_task_accepted(task_id)
+            # 并发执行 — 不阻塞其他角色的扫描
+            asyncio.create_task(_run_and_finish(role, cfg, content, task_id, restriction))
+            # 防止同一任务重复认领
+            await asyncio.sleep(1)
+            continue
             await notify_state_change({
                 "type": "tag_transition",
                 "from_tag": "task:pending",
