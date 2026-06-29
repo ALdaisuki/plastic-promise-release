@@ -16,6 +16,7 @@
 """
 
 import json
+import os
 import datetime
 from typing import Any
 
@@ -41,7 +42,9 @@ def _generate_federation_signals(pack, domain_hint, engine, federation):
                     "source": item_domain,
                     "target": domain_hint,
                     "signal": dm.generate_signal(item_domain, domain_hint,
-                                                  getattr(item, 'id', '?'))
+                                                  getattr(item, 'id', '?'),
+                                                  agent_id=getattr(engine, '_agent_owner', '')
+                                                    or os.environ.get("AGENT_OWNER", ""))
                 })
     return signals
 

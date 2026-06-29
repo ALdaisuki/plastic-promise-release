@@ -11,6 +11,7 @@
 """
 
 import json
+import os
 from typing import Any
 from mcp.types import TextContent
 
@@ -94,6 +95,11 @@ async def handle_domain_rename(engine: Any, args: dict) -> list[TextContent]:
 # domain — 统一入口 (replaces domain_stats/merge/unmerge/rename as MCP tools)
 # ---------------------------------------------------------------------------
 
+def _get_agent_id(engine: Any) -> str:
+    """从 engine 或环境变量提取当前 Agent 标识。空串 = 单 Agent 模式。"""
+    return getattr(engine, '_agent_owner', '') or os.environ.get("AGENT_OWNER", "")
+
+
 async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
     """域联邦统一入口。action: stats|merge|unmerge|rename|rebuild"""
     action = args.get("action", "stats")
@@ -102,20 +108,22 @@ async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(
             {"error": "DomainManager not available (_dm_ok=False)"}, ensure_ascii=False))]
 
+    agent_id = _get_agent_id(engine)
+
     try:
         if action == "stats":
-            return [TextContent(type="text", text=json.dumps(dm.stats(), ensure_ascii=False, indent=2))]
+            return [TextContent(type="text", text=json.dumps(dm.stats(agent_id=agent_id), ensure_ascii=False, indent=2))]
         elif action == "merge":
-            ok = dm.merge(args["source"], args["target"])
+            ok = dm.merge(args["source"], args["target"], agent_id=agent_id)
             return [TextContent(type="text", text=json.dumps({"merged": ok, "source": args["source"], "target": args["target"]}, ensure_ascii=False))]
         elif action == "unmerge":
-            ok = dm.unmerge(args["source"])
+            ok = dm.unmerge(args["source"], agent_id=agent_id)
             return [TextContent(type="text", text=json.dumps({"unmerged": ok, "source": args["source"]}, ensure_ascii=False))]
         elif action == "rename":
-            ok = dm.rename(args["old_name"], args["new_name"])
+            ok = dm.rename(args["old_name"], args["new_name"], agent_id=agent_id)
             return [TextContent(type="text", text=json.dumps({"renamed": ok, "old_name": args["old_name"], "new_name": args["new_name"]}, ensure_ascii=False))]
         elif action == "rebuild":
-            result = dm.rebuild_from_memories()
+            result = dm.rebuild_from_memories(agent_id=agent_id)
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
         else:
             return [TextContent(type="text", text=json.dumps({"error": f"unknown action: {action}"}, ensure_ascii=False))]

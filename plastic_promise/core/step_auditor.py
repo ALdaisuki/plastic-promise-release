@@ -156,7 +156,7 @@ class StepAuditor:
             import os
             db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
             dm = DomainManager(db_path=db_path)
-            decayed = dm.decay()
+            decayed = dm.decay(agent_id="")
             if decayed:
                 result.audit_log = (result.audit_log or "") + (
                     "\n[domain_decay] " + str(len(decayed)) + " domains decayed: "

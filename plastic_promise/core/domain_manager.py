@@ -370,7 +370,7 @@ class DomainManager:
 
     # ======== 公开 API ========
 
-    def assign(self, tags: list[str]) -> str:
+    def assign(self, tags: list[str], agent_id: str = "") -> str:
         """为记忆标签分配域。
 
         线程安全。tie-breaking: 匹配数→score→创建时间。
@@ -464,7 +464,7 @@ class DomainManager:
             # 已是正式域但匹配分低
             return "uncategorized"
 
-    def merge(self, source: str, target: str) -> bool:
+    def merge(self, source: str, target: str, agent_id: str = "") -> bool:
         """合并两个域。source 标记为 merged，谱系写入 target.merged_from。
 
         Returns:
@@ -528,7 +528,7 @@ class DomainManager:
             })
             return True
 
-    def rename(self, old: str, new: str) -> bool:
+    def rename(self, old: str, new: str, agent_id: str = "") -> bool:
         """重命名域。旧名→aliases 保留 30 天。"""
         with self._lock:
             if old not in self.domains or new in self.domains:
@@ -548,7 +548,7 @@ class DomainManager:
             self._write_audit_log("domain_rename", {"old": old, "new": new})
             return True
 
-    def decay(self) -> list[dict]:
+    def decay(self, agent_id: str = "") -> list[dict]:
         """衰减检测。返回被衰减的域列表。
 
         规则:
@@ -623,7 +623,7 @@ class DomainManager:
 
         return best_name
 
-    def generate_signal(self, from_domain: str, to_domain: str, context: str) -> str:
+    def generate_signal(self, from_domain: str, to_domain: str, context: str, agent_id: str = "") -> str:
         """实时生成联邦信号摘要（≤200 字符，不持久化）。
 
         Args:
@@ -637,7 +637,8 @@ class DomainManager:
         msg = f"{from_domain} → {to_domain}: {context}"
         return msg[:200]
 
-    def stats(self) -> dict:
+    def stats(self, agent_id: str = "") -> dict:
+        # TODO(agent_id): 多 Agent 场景按 agent_id 过滤域可见性
         """返回所有域统计（只读，快照复制）。"""
         result = {}
         for name, dom in sorted(self.domains.items()):
@@ -685,7 +686,7 @@ class DomainManager:
         )
         self._conn.commit()
 
-    def rebuild_from_memories(self, memories_source=None) -> dict:
+    def rebuild_from_memories(self, memories_source=None, agent_id: str = "") -> dict:
         """从记忆的 tags 字段全量逆向重建域联邦图谱。
 
         Args:

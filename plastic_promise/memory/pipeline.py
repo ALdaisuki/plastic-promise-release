@@ -201,7 +201,7 @@ class MemoryPipeline:
             # 新增: domain 分配
             tags = record.get("tags", [])
             if hasattr(self, '_dm') and self._dm is not None:
-                record["domain"] = self._dm.assign(tags)
+                record["domain"] = self._dm.assign(tags, agent_id=getattr(self, '_owner', ''))
             else:
                 record["domain"] = "uncategorized"
 

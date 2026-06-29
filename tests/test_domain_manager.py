@@ -97,3 +97,16 @@ class TestDomainManager:
         assert "reflecting" in dm.tag_to_domain.get("review", set())
         # 应该是多个域
         assert len(dm.tag_to_domain.get("review", set())) >= 2
+
+    def test_agent_id_param_accepted(self):
+        """agent_id 参数接受非空值，行为不变（零行为变化）"""
+        dm = DomainManager(db_path=":memory:")
+        # stats
+        result = dm.stats(agent_id="agent_pi")
+        assert "building" in result
+        # assign
+        r = dm.assign(["debug", "fix"], agent_id="agent_pi")
+        assert r == "fixing"
+        # merge
+        ok = dm.merge("fixing", "building", agent_id="agent_pi")
+        assert ok is True
