@@ -74,8 +74,10 @@ async def listen_and_work():
 
 
 async def execute_task():
+    import shutil
+    pi_cmd = shutil.which("pi") or shutil.which("pi.cmd") or "D:\\npm-global\\pi.cmd"
     proc = await asyncio.create_subprocess_exec(
-        "pi", "--print",
+        pi_cmd, "--print",
         f"You are {ROLE}, domain {DOMAIN}. Claude assigned you a task. "
         f"1. Call memory_recall(domain_hint='{DOMAIN}', query='TASK for {ROLE} pending') to find it. "
         f"2. Execute using write/edit/bash. "
