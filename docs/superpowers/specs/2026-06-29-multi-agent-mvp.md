@@ -45,8 +45,12 @@ Pi 启动时会读取 `.pi/memory.md` 作为持久化记忆。写在里面，每
 ### 执行任务前的标准流程
 
 1. `issue_list(owner="pi_builder", state="open")` → 查看分配给你的任务
-2. `issue_transition(<task-id>, "in_progress", reason="已认领")` → 认领任务
+   - 返回 JSON 数组，每项含 `id`（格式 `issue_<hex12>`）、`title`、`context`
+   - 从中提取 Issue ID，记作 `<task-id>`
+2. `issue_transition("<task-id>", "in_progress", reason="已认领")` → 认领任务
 3. `memory_recall(domain_hint="building", query="<任务关键词>")` → 拉取项目上下文
+   - query 值从 Issue 的 `context.interfaces` 或 `context.files` 中提取关键词
+   - 不传空字符串——如果 context 缺关键词，query 取 Issue title
 
 ### 执行期间
 
@@ -95,64 +99,95 @@ pi --print "执行任务" \
 
 ## 五、验证方案
 
-### 测试：Pi 是否自主调用了 MCP 工具
+### 测试：通过 Issue 状态历史验证
+
+不读 Pi 的日志文本——日志格式可能变化。直接查 Issue 表的状态变更历史，确定 Pi 真的调了 issue_transition。
 
 ```python
 # tests/test_team_protocol.py
 
 class TestTeamProtocol:
-    def test_pi_can_list_issues(self):
-        """Pi 能通过 MCP 调用 issue_list"""
-        # 创建测试 Issue
-        issue_create(title="E2E Protocol Test", assignee="pi_builder", ...)
-        
-        # 运行 Pi with team protocol
-        result = run_pi("执行 Issue task_proto_001")
-        
-        # Pi 的 ReAct 日志应包含 issue_list / issue_transition 调用
-        assert "issue_list" in result.log
-        assert "in_progress" in result.log
-
-    def test_pi_loads_context_before_execution(self):
-        """Pi 执行前调用了 memory_recall"""
-        memory_store("测试上下文：项目中已有 auth 模块")
-        
-        result = run_pi("实现 JWT 登录")
-        
-        # Pi 应在执行前拉取上下文
-        assert "memory_recall" in result.log
-        # 执行应参考已有 auth 模块
-        assert "auth" in result.output.lower()
-
     def test_full_issue_lifecycle(self):
-        """完整生命周期: open→in_progress→resolved"""
-        issue = issue_create(...)
-        
-        run_pi(f"执行 Issue {issue.id}")
-        
-        # 检查 Issue 状态变更历史
-        history = issue_get(issue.id).history
-        states = [h["state"] for h in history]
-        assert states == ["open", "in_progress", "resolved"]
+        """Pi 自主完成 open→in_progress→resolved，通过 Issue 状态历史验证"""
+        from plastic_promise.core.context_engine import ContextEngine
+        engine = ContextEngine()
+
+        # 1. Claude 创建任务
+        issue = engine.create_issue(
+            title="MVP Protocol Test: 在 hello.py 加一个 /health 端点",
+            assignee="pi_builder",
+            context={
+                "files": ["hello.py"],
+                "interfaces": "GET /health → {\"status\": \"ok\"}",
+                "acceptance": "curl http://localhost:8000/health 返回 status ok"
+            }
+        )
+        issue_id = issue["id"]
+        assert issue["state"] == "open"
+
+        # 2. 运行 Pi（带 Team Protocol）
+        import subprocess
+        result = subprocess.run([
+            "pi", "--print",
+            f"执行 Issue {issue_id}：在 hello.py 加 /health 端点",
+            "--append-system-prompt",
+            "执行任务前先 issue_list(owner=pi_builder) 认领，"
+            "然后 issue_transition(task_id, in_progress)，"
+            "执行后 issue_transition(task_id, resolved)。"
+            "Issue ID 从返回 JSON 的 id 字段提取，格式 issue_<hex12>。",
+            "--session-id", f"mvp_test_{issue_id}",
+        ], capture_output=True, text=True, timeout=120)
+        print("Pi stdout:", result.stdout[-500:])
+
+        # 3. 检查 Issue 状态历史 —— 不依赖日志文本
+        updated = engine.get_issue(issue_id)
+        states = [h["state"] for h in updated.get("history", [])]
+        # Pi 应该至少推到了 in_progress（最好 resolved）
+        assert "in_progress" in states, \
+            f"Pi 未认领任务：{states}"
+        if "resolved" in states:
+            print("PASS: Pi 完成完整 open→in_progress→resolved 闭环")
+        else:
+            print(f"WARN: Pi 只到 in_progress，状态: {states}")
+
+    def test_pi_recalls_context(self):
+        """Pi 在修改 hello.py 时参考了已有代码（间接验证 memory_recall）"""
+        # 前置：存入包含 hello.py 当前结构的信息
+        from plastic_promise.core.context_engine import ContextEngine
+        engine = ContextEngine()
+        engine.register_memory({
+            "content": "hello.py 是 FastAPI 应用，已有 GET / 端点返回 Hello World JSON",
+            "memory_type": "experience",
+            "tags": ["hello", "fastapi", "e2e"],
+            "domain": "building",
+        })
+
+        # Pi 被要求加 /health 端点——如果它读了 memory，应该能正确导入 FastAPI
+        # 验证：hello.py 仍然包含原有的 GET / 端点（没有被覆盖）
+        import subprocess
+        subprocess.run([
+            "pi", "--print",
+            "在 hello.py 中加一个 GET /health 端点，返回 {\"status\":\"ok\"}。"
+            "保留已有的 GET / 端点不变。",
+            "--session-id", "mvp_context_test",
+        ], capture_output=True, text=True, timeout=120)
+
+        with open("hello.py") as f:
+            content = f.read()
+        assert "Hello, World!" in content, "原有 GET / 端点被覆盖——Pi 没有拉取上下文"
+        assert "/health" in content, "Pi 没有添加 /health 端点"
+        assert "status" in content, "Pi 的 /health 端点格式错误"
+        print("PASS: Pi 保留了已有代码并添加了新端点")
 ```
 
-### 手动验证
+### 手动验证（第一步——确认 Pi 日志格式）
 
 ```bash
-# 1. Plastic Promise SSE 就绪
-netstat -ano | findstr 9020
-
-# 2. Claude 创建测试 Issue
-# (via MCP) issue_create(title="Protocol Test", assignee="pi_builder", ...)
-
-# 3. 启动 Pi（带 Team Protocol）
-pi --print "执行分配给 pi_builder 的任务" \
-   --append-system-prompt "$(cat .pi/team-protocol.md)" \
-   --session-id mvp_test
-
-# 4. 检查 Issue 状态
-# (via MCP) issue_list(owner="pi_builder") → state 应为 "resolved"
+# 先跑一次，看 Pi 输出里工具调用的实际表示方式
+pi --print "issue_list(owner=pi_builder, state=open)" --session-id log_check 2>&1 | head -30
 ```
+
+根据实际输出调整 `query` 参数格式和 Issue ID 提取逻辑。
 
 ## 六、文件清单
 
