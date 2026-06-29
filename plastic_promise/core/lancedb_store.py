@@ -157,6 +157,41 @@ class LanceDBStore:
             logger.warning("LanceDB FTS search failed: %s", e)
             return []
 
+    def search_similar(
+        self, vector: list[float], k: int = 5,
+    ) -> list[tuple[str, float]]:
+        """Return top-k (memory_id, similarity) sorted by similarity descending.
+
+        No scope/tier filtering — raw vector similarity for dedup and merge.
+        Uses existing ANN search with cosine metric.
+        Returns empty list when table is None or search fails.
+        """
+        if self._table is None:
+            return []
+        try:
+            raw = self._table.search(vector).metric("cosine").limit(k).to_list()
+            results = []
+            for row in raw:
+                dist = row.get("_distance", 0.0)
+                sim = 1.0 - (dist / 2.0)  # cosine distance -> similarity [0, 1]
+                results.append((row["memory_id"], max(0.0, min(1.0, sim))))
+            return results
+        except Exception as e:
+            logger.warning("LanceDB search_similar failed: %s", e)
+            return []
+
+    def check_duplicate(
+        self, vector: list[float], threshold: float = 0.85,
+    ) -> Optional[str]:
+        """Return memory_id of the nearest match if similarity >= threshold, else None.
+
+        Thin wrapper over search_similar(k=1). Used by pipeline dedup (Task 3).
+        """
+        results = self.search_similar(vector, k=1)
+        if results and results[0][1] >= threshold:
+            return results[0][0]
+        return None
+
     def insert(
         self, memory_id: str, vector: list[float], text: str,
         tier: str = "L1", category: str = "other", scope: str = "global",

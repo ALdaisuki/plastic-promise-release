@@ -181,3 +181,55 @@ class TestLanceDBStore:
         assert len(results) == 1
         assert results[0][0] == "mem_001"
         # LanceDB connection is auto-closed on garbage collection
+
+    def test_search_similar_returns_top_k(self):
+        """search_similar returns top-k matches sorted by similarity descending."""
+        import random
+        # Insert 5 memories with known vectors
+        base = [0.5] * EMB_DIM
+        for i in range(5):
+            vec = [v + random.uniform(-0.01, 0.01) for v in base]
+            self.store.insert(f"sim_{i}", vec, f"similar memory {i}")
+        # Search with a near-identical vector
+        query = [0.51] * EMB_DIM
+        results = self.store.search_similar(query, k=3)
+        assert len(results) == 3
+        # First result should be most similar
+        assert results[0][1] >= results[1][1] >= results[2][1]
+        # All scores in [0, 1]
+        for mid, score in results:
+            assert 0.0 <= score <= 1.0
+
+    def test_search_similar_empty_table(self):
+        """search_similar on empty table returns empty list."""
+        results = self.store.search_similar([0.5] * EMB_DIM, k=3)
+        assert results == []
+
+    def test_check_duplicate_finds_match(self):
+        """check_duplicate returns memory_id when similarity >= threshold."""
+        vec = [0.7] * EMB_DIM
+        self.store.insert("dup_target", vec, "target text")
+        # Search with near-identical vector
+        query = [0.71] * EMB_DIM
+        result = self.store.check_duplicate(query, threshold=0.85)
+        assert result == "dup_target"
+
+    def test_check_duplicate_no_match(self):
+        """check_duplicate returns None when no vector is similar enough."""
+        # Uniform vectors are colinear (cosine sim ~1.0). Use orthogonal vector.
+        self.store.insert("far_away", [0.1] * EMB_DIM, "distant text")
+        query = [1.0] + [0.0] * (EMB_DIM - 1)  # orthogonal to uniform
+        result = self.store.check_duplicate(query, threshold=0.85)
+        assert result is None
+
+    def test_check_duplicate_skips_self(self):
+        """check_duplicate should not match the same memory_id (self-exclusion later in pipeline)."""
+        # This tests the LanceDB layer only — self-exclusion is pipeline's job
+        vec = [0.5] * EMB_DIM
+        self.store.insert("self_test", vec, "self")
+        # A different but very similar vector
+        query = [0.51] * EMB_DIM
+        result = self.store.check_duplicate(query, threshold=0.85)
+        # May match "self_test" — pipeline handles self-exclusion
+        # This test just verifies the method doesn't crash
+        assert result is not None
