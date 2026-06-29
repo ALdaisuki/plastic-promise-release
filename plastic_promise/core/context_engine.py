@@ -203,10 +203,12 @@ class ContextEngine:
             for mid, data in self._sqlite.iter_all():
                 self._memories[mid] = data
 
+        # DB path — used by both DomainManager and LanceDBStore
+        db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+
         # DomainManager for domain-weighted retrieval
         try:
             from plastic_promise.core.domain_manager import DomainManager
-            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
             self._dm = DomainManager(db_path=db_path)
             self._dm_ok = True
         except Exception as e:
@@ -214,6 +216,23 @@ class ContextEngine:
             self._dm = None
             self._dm_ok = False
         self._domain_hint: Optional[str] = None
+
+        # Initialize LanceDB vector store
+        self._ldb: Optional[object] = None
+        try:
+            from plastic_promise.core.lancedb_store import LanceDBStore
+            from plastic_promise.core.embedder import get_embedder
+            ldb_path = os.environ.get("PLASTIC_LANCEDB_PATH",
+                                       os.path.join(os.path.dirname(db_path or "plastic_memory.db"),
+                                                    "plastic_memory.lancedb"))
+            embedder = get_embedder(fallback_on_error=True)
+            self._ldb = LanceDBStore(ldb_path, embedder)
+            # Backfill any memories that bypassed the pipeline
+            self._ldb.backfill(self)
+            logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
+        except Exception as e:
+            logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
+            self._ldb = None
 
         self._current_time: str = ""
 
@@ -458,8 +477,13 @@ class ContextEngine:
         # 粗 (vector): 语义向量相关性 (零向量时跳过)
         vector_results = self._vector_retrieval(task_vector) if any(v != 0.0 for v in task_vector) else []
 
-        # Phase 2: 分层融合 — 细权重最高，粗作为补充
-        all_results = self._layered_fuse(graph_results, text_results, vector_results)
+        # Phase 2: Hybrid fusion (vector + text) then layer with graph
+        if vector_results:
+            fused_results = self._hybrid_fuse(vector_results, text_results, vector_weight=0.7)
+        else:
+            # No vector available (Ollama down / zero vector) — use text only
+            fused_results = [(mid, score * 0.8, content, source) for mid, score, content, source in text_results]
+        all_results = self._layered_fuse(graph_results, fused_results, [])
 
         # Phase 3: 符号规则调整
         all_results = self._apply_symbol_rules(all_results, task_description)
@@ -503,6 +527,8 @@ class ContextEngine:
             "graph_nodes": str(len(self._graph_nodes)),
             "graph_edges": str(len(self._graph_edges)),
             "memory_pool_size": str(len(self._memories)),
+            "vector_search": "active" if vector_results else "fallback_text_only",
+            "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
         }
 
         return pack
@@ -821,23 +847,65 @@ class ContextEngine:
         return results
 
     def _vector_retrieval(self, task_vector: list[float]) -> List[tuple]:
-        """细匹配: cosine similarity against stored records (if vectors available)."""
-        results = []
-        for mid, mem in self._memories.items():
-            vec = mem.get("_vector")
-            if not vec or len(vec) != len(task_vector):
-                continue
-            try:
-                dot = sum(a * b for a, b in zip(task_vector, vec))
-                norm_a = sum(a * a for a in task_vector) ** 0.5
-                norm_b = sum(b * b for b in vec) ** 0.5
-                if norm_a > 0 and norm_b > 0:
-                    sim = dot / (norm_a * norm_b)
-                    if sim > 0.3:
-                        results.append((mid, sim, mem["content"][:300], mem["source"]))
-            except Exception:
-                pass
-        return results
+        """Semantic vector retrieval via LanceDB ANN search.
+
+        Falls back to empty list if LanceDB is unavailable.
+        """
+        if self._ldb is None:
+            return []
+        try:
+            raw_results = self._ldb.search(
+                vector=task_vector,
+                k=20,
+                scope=getattr(self, '_domain_hint', None),
+            )
+            # Convert LanceDB results to internal tuple format
+            return [(mid, score, text[:300], "vector") for mid, score, text, _tier, _scope in raw_results]
+        except Exception as e:
+            logging.warning("_vector_retrieval LanceDB failed, returning empty: %s", e)
+            return []
+
+    def _hybrid_fuse(
+        self,
+        vector_results: list[tuple],
+        text_results: list[tuple],
+        vector_weight: float = 0.7,
+    ) -> list[tuple]:
+        """Fuse vector and text retrieval results with weighted combination.
+
+        Formula: fusedScore = vectorScore * 0.7 + textScore * 0.3
+        BM25 high-score bypass: if text score >= 0.75, promote via 0.9 weight.
+
+        Args:
+            vector_results: [(id, score, content, source), ...] from LanceDB.
+            text_results: [(id, score, content, source), ...] from _text_retrieval.
+            vector_weight: Weight for vector scores (default 0.7).
+
+        Returns:
+            Fused result list sorted by combined score descending.
+        """
+        combined: dict[str, tuple[float, str, str]] = {}
+
+        # Vector channel: weight × vector_weight
+        for mid, score, content, source in vector_results:
+            combined[mid] = (score * vector_weight, content, source)
+
+        # Text channel: weight × (1 - vector_weight), with BM25 bypass
+        text_weight = 1.0 - vector_weight
+        for mid, score, content, source in text_results:
+            w = score * text_weight
+            # BM25 high-score bypass: keyword results >= 0.75 override semantic
+            if score >= 0.75:
+                w = max(w, score * 0.9)
+            if mid in combined:
+                existing_score, existing_content, existing_source = combined[mid]
+                combined[mid] = (max(existing_score, w), existing_content, existing_source)
+            else:
+                combined[mid] = (w, content, source)
+
+        return [(mid, score, content, source)
+                for mid, (score, content, source) in
+                sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
 
     def _graph_traversal(self, task_type: str) -> List[tuple]:
         """细匹配: principle association + entity link traversal."""
