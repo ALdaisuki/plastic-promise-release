@@ -520,6 +520,50 @@ async def list_tools() -> list[Tool]:
         ),
     ])
 
+    # === 域联邦域 ===
+    tools.extend([
+        Tool(
+            name="domain_stats",
+            description="查看所有域：标签数、记忆数、原则数、得分、合并谱系、最后活跃时间。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="domain_merge",
+            description="手动合并两个域（覆盖自动阈值）。合并后源域标记为 merged，标签转移到目标域。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "被合并的域"},
+                    "target": {"type": "string", "description": "合并到的目标域"},
+                },
+                "required": ["source", "target"],
+            },
+        ),
+        Tool(
+            name="domain_unmerge",
+            description="手动解除合并（从 merged_from 谱系恢复）。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "要恢复的域"},
+                },
+                "required": ["source"],
+            },
+        ),
+        Tool(
+            name="domain_rename",
+            description="重命名域，自动更新所有关联记忆和原则的 domain 字段。旧名作为别名保留 30 天。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "old_name": {"type": "string", "description": "当前域名"},
+                    "new_name": {"type": "string", "description": "新域名"},
+                },
+                "required": ["old_name", "new_name"],
+            },
+        ),
+    ])
+
     return tools
 
 
@@ -654,6 +698,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "pack_recall":
             from plastic_promise.mcp.tools.management import handle_pack_recall
             return await handle_pack_recall(engine, arguments)
+
+        # Domain federation
+        elif name == "domain_stats":
+            from plastic_promise.mcp.tools.domain import handle_domain_stats
+            return await handle_domain_stats(engine, arguments)
+        elif name == "domain_merge":
+            from plastic_promise.mcp.tools.domain import handle_domain_merge
+            return await handle_domain_merge(engine, arguments)
+        elif name == "domain_unmerge":
+            from plastic_promise.mcp.tools.domain import handle_domain_unmerge
+            return await handle_domain_unmerge(engine, arguments)
+        elif name == "domain_rename":
+            from plastic_promise.mcp.tools.domain import handle_domain_rename
+            return await handle_domain_rename(engine, arguments)
 
         else:
             return [TextContent(type="text", text=json.dumps(

@@ -150,6 +150,21 @@ class StepAuditor:
             except Exception:
                 pass
 
+        # 域联邦自进化: 每次审计后触发衰减检测
+        try:
+            from plastic_promise.core.domain_manager import DomainManager
+            import os
+            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+            dm = DomainManager(db_path=db_path)
+            decayed = dm.decay()
+            if decayed:
+                result.audit_log = (result.audit_log or "") + (
+                    "\n[domain_decay] " + str(len(decayed)) + " domains decayed: "
+                    + ", ".join(d.get("name", "?") for d in decayed)
+                )
+        except Exception:
+            pass  # 域检测失败不影响主审计流程
+
         return result
 
     # ============================================================

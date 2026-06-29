@@ -17,6 +17,30 @@ from typing import Any
 from mcp.types import TextContent
 
 
+def _generate_federation_signals(pack, domain_hint, engine, federation):
+    """Generate cross-domain federation signals on retrieval."""
+    if not federation or not domain_hint or domain_hint == "all":
+        return []
+    dm = getattr(engine, '_dm', None)
+    if dm is None:
+        return []
+    signals = []
+    seen = set()
+    for item in (pack.core + pack.related):
+        item_domain = getattr(item, 'domain', '') or ''
+        if item_domain and item_domain != domain_hint and item_domain != "all":
+            key = (item_domain, domain_hint)
+            if key not in seen:
+                seen.add(key)
+                signals.append({
+                    "source": item_domain,
+                    "target": domain_hint,
+                    "signal": dm.generate_signal(item_domain, domain_hint,
+                                                  getattr(item, 'id', '?'))
+                })
+    return signals
+
+
 # ---- memory_recall ----
 async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
     """Hybrid memory retrieval: embed query -> ContextEngine.supply() -> ContextPack JSON.
@@ -45,6 +69,8 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         task_type = args.get("task_type", "general")
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
+        domain_hint = args.get("domain_hint", None)
+        federation = args.get("federation", True)
 
         try:
             embedder = get_embedder(fallback_on_error=False)
@@ -63,6 +89,8 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             "divergent": [{"id": i.id, "content": i.content[:500], "relevance": i.relevance}
                           for i in pack.divergent[:max_results]],
             "activated_principles": pack.activated_principles,
+            "domain_hint": domain_hint,
+            "federation_signals": _generate_federation_signals(pack, domain_hint, engine, federation),
             "total_items": pack.total_items,
             "audit": pack.audit_metadata,
         }, ensure_ascii=False, indent=2))]
