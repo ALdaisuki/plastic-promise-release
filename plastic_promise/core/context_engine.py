@@ -192,10 +192,11 @@ class ContextEngine:
     def __init__(self, use_sqlite: bool = None):
         self._graph_nodes: Dict[str, Dict[str, Any]] = {}
         self._graph_edges: List[Dict[str, Any]] = []
-        self._feedback: Dict[str, float] = {}  # item_id -> accumulated delta
+        self._feedback: Dict[str, float] = {}  # item_id -> accumulated delta (P2: 替换为 worth_score)
         self.enable_principles: bool = True
         self._current_time: str = ""
         self._memories: Dict[str, Dict[str, Any]] = {}
+        self._principle_anchors: Dict[int, List[float]] = {}  # P1: 原则锚点向量
 
         # SQLite write-through — persists every mutation to disk (default ON)
         if use_sqlite is None:
@@ -205,6 +206,9 @@ class ContextEngine:
             # Load existing from disk
             for mid, data in self._sqlite.iter_all():
                 self._memories[mid] = data
+
+        # P0: Rebuild principle↔memory graph edges from persisted memories
+        self._rebuild_graph_from_memories()
 
         # DB path — used by both DomainManager and LanceDBStore
         db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
