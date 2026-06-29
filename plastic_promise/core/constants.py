@@ -496,3 +496,61 @@ DEDUP_SIMILARITY_THRESHOLD = 0.85      # cosine similarity >= this → duplicate
 MERGE_SIMILARITY_THRESHOLD = 0.70      # cosine similarity >= this → merge candidate
 MERGE_TOP_K = 3                        # top-k similar to check per memory during merge
 MERGE_AUDIT_RETENTION_DAYS = 7         # merged records kept in SQLite before permanent GC
+
+# ============================================================
+# Skill Tracking — SuperPowers 流程可追踪化
+# ============================================================
+
+SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
+    # 起点 skills (无强制前驱)
+    "brainstorming":               {"predecessors": [],           "successors": ["writing-plans"]},
+    "systematic-debugging":        {"predecessors": [],           "successors": ["test-driven-development"]},
+    "requesting-code-review":      {"predecessors": [],           "successors": ["receiving-code-review"]},
+    "writing-skills":              {"predecessors": [],           "successors": []},
+
+    # 中间 skills
+    "writing-plans":               {"predecessors": ["brainstorming"],  "successors": ["subagent-driven-development", "executing-plans"]},
+    "test-driven-development":     {"predecessors": ["systematic-debugging"], "successors": ["verification-before-completion"]},
+    "subagent-driven-development": {"predecessors": ["writing-plans"], "successors": ["finishing-a-development-branch"]},
+    "executing-plans":             {"predecessors": ["writing-plans"], "successors": ["verification-before-completion"]},
+    "verification-before-completion": {"predecessors": ["test-driven-development", "executing-plans"], "successors": ["finishing-a-development-branch"]},
+    "receiving-code-review":       {"predecessors": ["requesting-code-review"], "successors": []},
+
+    # 终端 skills
+    "finishing-a-development-branch": {"predecessors": ["subagent-driven-development", "verification-before-completion"], "successors": []},
+
+    # 辅助 skills (松散约束)
+    "using-git-worktrees":         {"predecessors": [], "successors": []},
+    "dispatching-parallel-agents": {"predecessors": [], "successors": []},
+    "using-superpowers":           {"predecessors": [], "successors": ["brainstorming", "systematic-debugging", "requesting-code-review"]},
+}
+
+SKILL_DOMAIN_MAP: dict[str, str] = {
+    "brainstorming":                  "designing",
+    "writing-plans":                  "designing",
+    "executing-plans":                "building",
+    "subagent-driven-development":    "building",
+    "dispatching-parallel-agents":     "building",
+    "using-git-worktrees":             "building",
+    "test-driven-development":        "building",
+    "verification-before-completion": "reflecting",
+    "requesting-code-review":         "reflecting",
+    "receiving-code-review":          "reflecting",
+    "systematic-debugging":           "fixing",
+    "finishing-a-development-branch": "governing",
+    "writing-skills":                 "designing",
+    "using-superpowers":              "governing",
+}
+
+DOMAIN_TO_TASK_TYPE: dict[str, str] = {
+    "designing":   "architecture",
+    "building":    "code_generation",
+    "reflecting":  "code_review",
+    "fixing":      "debugging",
+    "governing":   "general",
+}
+
+# Skill tracking thresholds
+ORPHAN_THRESHOLD_MINUTES: int = 30
+MAX_STILL_IN_PROGRESS_RENEWALS: int = 3
+SKILL_COMPLETE_WORTH_DELTA: float = 0.02
