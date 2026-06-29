@@ -102,25 +102,20 @@ class QualityGate:
 
     @staticmethod
     def _compute_freshness(created_at: Optional[str] = None) -> float:
-        """Time-decay freshness. New memories = 1.0; older = decayed.
+        """Time-decay freshness via Direction A Weibull engine.
 
-        Uses Direction A's Weibull decay when created_at is provided.
-        Defaults to 1.0 (brand new) when created_at is None.
+        Delegates to WeibullDecayCalculator for consistency with composite_score.
+        New memories (created_at=None) → 1.0. Older → real Weibull decay value.
         """
         if created_at is None:
             return 1.0
         try:
-            import datetime
-            now = datetime.datetime.now()
-            created = datetime.datetime.fromisoformat(created_at)
-            age_hours = (now - created).total_seconds() / 3600.0
-            # Simple exponential decay: half-life of 168 hours (7 days)
-            # This is a fast-path; Direction A Weibull is more precise but heavier
-            import math
-            half_life = 168.0  # hours
-            decay = math.exp(-math.log(2) * age_hours / half_life)
-            return max(0.0, min(1.0, decay))
-        except (ValueError, TypeError):
+            from plastic_promise.core.decay_engine import WeibullDecayCalculator
+            wdc = WeibullDecayCalculator()
+            # Use default tier (L1) for gate-level freshness — conservative estimate
+            decay = wdc.compute_decay("default", created_at)
+            return decay
+        except Exception:
             return 1.0
 
     @staticmethod
