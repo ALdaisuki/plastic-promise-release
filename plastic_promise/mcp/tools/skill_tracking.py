@@ -67,6 +67,10 @@ def _validate_parent(
     Never blocks -- always returns None (allowing creation) plus an optional
     warning string that the caller surfaces in chain_warning.
     """
+    # auto_inject: sessions have no parent chain — skip validation
+    if skill_name.startswith("auto_inject:"):
+        return None
+
     if not parent_entity_id:
         return None
     parent_skill = _parse_skill_from_entity_id(parent_entity_id)
@@ -221,6 +225,7 @@ async def handle_skill_session_trace(
     session_scope: str = args.get("session_scope", "all")
     skill_filter: str | None = args.get("skill_name", None)
     status_filter: str | None = args.get("status", None)
+    include_auto_inject: bool = args.get("include_auto_inject", False)
 
     # -- Resolve branch name for session_scope "branch" ----------------------
     current_branch: str = ""
@@ -356,11 +361,20 @@ async def handle_skill_session_trace(
                             len("skill_session:"):
                         ]
 
+    # -- Exclude auto_inject sessions by default ----------------------------
+    if not include_auto_inject:
+        sessions = [s for s in sessions
+                    if not s["skill_name"].startswith("auto_inject:")]
+
     # -- Gap detection ------------------------------------------------------
     gaps: list[dict] = []
     chain_warnings: list[dict] = []
 
     for s in sessions:
+        # auto_inject: sessions are instant — skip orphan detection
+        if s["skill_name"].startswith("auto_inject:"):
+            continue
+
         # 1. orphan_active: active and last_accessed > threshold
         if s["status"] == "active" and s["last_accessed"]:
             try:
@@ -480,8 +494,9 @@ async def handle_skill_session_start(
     task_description = args.get("task_description", "")
     parent_entity_id = args.get("parent_entity_id", None)
 
-    # Validate skill_name
-    if skill_name not in SKILL_DOMAIN_MAP:
+    # Validate skill_name (auto_inject:* is always allowed)
+    if (not skill_name.startswith("auto_inject:")
+            and skill_name not in SKILL_DOMAIN_MAP):
         return [TextContent(type="text", text=json.dumps({
             "error": (
                 f"Unknown skill_name '{skill_name}'. "
@@ -491,7 +506,11 @@ async def handle_skill_session_start(
         }, ensure_ascii=False))]
 
     # Derive domain and entity_id
-    domain = SKILL_DOMAIN_MAP[skill_name]
+    # auto_inject:* prefix → "reflecting" domain (context audit snapshot)
+    if skill_name.startswith("auto_inject:"):
+        domain = "reflecting"
+    else:
+        domain = SKILL_DOMAIN_MAP.get(skill_name, "general")
     entity_id = _make_entity_id(skill_name)
 
     # Parent chain validation (warning, not blocking)
