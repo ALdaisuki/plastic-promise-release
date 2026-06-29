@@ -807,11 +807,11 @@ async def run_sse(port: int = 9020):
             await server.run(
                 read_stream, write_stream, init_options, raise_exceptions=False
             )
-        return Response()
+        # SSE transport already sends the response — don"t return Response()
 
     async def handle_messages(request: Request):
         await sse.handle_post_message(request.scope, request.receive, request._send)
-        return Response()
+        # SSE transport already sends the response — don"t return Response()
 
     async def handle_events(request: Request):
         """SSE event stream — push notifications to connected clients.

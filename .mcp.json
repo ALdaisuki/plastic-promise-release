@@ -1,9 +1,8 @@
 {
   "mcpServers": {
     "plastic-promise": {
-      "url": "http://127.0.0.1:9020/sse",
-      "lifecycle": "lazy",
-      "description": "Plastic Promise — shared engine with Pi agents"
+      "type": "sse",
+      "url": "http://127.0.0.1:9020/sse"
     }
   }
 }

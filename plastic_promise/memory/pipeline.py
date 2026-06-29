@@ -10,6 +10,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from plastic_promise.core.constants import DEDUP_SIMILARITY_THRESHOLD
+
 
 class MemoryPipeline:
     """记忆处理流水线 — 所有记忆的必经之路。
@@ -320,7 +322,7 @@ class MemoryPipeline:
                 if vec and self._lancedb is not None:
                     try:
                         dup_id = self._lancedb.check_duplicate(
-                            vec, threshold=0.85  # DEDUP_SIMILARITY_THRESHOLD
+                            vec, threshold=DEDUP_SIMILARITY_THRESHOLD
                         )
                         if dup_id and engine is not None:
                             now_iso = datetime.datetime.now().isoformat()
