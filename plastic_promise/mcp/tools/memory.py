@@ -154,6 +154,20 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         # Process through pipeline immediately (同步处理——大类分完就入池)
         result = fb.process_pipeline()
 
+        # Push SSE notification for real-time multi-agent awareness
+        try:
+            from plastic_promise.mcp.server import notify_issue_change
+            notify_issue_change({
+                "type": "memory_stored",
+                "memory_id": fuzzy_id,
+                "content_preview": content[:200],
+                "memory_type": memory_type,
+                "domain": getattr(engine, '_domain_hint', ''),
+                "timestamp": __import__('datetime').datetime.now().isoformat(),
+            })
+        except Exception:
+            pass
+
         return [TextContent(type="text", text=json.dumps({
             "stored": True,
             "memory_id": fuzzy_id,
