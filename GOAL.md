@@ -47,19 +47,26 @@
 
 ### 已完成
 - 经验包系统（export/import/recall + 三条铁律） ✅
-- 32 个 MCP 工具全部可用
-- 12 条核心原则，激活时返回后果+建议
+- 39 个 MCP 工具（韧性格局合并后 → 29 个） ✅
+- 域联邦系统（6 行为域 + 1 通用原则域） ✅
+- 12 条核心原则，按行为域分布（all/governing/building/designing/reflecting） ✅
+- 域自演化三层闭环（流水线微进化 + 周期审计 + 检索反馈） ✅
+- 灾难恢复：rebuild_from_memories() 从 tags 逆向重建域图谱 ✅
+- 跨版本兼容：schema_version 迁移链 + pack 跨版本逃生舱 ✅
+- 静默失效防护：DomainManager 降级开关 _dm_ok ✅
+- 流式 pack_export（防 OOM）+ pack_import strategy 参数 ✅
+- 联邦信号实时生成（不持久化） ✅
 - 7 维审计 + 5 维 SCARF 自省
 - 三层防线（L0 + L1 信任约束 + L2 免疫巡检）
-- 分层检索（细=graph → 类=L1 boost → 粗=text+vector）
-- 模糊缓存区（raw→tagged→classified→embedded→migrate）
+- 分层检索（细=graph → 类=L1 boost + 域加权 → 粗=text+vector）
+- 记忆流水线（raw→tagged(语义标签)→classified(域+Tier)→embedded→migrate）
 - 记忆纠正（memory_correct — 人类可编辑）
 - 实体自动链接（提取 → 图边 → 遍历）
 - 多 Agent owner 隔离（共享域 + 独立域）
 - SSE 传输 + 健康检查 + 优雅关闭
 - FallbackEmbedder（零向量降级）
 - L1/L3 分层 + EvolveR + MemoryGC
-- SQLite 写穿透持久化
+- SQLite 写穿透持久化 + schema_version 版本管理
 - post_task 六联闭环（约定对齐→SCARF→激素→信任→反思→CEI）
 - PrincipleTracker 原则遵守量化 + 趋势分析
 - 信任分接入检索权重
@@ -67,15 +74,9 @@
 - worth 反馈闭环（access_count + EvolveR 联动）
 - AgentBehaviorTracker 行为模式学习
 - curiosity 自适应探索闭环
-- Issue 生命周期 + 依赖管理（4 MCP 工具）
+- Issue 生命周期 + 依赖管理
 - 上下文预备（post_task 自动预取 + context_ready MCP）
 - Bridge Pi 任务执行 + N.E.K.O ZMQ 转发
-
-### 进行中
-- 无
-
-### 已全部完成 ✅
-四阶段路线图全部交付。项目进入维护和深化阶段。
 
 ## 四、12 条核心约定
 
@@ -110,9 +111,9 @@
 - 原则遵守率定期审视
 
 ### 当前指令
-- Phase 2 准备就绪：持久化 + Issue + 依赖
+- 韧性专项：灾难恢复 + 跨版本兼容 + 静默失效防护 设计中
+- 工具精简：39 → 29 个 MCP 工具
 - 推送到 main 分支
-- MCP 重连后验证：`/mcp reconnect plastic-promise`
 
 ## 六、关键接口
 
@@ -125,10 +126,16 @@ PrincipleTracker().stats()  # -> {pid: {adhered, violated, rate}}
 SoulLoop().post_task(description, git_commit)  # -> 六联结果
 TrustManager().get_retrieval_boost()  # -> 1.3/1.0/0.7/0.5
 StepAuditor().suggest_repairs(result)  # -> [修复建议]
+DomainManager().assign(tags)  # -> 域名字符串
+DomainManager().stats()  # -> 全域统计 + 谱系
 
 # 演化层
 EvolveR(rec_mem).evolve_cycle()  # -> 演化统计
-FuzzyBuffer().process_pipeline()  # -> 四阶段处理
+MemoryPipeline().process_pipeline()  # -> raw→tagged→classified→embedded→migrate
+
+# 韧性
+DomainManager().rebuild_from_memories(engine)  # -> 从 tags 全量重建域图谱
+DomainManager().decay()  # -> 域衰减/萎缩检测
 ```
 
 ## 七、记忆准则
