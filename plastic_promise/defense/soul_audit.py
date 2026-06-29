@@ -1,8 +1,8 @@
-"""七维度审计 + 免疫巡检引擎
+"""八维度审计 + 免疫巡检引擎
 
 免疫系统：检测和修复系统异常。
-包含七维度审计框架（原则联想/记忆供应/约束合规/反馈闭环/信任校准/原则继承/安全追溯）、
-pre_check 行动前合规检查、合规率计算和告警状态。
+包含八维度审计框架（奥卡姆剃刀/全过程可查可透明/自我审计闭环/原则激活率/记忆供给质量/
+约束合规度/反馈闭环率/Skill执行可追溯）、pre_check 行动前合规检查、合规率计算和告警状态。
 
 AuditReport — 审计报告数据容器（dict/json/markdown 多格式输出）
 SoulAuditor — 审计执行引擎（run_audit/pre_check/get_report/compliance_rate/alert_status）
@@ -21,7 +21,7 @@ from plastic_promise.core.constants import (
 
 
 class AuditReport:
-    """七维度审计报告 —— 不可变数据容器。
+    """八维度审计报告 —— 不可变数据容器。
 
     封装一次审计的完整结果，支持多种输出格式（dict、JSON 字符串、
     Markdown 报告），便于跨系统传递和人工审查。
@@ -29,7 +29,7 @@ class AuditReport:
     Attributes:
         timestamp: 审计报告生成时间
         scope: 审计范围 ('full' | 'quick' | 'targeted')
-        dimensions: 七维度评分明细 (key -> {name, score, weight, description})
+        dimensions: 八维度评分明细 (key -> {name, score, weight, description})
         findings: 审计发现列表 (P0 告警等)
         overall_score: 综合评分 (0.0 ~ 1.0)
     """
@@ -114,9 +114,9 @@ class AuditReport:
 
 
 class SoulAuditor:
-    """七维度审计执行引擎 —— 数字免疫系统。
+    """八维度审计执行引擎 —— 数字免疫系统。
 
-    执行周期性和按需审计，对七维度逐项评分，生成审计报告，
+    执行周期性和按需审计，对八维度逐项评分，生成审计报告，
     并提供 pre_check 合规性检查和告警状态查询。
 
     Attributes:
@@ -132,26 +132,29 @@ class SoulAuditor:
         self._reports: List[AuditReport] = []
         self._last_audit_time: Optional[datetime.datetime] = None
 
-    # Baseline heuristic scores for the 7 audit dimensions
+    # Baseline heuristic scores for the 8 audit dimensions
     _BASELINE_SCORES: Dict[str, float] = {
+        "simplicity": 0.70,
+        "transparency": 0.75,
+        "audit_closure": 0.70,
         "principle_activation": 0.70,
         "memory_supply": 0.75,
         "constraint_compliance": 0.80,
         "feedback_closure": 0.65,
-        "trust_alignment": 0.70,
-        "principle_inheritance": 0.60,
-        "safety_trace": 0.85,
+        "skill_trace": 0.70,
     }
 
-    def run_audit(
+    async def run_audit(
         self,
         scope: str = "full",
         time_range_hours: Optional[int] = None,
     ) -> AuditReport:
-        """执行一次完整审计，覆盖七维度逐项评分。
+        """执行一次完整审计，覆盖八维度逐项评分。
 
-        对 AUDIT_DIMENSIONS 中定义的七个维度逐一评分（目前使用启发式基线分数），
-        按权重计算综合评分，并将低于 0.60 的维度标记为 P0 发现。
+        对 AUDIT_DIMENSIONS 中定义的八个维度逐一评分，其中 skill_trace
+        维度通过实时调用 handle_skill_session_trace 动态计算，其余维度
+        使用启发式基线分数。按权重计算综合评分，并将低于 0.60 的维度标记
+        为 P0 发现。
 
         Args:
             scope: 审计范围 — 'full' 全面审计 | 'quick' 快速巡检 | 'targeted' 定向审计
@@ -163,11 +166,49 @@ class SoulAuditor:
         report = AuditReport()
         report.scope = scope
 
+        # -- Pre-compute skill_trace score (dynamic, may fail gracefully) --
+        skill_trace_score: float = 0.5
+        skill_trace_details: Dict[str, Any] = {}
+        try:
+            from plastic_promise.mcp.tools.skill_tracking import (
+                handle_skill_session_trace,
+            )
+            from plastic_promise.mcp.server import get_engine
+            engine = get_engine()
+            trace_result = await handle_skill_session_trace(
+                engine, {"session_scope": "all"},
+            )
+            trace_data = json.loads(trace_result[0].text)
+            gaps = trace_data.get("gaps", [])
+            chain_valid = trace_data.get("chain_valid", True)
+            total = trace_data.get("total_count", 0)
+
+            if total == 0:
+                skill_trace_score = 0.0
+            elif len(gaps) == 0 and chain_valid:
+                skill_trace_score = 1.0
+            elif len(gaps) > 0:
+                skill_trace_score = 0.3
+            else:
+                skill_trace_score = 0.7
+
+            skill_trace_details = {
+                "total_sessions": total,
+                "gaps": len(gaps),
+                "chain_valid": chain_valid,
+            }
+        except Exception:
+            skill_trace_score = 0.5
+            skill_trace_details = {"error": "trace unavailable"}
+
         weighted_sum = 0.0
         total_weight = 0.0
 
         for dim_key, dim_config in AUDIT_DIMENSIONS.items():
-            score = self._BASELINE_SCORES.get(dim_key, 0.60)
+            if dim_key == "skill_trace":
+                score = skill_trace_score
+            else:
+                score = self._BASELINE_SCORES.get(dim_key, 0.60)
             weight = dim_config["weight"]
 
             report.dimensions[dim_key] = {
@@ -176,6 +217,10 @@ class SoulAuditor:
                 "weight": weight,
                 "description": dim_config["description"],
             }
+
+            # Attach skill_trace diagnostic details
+            if dim_key == "skill_trace" and skill_trace_details:
+                report.dimensions[dim_key]["details"] = skill_trace_details
 
             weighted_sum += score * weight
             total_weight += weight

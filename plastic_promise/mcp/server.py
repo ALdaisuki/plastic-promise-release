@@ -483,6 +483,60 @@ async def list_tools() -> list[Tool]:
         ),
     ])
 
+    # === 技能追踪域 ===
+    tools.extend([
+        Tool(
+            name="skill_session_start",
+            description="创建技能执行实例实体，自动激活关联原则并建立父→子链追踪。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "skill_name": {"type": "string", "description": "技能名称"},
+                    "task_description": {"type": "string", "description": "本次执行的任务描述"},
+                    "parent_entity_id": {"type": "string", "description": "父技能会话的 entity_id"},
+                    "estimated_duration_minutes": {"type": "integer", "description": "预估耗时（分钟）"},
+                },
+                "required": ["skill_name", "task_description"],
+            },
+        ),
+        Tool(
+            name="skill_session_complete",
+            description="标记技能执行完成，自动处理标签状态转换和 worth 更新，支持 still_in_progress/abandoned/normal 三种结果。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "string", "description": "技能会话 entity_id"},
+                    "outcome": {"type": "string", "description": "结果: still_in_progress / abandoned: <原因> / 留空=正常完成"},
+                    "artifacts": {"type": "array", "items": {"type": "string"}, "description": "产物路径列表"},
+                },
+                "required": ["entity_id", "outcome"],
+            },
+        ),
+        Tool(
+            name="skill_session_trace",
+            description="追踪技能执行链：查询、完整性检测、违反警告。支持当前/分支/全部范围。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_scope": {"type": "string", "description": "查询范围: current|branch|all (默认 all)"},
+                    "skill_name": {"type": "string", "description": "按技能名称筛选"},
+                    "status": {"type": "string", "description": "按状态筛选: active|done|abandoned"},
+                },
+            },
+        ),
+        Tool(
+            name="skill_session_audit",
+            description="事后间隙扫描：检测技能记忆中提到但缺少 session 实体的技能，支持自动补录修复。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "time_range_hours": {"type": "integer", "description": "审计时间范围（小时）"},
+                    "auto_fix": {"type": "boolean", "description": "自动补录缺失的 session (默认 false)"},
+                },
+            },
+        ),
+    ])
+
     return tools
 
 
@@ -601,6 +655,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "domain":
             from plastic_promise.mcp.tools.domain import handle_domain
             return await handle_domain(engine, arguments)
+
+        # Skill tracking
+        elif name == "skill_session_start":
+            from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
+            return await handle_skill_session_start(engine, arguments)
+        elif name == "skill_session_complete":
+            from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
+            return await handle_skill_session_complete(engine, arguments)
+        elif name == "skill_session_trace":
+            from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
+            return await handle_skill_session_trace(engine, arguments)
+        elif name == "skill_session_audit":
+            from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_audit
+            return await handle_skill_session_audit(engine, arguments)
 
         else:
             return [TextContent(type="text", text=json.dumps(
