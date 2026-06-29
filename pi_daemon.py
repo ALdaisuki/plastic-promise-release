@@ -89,24 +89,132 @@ def can_execute(role: str) -> bool:
     return ok
 
 
-def mark_task_accepted(task_id: str):
-    """将 trigger tag → task:accepted，防重复执行。"""
+def mark_task_active(task_id: str, role: str):
+    """task:pending → task:active + 时间戳。Pi 崩溃则超时恢复。"""
     import sqlite3, json
-    conn = sqlite3.connect(
-        os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
-    )
+    ts = f"ts:{time.strftime('%Y%m%dT%H%M%S')}"
+    conn = sqlite3.connect(os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db"))
     row = conn.execute("SELECT tags FROM memories WHERE id = ?", (task_id,)).fetchone()
     if row:
         tags = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or [])
         new_tags = []
         for t in tags:
-            if t in ("task:pending", "task:rejected", "task:active", "task:done"):
+            if t.startswith("ts:"):
+                continue  # 移除旧时间戳
+            if t in ("task:pending", "task:rejected"):
+                new_tags.append("task:active")
+            else:
+                new_tags.append(t)
+        new_tags.append(ts)
+        conn.execute("UPDATE memories SET tags = ? WHERE id = ?",
+                     (json.dumps(new_tags), task_id))
+        conn.commit()
+    conn.close()
+
+
+def mark_task_accepted(task_id: str):
+    """中间态 tag → task:accepted（最终完成）。"""
+    import sqlite3, json
+    conn = sqlite3.connect(os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db"))
+    row = conn.execute("SELECT tags FROM memories WHERE id = ?", (task_id,)).fetchone()
+    if row:
+        tags = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or [])
+        new_tags = []
+        for t in tags:
+            if t.startswith("ts:"):
+                continue
+            if t in ("task:pending", "task:rejected", "task:active", "task:done", "task:review"):
                 new_tags.append("task:accepted")
             else:
                 new_tags.append(t)
         conn.execute("UPDATE memories SET tags = ? WHERE id = ?",
                      (json.dumps(new_tags), task_id))
         conn.commit()
+    conn.close()
+
+
+def recover_stuck_tasks():
+    """超时恢复: task:active>5min 或 task:reviewed>10min → 重置为 task:pending。"""
+    import sqlite3, json
+    from datetime import datetime, timedelta
+    conn = sqlite3.connect(os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db"))
+    rows = conn.execute(
+        "SELECT id, tags FROM memories WHERE tags LIKE '%task:active%' OR tags LIKE '%task:reviewed%'"
+    ).fetchall()
+
+    now = datetime.now()
+    for (mid, tags_raw) in rows:
+        try:
+            tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+        except Exception:
+            continue
+
+        # 提取时间戳
+        ts_str = None
+        for t in tags:
+            if t.startswith("ts:"):
+                ts_str = t[3:]
+                break
+        if not ts_str:
+            continue
+
+        try:
+            task_time = datetime.strptime(ts_str, "%Y%m%dT%H%M%S")
+        except ValueError:
+            continue
+
+        elapsed = (now - task_time).total_seconds()
+
+        if "task:active" in tags and elapsed > 300:  # 5 min
+            new_tags = ["task:pending" if t in ("task:active",) else t for t in tags if not t.startswith("ts:")]
+            conn.execute("UPDATE memories SET tags = ? WHERE id = ?", (json.dumps(new_tags), mid))
+            print(f"  [RECOVER] task:active timed out ({elapsed:.0f}s) → reset to pending")
+        elif "task:reviewed" in tags and elapsed > 600:  # 10 min
+            new_tags = ["task:active" if t in ("task:reviewed",) else t for t in tags if not t.startswith("ts:")]
+            conn.execute("UPDATE memories SET tags = ? WHERE id = ?", (json.dumps(new_tags), mid))
+            print(f"  [RECOVER] task:reviewed timed out ({elapsed:.0f}s) → reset to active")
+    conn.commit()
+    conn.close()
+
+
+def cleanup_old_memories():
+    """清理 7 天前的 task:accepted / task:reviewed 已验收记忆。"""
+    import sqlite3, json
+    from datetime import datetime, timedelta
+    conn = sqlite3.connect(os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db"))
+    rows = conn.execute(
+        "SELECT id, tags FROM memories WHERE tags LIKE '%task:accepted%' OR tags LIKE '%task:reviewed%'"
+    ).fetchall()
+
+    cutoff = datetime.now() - timedelta(days=7)
+    removed = 0
+    for (mid, tags_raw) in rows:
+        try:
+            tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+        except Exception:
+            continue
+
+        ts_str = None
+        for t in tags:
+            if t.startswith("ts:"):
+                ts_str = t[3:]
+                break
+        if not ts_str:
+            continue
+
+        try:
+            task_time = datetime.strptime(ts_str, "%Y%m%dT%H%M%S")
+        except ValueError:
+            continue
+
+        if task_time < cutoff:
+            new_tags = [t for t in tags if not t.startswith("task:") and not t.startswith("ts:")]
+            conn.execute("UPDATE memories SET tags = ? WHERE id = ?", (json.dumps(new_tags), mid))
+            removed += 1
+
+    if removed:
+        print(f"  [CLEANUP] {removed} old task memories cleaned (>7 days)")
+    conn.commit()
     conn.close()
 
 
@@ -150,6 +258,7 @@ async def main():
     print(f"Roles: {', '.join(AGENT_ROLES.keys())}")
     print(f"Auto-chain: {', '.join(f'{k}→{v}' for k,v in AUTO_CHAIN.items())}")
 
+    _cleanup_counter = 0
     while True:
         task = get_pending_task()
         if task:
@@ -158,6 +267,7 @@ async def main():
                 await asyncio.sleep(INTERVAL)
                 continue
             print(f"[{_now()}] {role}({cfg['domain']}) ← {task_id[:20]}...")
+            mark_task_active(task_id, role)  # 打时间戳，超时可恢复
             result = await execute_task(role, cfg, content, task_id)
             print(result.strip()[-200:] or "DONE")
             mark_task_accepted(task_id)
@@ -172,6 +282,13 @@ async def main():
             })
         else:
             print(f"[{_now()}] idle.", end="\r")
+
+        # Batch 2: 超时恢复 + 定期清理
+        recover_stuck_tasks()
+        _cleanup_counter += 1
+        if _cleanup_counter >= 360:  # ~每小时 (360 * 10s = 3600s)
+            cleanup_old_memories()
+            _cleanup_counter = 0
         await asyncio.sleep(INTERVAL)
 
 
