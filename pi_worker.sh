@@ -31,9 +31,7 @@ Team Protocol:
 - 禁止闲聊。通信必须携带 Issue ID 和文件路径
 - 上下文不足时 issue_transition(id, 'in_progress', reason='NEEDS_CONTEXT: <具体缺什么>')
 - 不要猜测——如果不确定上下文，调用 memory_recall 再查一次" \
-  --session-id "${ROLE}_worker" \
-  --no-session \
-  2>&1 | tail -5
+  --session-id "${ROLE}_worker" 2>&1 | tail -5
 
   sleep "$INTERVAL"
 done
