@@ -36,6 +36,7 @@ class ContextItem:
     layer: str = "related"
     is_principle: bool = False
     worth_score: float = 0.0
+    is_auto_recall: bool = True  # True = internal retrieval, False = user-initiated
 
     def to_prompt_line(self) -> str:
         mark = " 🧬" if self.is_principle else ""

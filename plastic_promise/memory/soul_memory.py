@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 import datetime
+import logging
 from typing import Optional, List, Dict, Any
 
 from plastic_promise.core.constants import (
@@ -310,11 +311,28 @@ class MemoryTierManager:
         if record is None:
             return "L1"
         try:
-            if record.worth_score >= 0.5 and record.access_count >= 3:
+            # 使用 composite_score 替代 worth_score
+            calc = MemoryWorthCalculator()
+            composite = calc.calculate_composite_score(record)
+            if composite >= 0.5 and record.access_count >= 3:
                 return "L3"
         except Exception:
             pass
         return "L1"
+
+    def should_demote(self, record: MemoryRecord) -> bool:
+        """Check if a memory should be demoted from L3 to L1."""
+        try:
+            calc = MemoryWorthCalculator()
+            composite = calc.calculate_composite_score(record)
+            dm = getattr(record, 'decay_multiplier', 1.0)
+            if dm < 0.2:
+                return True
+            if composite < 0.15:
+                return True
+        except Exception:
+            pass
+        return False
 
     def promote_to_l3(self, record: MemoryRecord) -> None:
         """将记忆从 L1 晋升到 L3 长期记忆。
@@ -860,19 +878,44 @@ class EvolveR:
             return {"promoted": 0, "demoted": 0, "decayed": 0, "evicted": 0,
                     "health_before": 1.0, "health_after": 1.0}
         try:
+            # Phase A: 批量更新 decay_multiplier
+            try:
+                from plastic_promise.core.decay_engine import WeibullDecayCalculator
+                import datetime
+                wdc = WeibullDecayCalculator()
+                records_pre = list(self.rec_mem._records.values()) if self.rec_mem else []
+                if records_pre:
+                    results = wdc.evaluate_all(records_pre)
+                    now = datetime.datetime.now().isoformat()
+                    for mid, dm in results:
+                        if mid in self.rec_mem._records:
+                            self.rec_mem._records[mid].decay_multiplier = dm
+                        # Persist to SQLite
+                        engine = self.rec_mem._engine if self.rec_mem else None
+                        if engine and engine._sqlite:
+                            engine._sqlite._conn.execute(
+                                "UPDATE memories SET decay_multiplier = ? WHERE id = ?",
+                                (dm, mid)
+                            )
+                    if engine and engine._sqlite:
+                        engine._sqlite._conn.commit()
+            except Exception as e:
+                logging.warning("EvolveR: decay batch update failed: %s", e)
+
             health_before = self.rec_mem.health_ratio
             records = list(self.rec_mem._records.values())
             promoted = 0
             demoted = 0
 
-            # Demote L3 low-worth records
-            l3_records = [r for r in records if r.tier == "L3" and r.worth_score < self.decay_threshold]
+            # Demote L3 low-composite records (use should_demote which checks decay + composite)
+            l3_records = [r for r in records if r.tier == "L3" and self.tier_manager.should_demote(r)]
             for r in l3_records:
                 self.tier_manager.demote_to_l1(r)
                 demoted += 1
 
-            # Promote L1 high-worth records
-            l1_records = [r for r in records if r.tier == "L1" and r.worth_score >= 0.6]
+            # Promote L1 high-composite records
+            calc = MemoryWorthCalculator()
+            l1_records = [r for r in records if r.tier == "L1" and calc.calculate_composite_score(r) >= 0.6]
             for r in l1_records:
                 self.tier_manager.promote_to_l3(r)
                 promoted += 1
