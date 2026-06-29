@@ -62,7 +62,9 @@ MemoryGC.collect() (existing cycle, ~7 days)
 
 - `extract_memories()` returns **0 items**: pure noise → return `None`, skip pipeline entirely
 - Returns **1 item**: return `str` (memory_id), backward compatible
-- Returns **N > 1 items**: return `list[str]`, one buffer record per ExtractedMemory
+- Returns **N > 1 items**: all N records enter buffer; returns `str` (first memory_id only)
+  - Caller (`memory_store` MCP tool) expects a single `str` for SSE notifications, entity edges, and JSON response
+  - Remaining extracted memories are still processed through pipeline — they just aren't named in the return value
 - Category injected as `cat:{category}` tag to enhance domain matching
 
 ### 3.3 Buffer Record Extension
@@ -185,7 +187,20 @@ class QualityGate:
 - **L2 score** (0.2): `l2_content` exists and len > 50
 - **Structure score** (0.2): has category AND tags
 
-### 5.3 Decision Matrix
+### 5.3 Graceful Defaults (extracted field missing)
+
+When `extracted` is absent (direct `memory_store` call, extraction error, or bypass path):
+
+| Dimension | Default | Rationale |
+|-----------|---------|-----------|
+| confidence | 0.5 | Neutral — no extraction signal |
+| relevance | 0.5 | Neutral — no domain hint |
+| freshness | 1.0 | Brand new write, created_at = now |
+| info_density | **0.5** | Generous default for direct writes (not 0.0, which would unfairly filter user-initiated stores) |
+
+Combined: `(0.5+0.5+1.0+0.5) × 0.25 = 0.625`, comfortably above the 0.5 store threshold.
+
+### 5.4 Decision Matrix
 
 | gate_score | Action |
 |------------|--------|
@@ -237,6 +252,9 @@ For each memory with a vector:
 Priority order:
 1. **Highest `worth_score`** (feedback-verified value)
 2. **Most recent `created_at`** (tiebreaker when scores equal)
+
+New memories default to `worth_score = 0.5` (Wilson lower bound, `WORTH_MIN_OBSERVATIONS = 5`). This prevents new
+memories from being incorrectly merged away — they compete fairly, and `created_at` breaks ties correctly.
 
 ### 6.4 Survivor Metadata Structure
 
@@ -316,3 +334,11 @@ MERGE_AUDIT_RETENTION_DAYS = 7         # merged records kept in SQLite before GC
 - `memory_stats` — verify dedup increments worth_success on existing records
 - `memory_list` — verify low_quality tag appears for borderline memories
 - `memory_recall` — verify merged records are not returned
+
+## 10. Resolved Design Decisions
+
+| # | Decision | Resolution | Rationale |
+|---|----------|------------|-----------|
+| 1 | `store_urgent()` return type for multi-extraction | Always return `str` (first memory_id) | `memory_store` MCP tool uses `fuzzy_id` as single string for edges, SSE notifications, and JSON response (tools/memory.py:147-174). All extracted records still enter pipeline buffer. |
+| 2 | QualityGate defaults when `extracted` is missing | `info_density` defaults to 0.5 (not 0.0) | Combined score = 0.625, passes store threshold. Prevents direct `memory_store` writes from being unfairly filtered. |
+| 3 | `worth_score` timing for merge (new memories) | No risk — default is 0.5, not 0 | Wilson lower bound returns 0.5 when `n < WORTH_MIN_OBSERVATIONS` (5). `created_at` tiebreaker correctly handles equal scores. New memories won't be incorrectly merged away. |
