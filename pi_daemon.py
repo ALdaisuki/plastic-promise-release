@@ -73,10 +73,6 @@ async def listen_and_work():
 
         await asyncio.gather(sse_listen(), poll_fallback())
 
-            except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:
-                print(f"SSE disconnected: {e}. Reconnecting in 5s...")
-                await asyncio.sleep(5)
-
 
 async def execute_task():
     proc = await asyncio.create_subprocess_exec(
