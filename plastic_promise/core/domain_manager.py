@@ -684,3 +684,127 @@ class DomainManager:
             ),
         )
         self._conn.commit()
+
+    def rebuild_from_memories(self, memories_source=None) -> dict:
+        """从记忆的 tags 字段全量逆向重建域联邦图谱。
+
+        Args:
+            memories_source: 可选 list[dict]，每项含 id, tags, domain。
+                            None = 从 SQLite memories 表读取。
+        Returns:
+            {"restored_domains": int, "tags_indexed": int}
+        """
+        import json as _json
+        from collections import Counter
+
+        with self._lock:
+            if memories_source is None or memories_source == "sqlite":
+                rows = self._conn.execute(
+                    "SELECT id, tags FROM memories"
+                ).fetchall()
+                memories_source = [
+                    {"id": r[0], "tags": _json.loads(r[1]) if isinstance(r[1], str) else (r[1] or [])}
+                    for r in rows
+                ]
+
+            # Phase 1: 标签共现统计
+            tag_cooccur = Counter()
+            tag_freq = Counter()
+            all_tags = set()
+
+            for mem in memories_source:
+                tags = mem.get("tags", [])
+                if isinstance(tags, str):
+                    tags = _json.loads(tags) if tags else []
+                for t in tags:
+                    tag_freq[t] += 1
+                    all_tags.add(t)
+                for i, t1 in enumerate(tags):
+                    for t2 in tags[i+1:]:
+                        key = tuple(sorted([t1, t2]))
+                        tag_cooccur[key] += 1
+
+            # Phase 2: 聚类 (cooccur > 3 → 同域)
+            clusters = self._cluster_by_cooccurrence(tag_cooccur, tag_freq, all_tags)
+
+            # Phase 3: 合并入预定义域
+            merged_domains = {}
+            for name, cfg in PREDEFINED_DOMAINS.items():
+                if name == "all":
+                    # 保留 all 域但不参与聚类合并
+                    merged_domains[name] = dict(cfg)
+                    merged_domains[name]["tags"] = set(cfg["tags"])
+                    continue
+                merged_domains[name] = dict(cfg)
+                merged_domains[name]["tags"] = set(cfg["tags"])
+
+            for cluster_tags in list(clusters):
+                best_name = None
+                best_jac = 0.0
+                for dname, dcfg in merged_domains.items():
+                    if dname == "all":
+                        continue
+                    inter = len(cluster_tags & dcfg["tags"])
+                    union = len(cluster_tags | dcfg["tags"])
+                    jac = inter / union if union > 0 else 0.0
+                    if jac > best_jac:
+                        best_jac = jac
+                        best_name = dname
+                if best_jac > 0.4 and best_name:
+                    merged_domains[best_name]["tags"].update(cluster_tags)
+                else:
+                    name = max(cluster_tags, key=lambda t: tag_freq.get(t, 0))
+                    merged_domains[name] = {
+                        "score": 0.5, "tags": cluster_tags,
+                        "principle_ids": [], "status": "active",
+                    }
+
+            # Phase 4: 写入
+            self.domains.clear()
+            for name, cfg in merged_domains.items():
+                self.domains[name] = DomainInfo(
+                    name=name,
+                    score=cfg["score"],
+                    tags=cfg["tags"],
+                    principle_ids=cfg.get("principle_ids", []),
+                    status=cfg.get("status", "active"),
+                )
+                self._persist_domain(name)
+
+            # Phase 5: 重建索引
+            self._rebuild_tag_index()
+
+            # Phase 6: 审计
+            self._write_audit_log("domain_rebuild", {
+                "source": "memories table",
+                "domains_restored": len(merged_domains),
+                "tags_total": len(all_tags),
+            })
+
+            return {"restored_domains": len(merged_domains), "tags_indexed": len(all_tags)}
+
+    def _cluster_by_cooccurrence(self, cooccur, tag_freq, all_tags):
+        """基于标签共现频次聚类。cooccur > 3 → 认为属于同一域候选"""
+        parent = {}
+        def find(x):
+            while parent.get(x, x) != x:
+                parent[x] = parent.get(parent[x], parent[x])
+                x = parent[x]
+            return x
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for (t1, t2), count in cooccur.items():
+            if count > 3:
+                union(t1, t2)
+
+        clusters = {}
+        for tag in all_tags:
+            root = find(tag)
+            if root not in clusters:
+                clusters[root] = set()
+            clusters[root].add(tag)
+
+        return [c for c in clusters.values() if len(c) >= 2]
