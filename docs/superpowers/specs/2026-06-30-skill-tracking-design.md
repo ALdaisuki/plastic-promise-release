@@ -390,57 +390,27 @@ def _audit_skill_trace(engine, time_range_hours: int):
 
 ### 10.1 Skill 调用协议
 
-```markdown
-## Skill 调用协议 (Session 追踪)
+新增 "## Skill 调用协议 (Session 追踪)" 段:
 
-每次调用 SuperPowers skill 时执行以下步骤：
-
-### 前置指令
-```
-parent_id = <上一个 skill 的 entity_id, 没有则为 null>
-skill_session_start(skill_name="<name>", task_description="<本次任务>", parent_entity_id=parent_id)
-```
-
-### 后置指令
-```
-outcome = "<结果摘要，不超过 200 字>"
-artifacts = ["path/to/output1", ...]
-skill_session_complete(entity_id="<start 返回的 id>", outcome=outcome, artifacts=artifacts)
-```
-
-### 超时续期
-如果 skill 超过 30 分钟未完成:
-```
-skill_session_complete(entity_id="<id>", outcome="still_in_progress", artifacts=[])
-```
-
-### 放弃
-```
-skill_session_complete(entity_id="<id>", outcome="abandoned: <原因>", artifacts=[])
-```
-```
+- **前置指令**：每次调用 Skill 工具前，执行 `skill_session_start(skill_name, task_description, parent_entity_id)`
+- **后置指令**：skill 执行完毕时，执行 `skill_session_complete(entity_id, outcome, artifacts)`，outcome ≤200 字
+- **超时续期**：执行超 30 分钟时，执行 `skill_session_complete(entity_id, "still_in_progress", [])` 重置计时器
+- **放弃**：被中断时，执行 `skill_session_complete(entity_id, "abandoned: <原因>", [])`
 
 ### 10.2 分支完成前验收
 
-```markdown
-## 开发分支完成前验收
+新增 "## 开发分支完成前验收" 段:
 
-finishing-a-development-branch 执行前，必须先调用:
+`finishing-a-development-branch` 执行前必须先调用 `skill_session_trace(session_scope="branch")`。
 
-    skill_session_trace(session_scope="branch")
+验收标准（全部满足才能继续）：
+1. `chain_complete = true` — 所有 skill 形成完整闭环
+2. `gaps` 为空 — 无 orphan_active（超 30 分钟未完成的 session）
+3. `chain_valid = true` — 调用链合法无 violation
+4. 链首为 `brainstorming` / `systematic-debugging` / `requesting-code-review` 之一
+5. 链尾为 `finishing-a-development-branch` 或 `receiving-code-review`
 
-验收标准 (全部满足才能继续):
-1. chain_complete = true
-2. gaps 为空 (无 orphan_active)
-3. chain_valid = true (调用链合法)
-4. 链首为 brainstorming / systematic-debugging / requesting-code-review 之一
-5. 链尾为 finishing-a-development-branch 或 receiving-code-review
-
-验收不通过时的修复:
-- orphan_active → skill_session_complete(entity_id, "abandoned: 分支完成时未闭环")
-- chain_broken → 检查是否应调用后续 skill
-- chain_violation → 调用 skill_session_audit 评估是否需要修复
-```
+验收不通过时的修复路径: orphan_active → 手动 complete 为 abandoned；chain_broken → 检查是否应调用后续 skill；chain_violation → 调用 `skill_session_audit` 评估。
 
 ## 十一、实现文件清单
 
