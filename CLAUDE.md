@@ -96,6 +96,12 @@
 ## 多 Agent
 
 - Claude Code: stdio 模式（`.mcp.json` 自动启动）
+- Pi Worker 后台轮询:
+  ```bash
+  bash pi_worker.sh pi_builder building    # Builder 轮询 30s
+  bash pi_worker.sh pi_fixer fixing        # Fixer 轮询 30s
+  bash pi_worker.sh pi_reviewer reflecting # Reviewer 轮询 30s
+  ```
 - Pi / N.E.K.O: SSE 模式
   ```bash
   set AGENT_OWNER=pi
