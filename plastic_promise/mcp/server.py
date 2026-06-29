@@ -880,6 +880,63 @@ async def run_sse(port: int = 9020):
             "pid": os.getpid(),
         })
 
+    async def api_stats(request):
+        """Return memory pool + body system statistics."""
+        import json as _json
+        from starlette.responses import JSONResponse
+        try:
+            engine = get_engine()
+            stats_raw = engine.memory_stats_json()
+            stats = _json.loads(stats_raw) if isinstance(stats_raw, str) else stats_raw
+            from plastic_promise.core.constants import DIGITAL_BODY_SYSTEMS
+            systems = {}
+            for k, v in DIGITAL_BODY_SYSTEMS.items():
+                systems[k] = {
+                    "name": v.get("name", k),
+                    "maturity": v.get("maturity", 0.0),
+                }
+            return JSONResponse({
+                "memory": stats,
+                "body_systems": systems,
+                "uptime": round(_time.time() - start_time, 1),
+                "version": "0.1.0",
+            })
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    async def api_issues(request):
+        """Return active issue list."""
+        import json as _json
+        from starlette.responses import JSONResponse
+        try:
+            engine = get_engine()
+            from plastic_promise.mcp.tools.management import handle_issue_list
+            result = await handle_issue_list(engine, {})
+            data = _json.loads(result[0].text) if result else {"issues": []}
+            return JSONResponse(data)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    async def api_trust(request):
+        """Return trust/defense status."""
+        import json as _json
+        from starlette.responses import JSONResponse
+        try:
+            engine = get_engine()
+            from plastic_promise.mcp.tools.audit_defense import handle_defense, handle_audit_run
+            result = await handle_defense(engine, {"action": "get"})
+            data = _json.loads(result[0].text) if result else {}
+            # Add audit summary
+            try:
+                audit_result = await handle_audit_run(engine, {"action": "report"})
+                audit_data = _json.loads(audit_result[0].text) if audit_result else {}
+            except Exception:
+                audit_data = {"message": "No audit run yet"}
+            data["audit_summary"] = audit_data
+            return JSONResponse(data)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     async def shutdown():
         logger.info("Shutting down Plastic Promise SSE server...")
 
@@ -889,6 +946,9 @@ async def run_sse(port: int = 9020):
         Route("/events", endpoint=handle_events, methods=["GET"]),
         Route("/notify", endpoint=handle_notify, methods=["POST"]),
         Route("/health", endpoint=health),
+        Route("/api/stats", endpoint=api_stats),
+        Route("/api/issues", endpoint=api_issues),
+        Route("/api/trust", endpoint=api_trust),
     ], on_shutdown=[shutdown])
 
     logger.info(f"Plastic Promise MCP Server v0.1.0")
