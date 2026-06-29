@@ -1,166 +1,126 @@
 # Plastic Promise — 项目目标与指令
 
-> **核心范式**: 约定工程 (Commitment Engineering) — 内化约定替代外部约束。约定，是比约束更深的力量。
-
----
+> **核心范式**: 约定工程 (Commitment Engineering) — 内化约定替代外部约束。
 
 ## 一、项目定位
 
-构建 AI 行为治理系统——不是通过规则门禁拦截 Agent（约束工程），而是让 Agent 主动查阅和内化约定（约定工程）。
+构建 AI 行为治理系统——不是通过规则门禁拦截 Agent（约束工程），而是让 Agent 主动查阅和内化约定（约定工程）。现已扩展为完整的多 Agent 协作框架——Claude 作为项目经理管理 Pi 开发团队。
 
-```
-约定与约束的区别:
-  约束: "你不能这样做" → Agent 被动服从 → 绕过去
-  约定: "这样做会违反我们共同的约定，后果是..." → Agent 主动践行 → 内化
-```
-
-## 二、三层架构
+## 二、架构
 
 ```
 约定层 — 内化于心
-  12 条核心原则（激活带后果+建议）
-  原则遗传（跨 Agent 扩散）
-  原则遵守量化追踪 ← Phase 1 ✅
+  12 条核心原则（行为域分布: all/governing/building/designing/reflecting）
+  原则遗传（跨 Agent 扩散 + principle_inherit）
+  原则遵守量化追踪（PrincipleTracker） ✅
 
 实践层 — 外显于行
-  上下文预备（决策前查阅约定）
-  反思/修复（post_task 六联闭环） ← Phase 1 ✅
-  动态信任（遵守→信任↑→自主权↑→检索范围↑） ← Phase 1 ✅
-  Issue 生命周期（约定→任务→追踪） ← Phase 2
+  多 Agent 开发组（Claude PM + Pi Builder/Fixer/Reviewer） ✅
+  自治流水线（标签驱动, 零Token Daemon, 自动衔接） ✅
+  post_task 六联闭环（light委派+full验收） ✅
+  动态信任-自由度矩阵（4档映射到工具权限） ✅
+  11 维审计（每小时自动 + Tier1 修复） ✅
 
 演化层 — 迭代进步
-  越用越聪明（worth 反馈闭环） ← Phase 3 ✅
-  越用越默契（行为模式学习） ← Phase 3 ✅
-  主动成长（curiosity→探索→实践） ← Phase 3 ✅
-  内化约定（原则遵守历史量化） ← Phase 3 ✅
+  worth 反馈闭环 ✅
+  AgentBehaviorTracker ✅
+  curiosity 自适应探索 ✅
+  PrincipleTracker 趋势分析 ✅
 
 基础设施
-  永久记忆存储（SQLite 写穿透） ← Phase 2 ✅
-  依赖关系管理（blocks/blockedBy + 循环检测） ← Phase 2 ✅
-  Issue 生命周期（open→in_progress→resolved→closed） ← Phase 2 ✅
-  上下文预备（post_task 预取 + MCP 工具） ← Phase 4 ✅
-  Bridge TODO（Pi 任务 + N.E.K.O ZMQ） ← Phase 4 ✅
-  SSE 生产化（health + 日志 + 优雅关闭） ← Phase 4 ✅
+  SQLite 写穿透 + schema_version 迁移链 ✅
+  域联邦（7域 + 自演化 + 联邦信号） ✅
+  标签状态机（task:pending→done→reviewed） ✅
+  双向桥（/notify→SSE /events 实时推送） ✅
+  灾难恢复（rebuild_from_memories） ✅
+  经验包（流式导出 + version_mapper + strategy） ✅
 ```
 
 ## 三、当前状态
 
-### 已完成
-- 经验包系统（export/import/recall + 三条铁律） ✅
-- 39 个 MCP 工具（韧性格局合并后 → 29 个） ✅
-- 域联邦系统（6 行为域 + 1 通用原则域） ✅
-- 12 条核心原则，按行为域分布（all/governing/building/designing/reflecting） ✅
-- 域自演化三层闭环（流水线微进化 + 周期审计 + 检索反馈） ✅
-- 灾难恢复：rebuild_from_memories() 从 tags 逆向重建域图谱 ✅
-- 跨版本兼容：schema_version 迁移链 + pack 跨版本逃生舱 ✅
-- 静默失效防护：DomainManager 降级开关 _dm_ok ✅
-- 流式 pack_export（防 OOM）+ pack_import strategy 参数 ✅
-- 联邦信号实时生成（不持久化） ✅
-- 7 维审计 + 5 维 SCARF 自省
+### 已完成 (2026-06-29)
+
+**内核：**
+- 29 个 MCP 工具（8 域）
+- 12 条核心原则（按行为域分布）
+- 7 维审计 + 5 维 SCARF 自省 + 11 维多 Agent 审计
+- 域联邦系统（自演化 + 联邦信号）
 - 三层防线（L0 + L1 信任约束 + L2 免疫巡检）
-- 分层检索（细=graph → 类=L1 boost + 域加权 → 粗=text+vector）
-- 记忆流水线（raw→tagged(语义标签)→classified(域+Tier)→embedded→migrate）
-- 记忆纠正（memory_correct — 人类可编辑）
-- 实体自动链接（提取 → 图边 → 遍历）
-- 多 Agent owner 隔离（共享域 + 独立域）
-- SSE 传输 + 健康检查 + 优雅关闭
-- FallbackEmbedder（零向量降级）
-- L1/L3 分层 + EvolveR + MemoryGC
-- SQLite 写穿透持久化 + schema_version 版本管理
-- post_task 六联闭环（约定对齐→SCARF→激素→信任→反思→CEI）
-- PrincipleTracker 原则遵守量化 + 趋势分析
-- 信任分接入检索权重
-- 修复建议自动生成
-- worth 反馈闭环（access_count + EvolveR 联动）
-- AgentBehaviorTracker 行为模式学习
-- curiosity 自适应探索闭环
-- Issue 生命周期 + 依赖管理
-- 上下文预备（post_task 自动预取 + context_ready MCP）
-- Bridge Pi 任务执行 + N.E.K.O ZMQ 转发
-- 多 Agent 开发组（Claude PM + Pi Builder/Fixer/Reviewer）E2E 验证通过 ✅
+- 韧性专项（灾难恢复 + 跨版本 + 静默失效）
 
-### 多 Agent 开发组 — 2026-06-29 闭环验证
+**多 Agent 开发组：**
+- Pi CLI 原生执行（替代自建 agent.py）
+- 标签状态机（task:pending→active→done→review→reviewed）
+- 零 Token Daemon（SQLite 直查, 多角色管理）
+- 自治流水线（Builder→Reviewer 自动衔接, Fixer 修复循环）
+- 信任-自由度矩阵（4 档, 权限映射到工具）
+- 双向桥（/notify→SSE /events）
+- 任务超时恢复（5min task:active reset）
+- 定时记忆清理（7 天 GC）
+- SuperPowers 流水线映射（planner→builder→fixer→reviewer）
 
-```
-Claude (项目经理) → issue_create → Pi (deepseek-v4-pro) → eco.py 交付
-                 → Claude 验收 → trust boost → memory_store → post_task
-
-验证结果:
-  - Pi 原生 CLI (pi --print) 替代自建 agent.py ✅
-  - Issue 表 = 唯一通信协议 ✅ (issue_create/transition/list)
-  - Team Protocol (.pi/memory.md) 驱动 Pi ReAct 循环 ✅
-  - 宪法校验 (issue_validator) ✅
-  - 质量闸门 (Issue review 状态) ✅
-  - 信任联邦 (defense adjust target="pi_builder") ✅
-  - 约定工程融入 (post_task light/full 双层) ✅
-  - 记忆池: Pi 自主 memory_store + memory_recall 上下文拉取 ✅
-
-架构: 不建消息队列/RPC/WebSocket — Pi 的单次执行 + bash while 轮询 = 邮箱模型
-```
+### 进行中
+- 无。所有已交付。
 
 ## 四、12 条核心约定
 
-在每次决策前主动查阅（`principle_activate`）：
+| # | 原则 | 域 | 一句话 |
+|---|------|------|--------|
+| 1 | 奥卡姆剃刀 | all | 如无必要，勿增实体 |
+| 2 | 全过程可查可透明 | all | 每步有 git 痕迹、可追溯审计日志 |
+| 3 | 自我审计闭环 | reflecting | 根因→改良→教训→评分 |
+| 4 | 上下文驱动决策 | designing | 无上下文不行动，不足时标注而非猜测 |
+| 5 | 约定优于约束 | governing | 检验存在不等于有效 |
+| 6 | 数据流驱动 | designing | 追踪真实数据流，非假设架构图 |
+| 7 | 器官互保 | building | 每个子系统保护整个系统 |
+| 8 | 工具即感官 | all | LLM 能力边界由工具链决定 |
+| 9 | 信任驱动约束 | governing | 动态信任分调节自主权 |
+| 10 | 自演化闭环 | reflecting | 评价驱动行为修正 |
+| 11 | 原则遗传 | governing | 核心约定跨 Agent 代际传递 |
+| 12 | 代码即文档 | building | 代码本身是最权威的文档 |
 
-1. **奥卡姆剃刀** — 如无必要，勿增实体
-2. **全过程可查可透明** — 每步有 git 痕迹
-3. **自我审计闭环** — 根因→改良→教训→评分
-4. **上下文驱动决策** — 无上下文不行动
-5. **约定优于约束** — 检验存在不等于有效
-6. **数据流驱动** — 追踪真实数据流
-7. **器官互保** — 每个子系统保护整个系统
-8. **工具即感官** — LLM 能力边界由工具链决定
-9. **信任驱动约束** — 动态信任分调节自主权
-10. **自演化闭环** — 评价驱动行为修正
-11. **原则遗传** — 核心约定跨代传递
-12. **代码即文档** — 代码本身是最权威的文档
+## 五、多 Agent 标签状态机
 
-## 五、操作方法
+```
+task:pending  → task:accepted → task:active → task:done → task:review → task:reviewed
+    ↑ Claude发布   ↑ Daemon认领   ↑ Pi执行     ↑ 完成    ↑ Reviewer   ↑ Claude验收
 
-### 开发流程
-1. 查阅原则 + 记忆 → 获取上下文
-2. 设计 → brainstorming → spec → writing-plans
-3. 实现 → subagent-driven-development
-4. 每步 post_task → 记录约定对齐 + 反思 + CEI
+task:rejected → Fixer认领 → task:accepted → 修复循环
 
-### 实施约定
-- 每次决策前先 `principle_activate` + `memory_recall`
-- 每次完成后 `post_task(task_description, git_commit)`
-- 信任分下降 → 缩小检索范围，增加审查
-- 审计低分 → 自动生成修复建议
-- 原则遵守率定期审视
-
-### 当前指令
-- 韧性专项已交付 ✅：灾难恢复(rebuild) + 跨版本兼容(schema_version) + 静默失效防护(_dm_ok)
-- 工具精简：39 → 29 个 MCP 工具 ✅
-- 推送到 main 分支
-
-## 六、关键接口
-
-```python
-# 约定层
-PrincipleTracker().record(pid, adhered, context)
-PrincipleTracker().stats()  # -> {pid: {adhered, violated, rate}}
-
-# 实践层
-SoulLoop().post_task(description, git_commit)  # -> 六联结果
-TrustManager().get_retrieval_boost()  # -> 1.3/1.0/0.7/0.5
-StepAuditor().suggest_repairs(result)  # -> [修复建议]
-DomainManager().assign(tags)  # -> 域名字符串
-DomainManager().stats()  # -> 全域统计 + 谱系
-
-# 演化层
-EvolveR(rec_mem).evolve_cycle()  # -> 演化统计
-MemoryPipeline().process_pipeline()  # -> raw→tagged→classified→embedded→migrate
-
-# 韧性
-DomainManager().rebuild_from_memories(engine)  # -> 从 tags 全量重建域图谱
-DomainManager().decay()  # -> 域衰减/萎缩检测
+超时: task:active>5min → pending | task:reviewed>10min → active
+清理: task:accepted/reviewed>7天 → 移除标签
 ```
 
-## 七、记忆准则
+## 六、信任-自由度矩阵
 
-每次会话应将关键决策、Bug 修复、API 约定写入记忆：
-- `memory_store(content, memory_type, owner)`
-- 记录类型：`experience`（经验）/ `reflection`（反思）/ `knowledge`（知识）
-- API 约定写入 `C:\Users\ALdai\.claude\projects\F--Agent-Memory-system\memory\`
+| 信任分 | 等级 | 写文件 | 发Issue | 分配任务 | 修改原则 |
+|--------|------|--------|---------|----------|----------|
+| 0.80+ | autonomous | ✅ | ✅ | ✅ | ⚠️审批 |
+| 0.60+ | standard | ✅ | ✅ | ❌ | ❌ |
+| 0.30+ | restricted | ⚠️审批 | ❌ | ❌ | ❌ |
+| 0.00+ | readonly | ❌ | ❌ | ❌ | ❌ |
+
+## 七、操作方法
+
+### 启动团队
+```bash
+python -m plastic_promise.mcp.server --sse 9020   # 共享记忆
+python pi_daemon.py                                 # 自治流水线
+```
+
+### Claude 发任务
+```
+memory_store(tags=["task:pending","assignee:pi_builder","domain:building"])
+→ Daemon 自动检测 → Pi 执行 → Reviewer 自动审查 → Claude 验收
+```
+
+### 验收
+```
+通过: defense(adjust, +0.02, target="pi_builder") → memory_store(task:reviewed)
+打回: memory_store(task:rejected, assignee:pi_fixer) → Fixer 自动修复
+```
+
+### 当前指令
+- 推送到 main 分支
+- Daemon 持续运行 (pi_daemon.py)
+- 审计每小时自动执行

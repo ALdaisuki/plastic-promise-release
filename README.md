@@ -2,59 +2,31 @@
 
 > 记忆是可塑的，灵魂因记忆存在、因约定成长。
 
-**Plastic Promise** 是以「约定工程」(Commitment Engineering) 替代「约束工程」的 AI 行为治理系统。29 个 MCP 工具覆盖记忆、原则、域联邦、上下文、审计、反思、系统、经验包八大域。内置灾难恢复、跨版本兼容、静默失效防护。
+**Plastic Promise** 是以「约定工程」替代「约束工程」的 AI 行为治理系统。29 个 MCP 工具覆盖记忆、原则、域联邦、上下文、审计、反思、系统、经验包八大域。内置完整多 Agent 开发组——Claude PM 管理 Pi Builder/Fixer/Reviewer 团队，标签状态机驱动自治流水线。
 
 > 📋 完整架构、路线图和当前状态见 **[GOAL.md](GOAL.md)**。
-
----
-
-## 12 条核心原则（按行为域分布）
-
-| # | 原则 | 一句话 | 域 |
-|---|------|--------|------|
-| 1 | 奥卡姆剃刀 | 如无必要，勿增实体 | all |
-| 2 | 全过程可查可透明 | 每步有 git 痕迹、可追溯审计日志 | all |
-| 3 | 自我审计闭环 | 根因→改良→教训→评分 | reflecting |
-| 4 | 上下文驱动决策 | 无上下文不行动，不足时标注而非猜测 | designing |
-| 5 | 约定优于约束 | 检验存在不等于有效 | governing |
-| 6 | 数据流驱动 | 追踪真实数据流，非假设架构图 | designing |
-| 7 | 器官互保 | 每个子系统保护整个系统 | building |
-| 8 | 工具即感官 | LLM 能力边界由工具链决定 | all |
-| 9 | 信任驱动约束 | 动态信任分调节自主权 | governing |
-| 10 | 自演化闭环 | 评价驱动行为修正 | reflecting |
-| 11 | 原则遗传 | 核心约定跨 Agent 代际传递 | governing |
-| 12 | 代码即文档 | 代码本身是最权威的文档 | building |
-
-每条原则激活时返回：名称、内容、违反后果、遵循建议——决策参考，非门禁。
 
 ---
 
 ## 架构
 
 ```
-MCP Server (29 tools, 8 domains)
-├── 记忆域 (10): recall store update forget stats list gc correct + pipeline
-├── 域联邦 (1):  domain(stats|merge|unmerge|rename|rebuild)
-├── 原则域 (4):  activate inherit diffuse evaluate
-├── 上下文 (4):  supply inject graph ready
-├── 审计域 (4):  run pre_check defense(stats|adjust|status)
-├── 反思域 (2):  scarf_reflect(mode=inertia) feedback
-├── 系统域 (4):  stats issue_create/transition/list system(backup|migrate)
-└── 经验包 (3):  pack_export pack_import(strategy) pack_recall
-
-core/                       memory/               defense/
-├── constants.py             ├── soul_memory.py    ├── soul_audit.py
-├── context_engine.py        └── pipeline.py       └── soul_enforcer.py
-├── domain_manager.py  ←── 域联邦核心
-├── principles.py            reflection/           growth/
-├── embedder.py              ├── soul_scarf.py     ├── soul_hormone.py
-├── reranker.py              ├── soul_curiosity.py ├── soul_classifier.py
-├── noise_filter.py          └── soul_proprio...   └── skill_extractor.py
-└── step_auditor.py
-                             loop/                 cron/
-pack.py  issue.py            └── soul_loop.py      ├── health_scan.py
-behavior.py                                          ├── audit_daily.py
-                                                     └── closure_guardian.py
+MCP Server (29 tools, 8 domains)          Multi-Agent Team
+├── 记忆域 (10)                             ├── Claude (PM, governing+designing)
+├── 域联邦 (1)                              ├── Pi-Builder (building)
+├── 原则域 (4)                              ├── Pi-Fixer (fixing)
+├── 上下文 (4)                              └── Pi-Reviewer (reflecting)
+├── 审计域 (4)                                    │
+├── 反思域 (2)                              Autonomous Pipeline
+├── 系统域 (4)                              ├── pi_daemon.py (零Token轮询)
+└── 经验包 (3)                              ├── audit_daemon.py (11维审计)
+                                            ├── pi_worker.ps1 (四模式)
+                                            └── /notify → SSE /events (双向桥)
+共享记忆池 (SQLite WAL)
+├── 标签状态机 (task:pending→active→done→reviewed)
+├── 信任-自由度矩阵 (autonomous/standard/restricted/readonly)
+├── 域联邦 (7域, 6行为+1通用)
+└── 12条核心约定 (原则引擎 + PrincipleTracker)
 ```
 
 ---
@@ -62,56 +34,50 @@ behavior.py                                          ├── audit_daily.py
 ## 快速开始
 
 ```bash
-pip install mcp uvicorn starlette requests
+pip install mcp uvicorn starlette requests httpx
 
-# Claude Code (stdio，自动)
-# .mcp.json 已配置
-
-# 多 Agent SSE (Pi / N.E.K.O)
-set AGENT_OWNER=pi
+# 1. 启动共享记忆服务器
 python -m plastic_promise.mcp.server --sse 9020
+
+# 2. 启动自治流水线 (单进程管理 Builder+Fixer+Reviewer)
+python pi_daemon.py
+
+# 3. 发任务 (标签驱动, 零Token)
+memory_store(tags=["task:pending","assignee:pi_builder","domain:building"])
 ```
 
 ---
 
 ## 核心特性
 
-### 域联邦系统 — Agent 行为域
+### 多 Agent 自治流水线
 ```
-6 行为域 + 1 通用原则域:
-  building / fixing / designing / reflecting / governing / connecting / all
-
-标签自动提取 → 域聚类 → 同名域融合
-联邦信号 ≤200 字符，不深入细节
-自演化三层闭环: 流水线微进化 + 周期审计 + 检索反馈
+task:pending → Daemon 零Token检测 → spawn Pi → task:active
+             → Builder完成 → 自动唤醒 Reviewer → task:review
+             → Claude验收 → task:reviewed / task:rejected → Fixer自动修复
 ```
 
-### 记忆流水线 — 必经之路
+### 标签状态机
 ```
-raw → tagged(语义标签+种子匹配) → classified(域+Tier分配) → embedded(向量) → 主池
-Ollama 在线: 实时嵌入。离线: 零向量标注，待恢复后追补。
-```
-
-### 分层检索 — 域加权 + 细→类→粗
-```
-高置信(候选≥5 AND 命中率≥50%): 标签硬过滤 → domain加权 → text+vector精排 → 省token
-低置信: 全量软加权 → domain加权 → text+vector → 兜底
-同域记忆×1.3 联邦×1.1
+task:pending → task:accepted → task:active → task:done → task:review → task:reviewed
+                                  ↑ 超时5min恢复            ↑ 超时10min恢复
 ```
 
-### 经验包 — 随插随用
-```
-pack_export → 流式写盘(防OOM) → 冷备份文件
-pack_import(strategy="skip"|"replace"|"merge") + version_mapper → 主池
-pack_recall(strict=true) → 独立索引，不依赖DomainManager
-```
+### 信任-自由度矩阵
+| 信任分 | 等级 | 权限 |
+|--------|------|------|
+| 0.80+ | Autonomous | 全权限, 可分配任务 |
+| 0.60+ | Standard | 读写文件, 创建Issue |
+| 0.30+ | Restricted | 需审批 |
+| 0.00+ | ReadOnly | 只读 |
 
-### 韧性 — 可治愈、可兼容、可降级
-```
-灾难恢复: rebuild_from_memories() 从 tags 全量逆向重建域图谱
-跨版本: schema_version 迁移链 + pack 跨版本逃生舱
-静默失效: DomainManager 故障 → _dm_ok=False → 全量检索兜底 + pack_recall 保底
-```
+### 11 维审计
+每小时自动运行——trust/pipeline/domain/bridge 四维多Agent维度 + 现有七维。Tier1问题自动修复。
+
+### 韧性
+- 灾难恢复: `domain(action="rebuild")` 从 tags 重建域图谱
+- 跨版本: schema_version 迁移链 + pack 逃生舱
+- 静默失效: `_dm_ok` 降级开关 + 标签系统独立于 Issue 表
 
 ---
 
@@ -119,11 +85,12 @@ pack_recall(strict=true) → 独立索引，不依赖DomainManager
 
 | 层 | 技术 |
 |----|------|
-| 嵌入 | Ollama mxbai-embed-large (1024d) / OpenAI text-embedding-3-small / FallbackEmbedder |
+| LLM | Pi Agent (deepseek-v4-pro) |
+| 嵌入 | Ollama mxbai-embed-large |
 | 引擎 | Python 3.10+ |
-| 存储 | SQLite 写穿透（默认开启）+ schema_version 版本管理 |
-| 并发 | threading.RLock, WAL 模式 |
-| 协议 | MCP (stdio + SSE + health 端点) |
+| 存储 | SQLite WAL + schema_version |
+| 协议 | MCP (SSE + stdio) |
+| 并发 | asyncio + threading.RLock |
 
 ---
 
