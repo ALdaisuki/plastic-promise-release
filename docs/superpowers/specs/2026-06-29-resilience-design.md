@@ -83,7 +83,7 @@ pack_tag_index: dict[str, set[str]] = {}  # tag → set[memory_id]
 
 | 方式 | 条件 |
 |------|------|
-| 自动 | DomainManager 初始化发现 domains 表为空但 memories 表有数据 |
+| 自动 | DomainManager 初始化: domains 表为空 AND (SELECT COUNT(*) FROM memories) > 0 → 打印 WARNING 日志 → 等待 5 秒（可 Ctrl+C 取消）→ rebuild |
 | 手动 | `domain(action="rebuild")` MCP 工具 |
 | 冷备份 | `pack_export` 全量导出 → 备份文件 → `pack_import` + rebuild |
 
@@ -132,11 +132,13 @@ def pack_import(path, strategy="skip"):
     strategy:
       "skip"    — 已存在的 memory_id 跳过 (默认)
       "replace" — 已存在的覆盖
-      "merge"   — 同 ID 合并 tags 并集
+      "merge"   — 同 ID 合并 tags 并集；domain 冲突时以包内 domain 为准
+                  (包是导出时的已知正确快照)
     """
     # 1. 检测 pack version
     # 2. 应用 PACK_VERSION_MAP 域映射
-    # 3. 按 strategy 写入
+    # 3. 按 strategy 写入: merge 时 tags=tags_old|tags_new, domain=pack_domain
+    # 4. 重建 pack_tag_index
     # 4. 重建 pack_tag_index
 ```
 
@@ -162,7 +164,7 @@ def pack_export_streaming(name, output_path, tags=None):
 | 域 | 旧工具 | 新工具 | 节省 |
 |------|--------|--------|------|
 | Domain | domain_stats, domain_merge, domain_unmerge, domain_rename, (domain_rebuild 新) | **domain**(action=stats\|merge\|unmerge\|rename\|rebuild) | -4 |
-| Pipeline | fuzzy_status, fuzzy_process | **删除**，合并入 memory_stats + memory_store 自动触发 | -2 |
+| Pipeline | fuzzy_status, fuzzy_process | **删除独立入口**，memory_store 自动触发处理；积压计数保留在 memory_stats 和 system(action="stats") 中 | -2 |
 | Defense | defense_trust(已有 action), defense_status | defense_trust 内部吞并 status | -1 |
 | Audit | audit_run, audit_report | audit_report → audit_run(action="report") | -1 |
 | Reflection | scarf_reflect, inertia_check | inertia_check → scarf_reflect(mode="inertia") | -1 |
@@ -217,7 +219,7 @@ def principle_activate(task_type, task_description="", domain_hint=None):
 | `defense(action)` | 合并 defense_trust + defense_status: get/history/adjust/status |
 | `audit_run(action)` | 合并 + report 模式 |
 | `scarf_reflect(mode)` | 合并 + inertia 模式 |
-| `system(action)` | 合并 backup/migrate/stats |
+| `system(action)` | 合并 backup/migrate/stats；stats 含模糊缓存积压计数 |
 | `pack_import` | 新增 strategy 参数 ("skip"\|"replace"\|"merge") |
 | `pack_export` | 流式写盘，支持 tags 过滤 |
 | `principle_activate` | 新增 domain_hint 参数 |
@@ -242,5 +244,6 @@ def principle_activate(task_type, task_description="", domain_hint=None):
 - 不拆读写锁（RLock 持锁 <1ms，当前规模不需要）
 - 不用 LLM 生成联邦信号（模板拼接够用，原则 #1）
 - 不引入 Alembic（硬编码迁移链足够透明）
+- 不删除模糊缓存积压计数（保留在 system_stats / memory_stats 中，用户仍能看到 pending 量）
 - 不分片导出（gzip 流式写盘一条流，原则 #1）
 - 不改变现有 12 条原则的域分配
