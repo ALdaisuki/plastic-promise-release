@@ -458,3 +458,19 @@ INERTIA_SUPPRESSION_THRESHOLD = 0.85  # 相似度阈值
 
 # 好奇心探索
 CURIOSITY_EXPLORE_RATE = 0.15      # 探索率（epsilon-greedy）
+
+# ============================================================
+# 记忆衰减配置 (Weibull per-tier β + half-life)
+# ============================================================
+
+DECAY_CONFIG = {
+    "L1": {"beta": 1.5, "half_life_days": 3},
+    "L3": {"beta": 0.7, "half_life_days": 90},
+    "default": {"beta": 1.0, "half_life_days": 14},
+}
+
+REINFORCEMENT_CONFIG = {
+    "reinforcement_factor": 0.5,
+    "max_multiplier": 3.0,
+    "access_decay_days": 30,
+}
