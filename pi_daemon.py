@@ -76,17 +76,22 @@ def get_pending_task():
     return None
 
 
-def can_execute(role: str) -> bool:
-    """信任分检查 — trust < 0.3 则拒绝执行 (只读)。"""
-    from plastic_promise.core.issue_validator import get_tier, check_permission
+def get_trust_tier(role: str) -> dict:
+    """返回 Agent 的信任分 + 自由度等级 + 权限。"""
+    from plastic_promise.core.issue_validator import get_tier, check_permission, get_tier_info
     from plastic_promise.defense.soul_enforcer import TrustManager
     tm = TrustManager()
     trust = tm.get(role)
-    tier = get_tier(trust)
-    ok = check_permission(tier, "write_file") != "denied"
-    if not ok:
-        print(f"  [BLOCKED] {role} trust={trust:.2f} tier={tier} — skip")
-    return ok
+    tier_info = get_tier_info(trust)
+    tier = tier_info["tier"]
+    return {
+        "trust": trust,
+        "tier": tier,
+        "motto": tier_info["motto"],
+        "can_write": check_permission(tier, "write_file") != "denied",
+        "can_bash": check_permission(tier, "run_bash") != "denied",
+        "needs_review": check_permission(tier, "write_file") == "needs_review",
+    }
 
 
 def mark_task_active(task_id: str, role: str):
@@ -218,14 +223,24 @@ def cleanup_old_memories():
     conn.close()
 
 
-async def execute_task(role: str, cfg: dict, task_content: str, task_id: str):
+async def execute_task(role: str, cfg: dict, task_content: str, task_id: str, restriction: str = None):
     domain = cfg["domain"]
     output_tag = cfg["output"]
+
+    restriction_prompt = ""
+    if restriction:
+        restriction_prompt = (
+            f"TRUST RESTRICTION: {restriction}. "
+            f"You are in restricted mode — use read + memory_recall only. "
+            f"Do NOT write, edit, or run bash. "
+            f"If the task requires write/bash, respond 'NEEDS_APPROVAL' instead. "
+        )
+
     proc = await asyncio.create_subprocess_exec(
         PI_CMD, "--print",
-        f"You are {role}, domain {domain}. "
+        f"You are {role}, domain {domain}. {restriction_prompt}"
         f"Task: {task_content}. "
-        f"Execute it using write/edit/bash. "
+        f"Execute it. "
         f"When done, call memory_store(content='{role} DONE: <summary>', memory_type='experience', "
         f"domain='{domain}', tags=['{output_tag}','owner:{role}','domain:{domain}']). "
         f"IMPORTANT: use exactly the tag '{output_tag}' (NOT 'task:done').",
@@ -263,12 +278,24 @@ async def main():
         task = get_pending_task()
         if task:
             role, cfg, content, task_id = task
-            if not can_execute(role):
+            tier = get_trust_tier(role)
+
+            if tier["tier"] == "readonly":
+                print(f"  [BLOCKED] {role} trust={tier['trust']:.2f} readonly — cannot execute")
                 await asyncio.sleep(INTERVAL)
                 continue
-            print(f"[{_now()}] {role}({cfg['domain']}) ← {task_id[:20]}...")
-            mark_task_active(task_id, role)  # 打时间戳，超时可恢复
-            result = await execute_task(role, cfg, content, task_id)
+
+            restriction = None
+            if tier["needs_review"]:
+                restriction = "restricted: read+memory_recall only, no write/bash without Claude approval"
+            elif not tier["can_write"]:
+                print(f"  [BLOCKED] {role} trust={tier['trust']:.2f} — no write permission")
+                await asyncio.sleep(INTERVAL)
+                continue
+
+            print(f"[{_now()}] {role}({cfg['domain']}) trust={tier['trust']:.2f} [{tier['tier']}] ← {task_id[:20]}...")
+            mark_task_active(task_id, role)
+            result = await execute_task(role, cfg, content, task_id, restriction)
             print(result.strip()[-200:] or "DONE")
             mark_task_accepted(task_id)
             await notify_state_change({
