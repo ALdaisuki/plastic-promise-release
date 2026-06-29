@@ -8,6 +8,7 @@ import asyncio
 import subprocess
 import sys
 import os
+import httpx
 import shutil
 import time
 
@@ -84,6 +85,19 @@ def mark_task_accepted(task_id: str):
     conn.close()
 
 
+async def notify_state_change(event: dict):
+    """推送标签状态变更到 SSE /notify → /events 广播。"""
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                "http://127.0.0.1:9020/notify",
+                json=event,
+                timeout=5
+            )
+    except Exception:
+        pass
+
+
 def _now():
     return time.strftime("%H:%M:%S")
 
@@ -100,6 +114,15 @@ async def main():
             result = await execute_task(content, task_id)
             print(result or "DONE")
             mark_task_accepted(task_id)
+            await notify_state_change({
+                "type": "tag_transition",
+                "from_tag": "task:pending",
+                "to_tag": "task:accepted",
+                "agent": ROLE,
+                "domain": DOMAIN,
+                "task_id": task_id,
+                "tags": ["task:accepted", f"owner:{ROLE}", f"domain:{DOMAIN}"],
+            })
         else:
             print(f"[{_now()}] idle.", end="\r")
         await asyncio.sleep(INTERVAL)

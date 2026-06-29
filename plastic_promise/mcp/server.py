@@ -858,6 +858,18 @@ async def run_sse(port: int = 9020):
         except Exception:
             pass
 
+    async def handle_notify(request: Request):
+        """接收外部推送并广播到 SSE /events。Daemon/Worker 状态变更入口。"""
+        import json as _json
+        from starlette.responses import JSONResponse
+        try:
+            body = await request.body()
+            event = _json.loads(body.decode())
+            await _notify_queue.put(event)
+            return JSONResponse({"ok": True})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)})
+
     async def health(request):
         import json as _json
         from starlette.responses import JSONResponse
@@ -875,6 +887,7 @@ async def run_sse(port: int = 9020):
         Route("/sse", endpoint=handle_sse, methods=["GET"]),
         Route("/messages", endpoint=handle_messages, methods=["POST"]),
         Route("/events", endpoint=handle_events, methods=["GET"]),
+        Route("/notify", endpoint=handle_notify, methods=["POST"]),
         Route("/health", endpoint=health),
     ], on_shutdown=[shutdown])
 
