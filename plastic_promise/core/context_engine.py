@@ -117,8 +117,10 @@ class MemoryRecord:
         self.memory_type = memory_type
         self.source = source
         self.owner: str = owner or os.environ.get("AGENT_OWNER", "")
-        self.scope: str = "global"
-        self.category: str = "other"
+        self.scope: str = "global"           # deprecated — use domain
+        self.category: str = "other"         # deprecated — use domain
+        self.tags: list[str] = []             # NEW: 多标签
+        self.domain: str = "uncategorized"    # NEW: 域标签
         self.importance: float = 0.7
         self.entity_ids: list[str] = []
         self.created_at: str = ""
@@ -199,6 +201,12 @@ class ContextEngine:
             # Load existing from disk
             for mid, data in self._sqlite.iter_all():
                 self._memories[mid] = data
+
+        # DomainManager for domain-weighted retrieval
+        from plastic_promise.core.domain_manager import DomainManager
+        self._dm = DomainManager()
+        self._domain_hint: Optional[str] = None
+
         self._current_time: str = ""
 
     # ========== 记忆管理 ==========
@@ -212,6 +220,8 @@ class ContextEngine:
             "source": record.get("source", "user"),
             "owner": record.get("owner", os.environ.get("AGENT_OWNER", "")),
             "tier": record.get("tier", "L1"),
+            "tags": record.get("tags", []),
+            "domain": record.get("domain", "uncategorized"),
             "worth_success": record.get("worth_success", 0),
             "worth_failure": record.get("worth_failure", 0),
             "activation_weight": record.get("activation_weight", 0.5),
@@ -265,6 +275,8 @@ class ContextEngine:
             "worth_failure": record.worth_failure,
             "owner": record.owner,
             "tier": record.tier,
+            "tags": record.tags,
+            "domain": record.domain,
         }
         self._memories[mid] = data
         if self._sqlite:
@@ -292,6 +304,8 @@ class ContextEngine:
         record.worth_success = mem.get("worth_success", 0)
         record.worth_failure = mem.get("worth_failure", 0)
         record.tier = mem.get("tier", "L2")
+        record.tags = mem.get("tags", [])
+        record.domain = mem.get("domain", "uncategorized")
         return record
 
     def update_memory(self, memory_id: str, content=None,
@@ -775,6 +789,19 @@ class ContextEngine:
                     score = min(score * 1.5 * trust_boost, 1.0)
                 elif tier == "L3":
                     score = score * 0.8 * trust_boost  # long-term slightly de-prioritized
+
+                # 域加权: 同域 ×1.3, 融合域 (同标签) ×1.1
+                domain_hint = getattr(self, '_domain_hint', None)
+                if domain_hint and domain_hint != "all":
+                    mem_domain = mem.get("domain", "uncategorized")
+                    if mem_domain == domain_hint:
+                        score = min(score * 1.3, 1.0)
+                    elif hasattr(self, '_dm') and self._dm:
+                        mem_tags = set(mem.get("tags", []))
+                        hint_dom = self._dm.domains.get(domain_hint)
+                        if hint_dom and mem_tags & hint_dom.tags:
+                            score = min(score * 1.1, 1.0)
+
                 results.append((mid, min(score, 1.0), content[:300], mem["source"]))
                 # Auto access tracking — 越用越聪明
                 mem["access_count"] = mem.get("access_count", 0) + 1
@@ -946,14 +973,29 @@ class _SQLiteStorage:
         )
         self._conn.commit()
 
+        # 迁移: 新增 tags 和 domain 列 (SQLite ALTER TABLE 不支持 IF NOT EXISTS)
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'"
+            )
+        except Exception:
+            pass  # 列已存在
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN domain TEXT NOT NULL DEFAULT 'uncategorized'"
+            )
+        except Exception:
+            pass  # 列已存在
+        self._conn.commit()
+
     def upsert(self, mid: str, data: dict):
         """Insert or update a memory record."""
         import json
         self._conn.execute(
             "INSERT OR REPLACE INTO memories (id, content, memory_type, source, owner, "
-            "tier, scope, category, importance, entity_ids, created_at, access_count, "
+            "tier, scope, category, tags, domain, importance, entity_ids, created_at, access_count, "
             "worth_success, worth_failure, activation_weight) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 data.get("content", ""),
@@ -963,6 +1005,8 @@ class _SQLiteStorage:
                 data.get("tier", "L1"),
                 data.get("scope", "global"),
                 data.get("category", "other"),
+                json.dumps(data.get("tags", [])),
+                data.get("domain", "uncategorized"),
                 data.get("importance", 0.7),
                 json.dumps(data.get("entity_ids", [])),
                 data.get("created_at", ""),
@@ -977,7 +1021,10 @@ class _SQLiteStorage:
     def get(self, mid: str) -> dict | None:
         """Retrieve a single memory record."""
         row = self._conn.execute(
-            "SELECT * FROM memories WHERE id = ?", (mid,)
+            "SELECT id, content, memory_type, source, owner, tier, scope, category, "
+            "tags, domain, importance, entity_ids, created_at, access_count, "
+            "worth_success, worth_failure, activation_weight "
+            "FROM memories WHERE id = ?", (mid,)
         ).fetchone()
         if row is None:
             return None
@@ -990,7 +1037,11 @@ class _SQLiteStorage:
 
     def iter_all(self):
         """Iterate all memory records."""
-        rows = self._conn.execute("SELECT * FROM memories").fetchall()
+        rows = self._conn.execute(
+            "SELECT id, content, memory_type, source, owner, tier, scope, category, "
+            "tags, domain, importance, entity_ids, created_at, access_count, "
+            "worth_success, worth_failure, activation_weight FROM memories"
+        ).fetchall()
         for row in rows:
             d = self._row_to_dict(row)
             yield d["id"], d
@@ -1007,11 +1058,13 @@ class _SQLiteStorage:
             "tier": row[5],
             "scope": row[6],
             "category": row[7],
-            "importance": row[8],
-            "entity_ids": json.loads(row[9]) if row[9] else [],
-            "created_at": row[10],
-            "access_count": row[11] or 0,
-            "worth_success": row[12] or 0,
-            "worth_failure": row[13] or 0,
-            "activation_weight": row[14] or 0.5,
+            "tags": json.loads(row[8]) if row[8] else [],
+            "domain": row[9] or "uncategorized",
+            "importance": row[10],
+            "entity_ids": json.loads(row[11]) if row[11] else [],
+            "created_at": row[12],
+            "access_count": row[13] or 0,
+            "worth_success": row[14] or 0,
+            "worth_failure": row[15] or 0,
+            "activation_weight": row[16] or 0.5,
         }
