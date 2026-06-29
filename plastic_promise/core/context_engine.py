@@ -422,6 +422,8 @@ class ContextEngine:
         self._memories[mid] = data
         if self._sqlite:
             self._sqlite.upsert(mid, data)
+        # P0: Auto-create principle↔memory graph edges
+        self._build_principle_edges_for_memory(mid, data)
         return mid
 
     def get_memory(self, memory_id: str):
