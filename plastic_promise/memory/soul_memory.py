@@ -81,6 +81,40 @@ class MemoryWorthCalculator:
         except Exception:
             return 0.5
 
+    def calculate_composite_score(self, record: "MemoryRecord") -> float:
+        """Compute three-factor composite lifecycle score.
+
+        Formula:
+          composite = wilson_worth * 0.6 + freshness * 0.25 + reinforcement * 0.15
+
+        Args:
+            record: MemoryRecord with decay_multiplier and effective_half_life set.
+
+        Returns:
+            Composite score in [0.0, 1.0]. Falls back to pure Wilson worth
+            if decay components are unavailable.
+        """
+        try:
+            wilson = self.calculate_worth(record.worth_success, record.worth_failure)
+            freshness = 1.0 - getattr(record, 'decay_multiplier', 1.0)
+
+            # Compute reinforcement score from half-life fields
+            tier = getattr(record, 'tier', 'L1')
+            from plastic_promise.core.constants import DECAY_CONFIG, REINFORCEMENT_CONFIG
+            tier_cfg = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])
+            base_hl = tier_cfg["half_life_days"]
+            effective_hl = getattr(record, 'effective_half_life', base_hl)
+            max_hl = base_hl * REINFORCEMENT_CONFIG["max_multiplier"]
+            if max_hl > base_hl:
+                reinforcement = (effective_hl - base_hl) / (max_hl - base_hl)
+                reinforcement = max(0.0, min(1.0, reinforcement))
+            else:
+                reinforcement = 0.0
+
+            return wilson * 0.6 + freshness * 0.25 + reinforcement * 0.15
+        except Exception:
+            return self.calculate_worth(record.worth_success, record.worth_failure)
+
     def update_counters(self, record: "MemoryRecord", feedback_type: str) -> None:
         """根据反馈类型更新 MemoryRecord 的成功/失败计数器。
 
