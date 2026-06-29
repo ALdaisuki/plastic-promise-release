@@ -100,3 +100,91 @@ class WeibullDecayCalculator:
                 logger.warning("Decay eval failed for %s: %s", getattr(r, 'memory_id', '?'), e)
                 results.append((getattr(r, 'memory_id', ''), 1.0))
         return results
+
+
+class AccessReinforcement:
+    """Spaced-repetition half-life extension on active memory recall.
+
+    Formula:
+      effective_access = access_count x exp(-days_since_last_access / 30)
+      extension = base_half_life x reinforcement_factor x ln(1 + effective_access)
+      effective_half_life = min(base_half_life + extension,
+                                base_half_life x max_multiplier)
+
+    Only triggered by active recall (is_auto_recall=False).
+    Auto-recall from ContextEngine.supply() does NOT reinforce.
+    """
+
+    def __init__(self, config: Optional[dict] = None) -> None:
+        from plastic_promise.core.constants import REINFORCEMENT_CONFIG
+        cfg = config or REINFORCEMENT_CONFIG
+        self.reinforcement_factor = cfg["reinforcement_factor"]
+        self.max_multiplier = cfg["max_multiplier"]
+        self.access_decay_days = cfg["access_decay_days"]
+
+    def _days_since(self, iso_timestamp: str, current_time_str: str) -> float:
+        try:
+            ts = datetime.datetime.fromisoformat(iso_timestamp)
+            now = datetime.datetime.fromisoformat(current_time_str)
+            return (now - ts).total_seconds() / 86400.0
+        except Exception:
+            return 0.0
+
+    def compute_effective_access(self, access_count: int, last_accessed: str,
+                                 current_time_str: str) -> float:
+        """Compute time-decayed effective access count."""
+        days = self._days_since(last_accessed, current_time_str)
+        decay_factor = math.exp(-days / self.access_decay_days)
+        return access_count * decay_factor
+
+    def compute_effective_half_life(self, base_half_life: float,
+                                    access_count: int, last_accessed: str,
+                                    current_time_str: str) -> float:
+        """Compute extended half-life from access history."""
+        effective_access = self.compute_effective_access(
+            access_count, last_accessed, current_time_str
+        )
+        extension = (base_half_life * self.reinforcement_factor *
+                     math.log1p(effective_access))
+        return min(base_half_life + extension,
+                   base_half_life * self.max_multiplier)
+
+    def compute_reinforcement_score(self, base_half_life: float,
+                                    effective_half_life: float) -> float:
+        """Normalize reinforcement to [0, 1].
+
+        0.0 = no reinforcement (effective == base)
+        1.0 = max reinforcement (effective == base x max_multiplier)
+        """
+        max_hl = base_half_life * self.max_multiplier
+        if max_hl <= base_half_life:
+            return 0.0
+        raw = (effective_half_life - base_half_life) / (max_hl - base_half_life)
+        return max(0.0, min(1.0, raw))
+
+    def compute_boost(self, access_count: int, last_accessed: str,
+                      base_half_life: float, is_auto_recall: bool = False,
+                      current_time_str: Optional[str] = None
+                      ) -> tuple[float, float]:
+        """Compute reinforcement score and new effective half-life.
+
+        Args:
+            access_count: Current access count (before increment).
+            last_accessed: ISO timestamp of last access.
+            base_half_life: Base half-life for this memory's tier.
+            is_auto_recall: If True, skip reinforcement (return 0.0, base_hl).
+            current_time_str: ISO timestamp for "now". Defaults to now().
+
+        Returns:
+            (reinforcement_score, effective_half_life) tuple.
+            reinforcement_score in [0.0, 1.0].
+        """
+        if is_auto_recall or access_count <= 0:
+            return (0.0, base_half_life)
+
+        now = current_time_str or datetime.datetime.now().isoformat()
+        effective_hl = self.compute_effective_half_life(
+            base_half_life, access_count, last_accessed, now
+        )
+        score = self.compute_reinforcement_score(base_half_life, effective_hl)
+        return (score, effective_hl)
