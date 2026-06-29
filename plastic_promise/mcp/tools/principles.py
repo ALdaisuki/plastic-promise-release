@@ -59,6 +59,12 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
         ids = list(dict.fromkeys(ids))[:max_p]  # deduplicate, limit
         principles = [p for p in CORE_PRINCIPLES if p["id"] in ids]
 
+        # domain_hint filter — optionally narrow to a behavior domain
+        # All-domain principles are always included regardless of hint.
+        domain_hint = args.get("domain_hint", None)
+        if domain_hint and domain_hint != "all":
+            principles = [p for p in principles if p["domain"] in (domain_hint, "all")]
+
         # 违反后果 + 遵循建议（服务于决策参考，非门禁约束）
         consequences: dict[int, str] = {
             1: "指标失真，系统健康度不可信，小问题积累成大故障",
@@ -110,11 +116,12 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
 
 
 async def handle_principle_inherit(engine: Any, args: dict) -> list[TextContent]:
-    """Trigger principle diffusion: work->all or life->all with decay factor.
+    """Trigger principle diffusion: domain -> all with decay factor.
 
-    Triggers one-way principle diffusion from a source domain to a target
-    domain, applying the PRINCIPLE_INHERITANCE_DECAY factor (0.70) to
-    weights during propagation.
+    Triggers one-way principle diffusion from a source domain (work, life,
+    or a behavior domain such as building, designing, reflecting, governing,
+    fixing, connecting) to a target domain, applying the
+    PRINCIPLE_INHERITANCE_DECAY factor (0.70) to weights during propagation.
 
     Args:
         engine: ContextEngine instance (unused in stateless implementation).
@@ -130,7 +137,7 @@ async def handle_principle_inherit(engine: Any, args: dict) -> list[TextContent]
             PRINCIPLE_INHERITANCE_DECAY,
         )
 
-        source_domain = args["source_domain"]  # "work" or "life"
+        source_domain = args["source_domain"]  # work / life / building / designing / ...
         target_domain = args.get("target_domain", "all")
         principle_ids: list[int] = args.get("principle_ids") or []  # None/empty = all in source
 

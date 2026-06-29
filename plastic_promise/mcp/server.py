@@ -194,6 +194,7 @@ async def list_tools() -> list[Tool]:
                     "task_type": {"type": "string", "description": "任务类型"},
                     "task_description": {"type": "string", "description": "任务描述（用于关键词匹配）"},
                     "max_principles": {"type": "integer", "description": "最多返回原则数"},
+                    "domain_hint": {"type": "string", "description": "可选，限定域: building|fixing|designing|reflecting|governing|connecting|all"},
                 },
                 "required": ["task_type"],
             },
@@ -436,12 +437,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="pack_import",
-            description="Import a JSON experience pack into the memory pool.",
+            description="导入经验包。strategy: skip(默认)|replace|merge。merge 时 domain 以包内为准。",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path to the JSON pack file"},
                     "owner": {"type": "string", "description": "Owner to assign to imported memories"},
+                    "strategy": {"type": "string", "description": "skip|replace|merge"},
                 },
                 "required": ["path"],
             },
