@@ -77,6 +77,26 @@
 - Issue 生命周期 + 依赖管理
 - 上下文预备（post_task 自动预取 + context_ready MCP）
 - Bridge Pi 任务执行 + N.E.K.O ZMQ 转发
+- 多 Agent 开发组（Claude PM + Pi Builder/Fixer/Reviewer）E2E 验证通过 ✅
+
+### 多 Agent 开发组 — 2026-06-29 闭环验证
+
+```
+Claude (项目经理) → issue_create → Pi (deepseek-v4-pro) → eco.py 交付
+                 → Claude 验收 → trust boost → memory_store → post_task
+
+验证结果:
+  - Pi 原生 CLI (pi --print) 替代自建 agent.py ✅
+  - Issue 表 = 唯一通信协议 ✅ (issue_create/transition/list)
+  - Team Protocol (.pi/memory.md) 驱动 Pi ReAct 循环 ✅
+  - 宪法校验 (issue_validator) ✅
+  - 质量闸门 (Issue review 状态) ✅
+  - 信任联邦 (defense adjust target="pi_builder") ✅
+  - 约定工程融入 (post_task light/full 双层) ✅
+  - 记忆池: Pi 自主 memory_store + memory_recall 上下文拉取 ✅
+
+架构: 不建消息队列/RPC/WebSocket — Pi 的单次执行 + bash while 轮询 = 邮箱模型
+```
 
 ## 四、12 条核心约定
 
