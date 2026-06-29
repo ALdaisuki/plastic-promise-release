@@ -177,3 +177,52 @@ class TestPipelineQuality:
         assert py_rec.access_count == 3
         # effective_half_life should be recomputed (boosted from access + recency)
         assert py_rec.effective_half_life != original_hl
+
+    def test_migrate_store_initializes_decay_fields(self):
+        """Gap 3 fix: After RecMem.store(), decay_multiplier and effective_half_life are set."""
+        self.lancedb.check_duplicate.return_value = None  # no dedup
+
+        mid = "fuzzy_testdecayinit"
+        self.pipeline._buffer[mid] = {
+            "memory_id": mid, "content": "memory that needs decay init",
+            "memory_type": "experience", "source": "user",
+            "stage": "embedded", "tags": ["test"], "domain": "building",
+            "tier": "L3",
+            "vector": [0.5] * 1024, "entity_ids": [],
+            "extracted": {"category": "fact", "confidence": 0.85,
+                          "l0_abstract": "Test memory for decay initialization",
+                          "l1_summary": "[fact] Test memory should get decay fields set",
+                          "l2_content": "A sufficiently long content string that provides enough information density to pass the quality gate threshold comfortably."},
+            "created_at": "2026-06-30T12:00:00",
+        }
+
+        # Mock RecMem.store to return a real-like record and track it
+        real_store = self.rec_mem.store
+        stored_records = {}
+
+        def mock_store(**kwargs):
+            from plastic_promise.memory.soul_memory import MemoryRecord
+            mr = MemoryRecord(**kwargs)
+            mr.memory_id = "stored_decay_init"
+            stored_records[mr.memory_id] = mr
+            self.pipeline.rec_mem._records[mr.memory_id] = mr
+            return mr
+
+        self.rec_mem.store = mock_store
+        self.pipeline.rec_mem._engine = MagicMock()
+        # RecMem.store() normally registers to engine — our mock bypasses that,
+        # so pre-populate the engine dict with the expected ID
+        self.pipeline.rec_mem._engine._memories = {"stored_decay_init": {}}
+        self.pipeline.rec_mem._engine._sqlite = None
+
+        self.pipeline._process_embedded_to_migrate()
+
+        # Buffer entry removed (successful store)
+        assert mid not in self.pipeline._buffer
+        # The stored record should have decay_multiplier set (not default 1.0 for old dates)
+        stored = stored_records.get("stored_decay_init")
+        assert stored is not None
+        # For a just-created memory (created_at = 2026-06-30), decay_multiplier should be close to 1.0
+        assert stored.decay_multiplier > 0.9
+        # effective_half_life should be the L3 base (90 days), not the default 3.0
+        assert stored.effective_half_life > 3.0

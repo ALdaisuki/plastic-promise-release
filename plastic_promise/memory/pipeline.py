@@ -386,11 +386,13 @@ class MemoryPipeline:
                 domain_hint = record.get("domain", "uncategorized")
                 created_at = record.get("created_at")
 
+                tier = record.get("tier", "L1")
                 gate_score = gate.score(
                     extracted=extracted,
                     tags=tags,
                     domain_hint=domain_hint,
                     created_at=created_at,
+                    tier=tier,
                 )
                 decision = QualityGate.decide(gate_score)
 
@@ -417,6 +419,32 @@ class MemoryPipeline:
                         py_rec.metadata["gate_score"] = round(gate_score, 4)
                     logging.info("QualityGate: %s stored with low_quality tag (score=%.3f)",
                                  stored.memory_id, gate_score)
+
+                # ---- Gap 3: Initialize decay_multiplier + effective_half_life on store ----
+                try:
+                    from plastic_promise.core.decay_engine import WeibullDecayCalculator
+                    from plastic_promise.core.constants import DECAY_CONFIG
+                    wdc = WeibullDecayCalculator()
+                    dm = wdc.compute_decay(tier, created_at or datetime.datetime.now().isoformat())
+                    tier_cfg = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])
+                    base_hl = tier_cfg["half_life_days"]
+                    # New memory: effective_half_life starts at base (no access history yet)
+                    if hasattr(self.rec_mem, '_records') and stored.memory_id in self.rec_mem._records:
+                        py_rec = self.rec_mem._records[stored.memory_id]
+                        py_rec.decay_multiplier = dm
+                        py_rec.effective_half_life = base_hl
+                    if engine is not None and stored.memory_id in engine._memories:
+                        engine._memories[stored.memory_id]["decay_multiplier"] = dm
+                        engine._memories[stored.memory_id]["effective_half_life"] = base_hl
+                    sqlite = getattr(engine, '_sqlite', None)
+                    if sqlite is not None:
+                        sqlite._conn.execute(
+                            "UPDATE memories SET decay_multiplier = ?, effective_half_life = ? WHERE id = ?",
+                            (dm, base_hl, stored.memory_id)
+                        )
+                        sqlite._conn.commit()
+                except Exception:
+                    pass  # Graceful: decay init is a quality improvement
 
                 # ---- Existing: vector + tags + domain persistence ----
                 if engine is not None:

@@ -34,6 +34,7 @@ class QualityGate:
         tags: Optional[list[str]] = None,
         domain_hint: Optional[str] = None,
         created_at: Optional[str] = None,
+        tier: Optional[str] = None,
     ) -> float:
         """Compute composite gate_score from four dimensions.
 
@@ -43,6 +44,7 @@ class QualityGate:
             tags: semantic tags from pipeline
             domain_hint: domain assigned during classified stage
             created_at: ISO timestamp for freshness calculation (None = now)
+            tier: memory tier (L1/L3) for tier-aware freshness decay (None = default)
 
         Returns:
             float in [0.0, 1.0] — weighted sum of four dimensions.
@@ -52,7 +54,7 @@ class QualityGate:
 
         confidence = self._compute_confidence(extracted)
         relevance = self._compute_relevance(tags, domain_hint)
-        freshness = self._compute_freshness(created_at)
+        freshness = self._compute_freshness(created_at, tier)
         info_density = self._compute_info_density(extracted, tags)
 
         return (
@@ -101,19 +103,21 @@ class QualityGate:
             return 0.5
 
     @staticmethod
-    def _compute_freshness(created_at: Optional[str] = None) -> float:
+    def _compute_freshness(created_at: Optional[str] = None,
+                           tier: Optional[str] = None) -> float:
         """Time-decay freshness via Direction A Weibull engine.
 
         Delegates to WeibullDecayCalculator for consistency with composite_score.
-        New memories (created_at=None) → 1.0. Older → real Weibull decay value.
+        New memories (created_at=None) → 1.0.
+        Uses memory's actual tier when available, falls back to "default".
         """
         if created_at is None:
             return 1.0
         try:
             from plastic_promise.core.decay_engine import WeibullDecayCalculator
             wdc = WeibullDecayCalculator()
-            # Use default tier (L1) for gate-level freshness — conservative estimate
-            decay = wdc.compute_decay("default", created_at)
+            effective_tier = tier if tier in ("L1", "L3") else "default"
+            decay = wdc.compute_decay(effective_tier, created_at)
             return decay
         except Exception:
             return 1.0
