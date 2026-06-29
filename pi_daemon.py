@@ -26,14 +26,18 @@ def get_pending_task(role: str) -> tuple[str, str] | None:
     conn = sqlite3.connect(
         os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
     )
-    rows = conn.execute("SELECT id, content, tags FROM memories WHERE tags LIKE '%task:pending%'").fetchall()
+    rows = conn.execute(
+        "SELECT id, content, tags FROM memories "
+        "WHERE tags LIKE '%task:pending%' OR tags LIKE '%task:rejected%'"
+    ).fetchall()
     conn.close()
     for (mid, content, tags_raw) in rows:
         try:
             tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
         except Exception:
             continue
-        if "task:pending" in tags and f"assignee:{role}" in tags:
+        wanted = ("task:pending", "task:rejected")
+        if any(t in tags for t in wanted) and f"assignee:{role}" in tags:
             return content, mid
     return None
 
