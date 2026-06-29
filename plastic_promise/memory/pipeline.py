@@ -6,6 +6,7 @@ raw → tagged(关键词) → classified(大类L1/L3) → embedded(细分向量)
 
 import uuid
 import datetime
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
@@ -253,6 +254,20 @@ class MemoryPipeline:
                         engine = self.rec_mem._engine
                         if vec:
                             engine._memories[stored.memory_id]["_vector"] = vec
+                            # Dual-write to LanceDB for persistent vector storage
+                            try:
+                                ldb = getattr(engine, '_ldb', None)
+                                if ldb is not None:
+                                    ldb.insert(
+                                        memory_id=stored.memory_id,
+                                        vector=vec,
+                                        text=record.get("content", ""),
+                                        tier=record.get("tier", "L1"),
+                                        category=record.get("category", "other"),
+                                        scope=record.get("scope", "global"),
+                                    )
+                            except Exception as e:
+                                logging.warning("LanceDB dual-write failed for %s: %s", stored.memory_id, e)
                         tags = record.get("tags", [])
                         domain = record.get("domain", "uncategorized")
                         engine._memories[stored.memory_id]["tags"] = tags
