@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 AGENT_ROLES = {
     "pi_builder":  {"domain": "building",   "trigger": ["task:pending"], "output": "task:active"},
     "pi_fixer":    {"domain": "fixing",     "trigger": ["task:rejected"], "output": "task:fixed"},
-    "pi_reviewer": {"domain": "reflecting", "trigger": ["task:active"],   "output": "task:review"},
+    "pi_reviewer": {"domain": "reflecting", "trigger": ["task:active", "task:done"], "output": "task:review"},
 }
 
 # 自动衔接: 当某个 output tag 出现时，哪个角色应该被唤醒
@@ -119,7 +119,8 @@ async def execute_task(role: str, cfg: dict, task_content: str, task_id: str):
         f"Task: {task_content}. "
         f"Execute it using write/edit/bash. "
         f"When done, call memory_store(content='{role} DONE: <summary>', memory_type='experience', "
-        f"domain='{domain}', tags=['{output_tag}','owner:{role}','domain:{domain}']).",
+        f"domain='{domain}', tags=['{output_tag}','owner:{role}','domain:{domain}']). "
+        f"IMPORTANT: use exactly the tag '{output_tag}' (NOT 'task:done').",
         "--session-id", f"{role}_daemon",
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
