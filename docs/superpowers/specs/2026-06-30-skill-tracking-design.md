@@ -131,7 +131,7 @@ SkillSession (通过标签和 entity_type 区分):
 9. 推导 next_skills = SKILL_CHAIN_MAP[skill_name]
 10. 返回结果
 
-**"still_in_progress" 机制**：如果 skill 执行时间超过 30 分钟阈值，Claude 可调用 `skill_session_complete(entity_id, "still_in_progress")` 重置孤儿计时器。不改变 status，仅刷新 last_accessed。
+**"still_in_progress" 机制**：如果 skill 执行时间超过 30 分钟阈值，Claude 可调用 `skill_session_complete(entity_id, "still_in_progress")` 重置孤儿计时器。不改变 status，仅刷新 last_accessed。**最多续期 3 次**；超过 3 次后自动标记 `overdue` 标签（`task:overdue`），孤儿检测对该 session 降级为 warning 而非 gap。
 
 ### 4.3 skill_session_trace
 
@@ -178,6 +178,11 @@ SkillSession (通过标签和 entity_type 区分):
    - chain_broken: done 状态但非终端 skill 且无子节点
    - tag_mismatch: status 与 task: 标签不一致
 
+**session_scope 实现说明**：
+- `"current"` — 过滤本次会话内（same conversation session）创建的 session
+- `"branch"` — 检测当前 git 分支名，过滤该分支上的所有 session（跨会话）。不在 git 仓库中时 fallback 到 `"current"`
+- `"all"` — 不做过滤，返回所有记录
+
 ### 4.4 skill_session_audit (事后补全)
 
 ```
@@ -201,6 +206,8 @@ SkillSession (通过标签和 entity_type 区分):
 ```
 
 **内部逻辑**：扫描最近的记忆/对话上下文，检测 Skill 工具调用但无对应 skill_session_start 的情况。启发式匹配（skill 名称 + 时间接近度 < 60s）。可以事后补录。
+
+**auto_fix 行为**：`auto_fix=true` 时，仅处理 `missing_start` 类型缺口。自动调用 `skill_session_start(skill_name=gap.skill_name, task_description=f"[事后补录] {detected_context}", parent_entity_id=None)`。其他缺口类型（orphan_active、chain_broken）需要人工判断，不做自动修复。
 
 ## 五、Skill 调用链映射
 
@@ -246,7 +253,7 @@ SKILL_CHAIN_MAP = {
     # 辅助 skills (松散约束)
     "using-git-worktrees":         {"predecessors": [], "successors": []},
     "dispatching-parallel-agents": {"predecessors": [], "successors": []},
-    "using-superpowers":           {"predecessors": [], "successors": []},
+    "using-superpowers":           {"predecessors": [], "successors": ["brainstorming", "systematic-debugging", "requesting-code-review"]},
 }
 ```
 
@@ -335,7 +342,14 @@ if status_transition == "active→done":
 
 ## 九、audit_run 第八维增强
 
-在现有七维审计基础上，新增 `skill_trace` 维度：
+在现有七维审计基础上，新增 `skill_trace` 维度。权重分配：
+
+| 维度 | 旧权重 | 新权重 |
+|------|--------|--------|
+| 7 维原有维度 | 各 0.10–0.20 | 按比例缩减至总和 0.90 |
+| skill_trace (新增) | — | **0.10** |
+
+`skill_trace` 维度评分逻辑：无 gap 且 chain_valid → 1.0；有 warning 无 gap → 0.7；有 gap → 0.3；无 session 记录 → 0.0。
 
 ```python
 def _audit_skill_trace(engine, time_range_hours: int):
