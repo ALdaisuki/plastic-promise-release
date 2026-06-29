@@ -1,12 +1,9 @@
 {
   "mcpServers": {
     "plastic-promise": {
-      "command": "python",
-      "args": ["-m", "plastic_promise.mcp.server"],
-      "env": {
-        "PYTHONPATH": "F:/Agent/Memory system",
-        "OLLAMA_HOST": "http://127.0.0.1:11434"
-      }
+      "url": "http://127.0.0.1:9020/sse",
+      "lifecycle": "lazy",
+      "description": "Plastic Promise — shared engine with Pi agents"
     }
   }
 }
