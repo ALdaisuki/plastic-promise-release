@@ -1065,6 +1065,19 @@ class _SQLiteStorage:
             )
         except Exception:
             pass  # 列已存在
+        # 迁移: 新增 decay_multiplier 和 effective_half_life 列
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN decay_multiplier REAL NOT NULL DEFAULT 1.0"
+            )
+        except Exception:
+            pass  # 列已存在
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN effective_half_life REAL NOT NULL DEFAULT 3.0"
+            )
+        except Exception:
+            pass  # 列已存在
         self._conn.commit()
 
     def upsert(self, mid: str, data: dict):
@@ -1073,8 +1086,8 @@ class _SQLiteStorage:
         self._conn.execute(
             "INSERT OR REPLACE INTO memories (id, content, memory_type, source, owner, "
             "tier, scope, category, tags, domain, importance, entity_ids, created_at, access_count, "
-            "worth_success, worth_failure, activation_weight) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "worth_success, worth_failure, activation_weight, decay_multiplier, effective_half_life) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 data.get("content", ""),
@@ -1093,6 +1106,8 @@ class _SQLiteStorage:
                 data.get("worth_success", 0),
                 data.get("worth_failure", 0),
                 data.get("activation_weight", 0.5),
+                data.get("decay_multiplier", 1.0),
+                data.get("effective_half_life", 3.0),
             ),
         )
         self._conn.commit()
@@ -1102,7 +1117,8 @@ class _SQLiteStorage:
         row = self._conn.execute(
             "SELECT id, content, memory_type, source, owner, tier, scope, category, "
             "tags, domain, importance, entity_ids, created_at, access_count, "
-            "worth_success, worth_failure, activation_weight "
+            "worth_success, worth_failure, activation_weight, "
+            "decay_multiplier, effective_half_life "
             "FROM memories WHERE id = ?", (mid,)
         ).fetchone()
         if row is None:
@@ -1119,7 +1135,8 @@ class _SQLiteStorage:
         rows = self._conn.execute(
             "SELECT id, content, memory_type, source, owner, tier, scope, category, "
             "tags, domain, importance, entity_ids, created_at, access_count, "
-            "worth_success, worth_failure, activation_weight FROM memories"
+            "worth_success, worth_failure, activation_weight, "
+            "decay_multiplier, effective_half_life FROM memories"
         ).fetchall()
         for row in rows:
             d = self._row_to_dict(row)
@@ -1146,4 +1163,6 @@ class _SQLiteStorage:
             "worth_success": row[14] or 0,
             "worth_failure": row[15] or 0,
             "activation_weight": row[16] or 0.5,
+            "decay_multiplier": row[17] if len(row) > 17 else 1.0,
+            "effective_half_life": row[18] if len(row) > 18 else 3.0,
         }

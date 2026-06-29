@@ -128,6 +128,8 @@ class MemoryRecord:
         metadata: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
         domain: str = "uncategorized",
+        decay_multiplier: float = 1.0,
+        effective_half_life: float = 3.0,
     ) -> None:
         """初始化一条记忆记录。
 
@@ -143,6 +145,8 @@ class MemoryRecord:
             metadata: 附加元数据字典（如标签、关联实体、创建时间等）。
             tags: 语义标签列表。
             domain: 分配的语义域名称。
+            decay_multiplier: 衰减乘数，控制记忆衰退速率。
+            effective_half_life: 有效半衰期（天），记忆价值衰减到一半所需天数。
         """
         self.memory_id = memory_id if memory_id is not None else str(uuid.uuid4())
         self.content = content
@@ -158,6 +162,8 @@ class MemoryRecord:
         self.created_at = datetime.datetime.now().isoformat()
         self.last_accessed = self.created_at
         self.access_count = 0
+        self.decay_multiplier = decay_multiplier
+        self.effective_half_life = effective_half_life
 
     @property
     def worth_score(self) -> float:
@@ -196,6 +202,8 @@ class MemoryRecord:
             "created_at": self.created_at,
             "last_accessed": self.last_accessed,
             "access_count": self.access_count,
+            "decay_multiplier": self.decay_multiplier,
+            "effective_half_life": self.effective_half_life,
             "worth_score": self.worth_score,
         }
 
@@ -221,6 +229,8 @@ class MemoryRecord:
             metadata=data.get("metadata", {}),
             tags=data.get("tags", []),
             domain=data.get("domain", "uncategorized"),
+            decay_multiplier=data.get("decay_multiplier", 1.0),
+            effective_half_life=data.get("effective_half_life", 3.0),
         )
         record.created_at = data.get("created_at", record.created_at)
         record.last_accessed = data.get("last_accessed", record.last_accessed)
