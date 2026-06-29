@@ -474,3 +474,25 @@ REINFORCEMENT_CONFIG = {
     "max_multiplier": 3.0,
     "access_decay_days": 30,
 }
+
+# ============================================================
+# Quality Gate (Direction B — Task 3)
+# ============================================================
+
+QUALITY_GATE_WEIGHTS = {
+    "confidence": 0.25,
+    "relevance": 0.25,
+    "freshness": 0.25,
+    "info_density": 0.25,
+}
+QUALITY_GATE_THRESHOLD_STORE = 0.5    # >= this → store normally
+QUALITY_GATE_THRESHOLD_LOW = 0.3      # 0.3–0.5 → store with low_quality tag; <0.3 → discard
+
+# ============================================================
+# Dedup & Merge (Direction B — Task 2 & 4)
+# ============================================================
+
+DEDUP_SIMILARITY_THRESHOLD = 0.85      # cosine similarity >= this → duplicate
+MERGE_SIMILARITY_THRESHOLD = 0.70      # cosine similarity >= this → merge candidate
+MERGE_TOP_K = 3                        # top-k similar to check per memory during merge
+MERGE_AUDIT_RETENTION_DAYS = 7         # merged records kept in SQLite before permanent GC
