@@ -1,9 +1,18 @@
-"""MCP Management tool handlers — 3 tools for system administration.
+"""MCP Management tool handlers — system administration + issues + packs.
 
-工具列表:
-- system_stats   : 获取 Plastic Promise 系统整体统计
-- system_backup  : 导出 Plastic Promise 完整状态 (stub)
-- system_migrate : 从其他记忆系统迁移数据到 Plastic Promise (stub)
+公开工具:
+- system         : 系统工具统一入口 (action=stats|backup|migrate)。stats 含模糊缓存积压计数。
+- issue_create   : 创建新 Issue
+- issue_transition : 推进 Issue 状态
+- issue_list     : 列出 Issue
+- pack_export    : 导出体验包
+- pack_import    : 导入体验包
+- pack_recall    : 严格模式回忆
+
+内部处理器:
+- handle_system_stats   : 系统整体统计 (由 system action=stats 调用)
+- handle_system_backup  : 导出完整状态 (由 system action=backup 调用)
+- handle_system_migrate : 迁移数据 (由 system action=migrate 调用)
 """
 
 import json
@@ -71,7 +80,53 @@ async def handle_system_stats(engine: Any, args: dict) -> list[TextContent]:
 
 
 # ---------------------------------------------------------------------------
-# system_backup (stub)
+# system — 统一入口 (replaces system_stats/system_backup/system_migrate as MCP tools)
+# ---------------------------------------------------------------------------
+
+def _get_fuzzy_buffer(engine: Any):
+    """Get or create FuzzyBuffer / MemoryPipeline attached to the engine."""
+    if not hasattr(engine, '_fuzzy_buffer') or engine._fuzzy_buffer is None:
+        from plastic_promise.memory.pipeline import MemoryPipeline
+        from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
+        from plastic_promise.core.embedder import get_embedder
+
+        rec_mem = engine._rec_mem if hasattr(engine, '_rec_mem') else RecMem(engine)
+        try:
+            embedder = get_embedder()
+        except Exception:
+            from plastic_promise.core.embedder import FallbackEmbedder
+            embedder = FallbackEmbedder()
+        tier_mgr = MemoryTierManager(rec_mem)
+        engine._fuzzy_buffer = MemoryPipeline(rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr)
+        engine._rec_mem = rec_mem
+    return engine._fuzzy_buffer
+
+
+async def handle_system(engine: Any, args: dict) -> list[TextContent]:
+    """系统工具统一入口。action: stats|backup|migrate"""
+    action = args.get("action", "stats")
+    if action == "backup":
+        return await handle_system_backup(engine, args)
+    elif action == "migrate":
+        return await handle_system_migrate(engine, args)
+    else:
+        # stats 模式: 合并 system_stats + fuzzy 积压计数
+        result = await handle_system_stats(engine, args)
+        # 追加 fuzzy buffer 积压信息
+        try:
+            fb = _get_fuzzy_buffer(engine)
+            if fb:
+                buf_stats = fb.stats()
+                parsed = json.loads(result[0].text) if result else {}
+                parsed["fuzzy_buffer"] = buf_stats
+                result = [TextContent(type="text", text=json.dumps(parsed, ensure_ascii=False, indent=2))]
+        except Exception:
+            pass
+        return result
+
+
+# ---------------------------------------------------------------------------
+# system_backup (stub) — internal, called by handle_system
 # ---------------------------------------------------------------------------
 
 async def handle_system_backup(engine: Any, args: dict) -> list[TextContent]:

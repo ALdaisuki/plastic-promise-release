@@ -168,22 +168,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="fuzzy_status",
-            description="查看模糊缓存区统计：各区数量、待处理量、最旧条目时间。",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
-            name="fuzzy_process",
-            description="手动触发模糊缓存区处理流水线：raw→tagged→embedded→classified→迁移到主记忆池。",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
             name="memory_correct",
             description="人类纠正记忆：编辑内容、标记为错误/已废弃/已纠正。服务于原则 2（可查可透明）和原则 3（审计闭环）。",
             inputSchema={
@@ -309,12 +293,13 @@ async def list_tools() -> list[Tool]:
     tools.extend([
         Tool(
             name="audit_run",
-            description="执行七维度审计，返回结构化评分报告（原则联想/记忆供应/约束合规/反馈闭环/信任校准/原则继承/安全追溯）。",
+            description="执行七维审计: action=full(默认)|report",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "scope": {"type": "string", "description": "审计范围: full/quick/principles_only/memory_only"},
                     "time_range_hours": {"type": "integer", "description": "审计时间范围（小时）"},
+                    "action": {"type": "string", "description": "full|report"},
                 },
             },
         ),
@@ -331,35 +316,16 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="audit_report",
-            description="获取最近一次审计报告全文或指定维度的详细分析。",
+            name="defense",
+            description="防线管理: action=get|history|adjust|status",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "dimension": {"type": "string", "description": "维度名 (空=全部)"},
-                    "format": {"type": "string", "description": "输出格式: json/markdown/summary"},
-                },
-            },
-        ),
-        Tool(
-            name="defense_trust",
-            description="查看当前信任分及其变化历史，或手动调整信任分（需要原因备注）。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "操作: get/history/adjust"},
+                    "action": {"type": "string", "description": "get|history|adjust|status"},
                     "delta": {"type": "number", "description": "调整量 (±0.01 ~ ±0.10)"},
                     "reason": {"type": "string", "description": "调整原因"},
                 },
                 "required": ["action"],
-            },
-        ),
-        Tool(
-            name="defense_status",
-            description="获取三层防线当前状态：L0 硬边界/L1 约束衰减（含信任分驱动的切换状态）/L2 免疫巡检。",
-            inputSchema={
-                "type": "object",
-                "properties": {},
             },
         ),
     ])
@@ -368,24 +334,15 @@ async def list_tools() -> list[Tool]:
     tools.extend([
         Tool(
             name="scarf_reflect",
-            description="执行 SCARF 五维度自省：Status/Certainty/Autonomy/Relatedness/Fairness，返回结构化评分和建议。",
+            description="SCARF 五维自省: mode=standard|inertia",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "context": {"type": "string", "description": "当前上下文/最近行为描述"},
                     "dimensions": {"type": "array", "items": {"type": "string"}, "description": "指定维度 (空=全部)"},
+                    "mode": {"type": "string", "description": "standard|inertia"},
                 },
                 "required": ["context"],
-            },
-        ),
-        Tool(
-            name="inertia_check",
-            description="惯性抑制检测：检查最近 N 个任务是否过于相似，给出探索建议。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "recent_tasks": {"type": "array", "items": {"type": "string"}, "description": "最近任务描述列表"},
-                },
             },
         ),
         Tool(
@@ -406,35 +363,19 @@ async def list_tools() -> list[Tool]:
     # === 管理域 ===
     tools.extend([
         Tool(
-            name="system_stats",
-            description="获取 Plastic Promise 系统整体统计：九大系统健康度/CEI 指数/记忆池状态/信任分趋势/图规模。",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
-            name="system_backup",
-            description="导出 Plastic Promise 完整状态：记忆池/原则图谱/信任分/审计历史。",
+            name="system",
+            description="系统工具: action=stats|backup|migrate。stats 含模糊缓存积压计数。",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {"type": "string", "description": "stats|backup|migrate"},
                     "format": {"type": "string", "description": "导出格式: json/sqlite"},
-                    "include_audit_history": {"type": "boolean"},
-                },
-            },
-        ),
-        Tool(
-            name="system_migrate",
-            description="从其他记忆系统迁移数据到 Plastic Promise（兼容 memory-lancedb / memory-lancedb-pro 格式）。",
-            inputSchema={
-                "type": "object",
-                "properties": {
                     "source_path": {"type": "string", "description": "源数据路径"},
                     "source_type": {"type": "string", "description": "源类型: lancedb/json/csv"},
+                    "include_audit_history": {"type": "boolean"},
                     "dry_run": {"type": "boolean", "description": "仅预览，不实际导入"},
                 },
-                "required": ["source_path", "source_type"],
+                "required": ["action"],
             },
         ),
         Tool(
@@ -523,43 +464,18 @@ async def list_tools() -> list[Tool]:
     # === 域联邦域 ===
     tools.extend([
         Tool(
-            name="domain_stats",
-            description="查看所有域：标签数、记忆数、原则数、得分、合并谱系、最后活跃时间。",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="domain_merge",
-            description="手动合并两个域（覆盖自动阈值）。合并后源域标记为 merged，标签转移到目标域。",
+            name="domain",
+            description="域联邦统一入口: action=stats|merge|unmerge|rename|rebuild",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "source": {"type": "string", "description": "被合并的域"},
-                    "target": {"type": "string", "description": "合并到的目标域"},
+                    "action": {"type": "string", "description": "stats|merge|unmerge|rename|rebuild"},
+                    "source": {"type": "string", "description": "源域 (merge/unmerge)"},
+                    "target": {"type": "string", "description": "目标域 (merge)"},
+                    "old_name": {"type": "string", "description": "旧域名 (rename)"},
+                    "new_name": {"type": "string", "description": "新域名 (rename)"},
                 },
-                "required": ["source", "target"],
-            },
-        ),
-        Tool(
-            name="domain_unmerge",
-            description="手动解除合并（从 merged_from 谱系恢复）。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "source": {"type": "string", "description": "要恢复的域"},
-                },
-                "required": ["source"],
-            },
-        ),
-        Tool(
-            name="domain_rename",
-            description="重命名域，自动更新所有关联记忆和原则的 domain 字段。旧名作为别名保留 30 天。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "old_name": {"type": "string", "description": "当前域名"},
-                    "new_name": {"type": "string", "description": "新域名"},
-                },
-                "required": ["old_name", "new_name"],
+                "required": ["action"],
             },
         ),
     ])
@@ -604,12 +520,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_gc":
             from plastic_promise.mcp.tools.memory import handle_memory_gc
             return await handle_memory_gc(engine, arguments)
-        elif name == "fuzzy_status":
-            from plastic_promise.mcp.tools.memory import handle_fuzzy_status
-            return await handle_fuzzy_status(engine, arguments)
-        elif name == "fuzzy_process":
-            from plastic_promise.mcp.tools.memory import handle_fuzzy_process
-            return await handle_fuzzy_process(engine, arguments)
         elif name == "memory_correct":
             from plastic_promise.mcp.tools.memory import handle_memory_correct
             return await handle_memory_correct(engine, arguments)
@@ -649,37 +559,22 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "audit_pre_check":
             from plastic_promise.mcp.tools.audit_defense import handle_audit_pre_check
             return await handle_audit_pre_check(engine, arguments)
-        elif name == "audit_report":
-            from plastic_promise.mcp.tools.audit_defense import handle_audit_report
-            return await handle_audit_report(engine, arguments)
-        elif name == "defense_trust":
-            from plastic_promise.mcp.tools.audit_defense import handle_defense_trust
-            return await handle_defense_trust(engine, arguments)
-        elif name == "defense_status":
-            from plastic_promise.mcp.tools.audit_defense import handle_defense_status
-            return await handle_defense_status(engine, arguments)
+        elif name == "defense":
+            from plastic_promise.mcp.tools.audit_defense import handle_defense
+            return await handle_defense(engine, arguments)
 
         # Reflection
         elif name == "scarf_reflect":
             from plastic_promise.mcp.tools.reflection import handle_scarf_reflect
             return await handle_scarf_reflect(engine, arguments)
-        elif name == "inertia_check":
-            from plastic_promise.mcp.tools.reflection import handle_inertia_check
-            return await handle_inertia_check(engine, arguments)
         elif name == "feedback_apply":
             from plastic_promise.mcp.tools.reflection import handle_feedback_apply
             return await handle_feedback_apply(engine, arguments)
 
         # Management
-        elif name == "system_stats":
-            from plastic_promise.mcp.tools.management import handle_system_stats
-            return await handle_system_stats(engine, arguments)
-        elif name == "system_backup":
-            from plastic_promise.mcp.tools.management import handle_system_backup
-            return await handle_system_backup(engine, arguments)
-        elif name == "system_migrate":
-            from plastic_promise.mcp.tools.management import handle_system_migrate
-            return await handle_system_migrate(engine, arguments)
+        elif name == "system":
+            from plastic_promise.mcp.tools.management import handle_system
+            return await handle_system(engine, arguments)
         elif name == "issue_create":
             from plastic_promise.mcp.tools.management import handle_issue_create
             return await handle_issue_create(engine, arguments)
@@ -700,18 +595,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return await handle_pack_recall(engine, arguments)
 
         # Domain federation
-        elif name == "domain_stats":
-            from plastic_promise.mcp.tools.domain import handle_domain_stats
-            return await handle_domain_stats(engine, arguments)
-        elif name == "domain_merge":
-            from plastic_promise.mcp.tools.domain import handle_domain_merge
-            return await handle_domain_merge(engine, arguments)
-        elif name == "domain_unmerge":
-            from plastic_promise.mcp.tools.domain import handle_domain_unmerge
-            return await handle_domain_unmerge(engine, arguments)
-        elif name == "domain_rename":
-            from plastic_promise.mcp.tools.domain import handle_domain_rename
-            return await handle_domain_rename(engine, arguments)
+        elif name == "domain":
+            from plastic_promise.mcp.tools.domain import handle_domain
+            return await handle_domain(engine, arguments)
 
         else:
             return [TextContent(type="text", text=json.dumps(

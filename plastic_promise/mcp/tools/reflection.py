@@ -1,9 +1,11 @@
-"""MCP Reflection tool handlers — 3 tools for introspection and evolution.
+"""MCP Reflection tool handlers — 2 tools for introspection and evolution.
 
-工具列表:
-- scarf_reflect   : 执行 SCARF 五维度自省 (stub)
-- inertia_check   : 惯性抑制检测 — 检查任务是否过于相似 (stub)
-- feedback_apply  : 手动应用反馈到记忆或上下文条目
+公开工具:
+- scarf_reflect  : SCARF 五维自省 (mode=standard|inertia)
+- feedback_apply : 手动应用反馈到记忆或上下文条目
+
+内部处理器:
+- handle_inertia_check : 惯性抑制检测 (由 scarf_reflect mode=inertia 调用)
 """
 
 import json
@@ -17,15 +19,21 @@ from mcp.types import TextContent
 # ---------------------------------------------------------------------------
 
 async def handle_scarf_reflect(engine: Any, args: dict) -> list[TextContent]:
-    """Execute SCARF five-dimension self-reflection (stub).
+    """Execute SCARF five-dimension self-reflection or inertia check.
 
     Args:
         engine: ContextEngine instance.
-        args: {"context": str, "dimensions"?: list[str]}.
+        args: {"context": str, "dimensions"?: list[str], "mode"?: "standard"|"inertia",
+               "recent_tasks"?: list[str]}.
 
     Returns:
         list[TextContent]: MCP response.
     """
+    mode = args.get("mode", "standard")
+    if mode == "inertia":
+        return await handle_inertia_check(engine, args)
+
+    # standard SCARF reflection
     try:
         from plastic_promise.reflection.soul_scarf import SCARFReflector
         context = args.get("context", "")

@@ -1,13 +1,18 @@
-"""MCP Memory 工具 — 记忆域 7 个工具
+"""MCP Memory 工具 — 记忆域 8 个公开工具
 
-工具列表:
+公开工具:
 - memory_recall   : 混合检索记忆，返回三层上下文包
 - memory_store    : 存储一条记忆到 Plastic Promise 记忆池
 - memory_update   : 更新已有记忆的内容或元数据
 - memory_forget   : 软删除记忆（硬删除，标记为衰退待 GC 清理）
-- memory_stats    : 获取记忆池统计信息
+- memory_stats    : 获取记忆池统计信息（含 fuzzy buffer 积压）
 - memory_list     : 按条件列出记忆
 - memory_gc       : 手动触发垃圾回收
+- memory_correct  : 人类纠正记忆
+
+内部处理器 (not exposed as MCP tools):
+- handle_fuzzy_status  : 查看模糊缓存区统计
+- handle_fuzzy_process : 触发模糊缓存区处理流水线
 """
 
 import json
@@ -263,7 +268,7 @@ async def handle_memory_stats(engine: Any, args: dict) -> list[TextContent]:
         stats_json = engine.memory_stats_json(scope)
         stats = json.loads(stats_json)
 
-        return [TextContent(type="text", text=json.dumps({
+        result = {
             "total": stats.get("total", 0),
             "healthy": stats.get("healthy", 0),
             "decaying": stats.get("decaying", 0),
@@ -271,7 +276,17 @@ async def handle_memory_stats(engine: Any, args: dict) -> list[TextContent]:
             "by_type": stats.get("by_type", {}),
             "by_category": stats.get("by_category", {}),
             "average_worth": stats.get("average_worth", 0.0),
-        }, ensure_ascii=False))]
+        }
+
+        # 追加 fuzzy buffer 积压信息
+        try:
+            fb = _get_fuzzy_buffer(engine)
+            if fb:
+                result["fuzzy_buffer"] = fb.stats()
+        except Exception:
+            pass
+
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "memory_stats"}, ensure_ascii=False))]
@@ -407,7 +422,7 @@ def _get_fuzzy_buffer(engine: Any):
     return engine._fuzzy_buffer
 
 
-# ---- fuzzy_status ----
+# ---- fuzzy_status (internal — not exposed as MCP tool) ----
 async def handle_fuzzy_status(engine: Any, args: dict) -> list[TextContent]:
     """Query fuzzy buffer statistics — items per stage, total, oldest pending."""
     try:
@@ -419,7 +434,7 @@ async def handle_fuzzy_status(engine: Any, args: dict) -> list[TextContent]:
             {"error": str(e), "tool": "fuzzy_status"}, ensure_ascii=False))]
 
 
-# ---- fuzzy_process ----
+# ---- fuzzy_process (internal — not exposed as MCP tool) ----
 async def handle_fuzzy_process(engine: Any, args: dict) -> list[TextContent]:
     """Trigger fuzzy buffer pipeline processing (raw→tagged→embedded→classified→migrate)."""
     try:

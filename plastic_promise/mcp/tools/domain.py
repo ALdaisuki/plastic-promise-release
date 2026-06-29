@@ -1,10 +1,13 @@
-"""Domain MCP 工具 — 域联邦管理 4 个工具
+"""Domain MCP 工具 — 域联邦统一入口
 
-工具列表:
-- domain_stats   : 查看所有域的统计信息
-- domain_merge   : 手动合并两个域
-- domain_unmerge : 手动解除合并
-- domain_rename  : 重命名域
+公开工具:
+- domain : 统一入口，action=stats|merge|unmerge|rename|rebuild
+
+内部处理器 (保留供直接调用):
+- handle_domain_stats   : 查看所有域的统计信息
+- handle_domain_merge   : 手动合并两个域
+- handle_domain_unmerge : 手动解除合并
+- handle_domain_rename  : 重命名域
 """
 
 import json
@@ -85,3 +88,36 @@ async def handle_domain_rename(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "domain_rename"}, ensure_ascii=False))]
+
+
+# ---------------------------------------------------------------------------
+# domain — 统一入口 (replaces domain_stats/merge/unmerge/rename as MCP tools)
+# ---------------------------------------------------------------------------
+
+async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
+    """域联邦统一入口。action: stats|merge|unmerge|rename|rebuild"""
+    action = args.get("action", "stats")
+    dm = getattr(engine, '_dm', None)
+    if dm is None:
+        return [TextContent(type="text", text=json.dumps(
+            {"error": "DomainManager not available (_dm_ok=False)"}, ensure_ascii=False))]
+
+    try:
+        if action == "stats":
+            return [TextContent(type="text", text=json.dumps(dm.stats(), ensure_ascii=False, indent=2))]
+        elif action == "merge":
+            ok = dm.merge(args["source"], args["target"])
+            return [TextContent(type="text", text=json.dumps({"merged": ok, "source": args["source"], "target": args["target"]}, ensure_ascii=False))]
+        elif action == "unmerge":
+            ok = dm.unmerge(args["source"])
+            return [TextContent(type="text", text=json.dumps({"unmerged": ok, "source": args["source"]}, ensure_ascii=False))]
+        elif action == "rename":
+            ok = dm.rename(args["old_name"], args["new_name"])
+            return [TextContent(type="text", text=json.dumps({"renamed": ok, "old_name": args["old_name"], "new_name": args["new_name"]}, ensure_ascii=False))]
+        elif action == "rebuild":
+            result = dm.rebuild_from_memories()
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+        else:
+            return [TextContent(type="text", text=json.dumps({"error": f"unknown action: {action}"}, ensure_ascii=False))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False))]

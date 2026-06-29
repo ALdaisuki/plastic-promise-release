@@ -1,11 +1,14 @@
-"""MCP Audit & Defense tool handlers — 5 tools for audit and defense layers.
+"""MCP Audit & Defense tool handlers — 3 tools for audit and defense layers.
 
-工具列表:
-- audit_run       : 执行七维度审计，返回结构化评分报告 (stub)
+公开工具:
+- audit_run       : 七维审计 + 报告查询 (action=full|report)
 - audit_pre_check : 实时合规检查 — L0 硬边界 + L1 约束衰减
-- audit_report    : 获取最近一次审计报告全文或指定维度详细分析 (stub)
-- defense_trust   : 查看/调整当前信任分及其变化历史 (stub)
-- defense_status  : 获取三层防线当前状态
+- defense         : 防线管理统一入口 (action=get|history|adjust|status)
+
+内部处理器:
+- handle_audit_report   : 获取最近审计报告 (由 audit_run action=report 调用)
+- handle_defense_status : 获取三层防线状态 (由 defense action=status 调用)
+- handle_defense_trust  : 信任分管理 (由 defense action=get|history|adjust 调用)
 """
 
 import json
@@ -19,15 +22,21 @@ from mcp.types import TextContent
 # ---------------------------------------------------------------------------
 
 async def handle_audit_run(engine: Any, args: dict) -> list[TextContent]:
-    """Execute seven-dimension audit, return structured scoring report (stub).
+    """Execute seven-dimension audit or retrieve report.
 
     Args:
         engine: ContextEngine instance.
-        args: {"scope"?: str, "time_range_hours"?: int}.
+        args: {"action"?: "full"|"report", "scope"?: str, "time_range_hours"?: int,
+               "dimension"?: str, "format"?: str}.
 
     Returns:
         list[TextContent]: MCP response.
     """
+    action = args.get("action", "full")
+    if action == "report":
+        return await handle_audit_report(engine, args)
+
+    # full audit
     try:
         from plastic_promise.defense.soul_audit import SoulAuditor
         scope = args.get("scope", "global")
@@ -148,7 +157,7 @@ async def handle_audit_report(engine: Any, args: dict) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 
 async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
-    """View or adjust the current trust score and its change history (stub).
+    """View or adjust the current trust score and its change history.
 
     Args:
         engine: ContextEngine instance.
@@ -166,27 +175,27 @@ async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
                 "trust": tm.get(),
                 "tier": tm.tier,
                 "autonomy_level": tm.autonomy_level,
-                "history": tm.history(10),
             }, ensure_ascii=False, indent=2))]
-        elif action == "boost":
-            delta = args.get("delta", 0.02)
-            reason = args.get("reason", "manual boost")
-            new_trust = tm.boost(delta, reason)
+        elif action == "history":
             return [TextContent(type="text", text=json.dumps({
-                "action": "boost", "delta": delta, "new_trust": new_trust,
+                "trust": tm.get(),
                 "tier": tm.tier,
+                "history": tm.history(20),
             }, ensure_ascii=False, indent=2))]
-        elif action == "decay":
-            delta = args.get("delta", 0.005)
-            reason = args.get("reason", "manual decay")
-            new_trust = tm.decay(delta, reason)
+        elif action == "adjust":
+            delta = args.get("delta", 0.0)
+            reason = args.get("reason", "manual adjustment")
+            if delta >= 0:
+                new_trust = tm.boost(abs(delta) if delta == 0 else delta, reason)
+            else:
+                new_trust = tm.decay(abs(delta), reason)
             return [TextContent(type="text", text=json.dumps({
-                "action": "decay", "delta": delta, "new_trust": new_trust,
+                "action": "adjust", "delta": delta, "new_trust": new_trust,
                 "tier": tm.tier,
             }, ensure_ascii=False, indent=2))]
         else:
             return [TextContent(type="text", text=json.dumps({
-                "error": f"Unknown action '{action}'. Valid: get, boost, decay"
+                "error": f"Unknown action '{action}'. Valid: get, history, adjust"
             }, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
@@ -237,3 +246,16 @@ async def handle_defense_status(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "defense_status"}, ensure_ascii=False))]
+
+
+# ---------------------------------------------------------------------------
+# defense — 统一入口 (replaces defense_trust + defense_status as MCP tools)
+# ---------------------------------------------------------------------------
+
+async def handle_defense(engine: Any, args: dict) -> list[TextContent]:
+    """防线统一入口。action: get|history|adjust|status"""
+    action = args.get("action", "get")
+    if action == "status":
+        return await handle_defense_status(engine, args)
+    else:
+        return await handle_defense_trust(engine, args)
