@@ -709,8 +709,12 @@ Replace the `store_urgent` method body:
             else:
                 mem_content = content
 
-            # Tags: semantic extraction + category injection + custom
-            tags = self._extract_semantic_tags(mem_content)
+            # Tags: semantic extraction OR derived from ExtractedMemory
+            if em is not None and em.category:
+                # Fix #5: Derive tags from extraction result, skip redundant _extract_semantic_tags
+                tags = [f"cat:{em.category}"]
+            else:
+                tags = self._extract_semantic_tags(mem_content)
             if em is not None and em.category:
                 cat_tag = f"cat:{em.category}"
                 if cat_tag not in tags:
@@ -747,6 +751,11 @@ Replace the `store_urgent` method body:
             self._buffer[mid] = record
             if first_mid is None:
                 first_mid = mid
+
+        # Fix #1: Log multi-extraction for traceability
+        if len(extracted_list) > 1:
+            logging.info("store_urgent: %d memories extracted from content, returning first ID %s",
+                         len(extracted_list), first_mid)
 
         return first_mid
 ```
@@ -786,7 +795,9 @@ Replace the `_process_embedded_to_migrate` method:
                             vec, threshold=0.85  # DEDUP_SIMILARITY_THRESHOLD
                         )
                         if dup_id and engine is not None:
+                            now_iso = datetime.datetime.now().isoformat()
                             # Increment access_count + worth_success on existing record
+                            # Fix #2: Guard against dup_id missing from engine._memories (SQLite-only memory)
                             if dup_id in getattr(engine, '_memories', {}):
                                 engine._memories[dup_id]["access_count"] = (
                                     engine._memories[dup_id].get("access_count", 0) + 1
@@ -794,19 +805,22 @@ Replace the `_process_embedded_to_migrate` method:
                                 engine._memories[dup_id]["worth_success"] = (
                                     engine._memories[dup_id].get("worth_success", 0) + 1
                                 )
+                                # Fix #6: Update last_accessed so Direction A reinforcement isn't broken
+                                engine._memories[dup_id]["last_accessed"] = now_iso
                             if dup_id in getattr(self.rec_mem, '_records', {}):
                                 py_rec = self.rec_mem._records[dup_id]
                                 py_rec.access_count += 1
                                 py_rec.worth_success += 1
-                                py_rec.last_accessed = datetime.datetime.now().isoformat()
-                            # SQLite incremental update (follows existing pattern)
+                                py_rec.last_accessed = now_iso
+                            # SQLite incremental update — includes last_accessed (Fix #6)
                             sqlite = getattr(engine, '_sqlite', None)
                             if sqlite is not None:
                                 try:
                                     sqlite._conn.execute(
                                         "UPDATE memories SET access_count = access_count + 1, "
-                                        "worth_success = worth_success + 1 WHERE id = ?",
-                                        (dup_id,)
+                                        "worth_success = worth_success + 1, "
+                                        "last_accessed = ? WHERE id = ?",
+                                        (now_iso, dup_id)
                                     )
                                     sqlite._conn.commit()
                                 except Exception:
@@ -1238,12 +1252,19 @@ Add the `merge_similar` method to the `MemoryGC` class in `plastic_promise/memor
 
                     # Remove from engine._memories (retrieval layer)
                     if merged in memories:
-                        # Optionally persist merged_into to SQLite for audit
+                        # Fix #3: Persist merged_into to SQLite metadata for audit trail
                         sqlite = getattr(engine, '_sqlite', None)
-                        if sqlite is not None and merged in memories:
+                        if sqlite is not None:
                             try:
-                                mem_data = memories[merged]
+                                mem_data = dict(memories[merged])
                                 mem_data["merged_into"] = survivor
+                                # Ensure metadata dict exists and carries merged_into
+                                if "metadata" not in mem_data:
+                                    mem_data["metadata"] = {}
+                                if isinstance(mem_data["metadata"], dict):
+                                    mem_data["metadata"]["merged_into"] = survivor
+                                else:
+                                    mem_data["metadata"] = {"merged_into": survivor}
                                 sqlite.upsert(merged, mem_data)
                             except Exception:
                                 pass
