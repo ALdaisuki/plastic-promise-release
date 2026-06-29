@@ -657,8 +657,11 @@ class ContextEngine:
         # Phase 3: 符号规则调整
         all_results = self._apply_symbol_rules(all_results, task_description)
 
-        # Phase 4: 反馈权重
+        # Phase 4: 反馈权重 (P2: worth_score as single source of truth)
         all_results = self._apply_feedback(all_results)
+
+        # P2: Evolve edge weights based on feedback patterns
+        self._apply_edge_feedback()
 
         # Phase 5: 分层
         pack = ContextPack(activated_principles=activated)
@@ -1199,12 +1202,107 @@ class ContextEngine:
         return result
 
     def _apply_feedback(self, items: List[tuple]) -> List[tuple]:
-        return [(
-            item_id,
-            min(1.0, max(0.0, score + self._feedback.get(item_id, 0.0))),
-            content,
-            source,
-        ) for item_id, score, content, source in items]
+        """P2: Apply feedback using MemoryRecord.worth_score as single source of truth.
+
+        Old formula: score + self._feedback.get(item_id, 0.0)  — stale dict, never synced.
+        New formula: score * (MULTIPLIER_MIN + MULTIPLIER_RANGE * worth_score)
+
+        A memory with worth_score=1.0 (frequently adopted) retains full score.
+        A memory with worth_score=0.5 (no observations) gets a slight neutral discount.
+        A memory with worth_score=0.0 (frequently rejected) gets a 30% discount.
+        """
+        from plastic_promise.core.constants import (
+            FEEDBACK_SCORE_MULTIPLIER_MIN,
+            FEEDBACK_SCORE_MULTIPLIER_RANGE,
+        )
+
+        result = []
+        for item_id, score, content, source in items:
+            mem = self._memories.get(item_id, {})
+            if mem:
+                ws = mem.get("worth_success", 0)
+                wf = mem.get("worth_failure", 0)
+                total = ws + wf
+                worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+            else:
+                worth = 0.5  # No memory record → neutral
+            multiplier = FEEDBACK_SCORE_MULTIPLIER_MIN + FEEDBACK_SCORE_MULTIPLIER_RANGE * worth
+            adjusted = min(1.0, score * multiplier)
+            result.append((item_id, adjusted, content, source))
+        return result
+
+    def _apply_edge_feedback(self):
+        """P2: Evolve graph edge weights based on memory adoption patterns.
+
+        For each edge whose relation involves memories (governs, embodies, references),
+        update the edge weight via EMA: new_weight = (1-α)*old_weight + α*worth_score.
+        Clamp to [FEEDBACK_EDGE_WEIGHT_MIN, FEEDBACK_EDGE_WEIGHT_MAX].
+
+        Called at the end of each supply() call — lightweight and reactive.
+        """
+        from plastic_promise.core.constants import (
+            FEEDBACK_EDGE_EMA_ALPHA,
+            FEEDBACK_EDGE_WEIGHT_MIN,
+            FEEDBACK_EDGE_WEIGHT_MAX,
+        )
+
+        memory_relations = {"governs", "embodies", "references"}
+        alpha = FEEDBACK_EDGE_EMA_ALPHA
+
+        for edge in self._graph_edges:
+            if edge.get("relation") not in memory_relations:
+                continue
+
+            # Determine which node is the memory
+            memory_id = None
+            if edge["from"].startswith("memory:") or not edge["from"].startswith("principle:") and not edge["from"].startswith("task_type:"):
+                memory_id = edge["from"]
+            elif edge["to"].startswith("memory:") or not edge["to"].startswith("principle:") and not edge["to"].startswith("task_type:"):
+                memory_id = edge["to"]
+
+            if memory_id and memory_id in self._memories:
+                mem = self._memories[memory_id]
+                ws = mem.get("worth_success", 0)
+                wf = mem.get("worth_failure", 0)
+                total = ws + wf
+                worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+
+                old_weight = edge.get("weight", 0.5)
+                new_weight = (1.0 - alpha) * old_weight + alpha * worth
+                edge["weight"] = max(FEEDBACK_EDGE_WEIGHT_MIN,
+                                    min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight))
+
+    def _apply_edge_feedback_for_memory(self, memory_id: str):
+        """P2: Update all graph edges involving a specific memory.
+
+        Called after handle_feedback_apply() updates a MemoryRecord's worth counters.
+        Only recomputes edges connected to the given memory_id — O(E) but focused.
+        """
+        from plastic_promise.core.constants import (
+            FEEDBACK_EDGE_EMA_ALPHA,
+            FEEDBACK_EDGE_WEIGHT_MIN,
+            FEEDBACK_EDGE_WEIGHT_MAX,
+        )
+
+        if memory_id not in self._memories:
+            return
+
+        mem = self._memories[memory_id]
+        ws = mem.get("worth_success", 0)
+        wf = mem.get("worth_failure", 0)
+        total = ws + wf
+        worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+        alpha = FEEDBACK_EDGE_EMA_ALPHA
+
+        memory_relations = {"governs", "embodies", "references"}
+        for edge in self._graph_edges:
+            if edge.get("relation") not in memory_relations:
+                continue
+            if edge.get("from") == memory_id or edge.get("to") == memory_id:
+                old_weight = edge.get("weight", 0.5)
+                new_weight = (1.0 - alpha) * old_weight + alpha * worth
+                edge["weight"] = max(FEEDBACK_EDGE_WEIGHT_MIN,
+                                    min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight))
 
     def _calc_freshness(self, item_id: str) -> str:
         mem = self._memories.get(item_id, {})
