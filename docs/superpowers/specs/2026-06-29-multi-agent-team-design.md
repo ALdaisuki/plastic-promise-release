@@ -1,13 +1,14 @@
 # Multi-Agent Development Team — 完整设计
 
-> 状态: 已确认 | 日期: 2026-06-29
+> 状态: 已验证 (Pi 0.80.2 原生闭环跑通) | 日期: 2026-06-29
 
 ## 一、核心理念
 
 Claude Code 从"操作者"升级为"项目经理"——不再亲自写代码，而是通过**验证、分配、监控、验收**调度 Pi Agent 团队。所有 Agent 通过共享的 Plastic Promise 记忆框架协作，Issue 表是唯一的通信协议。
 
 **设计约束：**
-- 约 200 行新代码，其余全部复用现有基础设施
+- ~40 行新代码（仅 issue_validator），其余全部复用
+- Pi Agent 使用原生 CLI (`pi --print`)，不重写执行层
 - 零新通信协议——Issue 表 + 联邦信号已足够
 - 宪法人人遵守——Claude 发的 Issue 也需要通过 context 校验
 
@@ -189,58 +190,39 @@ Reviewer 误判        → decay
 
 ---
 
-## 六、Headless 运行
+## 六、Headless 运行 — 原生 Pi CLI
 
-### Supervisor 守护进程
+Pi Agent (v0.80.2) 自带 ReAct 循环 + 4 工具。不需要自己写执行层。
 
-一次启动，管理全部 Pi 子进程。
+### Claude 启动 Pi
 
-```python
-# agent_supervisor.py
-AGENTS = {
-    "pi_builder":  {"port": 9021, "role": "builder"},
-    "pi_fixer":    {"port": 9022, "role": "fixer"},
-    "pi_reviewer": {"port": 9023, "role": "reviewer"},
-}
-
-# 启动: python agent_supervisor.py start --all
-# Claude 控制: issue_create(type="agent_control", action="start", role="builder")
-
-# 主循环:
-while True:
-    check Issue 表 for type="agent_control"  → start/stop/restart
-    health check 每 30s → 超时 auto restart
+```bash
+# Claude 通过 Bash 工具调用:
+pi --print "实现 JWT 登录模块" --session task_001 --provider claude
 ```
 
-### Pi Agent 主循环
+Pi 自动完成：read 上下文 → write 代码 → bash 测试 → 返回结果。
 
-```python
-# agent.py — 每个 Pi Agent 的独立进程
-ROLE = os.environ["AGENT_OWNER"]
-DOMAIN_MAP = {"pi_builder": "building", "pi_fixer": "fixing", "pi_reviewer": "reflecting"}
+### Pi 的 MCP 连接
 
-async def main():
-    # 1. 宪法注入
-    await mcp.principle_activate(task_type="general")
+`.pi/mcp.json` 已配置 Plastic Promise SSE 端点。Pi 启动时自动连接，获得以下工具：
 
-    # 2. 注册身份
-    await mcp.memory_store(f"Agent {ROLE} 启动，域 {DOMAIN_MAP[ROLE]}")
-
-    # 3. 权限检查
-    trust = await mcp.defense(action="get")
-    tier = get_tier(trust["score"])
-
-    # 4. 主循环
-    while True:
-        issues = await mcp.issue_list(assignee=ROLE, state="open")
-        for i in issues:
-            if get_tier(trust["score"]) >= i.context.get("min_trust_level", "standard"):
-                await mcp.issue_transition(i.id, "in_progress")
-                result = await execute(i)
-                await mcp.memory_store(result.summary, tags=result.tags)
-                await mcp.issue_transition(i.id, "resolved", reason=result.files)
-        await asyncio.sleep(15)  # 轮询节拍
 ```
+memory_store    → 交付物写入共享记忆
+memory_recall   → 拉取项目上下文
+issue_list      → 轮询分配给自己的任务
+issue_transition → 认领/交付任务
+```
+
+### Claude 生命周期管理
+
+```bash
+# 启动: subprocess.Popen("pi --print 'task' --session id")
+# 状态: issue_list(owner="pi_builder", state="in_progress")
+# 终止: subprocess.terminate()
+```
+
+不需守护进程——Pi 本身是无状态 CLI，session 持久化到文件。
 
 ---
 
@@ -293,12 +275,11 @@ async def main():
 ## 八、实施范围
 
 ```
-新建 (约 200 行):
-├── agent_supervisor.py                  ~80 行
-├── plastic_promise/agent.py             ~80 行
+新建 (~40 行):
 └── plastic_promise/core/issue_validator.py  ~40 行
 
 复用 (零新代码):
+├── pi CLI (--print --session)           ← Pi 原生 headless 执行层
 ├── issue_create/transition/list         ← 任务协议
 ├── domain(stats) + signals              ← 身份 + 通知
 ├── memory_store/recall                  ← 上下文 + 交付
@@ -307,6 +288,10 @@ async def main():
 ├── pack_export/import                   ← 跨 Agent 知识
 ├── schema_version + _dm_ok             ← 韧性
 └── agent_id 参数 (已预埋)               ← 多 Agent 追溯
+
+已废止 (Pi 原生替代):
+├── agent.py (Pi 自带 ReAct 循环)
+└── agent_supervisor.py (pi --print 原生 headless)
 ```
 
 ---
