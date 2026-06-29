@@ -11,14 +11,15 @@ from typing import Any, Dict, List, Optional, Set
 class IssueManager:
     """Issue 生命周期管理器 — 约定工程的任务追踪引擎。
 
-    State machine: open → in_progress → resolved → closed
+    State machine: open → in_progress → review → resolved → closed
     Dependency check: prevents closing issues that block unresolved ones.
     """
 
-    VALID_STATES = {"open", "in_progress", "resolved", "closed"}
+    VALID_STATES = {"open", "in_progress", "review", "resolved", "closed"}
     VALID_TRANSITIONS = {
         "open": {"in_progress"},
-        "in_progress": {"resolved", "open"},
+        "in_progress": {"review", "resolved", "open"},
+        "review": {"resolved", "in_progress"},
         "resolved": {"closed", "in_progress"},
         "closed": set(),
     }
