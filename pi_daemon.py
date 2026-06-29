@@ -30,19 +30,22 @@ def get_engine():
 
 
 def has_pending_task(role: str, domain: str) -> bool:
-    """零 LLM 检查——直接遍历内存池查 task:pending 标签。"""
-    engine = get_engine()
-    for mid, mem in engine._memories.items():
-        tags = mem.get("tags", [])
-        if isinstance(tags, str):
-            tags = __import__('json').loads(tags)
+    """零 LLM 检查——直读 SQLite memories 表查 task:pending 标签。"""
+    import sqlite3, json
+    conn = sqlite3.connect(
+        os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    )
+    rows = conn.execute("SELECT tags FROM memories").fetchall()
+    conn.close()
+    for (tags_raw,) in rows:
+        try:
+            tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+        except Exception:
+            continue
         if "task:pending" in tags and f"assignee:{role}" in tags:
             return True
-        # also match unassigned tasks in our domain
         if "task:pending" in tags and "assignee:any" in tags:
-            mem_domain = mem.get("domain", "")
-            if mem_domain == domain:
-                return True
+            return True
     return False
 
 
