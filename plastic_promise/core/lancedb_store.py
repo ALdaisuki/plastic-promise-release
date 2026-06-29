@@ -61,7 +61,7 @@ class LanceDBStore:
     def _ensure_fts(self) -> None:
         """Create FTS index on 'text' column if not already present."""
         try:
-            self._table.create_fts_index("text", replace=False)
+            self._table.create_fts_index(["text"], replace=False)
             self._fts_ready = True
             logger.info("LanceDB: FTS index ready on 'text'")
         except Exception as e:
@@ -263,10 +263,11 @@ class LanceDBStore:
 
         logger.info("LanceDB backfill: %d in LDB < %d in SQLite — starting",
                     ldb_count, sqlite_count)
-        records = engine.list_memories(limit=10000)
+        # Use engine._memories dict directly (already loaded from SQLite) — avoids redundant re-query
+        memories = getattr(engine, '_memories', {})
         backfilled = 0
-        for r in records:
-            mid = r.id
+        for mid, mem_data in memories.items():
+            content = mem_data.get("content", "")
             # Check if already in LanceDB
             try:
                 existing = self._table.search().where(
@@ -278,18 +279,18 @@ class LanceDBStore:
                 pass
             # Generate embedding and insert
             try:
-                vec = self._embedder.embed(r.content)
+                vec = self._embedder.embed(content)
                 self.insert(
                     memory_id=mid,
                     vector=vec,
-                    text=r.content,
-                    tier=getattr(r, 'tier', 'L1'),
-                    category=getattr(r, 'category', 'other'),
-                    scope=getattr(r, 'scope', 'global'),
+                    text=content,
+                    tier=mem_data.get('tier', 'L1'),
+                    category=mem_data.get('category', 'other'),
+                    scope=mem_data.get('scope', 'global'),
                 )
                 backfilled += 1
                 if backfilled % 10 == 0:
-                    logger.info("LanceDB backfill: %d/%d done", backfilled, len(records))
+                    logger.info("LanceDB backfill: %d/%d done", backfilled, len(memories))
             except Exception as e:
                 logger.warning("LanceDB backfill: skip %s — %s", mid, e)
         logger.info("LanceDB backfill complete: %d memories indexed", backfilled)

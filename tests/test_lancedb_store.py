@@ -154,15 +154,13 @@ class TestLanceDBStore:
 
         class MockEngine:
             memory_count = 5
-
-            def list_memories(self, limit=10000):
-                return [
-                    MockRecord("mem_000", "existing 0"),
-                    MockRecord("mem_001", "existing 1"),
-                    MockRecord("mem_002", "new memory 2"),
-                    MockRecord("mem_003", "new memory 3", tier="L3", scope="private"),
-                    MockRecord("mem_004", "new memory 4"),
-                ]
+            _memories = {
+                "mem_000": {"content": "existing 0", "tier": "L1", "category": "other", "scope": "global"},
+                "mem_001": {"content": "existing 1", "tier": "L1", "category": "other", "scope": "global"},
+                "mem_002": {"content": "new memory 2", "tier": "L1", "category": "other", "scope": "global"},
+                "mem_003": {"content": "new memory 3", "tier": "L3", "category": "other", "scope": "private"},
+                "mem_004": {"content": "new memory 4", "tier": "L1", "category": "other", "scope": "global"},
+            }
 
         count = self.store.backfill(MockEngine())
         assert count == 3  # 5 sqlite - 2 already in lancedb

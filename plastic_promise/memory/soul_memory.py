@@ -607,6 +607,13 @@ class RecMem:
             True 表示成功删除，False 表示记忆不存在。
         """
         try:
+            # Sync delete from LanceDB vector store (A+B: dual-write consistency)
+            ldb = getattr(self._engine, '_ldb', None)
+            if ldb is not None:
+                try:
+                    ldb.delete(memory_id)
+                except Exception:
+                    pass
             result = self._engine.delete_memory(memory_id)
             if memory_id in self._records:
                 del self._records[memory_id]
