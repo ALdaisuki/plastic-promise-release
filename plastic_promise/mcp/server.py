@@ -1169,6 +1169,28 @@ async def run_sse(port: int = 9020):
             body = await request.body()
             event = _json.loads(body.decode())
             await _notify_queue.put(event)
+
+            # Persist audit reports as memories
+            if event.get("type") == "audit_report":
+                try:
+                    engine = get_engine()
+                    report_text = event.get("content", "")
+                    # Mark existing audit memories as replaced
+                    for mid, mem in engine._memories.items():
+                        if isinstance(mem, dict) and "audit" in mem.get("tags", []):
+                            mtags = list(mem.get("tags", []))
+                            if "status:replaced" not in mtags:
+                                mtags.append("status:replaced")
+                                engine._memories[mid]["tags"] = mtags
+                    engine.register_memory({
+                        "content": report_text,
+                        "memory_type": "reflection",
+                        "tags": ["audit", "domain:governing", f"score:{event.get('overall',0):.2f}"],
+                        "source": "maintenance_daemon",
+                    })
+                except Exception:
+                    pass
+
             return JSONResponse({"ok": True})
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)})

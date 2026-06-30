@@ -802,15 +802,17 @@ class ContextEngine:
                 decay_status=self._calc_decay_status(item_id, mem) if mem else "healthy",
             )
 
-            if score >= CONTEXT_LAYERS["core"]["min_relevance"]:
-                item.layer = "core"
-                pack.core.append(item)
-            elif score >= CONTEXT_LAYERS["related"]["min_relevance"]:
-                item.layer = "related"
-                pack.related.append(item)
-            elif score >= CONTEXT_LAYERS["divergent"]["min_relevance"]:
-                item.layer = "divergent"
-                pack.divergent.append(item)
+            # Principles are already listed in activated_principles — skip from layers
+            if not is_principle:
+                if score >= CONTEXT_LAYERS["core"]["min_relevance"]:
+                    item.layer = "core"
+                    pack.core.append(item)
+                elif score >= CONTEXT_LAYERS["related"]["min_relevance"]:
+                    item.layer = "related"
+                    pack.related.append(item)
+                elif score >= CONTEXT_LAYERS["divergent"]["min_relevance"]:
+                    item.layer = "divergent"
+                    pack.divergent.append(item)
 
         # P3a: Compute divergent quality and filter low-inspiration items
         if pack.divergent:
