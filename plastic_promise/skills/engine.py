@@ -296,8 +296,10 @@ class SkillEngine:
                                         "entity_id": entity_id,
                                         "outcome": f"abandoned: atom {atom_name} failed",
                                     })
-                            except Exception:
-                                pass
+                            except Exception as close_err:
+                                degrade_log.append(
+                                    f"skill_session_complete also failed during abort: {close_err}"
+                                )
                         return SkillResult(
                             skill_name=skill_name, success=False,
                             data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
@@ -337,8 +339,10 @@ class SkillEngine:
                             "entity_id": entity_id,
                             "outcome": f"abandoned: handler error -- {e}",
                         })
-                except Exception:
-                    pass
+                except Exception as close_err:
+                    degrade_log.append(
+                        f"skill_session_complete also failed during handler abort: {close_err}"
+                    )
             return SkillResult(
                 skill_name=skill_name, success=False,
                 data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},

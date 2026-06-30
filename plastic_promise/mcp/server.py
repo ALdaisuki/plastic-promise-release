@@ -44,8 +44,11 @@ from plastic_promise.core.constants import (
 # 全局 ContextEngine 代理 (Rust 不可用时回退到 Python mock)
 # ---------------------------------------------------------------------------
 
+from collections import deque
+
 _engine = None  # 延迟初始化
 _skill_engine = None  # 延迟初始化 — SkillEngine 单例
+_closure_history: deque = deque(maxlen=5)  # 滑动窗口: 最近5次闭环 {scarf, trust, cei}
 
 
 def get_engine():
@@ -665,6 +668,87 @@ async def list_tools() -> list[Tool]:
 
 
 # ---------------------------------------------------------------------------
+# 闭环仪表盘摘要格式化
+# ---------------------------------------------------------------------------
+
+def _format_closure_dashboard(result: dict, history: deque) -> str:
+    """Build a human-readable step-closure dashboard from post_task result.
+
+    Features:
+    - Trend arrows (↗↘→) comparing current vs previous closure
+    - Sigma marker (⚡) for values beyond ±2σ of sliding window
+    - First-closure graceful degradation
+    - SCARF dimension bar charts
+    """
+    scarf = result.get("scarf", {})
+    scarf_overall = scarf.get("summary", {}).get("overall_score", 0)
+    trust_data = result.get("trust", {})
+    trust_score = trust_data.get("score", 0)
+    cei = result.get("cei", {})
+    cei_score = cei.get("score", 0)
+    cei_tier = cei.get("tier", "?")
+    alignment = result.get("alignment", {})
+    principles = alignment.get("principles", [])
+    reflection = result.get("reflection", {})
+    lesson = reflection.get("lesson", "")
+
+    step_n = len(history) + 1  # history hasn't been updated yet
+    is_first = len(history) == 0
+
+    def bar(v):
+        filled = int(max(0, min(v, 1)) * 10)
+        return "█" * filled + "░" * (10 - filled)
+
+    def trend(current, key):
+        """Compare current value against previous closure history."""
+        if is_first:
+            return "-- baseline"
+        prev = history[-1].get(key, 0)
+        delta = current - prev
+        arrow = "↗" if delta > 0.01 else "↘" if delta < -0.01 else "→"
+        tag = f"{arrow} {delta:+.3f}"
+        # Sigma check: is current beyond ±2σ of window?
+        if len(history) >= 3:
+            vals = [h.get(key, 0) for h in history]
+            mean = sum(vals) / len(vals)
+            variance = sum((v - mean) ** 2 for v in vals) / len(vals)
+            std = variance ** 0.5
+            if std > 0 and abs(current - mean) > 2 * std:
+                tag += " ⚡"
+        return tag
+
+    scarf_trend = trend(scarf_overall, "scarf")
+    trust_trend = trend(trust_score, "trust")
+    cei_trend = trend(cei_score, "cei")
+
+    lines = []
+    lines.append("")
+    lines.append(f"╔══ Step #{step_n} Closure {'(baseline)' if is_first else ''} ═══════════════════════════════════════╗")
+    lines.append(f"║  SCARF {scarf_overall:.2f}  {bar(scarf_overall)}  ({scarf_trend})")
+    lines.append(f"║  Trust {trust_score:.3f}  {bar(trust_score)}  ({trust_trend})")
+    lines.append(f"║  CEI   {cei_score:.2f}  {bar(cei_score)}  ({cei_tier} · {cei_trend})")
+    if is_first:
+        lines.append(f"║  💡 首次闭环 — 基线已建立。下次将显示趋势。")
+    else:
+        lines.append(f"║  {'─' * 62}")
+        dims = []
+        for dim_name in ["Status", "Certainty", "Autonomy", "Relatedness", "Fairness"]:
+            d = scarf.get(dim_name, {})
+            s = d.get("score", 0)
+            dims.append(f"{dim_name[:4]} {s:.2f} {bar(s)}")
+        lines.append(f"║  {' │ '.join(dims[:3])}")
+        lines.append(f"║  {' │ '.join(dims[3:])}")
+    if lesson:
+        lines.append(f"║  💡 {lesson[:58]}{'…' if len(lesson) > 58 else ''}")
+    if principles:
+        p_names = [p[:12] for p in principles[:4]]
+        lines.append(f"║  📊 {len(principles)}/12 原则: {', '.join(p_names)}{'…' if len(principles) > 4 else ''}")
+    lines.append("╚══════════════════════════════════════════════════════════════╝")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # 工具调用路由
 # ---------------------------------------------------------------------------
 
@@ -827,7 +911,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             git_commit = arguments.get("git_commit", "")
             mode = arguments.get("mode", "full")
             result = await asyncio.to_thread(post_task, task_desc, git_commit, mode)
-            # post_task returns objects that aren't JSON-serializable — safe conversion
+
             def safe_serialize(obj):
                 if isinstance(obj, dict):
                     return {k: safe_serialize(v) for k, v in obj.items()}
@@ -845,8 +929,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     except (TypeError, ValueError):
                         return str(obj)
             safe = safe_serialize(result)
-            return [TextContent(type="text", text=json.dumps(
-                safe, ensure_ascii=False, indent=2))]
+
+            # Record closure in sliding window for trend tracking
+            _closure_history.append({
+                "scarf": safe.get("scarf", {}).get("summary", {}).get("overall_score", 0),
+                "trust": safe.get("trust", {}).get("score", 0),
+                "cei": safe.get("cei", {}).get("score", 0),
+            })
+
+            # Build dashboard summary + JSON body
+            dashboard = _format_closure_dashboard(safe, _closure_history)
+            json_body = json.dumps(safe, ensure_ascii=False, indent=2)
+            return [TextContent(type="text", text=dashboard + "\n" + json_body)]
 
         elif name == "memory_sync_files":
             from plastic_promise.mcp.tools.sync import handle_memory_sync_files
