@@ -1307,6 +1307,23 @@ async def run_sse(port: int = 9020):
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    async def api_skill_track(request):
+        """Lightweight HTTP endpoint for skill_auto_track (used by hook scripts)."""
+        import json as _json
+        from starlette.responses import JSONResponse
+        try:
+            body = await request.json()
+            engine = get_engine()
+            from plastic_promise.mcp.tools.skill_tracking import handle_skill_auto_track
+            result = await handle_skill_auto_track(engine, {
+                "phase": body.get("phase", "start"),
+                "skill_name": body.get("skill_name", ""),
+            })
+            data = _json.loads(result[0].text) if result else {}
+            return JSONResponse(data)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     async def dashboard(request):
         """Serve the monitoring dashboard HTML page."""
         from starlette.responses import HTMLResponse
@@ -1445,6 +1462,7 @@ setInterval(refresh, 5000);
         Route("/api/stats", endpoint=api_stats),
         Route("/api/issues", endpoint=api_issues),
         Route("/api/trust", endpoint=api_trust),
+        Route("/api/skill-track", endpoint=api_skill_track, methods=["POST"]),
         Route("/dashboard", endpoint=dashboard),
     ], on_shutdown=[shutdown])
 
