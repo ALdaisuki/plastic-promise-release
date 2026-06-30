@@ -1,7 +1,8 @@
 # Plastic Promise Skills 模型 — 原子 MCP + 高层 Skill 组合架构
 
-> **状态**: 设计完成，待评审
+> **状态**: 审计通过，已修复，待实施
 > **日期**: 2026-06-30
+> **审计**: 首次审计发现 8 项问题（1 严重 + 4 中等 + 3 建议），全部已修复
 > **核心范式**: 约定工程 — 程序化技能优先，Superpowers 清单互补
 
 ## 一、设计目标
@@ -180,20 +181,28 @@ class SkillEngine:
         self._registry: dict[str, SkillDef] = {}
 
     def register(self, skill_def: SkillDef) -> None:
-        """注册一个技能定义到对应域。"""
+        """注册一个技能定义到对应域。
+
+        注册前自动验证:
+        1. 所有声明的 atoms 在 MCP Server 中已注册 (validate_dependencies)
+        2. skill_name 不与已有技能冲突
+        3. tier 为 "P2" 时，allowed_callers 必须只含 ["daemon"] 或 ["admin"]
+        失败抛出 SkillRegistrationError。
+        """
 
     async def exec(self, skill_name: str, params: dict = None,
                    caller: str = "claude") -> SkillResult:
         """执行一个技能。
 
         执行流程:
-        1. 查找 SkillDef，验证 caller 在 allowed_callers 中
-        2. skill_session_start(entity_id) — 创建追踪实体
-        3. 按 atoms 列表顺序调用 P0/P1 工具
-        4. 每个原子调用包裹 try/except → 按 degrade_map 降级
-        5. 调用 SkillDef.handler(ctx, params, atom_results)
-        6. skill_session_complete(entity_id) — 标记完成
-        7. 返回 SkillResult (含 audit_trail)
+        1. 查找 SkillDef — 不存在返回 SkillResult(success=false)
+        2. **调用者权限检查** — caller 不在 allowed_callers 中直接拒绝
+        3. skill_session_start(entity_id) — 创建追踪实体
+        4. 按 atoms 列表顺序调用 P0/P1 工具
+        5. 每个原子调用包裹 try/except → 按 degrade_map 降级
+        6. 调用 SkillDef.handler(ctx, params, atom_results)
+        7. skill_session_complete(entity_id) — 标记完成
+        8. 返回 SkillResult (含 audit_trail)
         """
 
     async def exec_chain(self, skill_names: list[str],
@@ -238,6 +247,50 @@ finally:
     await skill_session_complete(entity_id, outcome=...)
 ```
 
+### 4.5 安全边界与依赖验证
+
+**调用者权限强制执行** — `SkillEngine.exec()` 在步骤 2 检查:
+
+```python
+async def exec(self, skill_name, params=None, caller="claude"):
+    skill = self._registry.get(skill_name)
+    if skill is None:
+        return SkillResult(success=False, errors=[f"Unknown skill: {skill_name}"])
+    if caller not in skill.allowed_callers:
+        return SkillResult(success=False, errors=[
+            f"Caller '{caller}' not in allowed_callers {skill.allowed_callers}"
+        ])
+    # ... continue execution
+```
+
+**依赖验证** — `SkillEngine.register()` 自动检查:
+
+```python
+def register(self, skill_def: SkillDef) -> None:
+    # 1. 检查技能名不冲突
+    if skill_def.name in self._registry:
+        raise SkillRegistrationError(f"Skill '{skill_def.name}' already registered")
+
+    # 2. 验证所有声明的 atoms 在 MCP Server 中可用
+    available_tools = {t.name for t in self._ctx.list_tools()}
+    for atom in skill_def.atoms:
+        if atom not in available_tools:
+            raise SkillRegistrationError(
+                f"Atom '{atom}' required by '{skill_def.name}' not in MCP tools"
+            )
+
+    # 3. P2 技能强制 daemon/admin 调用者
+    if skill_def.tier == "P2":
+        if set(skill_def.allowed_callers) - {"daemon", "admin"}:
+            raise SkillRegistrationError(
+                f"P2 skill '{skill_def.name}' must only allow ['daemon'] or ['admin']"
+            )
+        if not skill_def.allowed_callers:
+            skill_def.allowed_callers = ["daemon"]  # 默认
+
+    self._registry[skill_def.name] = skill_def
+```
+
 ## 五、8 域技能目录
 
 ### 域 1: Session Lifecycle (会话生命周期)
@@ -246,22 +299,30 @@ finally:
 
 | 技能 | 原子依赖 | 说明 | 调用者 |
 |------|---------|------|--------|
-| `session-init` | `auto_context_inject` → `domain(stats)` → `system(stats)` → `defense(get)` → `memory_gc(dry_run)` | CLAUDE.md 步骤 0-5 的完整封装 | claude, pi |
-| `session-close` | `skill_session_trace`(branch) → `memory_gc(dry_run)` → `pack_export` | 会话结束，导出经验包 | claude |
+| `session-init` | `principle_activate` → `context_supply` → `memory_store`(注入记录) → `domain(stats)` → `system(stats)` → `defense(get)` → `memory_gc(dry_run)` | CLAUDE.md 步骤 0-5 的完整封装；**拆解 `auto_context_inject` 为原子步骤**以避引擎双重包裹 | claude, pi |
+| `session-close` | `skill_session_trace`(branch, **include_auto_inject=false**) → `memory_gc`(dry_run) → `pack_export`(scope="branch", path="experience_packs/") | 会话结束，按分支作用域导出经验包 | claude |
 
-**`session-init` 执行链**:
+**`session-init` 执行链** (拆解 `auto_context_inject` 以避免 SkillEngine 双重包裹):
 
 ```
-1. auto_context_inject(task_description, source="claude_code")
-   → entity_id, context_pack, activated_principles, inject_memory_id
-2. domain(action="stats")
+1. principle_activate(task_type, task_description)
+   → 激活相关原则 + 违反后果 + 遵循建议
+2. context_supply(task_description, task_type)
+   → 三层上下文包 (core/related/divergent) + cross-encode rerank
+3. memory_store(content="[AUTO INJECT] {task_description}...", tags=["auto_inject", ...])
+   → 注入记录写入记忆池 + 完整质量管道
+4. domain(action="stats")
    → 域联邦健康度 + 当前活跃域
-3. system(action="stats")
+5. system(action="stats")
    → 记忆池总量 + 衰减分布 + fuzzy buffer 积压
-4. defense(action="get")
+6. defense(action="get")
    → 信任分 + 防线状态
-5. memory_gc(dry_run=True)
+7. memory_gc(dry_run=True)
    → 衰减记忆预览 + 合并候选
+
+引擎自动包裹:
+- SkillEngine.exec() 在外层执行 skill_session_start/complete
+- 内部原子不再各自创建 session，消除双重追踪
 
 降级路径:
 - MCP 服务器离线 → fallback: 文件系统降级 (写 .md + [[pending-sync]])
@@ -305,8 +366,10 @@ finally:
 
 **`branch-closure-check` — 对应 CLAUDE.md 三重验收**:
 
+> **注意**: `skill_session_trace` 调用使用 `include_auto_inject=false` (默认)以避免 `auto_inject:*` 瞬时 session 污染孤儿检测和链验证结果。
+
 ```
-1. skill_session_trace(session_scope="branch")
+1. skill_session_trace(session_scope="branch", include_auto_inject=false)
    → 验收: chain_complete=true, gaps=[], chain_valid=true
    → 链首: brainstorming|systematic-debugging|requesting-code-review
    → 链尾: finishing-a-development-branch|receiving-code-review
@@ -409,6 +472,20 @@ class SkillScheduler:
 
 **`evolve-from-feedback` — 封装现有 `SoulLoop.post_task()`**:
 
+> **注意**: `SoulLoop.post_task()` 是同步方法。在技能 handler 中通过 `asyncio.to_thread()` 包装为异步调用，避免阻塞事件循环。
+
+```python
+async def _evolve_from_feedback_handler(ctx, params, atom_results):
+    import asyncio
+    result = await asyncio.to_thread(
+        ctx._soul_loop.post_task,
+        params["task_description"],
+        params.get("git_commit", ""),
+        params.get("mode", "full"),
+    )
+    return SkillResult(success=True, data=result, ...)
+```
+
 ```
 输入: task_description, git_commit, mode ("light"|"full")
   1. alignment: principle_activate + PrincipleTracker.record
@@ -467,7 +544,7 @@ allowed_callers: [claude, pi]
 ## 做什么
 调用 `SkillEngine.exec("session-init")`，依次执行：
 1. Server up check (MCP 9020 健康检查)
-2. auto_context_inject → 原则激活 + 记忆召回 + 实体追踪
+2. principle_activate + context_supply + memory_store → 原则激活 + 记忆召回 + 实体追踪
 3. domain(stats) → 域联邦健康度
 4. system(stats) → 记忆池总量 + fuzzy buffer
 5. defense(get) → 信任分 + 防线状态
@@ -481,6 +558,70 @@ allowed_callers: [claude, pi]
 
 ## 对应程序化技能
 `plastic_promise/skills/session_lifecycle.py::skill_session_init`
+```
+
+### 7.1 Superpowers 技能注册
+
+清单文件存放在 `.claude/skills/plastic-promise/`，通过 `~/.claude/settings.json` 注册：
+
+```json
+{
+  "skills": {
+    "additionalSkillDirs": [".claude/skills/plastic-promise"]
+  }
+}
+```
+
+每个 `.md` 清单的 frontmatter 必须包含 `programmatic_skill` 字段，指向对应的 Python 技能：
+
+```markdown
+---
+name: session-init
+...
+programmatic_skill: session_lifecycle.session-init
+---
+```
+
+当 Claude 调用 `Skill("plastic-promise:session-init")` 时，SuperPowers 框架读取清单内容，然后在内部调用 `SkillEngine.exec("session-init")`。
+
+### 7.2 项目目录结构
+
+```
+plastic_promise/
+├── skills/                          # ← 新增: 程序化技能模块
+│   ├── __init__.py
+│   ├── engine.py                    # SkillEngine + SkillDef + SkillResult
+│   ├── session_lifecycle.py         # 域 1: session-init, session-close
+│   ├── memory_operations.py         # 域 2: smart-remember, context-aware-recall, ...
+│   ├── audit_compliance.py          # 域 3: pre-commit-audit, branch-closure-check, ...
+│   ├── collaboration.py             # 域 4: delegate-to-pi, review-and-accept, ...
+│   ├── knowledge_pack.py            # 域 5: export-experience, import-and-merge, ...
+│   ├── system_health.py             # 域 6: health-check, scheduled-gc, ...
+│   ├── principles_gov.py            # 域 7: align-principles, governance-check, ...
+│   └── self_evolution.py            # 域 8: evolve-from-feedback, close-the-loop, ...
+├── cron/
+│   ├── __init__.py
+│   ├── skill_scheduler.py           # ← 新增: P2 技能定时调度器
+│   ├── soul_closure_guardian.py     # 已有
+│   ├── health_scan.py               # 已有
+│   └── audit_daily.py               # 已有
+├── mcp/
+│   ├── tools/                       # 已有: 原子 MCP 工具 (不变)
+│   └── ...
+├── core/                            # 已有
+├── memory/                          # 已有
+└── ...
+
+.claude/
+├── skills/
+│   └── plastic-promise/             # ← 新增: Superpowers 清单
+│       ├── session-init.md
+│       ├── smart-remember.md
+│       ├── context-aware-recall.md
+│       ├── delegate-to-pi.md
+│       ├── evolve-from-feedback.md
+│       └── ...                      # 每域关键技能一个 .md
+└── settings.json                    # 更新: 注册技能目录
 ```
 
 ## 八、错误处理与降级矩阵
@@ -501,13 +642,12 @@ allowed_callers: [claude, pi]
 
 | 现有组件 | 集成方式 | 变更程度 |
 |---------|---------|---------|
-| `auto_context_inject` | 成为 `session-init` 的第一个原子调用 | **零变更** — 直接复用 handler |
-| `SoulLoop.post_task()` | 成为 `evolve-from-feedback` 的 handler | 包装为 SkillDef，不改内部逻辑 |
+| `auto_context_inject` (context.py) | **拆解为 3 个原子**供 `session-init` 调用: `principle_activate` + `context_supply` + `memory_store`(注入记录)。原 handler 保留为独立快速路径（非技能调用场景） | **零变更** — handler 不修改，`session-init` 直接调用拆解后的原子 |
+| `SoulLoop.post_task()` | 成为 `evolve-from-feedback` 的 handler，通过 `asyncio.to_thread()` 包装 | **零变更** — 不改内部逻辑 |
 | `SKILL_CHAIN_MAP` | `SkillEngine.exec_chain()` 使用 | 扩展为包含 8 域技能链定义 |
-| `skill_session_start/complete` | SkillEngine 自动包裹 | **零变更** — 引擎层调用 |
+| `skill_session_start/complete` | SkillEngine 自动包裹，**引擎层只创建 1 个 session 实体** | **零变更** — 引擎层调用 |
 | `pi_daemon.py` | 改为调用 `SkillEngine.exec("claim-task")` | 轻量 — daemon 调用技能而非直接操作标签 |
 | CLAUDE.md 步骤 0-5 | 替换为 `SkillEngine.exec("session-init")` | 6 个 MCP 调用 → 1 个技能调用 |
-| `handle_auto_context_inject` | 技能链的原型参考 | **零变更** — 已经是 4 步链模式 |
 
 ## 十、实现路线图
 
