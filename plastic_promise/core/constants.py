@@ -572,9 +572,9 @@ MERGE_AUDIT_RETENTION_DAYS = 7         # merged records kept in SQLite before pe
 
 SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     # ── SuperPowers 原始 skills (概念层) ──
-    "brainstorming":               {"predecessors": [],           "successors": ["using-git-worktrees", "writing-plans"]},
+    "brainstorming":               {"predecessors": [],           "successors": ["using-git-worktrees"]},
     "using-git-worktrees":         {"predecessors": ["brainstorming"], "successors": ["writing-plans"]},
-    "writing-plans":               {"predecessors": ["brainstorming", "using-git-worktrees"], "successors": ["subagent-driven-development", "executing-plans"]},
+    "writing-plans":               {"predecessors": ["using-git-worktrees"], "successors": ["subagent-driven-development", "executing-plans"]},
     "subagent-driven-development": {"predecessors": ["writing-plans"], "successors": ["test-driven-development", "requesting-code-review"]},
     "executing-plans":             {"predecessors": ["writing-plans"], "successors": ["test-driven-development", "verification-before-completion"]},
     "test-driven-development":     {"predecessors": ["subagent-driven-development", "executing-plans", "systematic-debugging"], "successors": ["verification-before-completion", "requesting-code-review"]},
@@ -590,9 +590,9 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     "using-superpowers":           {"predecessors": [], "successors": ["brainstorming", "systematic-debugging", "requesting-code-review"]},
 
     # ── Plastic Promise Programmatic Skills (sp-* 系列) — 与概念层一一对应 ──
-    "sp-brainstorming":               {"predecessors": [],                    "successors": ["sp-using-git-worktrees", "sp-writing-plans"]},
+    "sp-brainstorming":               {"predecessors": [],                    "successors": ["sp-using-git-worktrees"]},
     "sp-using-git-worktrees":         {"predecessors": ["sp-brainstorming"],  "successors": ["sp-writing-plans"]},
-    "sp-writing-plans":               {"predecessors": ["sp-brainstorming", "sp-using-git-worktrees"], "successors": ["sp-subagent-driven-development", "sp-executing-plans"]},
+    "sp-writing-plans":               {"predecessors": ["sp-using-git-worktrees"], "successors": ["sp-subagent-driven-development", "sp-executing-plans"]},
     "sp-subagent-driven-development": {"predecessors": ["sp-writing-plans"],  "successors": ["sp-test-driven-development", "sp-requesting-code-review"]},
     "sp-executing-plans":             {"predecessors": ["sp-writing-plans"],  "successors": ["sp-test-driven-development", "sp-verification-before-completion"]},
     "sp-test-driven-development":     {"predecessors": ["sp-subagent-driven-development", "sp-executing-plans", "sp-systematic-debugging"], "successors": ["sp-verification-before-completion", "sp-requesting-code-review"]},
