@@ -255,26 +255,22 @@ git commit -m "feat: add skills package with SkillDef, SkillResult, SkillRegistr
 from unittest.mock import MagicMock, AsyncMock, patch
 from plastic_promise.skills.engine import AtomRegistry
 
+def _make_mock_tool(name: str):
+    """Create a minimal mock tool with a .name attribute — mimics MCP Tool objects."""
+    tool = MagicMock()
+    tool.name = name
+    return tool
+
 class TestAtomRegistry:
     def test_build_returns_core_atoms(self):
         """AtomRegistry.build() must include all P0 atoms."""
         engine = MagicMock()
-        # engine must provide list_tools() for dependency validation
-        mock_tools = [
-            MagicMock(name="principle_activate"),
-            MagicMock(name="context_supply"),
-            MagicMock(name="memory_store"),
-            MagicMock(name="memory_recall"),
-            MagicMock(name="memory_stats"),
-            MagicMock(name="defense"),
-            MagicMock(name="domain"),
-            MagicMock(name="system"),
-            MagicMock(name="skill_session_start"),
-            MagicMock(name="skill_session_complete"),
-            MagicMock(name="memory_gc"),
-        ]
-        for t in mock_tools:
-            t.name = t._mock_name
+        # engine.list_tools() returns Tool objects, each with a .name attribute
+        mock_tools = [_make_mock_tool(n) for n in [
+            "principle_activate", "context_supply", "memory_store",
+            "memory_recall", "memory_stats", "defense", "domain",
+            "system", "skill_session_start", "skill_session_complete", "memory_gc",
+        ]]
         engine.list_tools = MagicMock(return_value=mock_tools)
 
         registry = AtomRegistry.build(engine)
@@ -287,14 +283,9 @@ class TestAtomRegistry:
     def test_build_includes_p1_p2_atoms(self):
         """All tools from the MCP server tool list must be included."""
         engine = MagicMock()
-        mock_tools = [
-            MagicMock(name="audit_run"),
-            MagicMock(name="pack_export"),
-            MagicMock(name="skill_session_trace"),
-            MagicMock(name="memory_gc"),
-        ]
-        for t in mock_tools:
-            t.name = t._mock_name
+        mock_tools = [_make_mock_tool(n) for n in [
+            "audit_run", "pack_export", "skill_session_trace", "memory_gc",
+        ]]
         engine.list_tools = MagicMock(return_value=mock_tools)
 
         registry = AtomRegistry.build(engine)
@@ -306,12 +297,9 @@ class TestAtomRegistry:
     def test_build_returns_different_callables(self):
         """Each atom callable must be a distinct function."""
         engine = MagicMock()
-        mock_tools = [
-            MagicMock(name="principle_activate"),
-            MagicMock(name="memory_store"),
-        ]
-        for t in mock_tools:
-            t.name = t._mock_name
+        mock_tools = [_make_mock_tool(n) for n in [
+            "principle_activate", "memory_store",
+        ]]
         engine.list_tools = MagicMock(return_value=mock_tools)
 
         registry = AtomRegistry.build(engine)
@@ -450,21 +438,11 @@ class TestSkillEngineRegister:
     def mock_engine(self):
         engine = MagicMock()
         # Mock list_tools to return a tool set that includes the atoms we test with
-        mock_tools = [
-            MagicMock(name="memory_store"),
-            MagicMock(name="memory_recall"),
-            MagicMock(name="principle_activate"),
-            MagicMock(name="context_supply"),
-            MagicMock(name="domain"),
-            MagicMock(name="system"),
-            MagicMock(name="defense"),
-            MagicMock(name="memory_gc"),
-            MagicMock(name="skill_session_start"),
-            MagicMock(name="skill_session_complete"),
-            MagicMock(name="issue_create"),
-        ]
-        for t in mock_tools:
-            t.name = t._mock_name
+        mock_tools = [_make_mock_tool(n) for n in [
+            "memory_store", "memory_recall", "principle_activate",
+            "context_supply", "domain", "system", "defense", "memory_gc",
+            "skill_session_start", "skill_session_complete", "issue_create",
+        ]]
         engine.list_tools = MagicMock(return_value=mock_tools)
         return engine
 
@@ -650,20 +628,11 @@ class TestSkillEngineExec:
     @pytest.fixture
     def mock_engine(self):
         engine = MagicMock()
-        mock_tools = [
-            MagicMock(name="principle_activate"),
-            MagicMock(name="context_supply"),
-            MagicMock(name="memory_store"),
-            MagicMock(name="memory_recall"),
-            MagicMock(name="domain"),
-            MagicMock(name="system"),
-            MagicMock(name="defense"),
-            MagicMock(name="memory_gc"),
-            MagicMock(name="skill_session_start"),
-            MagicMock(name="skill_session_complete"),
-        ]
-        for t in mock_tools:
-            t.name = t._mock_name
+        mock_tools = [_make_mock_tool(n) for n in [
+            "principle_activate", "context_supply", "memory_store",
+            "memory_recall", "domain", "system", "defense", "memory_gc",
+            "skill_session_start", "skill_session_complete",
+        ]]
         engine.list_tools = MagicMock(return_value=mock_tools)
         return engine
 
@@ -1048,19 +1017,11 @@ class TestSessionInit:
     @pytest.fixture
     def mock_engine(self):
         engine = MagicMock()
-        mock_tools = [
-            MagicMock(name="principle_activate"),
-            MagicMock(name="context_supply"),
-            MagicMock(name="memory_store"),
-            MagicMock(name="domain"),
-            MagicMock(name="system"),
-            MagicMock(name="defense"),
-            MagicMock(name="memory_gc"),
-            MagicMock(name="skill_session_start"),
-            MagicMock(name="skill_session_complete"),
-        ]
-        for t in mock_tools:
-            t.name = t._mock_name
+        mock_tools = [_make_mock_tool(n) for n in [
+            "principle_activate", "context_supply", "memory_store",
+            "domain", "system", "defense", "memory_gc",
+            "skill_session_start", "skill_session_complete",
+        ]]
         engine.list_tools = MagicMock(return_value=mock_tools)
         return engine
 
@@ -1207,7 +1168,7 @@ async def _session_init_handler(ctx, params, atom_results):
     context_data = {}
     context_raw = atom_results.get("context_supply")
     if context_raw and hasattr(context_raw[0], 'text'):
-        context_data = {"raw": context_raw[0].text}  # ContextPack .to_prompt() returns formatted text
+        context_data = {"prompt": context_raw[0].text}  # ContextPack.to_prompt() returns formatted text
     memory_data = parse(atom_results.get("memory_store"))
     domain_data = parse(atom_results.get("domain"))
     system_data = parse(atom_results.get("system"))
@@ -1301,16 +1262,10 @@ class TestSmartRemember:
     @pytest.fixture
     def mock_engine(self):
         engine = MagicMock()
-        mock_tools = [
-            MagicMock(name="principle_activate"),
-            MagicMock(name="memory_recall"),
-            MagicMock(name="memory_store"),
-            MagicMock(name="memory_update"),
-            MagicMock(name="skill_session_start"),
-            MagicMock(name="skill_session_complete"),
-        ]
-        for t in mock_tools:
-            t.name = t._mock_name
+        mock_tools = [_make_mock_tool(n) for n in [
+            "principle_activate", "memory_recall", "memory_store",
+            "memory_update", "skill_session_start", "skill_session_complete",
+        ]]
         engine.list_tools = MagicMock(return_value=mock_tools)
         return engine
 
@@ -1421,6 +1376,7 @@ Expected: FAIL — module not found
 
 import json
 
+from plastic_promise.core.constants import DEDUP_SIMILARITY_THRESHOLD
 from plastic_promise.skills.engine import SkillDef, SkillResult
 
 
@@ -1449,10 +1405,10 @@ async def _smart_remember_handler(ctx, params, atom_results):
     recall_data = parse(atom_results.get("memory_recall"))
     core_results = recall_data.get("core", [])
 
-    # Check for duplicates: any core result with relevance >= 0.7
+    # Check for duplicates: any core result with relevance >= DEDUP_SIMILARITY_THRESHOLD (0.85)
     duplicate = None
     for item in core_results:
-        if item.get("relevance", 0) >= 0.7:
+        if item.get("relevance", 0) >= DEDUP_SIMILARITY_THRESHOLD:
             duplicate = item
             break
 
