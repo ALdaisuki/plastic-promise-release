@@ -220,7 +220,8 @@ class SkillEngine:
         entity_id: str = ""
         task_description = params.get("task_description", skill_def.description)
 
-        # 3. skill_session_start
+        # 3. skill_session_start — failure degrades tracking but does not abort
+        tracking_degraded = False
         start_handler = self._atoms.get("skill_session_start")
         if start_handler:
             try:
@@ -230,8 +231,18 @@ class SkillEngine:
                 })
                 start_data = json.loads(start_result[0].text)
                 entity_id = start_data.get("entity_id", "")
+            except json.JSONDecodeError as e:
+                tracking_degraded = True
+                degrade_log.append(
+                    f"skill_session_start: malformed JSON response — "
+                    f"session tracking disabled for this execution ({e})"
+                )
             except Exception as e:
-                degrade_log.append(f"skill_session_start: {e}")
+                tracking_degraded = True
+                degrade_log.append(
+                    f"skill_session_start: failed — "
+                    f"session tracking disabled for this execution ({e})"
+                )
 
         try:
             # 4. Call atoms in order with degradation
@@ -283,7 +294,9 @@ class SkillEngine:
                         return SkillResult(
                             skill_name=skill_name, success=False,
                             data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
-                            degrade_log=degrade_log, audit_trail={"entity_id": entity_id}, errors=errors,
+                            degrade_log=degrade_log,
+                            audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
+                            errors=errors,
                         )
 
             # 5. Call handler
@@ -301,7 +314,7 @@ class SkillEngine:
                     degrade_log.append(f"skill_session_complete: {e}")
 
             # 7. Return
-            result.audit_trail = {"entity_id": entity_id}
+            result.audit_trail = {"entity_id": entity_id, "tracking_degraded": tracking_degraded}
             result.degrade_log = result.degrade_log or degrade_log
             result.errors = result.errors or errors
             return result
@@ -322,7 +335,9 @@ class SkillEngine:
             return SkillResult(
                 skill_name=skill_name, success=False,
                 data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
-                degrade_log=degrade_log, audit_trail={"entity_id": entity_id}, errors=errors,
+                degrade_log=degrade_log,
+                audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
+                errors=errors,
             )
 
 
