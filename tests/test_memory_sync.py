@@ -13,6 +13,9 @@ class TestMemorySyncFiles:
         """空目录返回 0 条同步。"""
         async def run():
             engine = ContextEngine(use_sqlite=False)
+            engine._ldb = None  # disable LanceDB dedup in tests
+            from plastic_promise.mcp.tools.memory import _get_fuzzy_buffer
+            _get_fuzzy_buffer(engine)
             with tempfile.TemporaryDirectory() as td:
                 result = await _call(engine, {"source_dir": td})
                 assert result["synced"] == 0
@@ -23,6 +26,9 @@ class TestMemorySyncFiles:
         """单条 .md 正确解析 frontmatter 并存储。"""
         async def run():
             engine = ContextEngine(use_sqlite=False)
+            engine._ldb = None  # disable LanceDB dedup in tests
+            from plastic_promise.mcp.tools.memory import _get_fuzzy_buffer
+            _get_fuzzy_buffer(engine)
             with tempfile.TemporaryDirectory() as td:
                 md_path = os.path.join(td, "test-memory.md")
                 with open(md_path, "w", encoding="utf-8") as f:
