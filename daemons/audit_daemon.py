@@ -11,8 +11,11 @@ import sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Also add project root so plastic_promise is importable
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
 
-DB_PATH = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+DB_PATH = os.environ.get("PLASTIC_DB_PATH", os.path.join(_project_root, "plastic_memory.db"))
 
 
 async def run_audit():
@@ -149,18 +152,18 @@ async def run_audit():
     if auto_fixes:
         report += f" | fixes: {'; '.join(auto_fixes)}"
 
-    # Store via subprocess to Pi (memory_store via MCP)
+    # Store via direct ContextEngine call (project root now in sys.path)
     try:
-        import subprocess
-        subprocess.run([
-            "python", "-c",
-            f"from plastic_promise.core.context_engine import ContextEngine; "
-            f"e = ContextEngine(); "
-            f"e.register_memory({{'content': {json.dumps(report)}, "
-            f"'memory_type': 'reflection', 'tags': {json.dumps(['audit','domain:governing'])}}})"
-        ], capture_output=True, timeout=10)
-    except Exception:
-        pass
+        from plastic_promise.core.context_engine import ContextEngine
+        engine = ContextEngine()
+        engine.register_memory({
+            "content": report,
+            "memory_type": "reflection",
+            "tags": ["audit", "domain:governing"],
+            "source": "pi_daemon",
+        })
+    except Exception as e:
+        print(f"  [AUDIT] Failed to store report: {e}")
 
     # Print to console
     print(f"\n  {'='*50}")

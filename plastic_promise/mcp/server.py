@@ -112,7 +112,7 @@ async def list_tools() -> list[Tool]:
     tools.extend([
         Tool(
             name="memory_recall",
-            description="混合检索记忆（文本+图遍历双通道），返回三层上下文包。支持关键词、任务类型、时间范围过滤。",
+            description="混合检索记忆（文本+图遍历双通道），返回三层上下文包。strict=True 时无匹配返回空。",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -121,6 +121,7 @@ async def list_tools() -> list[Tool]:
                     "max_results": {"type": "integer", "description": "最大返回数 (默认 20)"},
                     "min_relevance": {"type": "number", "description": "最低关联分数 (默认 0.2)"},
                     "include_principles": {"type": "boolean", "description": "是否注入原则 (默认 true)"},
+                    "strict": {"type": "boolean", "description": "严格模式: 无匹配时返回空 (默认 false)"},
                 },
                 "required": ["query"],
             },
@@ -166,14 +167,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="memory_stats",
-            description="获取记忆池统计信息：总量、健康/衰退分布、类型分布、worth 分布。",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
             name="memory_list",
             description="按条件列出记忆：类型、来源、时间范围、worth 范围。",
             inputSchema={
@@ -213,21 +206,6 @@ async def list_tools() -> list[Tool]:
         ),
     ])
 
-    # === 记忆重分类 ===
-    tools.extend([
-        Tool(
-            name="memory_reclassify",
-            description="强制已有记忆重跑分类管线——重新分配 tier、domain、category。支持分批处理。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "batch_size": {"type": "integer", "description": "单次处理数量 (默认 50)"},
-                    "resume_from": {"type": "string", "description": "从指定 memory_id 继续（断点续传）"},
-                },
-            },
-        ),
-    ])
-
     # === 原则域 ===
     tools.extend([
         Tool(
@@ -242,29 +220,6 @@ async def list_tools() -> list[Tool]:
                     "domain_hint": {"type": "string", "description": "可选，限定域: building|fixing|designing|reflecting|governing|connecting|all"},
                 },
                 "required": ["task_type"],
-            },
-        ),
-        Tool(
-            name="principle_inherit",
-            description="触发原则单向扩散：work→all 或 life→all，权重按同步衰减系数 (0.70) 传播。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "source_domain": {"type": "string", "description": "源域: work/life"},
-                    "target_domain": {"type": "string", "description": "目标域: all"},
-                    "principle_ids": {"type": "array", "items": {"type": "string"}, "description": "要扩散的原则 ID 列表（空=全部）"},
-                },
-                "required": ["source_domain", "target_domain"],
-            },
-        ),
-        Tool(
-            name="principle_diffuse",
-            description="查询原则在域间的传播状态：当前激活域、传播路径、衰减后的权重。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "principle_id": {"type": "string", "description": "原则 ID (空=全部)"},
-                },
             },
         ),
         Tool(
@@ -320,16 +275,6 @@ async def list_tools() -> list[Tool]:
                     "start_node": {"type": "string", "description": "起始节点 ID"},
                     "max_hops": {"type": "integer", "description": "最大跳数 (默认 3)"},
                     "query_type": {"type": "string", "description": "查询类型: traverse/node_info/edge_list/activated_principles"},
-                },
-            },
-        ),
-        Tool(
-            name="context_ready",
-            description="返回或刷新上下文预备区缓存。预备参考——供查阅，非强制。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_hint": {"type": "string", "description": "任务类型提示词 (默认 general)"},
                 },
             },
         ),
@@ -505,19 +450,6 @@ async def list_tools() -> list[Tool]:
                     "strategy": {"type": "string", "description": "skip|replace|merge"},
                 },
                 "required": ["path"],
-            },
-        ),
-        Tool(
-            name="pack_recall",
-            description="Recall ONLY from stored memories. Strict mode: never fabricate — returns empty on no match.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query for memory retrieval"},
-                    "pack": {"type": "string", "description": "Optional pack name to scope recall"},
-                    "strict": {"type": "boolean", "description": "Strict mode: return empty on no match (default: true)"},
-                },
-                "required": ["query"],
             },
         ),
     ])
@@ -787,9 +719,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_forget":
             from plastic_promise.mcp.tools.memory import handle_memory_forget
             return await handle_memory_forget(engine, arguments)
-        elif name == "memory_stats":
-            from plastic_promise.mcp.tools.memory import handle_memory_stats
-            return await handle_memory_stats(engine, arguments)
         elif name == "memory_list":
             from plastic_promise.mcp.tools.memory import handle_memory_list
             return await handle_memory_list(engine, arguments)
@@ -799,20 +728,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_correct":
             from plastic_promise.mcp.tools.memory import handle_memory_correct
             return await handle_memory_correct(engine, arguments)
-        elif name == "memory_reclassify":
-            from plastic_promise.mcp.tools.reclassify import handle_memory_reclassify
-            return await handle_memory_reclassify(engine, arguments)
-
         # Principle domain
         elif name == "principle_activate":
             from plastic_promise.mcp.tools.principles import handle_principle_activate
             return await handle_principle_activate(engine, arguments)
-        elif name == "principle_inherit":
-            from plastic_promise.mcp.tools.principles import handle_principle_inherit
-            return await handle_principle_inherit(engine, arguments)
-        elif name == "principle_diffuse":
-            from plastic_promise.mcp.tools.principles import handle_principle_diffuse
-            return await handle_principle_diffuse(engine, arguments)
         elif name == "principle_evaluate":
             from plastic_promise.mcp.tools.principles import handle_principle_evaluate
             return await handle_principle_evaluate(engine, arguments)
@@ -827,9 +746,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "context_graph":
             from plastic_promise.mcp.tools.context import handle_context_graph
             return await handle_context_graph(engine, arguments)
-        elif name == "context_ready":
-            from plastic_promise.mcp.tools.context import handle_context_ready
-            return await handle_context_ready(engine, arguments)
         elif name == "auto_context_inject":
             from plastic_promise.mcp.tools.context import handle_auto_context_inject
             return await handle_auto_context_inject(engine, arguments)
@@ -872,10 +788,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "pack_import":
             from plastic_promise.mcp.tools.management import handle_pack_import
             return await handle_pack_import(engine, arguments)
-        elif name == "pack_recall":
-            from plastic_promise.mcp.tools.management import handle_pack_recall
-            return await handle_pack_recall(engine, arguments)
-
         # Domain federation
         elif name == "domain":
             from plastic_promise.mcp.tools.domain import handle_domain
@@ -989,7 +901,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 ensure_ascii=False))]
 
         elif name == "memory_sync_files":
-            from plastic_promise.mcp.tools.sync import handle_memory_sync_files
+            from plastic_promise.mcp.tools.memory import handle_memory_sync_files
             return await handle_memory_sync_files(engine, arguments)
 
         else:

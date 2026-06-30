@@ -66,22 +66,18 @@ class AtomRegistry:
         "memory_store":     ("plastic_promise.mcp.tools.memory", "handle_memory_store"),
         "memory_update":    ("plastic_promise.mcp.tools.memory", "handle_memory_update"),
         "memory_forget":    ("plastic_promise.mcp.tools.memory", "handle_memory_forget"),
-        "memory_stats":     ("plastic_promise.mcp.tools.memory", "handle_memory_stats"),
         "memory_list":      ("plastic_promise.mcp.tools.memory", "handle_memory_list"),
         "memory_gc":        ("plastic_promise.mcp.tools.memory", "handle_memory_gc"),
         "memory_correct":   ("plastic_promise.mcp.tools.memory", "handle_memory_correct"),
 
         # === Principle domain (P0 + P1) ===
         "principle_activate":  ("plastic_promise.mcp.tools.principles", "handle_principle_activate"),
-        "principle_inherit":   ("plastic_promise.mcp.tools.principles", "handle_principle_inherit"),
-        "principle_diffuse":   ("plastic_promise.mcp.tools.principles", "handle_principle_diffuse"),
         "principle_evaluate":  ("plastic_promise.mcp.tools.principles", "handle_principle_evaluate"),
 
         # === Context domain (P0 + P1) ===
         "context_supply":       ("plastic_promise.mcp.tools.context", "handle_context_supply"),
         "context_inject":       ("plastic_promise.mcp.tools.context", "handle_context_inject"),
         "context_graph":        ("plastic_promise.mcp.tools.context", "handle_context_graph"),
-        "context_ready":        ("plastic_promise.mcp.tools.context", "handle_context_ready"),
         "auto_context_inject":  ("plastic_promise.mcp.tools.context", "handle_auto_context_inject"),
 
         # === Audit & Defense (P0 + P1) ===
@@ -103,7 +99,6 @@ class AtomRegistry:
         "issue_list":       ("plastic_promise.mcp.tools.management", "handle_issue_list"),
         "pack_export":      ("plastic_promise.mcp.tools.management", "handle_pack_export"),
         "pack_import":      ("plastic_promise.mcp.tools.management", "handle_pack_import"),
-        "pack_recall":      ("plastic_promise.mcp.tools.management", "handle_pack_recall"),
 
         # === Skill Tracking (P0 + P1) ===
         "skill_session_start":     ("plastic_promise.mcp.tools.skill_tracking", "handle_skill_session_start"),
@@ -362,8 +357,15 @@ class SkillEngine:
                 errors.append(msg)
                 continue
 
+            # Build atom-specific params: inject content for memory_store
+            atom_params = dict(params)
+            if atom_name == "memory_store" and "content" not in atom_params:
+                task_desc = params.get("task_description", "")
+                stage = params.get("stage", "")
+                atom_params["content"] = f"[{stage}] {task_desc}" if stage else task_desc
+
             try:
-                result = await atom_handler(self._ctx, params)
+                result = await atom_handler(self._ctx, atom_params)
                 atom_results[atom_name] = result
             except Exception as e:
                 action = skill_def.degrade_map.get(atom_name, "abort")
@@ -411,8 +413,14 @@ class SkillEngine:
             atom_handler = self._atoms.get(atom_name)
             if atom_handler is None:
                 return atom_name, None, f"Atom '{atom_name}' not in registry"
+            # Build atom-specific params: inject content for memory_store
+            atom_params = dict(params)
+            if atom_name == "memory_store" and "content" not in atom_params:
+                task_desc = params.get("task_description", "")
+                stage = params.get("stage", "")
+                atom_params["content"] = f"[{stage}] {task_desc}" if stage else task_desc
             try:
-                result = await atom_handler(self._ctx, params)
+                result = await atom_handler(self._ctx, atom_params)
                 return atom_name, result, None
             except Exception as e:
                 return atom_name, None, str(e)

@@ -15,10 +15,14 @@ import shutil
 import time
 
 INTERVAL = int(os.environ.get("PI_INTERVAL", "10"))
-AUDIT_INTERVAL = int(os.environ.get("AUDIT_INTERVAL_SECONDS", "3600"))
-PI_CMD = shutil.which("pi") or shutil.which("pi.cmd") or r"D:\npm-global\pi.cmd"
+AUDIT_INTERVAL = int(os.environ.get("AUDIT_INTERVAL_SECONDS", "300"))
+_PI_BIN = shutil.which("pi") or shutil.which("pi.cmd")
+PI_CMD = _PI_BIN if _PI_BIN else None  # None = no Pi CLI, daemon runs audit-only mode
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Also add project root so plastic_promise is importable
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
 
 from plastic_promise.defense.soul_enforcer import TrustManager
 _TRUST_MGR = TrustManager()  # 进程级单例，跨循环保持信任分
@@ -283,6 +287,9 @@ async def _run_and_finish(role: str, cfg: dict, content: str, task_id: str, rest
 
 
 async def execute_task(role: str, cfg: dict, task_content: str, task_id: str, restriction: str = None):
+    if PI_CMD is None:
+        return "[DAEMON] Pi CLI not installed — task execution skipped (audit-only mode)"
+
     domain = cfg["domain"]
     output_tag = cfg["output"]
 
@@ -332,11 +339,18 @@ def _now():
 
 async def main():
     # Write PID file for watchdog
-    with open("pi_daemon.pid", "w") as f:
+    _pid_path = os.path.join(_project_root, "pi_daemon.pid")
+    with open(_pid_path, "w") as f:
         f.write(str(os.getpid()))
-    print(f"Pi Daemon: Autonomous Pipeline (poll={INTERVAL}s, PID={os.getpid()})")
-    print(f"Roles: {', '.join(AGENT_ROLES.keys())}")
-    print(f"Auto-chain: {', '.join(f'{k}→{v}' for k,v in AUTO_CHAIN.items())}")
+
+    _mode = "audit-only" if PI_CMD is None else "full pipeline"
+    print(f"Pi Daemon: {_mode.upper()} (poll={INTERVAL}s, audit={AUDIT_INTERVAL}s, PID={os.getpid()})")
+    if PI_CMD is None:
+        print(f"  ⚠ Pi CLI not found — task dispatch disabled, running audit/recovery/cleanup only")
+        print(f"  Install Pi CLI to enable: pip install pi-agent  (or set PI_CMD env var)")
+    else:
+        print(f"Roles: {', '.join(AGENT_ROLES.keys())}")
+        print(f"Auto-chain: {', '.join(f'{k}→{v}' for k,v in AUTO_CHAIN.items())}")
 
     _cleanup_counter = 0
     # 冷启动: 30s 后执行首次审计（daemon 启动即获得基线）
@@ -344,42 +358,35 @@ async def main():
     from audit_daemon import run_audit
     await run_audit()
     while True:
-        task = get_pending_task()
-        if task:
-            role, cfg, content, task_id = task
-            tier = get_trust_tier(role, tm=_TRUST_MGR)
+        # Batch 1: task dispatch (only when Pi CLI is available)
+        if PI_CMD is not None:
+            task = get_pending_task()
+            if task:
+                role, cfg, content, task_id = task
+                tier = get_trust_tier(role, tm=_TRUST_MGR)
 
-            if tier["tier"] == "readonly":
-                print(f"  [BLOCKED] {role} trust={tier['trust']:.2f} readonly — cannot execute")
-                await asyncio.sleep(INTERVAL)
+                if tier["tier"] == "readonly":
+                    print(f"  [BLOCKED] {role} trust={tier['trust']:.2f} readonly — cannot execute")
+                    await asyncio.sleep(INTERVAL)
+                    continue
+
+                restriction = None
+                if tier["needs_review"]:
+                    restriction = "restricted: read+memory_recall only, no write/bash without Claude approval"
+                elif not tier["can_write"]:
+                    print(f"  [BLOCKED] {role} trust={tier['trust']:.2f} — no write permission")
+                    await asyncio.sleep(INTERVAL)
+                    continue
+
+                print(f"[{_now()}] {role}({cfg['domain']}) trust={tier['trust']:.2f} [{tier['tier']}] ← {task_id[:20]}...")
+                mark_task_active(task_id, role)
+                # 并发执行 — 不阻塞其他角色的扫描
+                asyncio.create_task(_run_and_finish(role, cfg, content, task_id, restriction))
+                # 防止同一任务重复认领
+                await asyncio.sleep(1)
                 continue
-
-            restriction = None
-            if tier["needs_review"]:
-                restriction = "restricted: read+memory_recall only, no write/bash without Claude approval"
-            elif not tier["can_write"]:
-                print(f"  [BLOCKED] {role} trust={tier['trust']:.2f} — no write permission")
-                await asyncio.sleep(INTERVAL)
-                continue
-
-            print(f"[{_now()}] {role}({cfg['domain']}) trust={tier['trust']:.2f} [{tier['tier']}] ← {task_id[:20]}...")
-            mark_task_active(task_id, role)
-            # 并发执行 — 不阻塞其他角色的扫描
-            asyncio.create_task(_run_and_finish(role, cfg, content, task_id, restriction))
-            # 防止同一任务重复认领
-            await asyncio.sleep(1)
-            continue
-            await notify_state_change({
-                "type": "tag_transition",
-                "from_tag": "task:pending",
-                "to_tag": cfg["output"],
-                "agent": role,
-                "domain": cfg["domain"],
-                "task_id": task_id,
-                "tags": [cfg["output"], f"owner:{role}", f"domain:{cfg['domain']}"],
-            })
-        else:
-            print(f"[{_now()}] idle.", end="\r")
+            else:
+                print(f"[{_now()}] idle.", end="\r")
 
         # Batch 2: 超时恢复 + 定期清理
         recover_stuck_tasks()
@@ -393,7 +400,6 @@ async def main():
                 _cleanup_counter = _audit_threshold - 1  # 下次循环再触发
             else:
                 cleanup_old_memories()
-                # 使用 packaged audit 入口（audit_daemon.py 在项目根目录，pi_daemon.py 同目录导入）
                 from audit_daemon import run_audit
                 await run_audit()
                 _cleanup_counter = 0

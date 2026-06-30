@@ -1,18 +1,9 @@
-"""MCP Memory 工具 — 记忆域 8 个公开工具
+"""MCP Memory 工具 — 记忆域
 
 公开工具:
-- memory_recall   : 混合检索记忆，返回三层上下文包
-- memory_store    : 存储一条记忆到 Plastic Promise 记忆池
-- memory_update   : 更新已有记忆的内容或元数据
-- memory_forget   : 软删除记忆（硬删除，标记为衰退待 GC 清理）
-- memory_stats    : 获取记忆池统计信息（含 fuzzy buffer 积压）
-- memory_list     : 按条件列出记忆
-- memory_gc       : 手动触发垃圾回收
-- memory_correct  : 人类纠正记忆
-
-内部处理器 (not exposed as MCP tools):
-- handle_fuzzy_status  : 查看模糊缓存区统计
-- handle_fuzzy_process : 触发模糊缓存区处理流水线
+- memory_recall, memory_store, memory_update, memory_forget
+- memory_list, memory_gc, memory_correct
+- memory_sync_files, memory_reclassify
 """
 
 import hashlib
@@ -108,6 +99,8 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         task_type = args.get("task_type", "general")
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
+        strict = args.get("strict", False)
+        pack = args.get("pack", None)
 
         # Check query cache
         cached = _cache_get(query, task_type, max_results, scope)
@@ -141,6 +134,12 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             "audit": pack.audit_metadata,
         }, ensure_ascii=False, indent=2)
 
+        # strict mode: return empty on no core matches
+        if strict and not pack.core:
+            return [TextContent(type="text", text=json.dumps(
+                {"strict": True, "core": [], "message": "no matches in strict mode"},
+                ensure_ascii=False))]
+
         # Cache the result
         _cache_set(query, task_type, max_results, scope, result_json)
 
@@ -164,21 +163,20 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.core.noise_filter import is_noise
-        content = args["content"]
+        content = args.get("content", "")
+        if not content or (isinstance(content, str) and not content.strip()):
+            return [TextContent(type="text", text=json.dumps(
+                {"stored": False, "reason": "empty_content",
+                 "note": "memory_store requires non-empty 'content'"},
+                ensure_ascii=False))]
         if is_noise(content):
             return [TextContent(type="text", text=json.dumps(
                 {"stored": False, "reason": "noise_filtered",
                  "content_preview": content[:100]},
                 ensure_ascii=False))]
 
-        # Health check: 异步检测 MCP 服务器可用性（不阻塞事件循环）
-        server_ok = True
-        try:
-            import httpx
-            async with httpx.AsyncClient() as client:
-                await client.get("http://127.0.0.1:9020/health", timeout=2.0)
-        except Exception:
-            server_ok = False
+        # Health check: detect MCP server availability (non-blocking, cached)
+        server_ok = getattr(engine, '_server_alive', True)
 
         memory_type = args.get("memory_type", "experience")
         source = args.get("source", "user")
@@ -582,3 +580,210 @@ async def handle_memory_correct(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "memory_correct"}, ensure_ascii=False))]
+
+
+# ═══════════════════════════════════════════════════════════════
+# memory_reclassify — 批量重跑分类管线
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]:
+    """Force existing memories through the classification pipeline."""
+    batch_size = args.get("batch_size", 50)
+    resume_from = args.get("resume_from", None)
+
+    fb = _get_fuzzy_buffer(engine)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    reclassified = 0
+    skipped = 0
+    errors = 0
+    remaining = 0
+
+    pending = []
+    for mid, mem in engine._memories.items():
+        if not isinstance(mem, dict):
+            continue
+        tags = mem.get("tags", [])
+        if "status:replaced" in tags:
+            skipped += 1
+            continue
+        if resume_from and mid <= resume_from:
+            skipped += 1
+            continue
+        pending.append((mid, dict(mem)))
+
+    remaining = max(0, len(pending) - batch_size)
+    batch = pending[:batch_size]
+
+    for mid, mem in batch:
+        try:
+            content = mem.get("content", "")
+            if not content.strip():
+                skipped += 1
+                continue
+
+            old_tags = list(mem.get("tags", []))
+            old_eids = list(mem.get("entity_ids", []))
+            old_source = mem.get("source", "user")
+            old_worth_s = mem.get("worth_success", 0)
+            old_worth_f = mem.get("worth_failure", 0)
+            old_access = mem.get("access_count", 0)
+
+            fb.store_urgent(
+                content=content,
+                memory_type=mem.get("memory_type", "experience"),
+                source=old_source,
+                entity_ids=old_eids,
+                custom_tags=old_tags,
+                domain_hint=None,
+            )
+            fb.process_pipeline()
+
+            new_mid = None
+            for check_mid in engine._memories:
+                if (check_mid not in dict(batch)
+                        and "status:replaced" not in engine._memories[check_mid].get("tags", [])
+                        and content[:50] in engine._memories[check_mid].get("content", "")):
+                    new_mid = check_mid
+                    break
+
+            if new_mid and new_mid in engine._memories:
+                new_mem = engine._memories[new_mid]
+                if "metadata" not in new_mem or not isinstance(new_mem.get("metadata"), dict):
+                    new_mem["metadata"] = {}
+                new_mem["metadata"]["worth_history"] = {
+                    "previous": {"success": old_worth_s, "failure": old_worth_f},
+                    "previous_access_count": old_access,
+                    "reclassified_at": now,
+                }
+
+            engine._memories[mid]["metadata"] = engine._memories[mid].get("metadata", {})
+            if not isinstance(engine._memories[mid]["metadata"], dict):
+                engine._memories[mid]["metadata"] = {}
+            engine._memories[mid]["metadata"]["replaced_by"] = new_mid
+            old_tags_replaced = list(engine._memories[mid].get("tags", []))
+            if "status:replaced" not in old_tags_replaced:
+                old_tags_replaced.append("status:replaced")
+            engine._memories[mid]["tags"] = old_tags_replaced
+
+            sqlite = getattr(engine, '_sqlite', None)
+            if sqlite is not None:
+                try:
+                    sqlite._conn.execute(
+                        "UPDATE memories SET tags = ?, metadata = ? WHERE id = ?",
+                        (json.dumps(old_tags_replaced),
+                         json.dumps(engine._memories[mid]["metadata"]), mid)
+                    )
+                    if new_mid and new_mid in engine._memories:
+                        sqlite._conn.execute(
+                            "UPDATE memories SET metadata = ? WHERE id = ?",
+                            (json.dumps(engine._memories[new_mid]["metadata"]), new_mid)
+                        )
+                    sqlite._conn.commit()
+                except Exception:
+                    pass
+
+            reclassified += 1
+        except Exception:
+            errors += 1
+
+    return [TextContent(type="text", text=json.dumps({
+        "reclassified": reclassified,
+        "remaining": remaining,
+        "skipped": skipped,
+        "errors": errors,
+        "batch_size": batch_size,
+        "last_id": batch[-1][0] if batch else None,
+        "total": len(engine._memories),
+    }, ensure_ascii=False))]
+
+
+# ═══════════════════════════════════════════════════════════════
+# memory_sync_files — 存量 .md 文件同步到 MCP 管道
+# ═══════════════════════════════════════════════════════════════
+
+def _parse_frontmatter(content: str) -> dict:
+    """使用 yaml 标准库解析 frontmatter。失败时降级返回空 dict。"""
+    if not content.startswith("---"):
+        return {}
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return {}
+    try:
+        import yaml
+        result = yaml.safe_load(parts[1])
+        return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}
+
+
+async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]:
+    """同步文件系统 .md 记忆到 MCP 管道。"""
+    source_dir = args.get("source_dir", "")
+    dry_run = args.get("dry_run", False)
+
+    if not source_dir or not os.path.isdir(source_dir):
+        return [TextContent(type="text", text=json.dumps({
+            "error": f"Invalid source_dir: {source_dir}",
+            "synced": 0, "skipped": 0, "errors": 0
+        }, ensure_ascii=False))]
+
+    synced = 0
+    skipped = 0
+    errors = 0
+
+    for fname in sorted(os.listdir(source_dir)):
+        if fname == "MEMORY.md" or not fname.endswith(".md"):
+            continue
+
+        fpath = os.path.join(source_dir, fname)
+        with open(fpath, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        if "[[synced-to-mcp]]" in content or "[[memory-system-primary-channel]]" in content:
+            skipped += 1
+            continue
+
+        fm = _parse_frontmatter(content)
+        name = fm.get("name", fname.replace(".md", ""))
+        metadata_fm = fm.get("metadata", {})
+        mem_type = metadata_fm.get("type", "reference") if isinstance(metadata_fm, dict) else "reference"
+        description = fm.get("description", "")
+
+        body = content
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            body = parts[-1].strip() if len(parts) >= 3 else content
+
+        tags = [f"cat:{mem_type}", "source:file-sync", f"file:{fname}"]
+        entity_id = f"memory:file:{name}"
+
+        if dry_run:
+            synced += 1
+            continue
+
+        try:
+            result = await handle_memory_store(engine, {
+                "content": f"[FILE SYNC] {name}: {description}\n\n{body}",
+                "memory_type": "experience",
+                "source": "file_sync",
+                "entity_ids": [entity_id],
+                "tags": tags,
+            })
+            data = json.loads(result[0].text)
+            if data.get("stored"):
+                synced += 1
+                new_content = content.rstrip() + "\n\n[[synced-to-mcp]]\n"
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+
+    return [TextContent(type="text", text=json.dumps({
+        "synced": synced,
+        "skipped": skipped,
+        "errors": errors,
+        "source_dir": source_dir,
+    }, ensure_ascii=False))]

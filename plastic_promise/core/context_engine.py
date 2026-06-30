@@ -78,18 +78,7 @@ class ContextPack:
                 if match:
                     lines.append(f"### {name}")
                     lines.append(f"> {match['content']}")
-                    lines.append(f"**⚠️ 违反后果**：指标失真，系统健康度不可信" if match["id"] == 1 else
-                                f"**⚠️ 违反后果**：Agent退化为最小合规，失去内在动机" if match["id"] == 2 else
-                                f"**⚠️ 违反后果**：记忆退化为被动档案库，上下文枯竭" if match["id"] == 3 else
-                                f"**⚠️ 违反后果**：原则形同虚设，行为与约定脱节" if match["id"] == 4 else
-                                f"**⚠️ 违反后果**：虚假安全感，机制存在但不产生效果" if match["id"] == 5 else
-                                f"**⚠️ 违反后果**：数据流断裂，系统各自为战" if match["id"] == 6 else
-                                f"**⚠️ 违反后果**：单点故障扩散，连锁崩溃" if match["id"] == 7 else
-                                f"**⚠️ 违反后果**：LLM失去感官，退化为纯文本补全" if match["id"] == 8 else
-                                f"**⚠️ 违反后果**：自主权错配，高分冒险低分难行" if match["id"] == 9 else
-                                f"**⚠️ 违反后果**：反馈信号丢失，行为漂移偏离约定" if match["id"] == 10 else
-                                f"**⚠️ 违反后果**：约定无法跨代传递，新Agent从零训练" if match["id"] == 11 else
-                                f"**⚠️ 违反后果**：代码腐化，维护成本指数增长，新人无法上手")
+                    lines.append(f"**⚠️ 违反后果**：{match.get('consequence', '未知后果')}")
                 else:
                     lines.append(f"- {name}")
             lines.append("")
@@ -620,6 +609,9 @@ class ContextEngine:
 
         Returns a list of MemoryRecord objects matching the filter criteria.
         """
+        # Refresh in-memory cache from SQLite first (catches external writes)
+        self._reload_from_sqlite()
+
         results = []
         for mid, mem in self._memories.items():
             if memory_type and mem.get("memory_type") != memory_type:
@@ -640,11 +632,25 @@ class ContextEngine:
                 break
         return results
 
+    def _reload_from_sqlite(self):
+        """Sync in-memory cache with SQLite: load any new memories written externally."""
+        if not self._sqlite:
+            return
+        try:
+            for mid, data in self._sqlite.iter_all():
+                if mid not in self._memories:
+                    self._memories[mid] = data
+        except Exception:
+            pass  # graceful degradation
+
     def memory_stats_json(self, scope=None) -> str:
         """Return memory pool statistics as a JSON string.
 
         Compatible with the Rust ContextEngine.memory_stats_json() interface.
         """
+        # Refresh in-memory cache from SQLite first (catches external writes)
+        self._reload_from_sqlite()
+
         total = len(self._memories)
         by_type: dict[str, int] = {}
         by_category: dict[str, int] = {}

@@ -1,18 +1,4 @@
-"""MCP Management tool handlers — system administration + issues + packs.
-
-公开工具:
-- system         : 系统工具统一入口 (action=stats|backup|migrate)。stats 含模糊缓存积压计数。
-- issue_create   : 创建新 Issue
-- issue_transition : 推进 Issue 状态
-- issue_list     : 列出 Issue
-- pack_export    : 导出体验包
-- pack_import    : 导入体验包
-- pack_recall    : 严格模式回忆
-
-内部处理器:
-- handle_system_stats   : 系统整体统计 (由 system action=stats 调用)
-- handle_system_backup  : 导出完整状态 (由 system action=backup 调用)
-- handle_system_migrate : 迁移数据 (由 system action=migrate 调用)
+"""MCP Management + Domain 工具 — 管理域
 """
 
 import json
@@ -335,19 +321,3 @@ async def handle_pack_import(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "pack_import"}, ensure_ascii=False))]
-
-
-# ---- pack_recall ----
-async def handle_pack_recall(engine: Any, args: dict) -> list[TextContent]:
-    """Recall ONLY from stored memories. Strict mode: never fabricate."""
-    try:
-        from plastic_promise.pack import recall_pack
-        result = recall_pack(
-            engine, query=args["query"],
-            pack_name=args.get("pack"),
-            strict=args.get("strict", True),
-        )
-        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
-    except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "pack_recall"}, ensure_ascii=False))]

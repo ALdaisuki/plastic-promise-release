@@ -1,9 +1,10 @@
-"""MCP Context 工具 — 上下文域 3 个工具
+"""MCP Context 工具 — 上下文域 4 个工具
 
 工具列表:
-- context_supply : 【核心工具】调用 ContextEngine.supply()，返回三层结构化上下文包
-- context_inject : 手动向 EntityGraph 注入原则关联边或注册新实体节点
-- context_graph : 查询实体关联图谱数据
+- context_supply      : 【核心工具】调用 ContextEngine.supply()，返回三层结构化上下文包
+- context_inject      : 手动向 EntityGraph 注入原则关联边或注册新实体节点
+- context_graph       : 查询实体关联图谱数据
+- auto_context_inject : 统一自动化上下文注入
 """
 
 import json
@@ -190,31 +191,6 @@ async def handle_context_graph(engine: Any, args: dict) -> list[TextContent]:
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "context_graph"}, ensure_ascii=False))]
-
-
-async def handle_context_ready(engine: Any, args: dict) -> list[TextContent]:
-    """Return or refresh the context-ready cache. 预备参考——供查阅，非强制."""
-    try:
-        task_hint = args.get("task_hint", "general")
-        ready = getattr(engine, '_context_ready', {})
-        if task_hint in ready:
-            pack = ready[task_hint]
-            # Check TTL
-            import datetime
-            ts = getattr(pack, '_ts', None)
-            if ts and (datetime.datetime.now() - ts).total_seconds() < 300:
-                return [TextContent(type="text", text=pack.to_prompt())]
-        # Not ready — do a fresh supply
-        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
-        try:
-            vec = get_embedder(fallback_on_error=False).embed(task_hint)
-        except Exception:
-            vec = FallbackEmbedder().embed(task_hint)
-        pack = engine.supply(task_hint, vec, "general", "global")
-        return [TextContent(type="text", text=pack.to_prompt())]
-    except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "context_ready"}, ensure_ascii=False))]
 
 
 # ---------------------------------------------------------------------------
