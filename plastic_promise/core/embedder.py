@@ -11,6 +11,7 @@ Environment variables:
   EMBEDDER_CACHE_TTL=300           (TTL in seconds, default: 300)
 """
 
+import asyncio
 import hashlib
 import os
 import threading
@@ -29,7 +30,6 @@ class Embedder(ABC):
 
     async def aembed(self, text: str) -> list[float]:
         """Async wrapper: runs embed() in thread pool to avoid event-loop blocking."""
-        import asyncio
         return await asyncio.to_thread(self.embed, text)
 
     @abstractmethod
