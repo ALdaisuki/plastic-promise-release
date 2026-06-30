@@ -128,6 +128,15 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
                  "content_preview": content[:100]},
                 ensure_ascii=False))]
 
+        # Health check: 异步检测 MCP 服务器可用性（不阻塞事件循环）
+        server_ok = True
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                await client.get("http://127.0.0.1:9020/health", timeout=2.0)
+        except Exception:
+            server_ok = False
+
         memory_type = args.get("memory_type", "experience")
         source = args.get("source", "user")
         scope = args.get("scope", "global")
@@ -178,6 +187,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
             "entity_ids": all_entities,
             "pipeline": result["pipeline"],
             "note": "必经流水线: raw→tagged→classified(大类)→embedded(细分)→主池",
+            "server_ok": server_ok,
         }, ensure_ascii=False))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
