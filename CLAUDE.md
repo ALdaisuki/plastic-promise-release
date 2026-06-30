@@ -193,6 +193,20 @@ defense(action="get") → 根据 tier 决定行为:
 | 用户打回/指出错误 | `defense(action="adjust", delta=-0.03)` | -0.03 |
 | 连续 5 步无失败 | `defense(action="adjust", delta=+0.01)` | +0.01 |
 
+## 减分机制（已生效）
+
+信任分通过 TrustStore 持久化到 SQLite，支持以下减分触发器：
+
+| 触发条件 | 幅度 | 触发方式 |
+|---------|------|---------|
+| SCARF < 0.40（step-closure 自动） | -0.02 | SoulLoop.post_task 自动 |
+| L0 防线违规（危险操作被拦截） | -0.05 | SoulEnforcer.pre_check 自动 |
+| L1 信任临界（< 0.15 被封锁） | -0.02 | SoulEnforcer.pre_check 自动 |
+| 时间衰减（24h 无活动） | -0.005/天 | TrustStore.get() 惰性触发 |
+| 用户打回/指出错误 | -0.03 | 手动 defense(action="adjust") |
+
+**信任分持久化**：信任分现在存储在 `plastic_memory.db` 的 `trust_scores` 表中，MCP 服务重启后不丢失。变更历史记录在 `trust_history` 表中。
+
 **为什么**: 信任分 0.6 从未波动意味着系统没有在"学习"——不区分好步骤和坏步骤。信任分是自演化的唯一量化指标，必须在每一步后更新。
 
 ## 关键约定

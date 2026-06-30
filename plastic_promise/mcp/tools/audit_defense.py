@@ -156,6 +156,19 @@ async def handle_audit_report(engine: Any, args: dict) -> list[TextContent]:
 # defense_trust (stub)
 # ---------------------------------------------------------------------------
 
+_trust_manager = None
+
+
+def _get_trust_manager() -> "TrustManager":
+    """Return a singleton TrustManager backed by TrustStore for persistence."""
+    global _trust_manager
+    if _trust_manager is None:
+        from plastic_promise.defense.trust_store import TrustStore
+        from plastic_promise.defense.soul_enforcer import TrustManager
+        _trust_manager = TrustManager(trust_store=TrustStore())
+    return _trust_manager
+
+
 async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
     """View or adjust the current trust score and its change history.
 
@@ -167,10 +180,9 @@ async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
-        from plastic_promise.defense.soul_enforcer import TrustManager
         action = args.get("action", "get")
         target = args.get("target", "")  # 空串=当前Agent，多Agent时传角色名
-        tm = TrustManager()
+        tm = _get_trust_manager()
         if action == "get":
             return [TextContent(type="text", text=json.dumps({
                 "trust": tm.get(target), "target": target or "default",
@@ -181,7 +193,7 @@ async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps({
                 "trust": tm.get(target), "target": target or "default",
                 "tier": tm.tier(target),
-                "history": tm.history(20),
+                "history": tm.history(target, 20),
             }, ensure_ascii=False, indent=2))]
         elif action == "adjust":
             delta = args.get("delta", 0.0)

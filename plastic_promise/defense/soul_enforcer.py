@@ -36,16 +36,25 @@ class TrustManager:
     target="" 表示默认 Agent (Claude 自己)。target="pi_builder" 等
     为多 Agent 场景的独立信任分追踪。
 
+    If *trust_store* is provided, all read/write operations are delegated
+    to the SQLite-backed TrustStore for persistence across restarts.
+    Without it, falls back to in-memory only (legacy / test mode).
+
     Attributes:
         _trusts: Dict[str, float] — agent_id → trust (0.0 ~ 1.0)
         _history: 信任分变更记录
+        _store: Optional TrustStore for persistence
     """
 
-    def __init__(self, initial_trust: float = TRUST_INITIAL) -> None:
+    def __init__(self, initial_trust: float = TRUST_INITIAL,
+                 trust_store: Any = None) -> None:
         self._trusts: Dict[str, float] = {}
         self._history: List[Dict[str, Any]] = []
+        self._store = trust_store  # None = in-memory only (legacy)
 
     def _trust(self, target: str = "") -> float:
+        if self._store:
+            return self._store.get(target)["trust"]
         return self._trusts.get(target, TRUST_INITIAL)
 
     def _set_trust(self, target: str, value: float):
@@ -62,6 +71,9 @@ class TrustManager:
             "old_value": old, "new_value": new,
             "timestamp": datetime.now(timezone.utc).isoformat(), "direction": "boost",
         })
+        if self._store:
+            self._store.save(target, new, self.tier(target), self.autonomy_level(target))
+            self._store.log_history(target, delta, reason, old, new, "boost")
         return new
 
     def decay(self, delta: float = TRUST_DECAY_RATE, reason: str = "", target: str = "") -> float:
@@ -75,6 +87,9 @@ class TrustManager:
             "old_value": old, "new_value": new,
             "timestamp": datetime.now(timezone.utc).isoformat(), "direction": "decay",
         })
+        if self._store:
+            self._store.save(target, new, self.tier(target), self.autonomy_level(target))
+            self._store.log_history(target, -delta, reason, old, new, "decay")
         return new
 
     def adjust(self, delta: float, reason: str = "", target: str = "") -> float:
@@ -83,9 +98,13 @@ class TrustManager:
         return self.decay(-delta, reason, target)
 
     def get(self, target: str = "") -> float:
+        if self._store:
+            return self._store.get(target)["trust"]
         return self._trusts.get(target, TRUST_INITIAL)
 
-    def history(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def history(self, target: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        if self._store:
+            return self._store.history(target, limit)
         if not self._history:
             return []
         return self._history[-limit:]
@@ -198,6 +217,12 @@ class SoulEnforcer:
                     "reason": f"Dangerous pattern match: {pattern}",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
+                # Violation-driven decay: L0 violation → -0.05
+                if self.trust_manager:
+                    try:
+                        self.trust_manager.decay(0.05, f"L0 violation: {pattern}")
+                    except Exception:
+                        pass
                 return {
                     "passed": False,
                     "layer_checks": layer_checks,
@@ -220,6 +245,12 @@ class SoulEnforcer:
                 "reason": f"Trust too low: {trust:.2f} < 0.15",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
+            # Violation-driven decay: L1 critical trust → -0.02
+            if self.trust_manager:
+                try:
+                    self.trust_manager.decay(0.02, f"L1 critical trust: {trust:.2f}")
+                except Exception:
+                    pass
         elif trust < 0.40:
             risk_score = max(risk_score, 0.50)
             layer_checks["L1"]["passed"] = True  # still passed, just warned

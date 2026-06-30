@@ -173,8 +173,9 @@ class SoulLoop:
         # 4. 信任联动
         try:
             if self._trust_manager is None:
+                from plastic_promise.defense.trust_store import TrustStore
                 from plastic_promise.defense.soul_enforcer import TrustManager
-                self._trust_manager = TrustManager()
+                self._trust_manager = TrustManager(trust_store=TrustStore())
             if result.get("scarf") and isinstance(result["scarf"], dict):
                 scarf_overall = result["scarf"].get("summary", {}).get("overall_score", 0.6)
                 if scarf_overall >= 0.80:
