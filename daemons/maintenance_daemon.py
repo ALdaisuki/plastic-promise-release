@@ -1,16 +1,21 @@
-"""Maintenance Daemon — 定时健康审计 + GC + 超时恢复 + 安全网扫描
+"""Maintenance Daemon — 定时健康审计 + GC + 超时恢复 + 免疫安全网
 
 轻量维护进程。MCP Server 是共享记忆唯一真相源，daemon 通过 /notify
 写入审计报告确保 MCP 进程可见。多 Agent 协调通过共享记忆池自治，
 不在此调度。
 
 原则 #1 奥卡姆剃刀: 从 pi_daemon(410行)+audit_daemon(226行) 砍掉
-Pi CLI 死代码 (~200行)，合并为 ~180 行维护守护进程。
+Pi CLI 死代码 (~200行)，合并为维护守护进程。
 
-Phase: Safety-Net Daemon — 新增三个安全网扫描器:
-  - scan_orphan_steps()     : 检测孤儿 step，分级自动修复
-  - scan_memory_health()    : 检测低 worth / 重复 / 衰减记忆
-  - scan_unclosed_issues()  : 检测超时未闭环 issue
+Phase: 免疫系统化 — 记忆池质量工程师:
+  - scan_duplicate_clusters()  : 检测并清理完全重复的记忆集群
+  - scan_stale_worth()         : 复活 (0,0) worth 记录
+  - scan_tier_migration()      : 基于访问活动自动升级 tier
+  - scan_category_stuck()      : 监控分类队列健康 + 触发 reclassify
+  - scan_orphan_steps()        : 检测孤儿 step，分级自动修复
+  - scan_unclosed_issues()     : 检测超时未闭环 issue
+  - scan_llm_classify()        : 后台 LLM 分类队列处理
+  - scan_self_noise (in run_audit) : daemon 自身审计去重
 """
 
 import asyncio
@@ -115,8 +120,11 @@ def cleanup_old_tags():
     conn.close()
 
 # ── 健康审计 ──────────────────────────────────────────────
+_last_audit_report = ""  # 自身去重：daemon 不制造重复噪音
+
 async def run_audit():
-    """四维健康审计: trust + pipeline + domain + bridge."""
+    """五维健康审计: trust + pipeline + domain + bridge + memory_quality."""
+    global _last_audit_report
     scores = {}
     findings = []
 
@@ -169,6 +177,31 @@ async def run_audit():
         scores["bridge"] = 0.0
         findings.append({"dim": "bridge", "detail": "/health unreachable"})
 
+    # 5. Memory Quality — 实时计算记忆池真实健康度
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        total_mem = conn.execute("SELECT COUNT(1) FROM memories").fetchone()[0]
+        zero_worth = conn.execute(
+            "SELECT COUNT(1) FROM memories WHERE worth_success=0 AND worth_failure=0"
+        ).fetchone()[0]
+        duplicate_clusters = conn.execute(
+            "SELECT COUNT(1) FROM (SELECT content, COUNT(1) as cnt FROM memories "
+            "GROUP BY content HAVING cnt > 1)"
+        ).fetchone()[0]
+        conn.close()
+        if total_mem > 0:
+            worth_health = 1.0 - (zero_worth / total_mem)
+            duplicate_penalty = min(0.3, duplicate_clusters * 0.05)
+            scores["memory_quality"] = round(max(0.0, worth_health - duplicate_penalty), 2)
+        else:
+            scores["memory_quality"] = 1.0
+        if zero_worth > 50:
+            findings.append({"dim": "memory_quality",
+                             "detail": f"{zero_worth}/{total_mem} zero-worth, {duplicate_clusters} dup clusters",
+                             "auto_fix": True})
+    except Exception:
+        scores["memory_quality"] = 0.5
+
     overall = round(sum(scores.values()) / max(len(scores), 1), 2)
 
     # Auto-fix: recover stuck pipeline tasks
@@ -178,27 +211,33 @@ async def run_audit():
             recover_stuck_tasks()
             auto_fixes.append("recovered stuck tasks")
 
-    # Store audit report via MCP /notify (ensures MCP process sees it)
+    # Store audit report — 自身去重：内容相同则不重复存储
     report = (
         f"AUDIT trust={scores['trust']:.2f} pipeline={scores['pipeline']:.2f} "
         f"domain={scores['domain']:.2f} bridge={scores['bridge']:.2f} "
-        f"→ {overall:.2f}"
+        f"mem_q={scores['memory_quality']:.2f} → {overall:.2f}"
     )
     if auto_fixes:
         report += f" | fixes: {'; '.join(auto_fixes)}"
 
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{MCP_URL}/notify", json={
-                "type": "audit_report",
-                "content": report,
-                "scores": scores,
-                "overall": overall,
-                "fixes": auto_fixes,
-                "ts": datetime.now().isoformat(),
-            }, timeout=5)
-    except Exception:
-        pass  # notify is best-effort
+    report_body = report  # 不含时间戳的纯内容用于去重比较
+    if report_body == _last_audit_report:
+        # 与上一轮完全相同 → 仅更新 last_accessed，不存储新记录
+        print(f"\n  AUDIT (skipped store: identical to previous)")
+    else:
+        _last_audit_report = report_body
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(f"{MCP_URL}/notify", json={
+                    "type": "audit_report",
+                    "content": report,
+                    "scores": scores,
+                    "overall": overall,
+                    "fixes": auto_fixes,
+                    "ts": datetime.now().isoformat(),
+                }, timeout=5)
+        except Exception:
+            pass  # notify is best-effort
 
     # Console display
     dims = " ".join(f"{k}={v:.2f}" for k, v in scores.items())
@@ -296,100 +335,249 @@ async def scan_orphan_steps():
         print(f"  [SAFETY_NET] scan_orphan_steps error: {e}")
 
 
-# ── 记忆健康扫描 ───────────────────────────────────────────
-async def scan_memory_health():
-    """检测问题记忆（低 worth / 重复 / 大量衰减）并自动修复。
+# ── 重复集群清理 ───────────────────────────────────────────
+async def scan_duplicate_clusters():
+    """直接 SQL GROUP BY 检测完全重复的记忆内容，保留 worth 最高的一条。
 
-    分级处理:
-      - worth < 0.15              → 自动 memory_forget
-      - 重复记忆 (merge 候选)     → 自动 forget 低分那条
-      - worth 0.15~0.30           → 发 task:pending 让 Pi 审查
-      - 大量衰减 (candidates>10)  → 发 task:pending 让 Pi 跑 GC
+    这是对旧 scan_memory_health 的替代——旧逻辑依赖 GC vector merge
+    (cos≥0.70)，但完全相同的文本在向量库里未必会被检测到。
     """
     try:
-        from plastic_promise.core.context_engine import ContextEngine
-        from plastic_promise.mcp.tools.memory import handle_memory_gc, handle_memory_forget
-        engine = ContextEngine()
-
-        # 1. 扫描低 worth 记忆 (SQLite 直查，动态计算 worth_score)
         conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute(
-            "SELECT id, content, worth_success, worth_failure FROM memories "
-            "WHERE worth_success + worth_failure >= 3 "
-            "ORDER BY CAST(worth_success AS REAL) / (worth_success + worth_failure) ASC LIMIT 5"
+        clusters = conn.execute(
+            "SELECT content, COUNT(1) as cnt, GROUP_CONCAT(id) as ids, "
+            "GROUP_CONCAT(worth_success || '/' || worth_failure || '|' || id) as worth_info "
+            "FROM memories "
+            "WHERE content IS NOT NULL AND content != '' "
+            "GROUP BY content HAVING cnt > 1 ORDER BY cnt DESC LIMIT 20"
         ).fetchall()
         conn.close()
 
-        fixed = False
-        for mid, content, ws, wf in rows:
-            if fixed:
-                break
-            total = ws + wf
-            worth = ws / total if total > 0 else 0
+        cleaned = 0
+        for content, cnt, ids_str, worth_info in clusters:
+            # 解析每条记录的 worth
+            id_list = ids_str.split(",")
+            if len(id_list) < 2:
+                continue
 
-            if worth < 0.15:
-                # Tier 1: 直接清理
+            best_id = None
+            best_worth = -1.0
+            for mid in id_list:
+                total = 0
+                success = 0
+                # 从 worth_info 中提取对应 id 的 worth
+                for entry in worth_info.split(","):
+                    parts = entry.split("|")
+                    if len(parts) >= 2 and parts[1] == mid:
+                        frac = parts[0].split("/")
+                        if len(frac) == 2:
+                            try:
+                                s, f_val = int(frac[0]), int(frac[1])
+                                total = s + f_val
+                                success = s
+                            except ValueError:
+                                pass
+                        break
+                w = success / total if total > 0 else 0.5
+                if w > best_worth:
+                    best_worth = w
+                    best_id = mid
+
+            # 清理除 best 外的所有重复
+            to_forget = [mid for mid in id_list if mid != best_id]
+            if not to_forget:
+                continue
+
+            for mid in to_forget:
                 try:
-                    await handle_memory_forget(engine, {
-                        "memory_id": mid,
-                        "reason": "safety-net: worth too low (<0.15)",
-                    })
-                    print(f"  [SAFETY_NET] auto-forgot low-worth memory: "
-                          f"{mid[:20]}... (worth={worth:.2f})")
-                    fixed = True
+                    conn2 = sqlite3.connect(DB_PATH)
+                    # 软删除：标记为 decaying + 设置 forget reason
+                    conn2.execute(
+                        "UPDATE memories SET tags = json_set("
+                        "  COALESCE(tags, '[]'), '$[#]', 'decaying', '$[#]', "
+                        "  'forget:safety-net:duplicate_cluster'"
+                        ") WHERE id = ?",
+                        (mid,)
+                    )
+                    # 直接删除（SQLite 层面清除，下次 GC 会清理 LanceDB）
+                    conn2.execute("DELETE FROM memories WHERE id = ?", (mid,))
+                    conn2.commit()
+                    conn2.close()
+                    cleaned += 1
+                    print(f"  [DUP_CLEAN] forgot duplicate: {mid[:20]}... "
+                          f"from cluster of {cnt} (kept {best_id[:20]}...)")
                 except Exception as e:
-                    print(f"  [SAFETY_NET] forget failed: {e}")
-            elif worth < 0.30:
-                # Tier 2: 发任务给 Pi
-                preview = (content or "")[:60]
-                await dispatch_fix_task(
-                    "correct_memory",
-                    f"低 worth 记忆: {preview} (worth={worth:.2f})",
-                    target_id=mid,
-                )
-                fixed = True
+                    print(f"  [DUP_CLEAN] forget failed for {mid[:20]}...: {e}")
+                    continue
 
-        if fixed:
-            return
+            if cleaned > 0:
+                break  # 一次只清理一个集群
 
-        # 2. 扫描重复/衰减记忆 (MCP memory_gc dry_run)
-        gc_result_list = await handle_memory_gc(engine, {"dry_run": True})
-        if not gc_result_list:
-            return
-        gc_data = json.loads(gc_result_list[0].text)
-        merge_candidates = gc_data.get("merge", {}).get("merged_pairs", [])
-        decay_count = gc_data.get("candidates_count", 0)
-
-        # 处理重复记忆：只处理第一对
-        if merge_candidates:
-            pair = merge_candidates[0]
-            c1 = pair.get("candidate_1", {})
-            c2 = pair.get("candidate_2", {})
-            w1 = c1.get("worth_score", 0.5)
-            w2 = c2.get("worth_score", 0.5)
-            loser = c1 if w1 < w2 else c2
-            loser_id = loser.get("id", "")
-            if loser_id:
-                try:
-                    await handle_memory_forget(engine, {
-                        "memory_id": loser_id,
-                        "reason": "safety-net: duplicate (merged by GC)",
-                    })
-                    print(f"  [SAFETY_NET] auto-forgot duplicate memory: {loser_id[:20]}...")
-                    return
-                except Exception as e:
-                    print(f"  [SAFETY_NET] forget duplicate error: {e}")
-
-        # 大量衰减记忆 → 发任务让 Pi 审查后跑 GC
-        if decay_count > 10:
-            await dispatch_fix_task(
-                "gc_run",
-                f"大量衰减记忆: {decay_count} candidates，建议审查后执行 memory_gc(dry_run=false)",
-                target_id="",
-            )
+        if cleaned:
+            print(f"  [DUP_CLEAN] cleaned {cleaned} duplicates from cluster size {cnt}")
 
     except Exception as e:
-        print(f"  [SAFETY_NET] scan_memory_health error: {e}")
+        print(f"  [SAFETY_NET] scan_duplicate_clusters error: {e}")
+
+
+# ── Worth 复活 ──────────────────────────────────────────────
+async def scan_stale_worth():
+    """复活 worth 系统：对 (0,0) 记忆基于 last_accessed 计算真实 worth。
+
+    规则:
+      - last_accessed 7 天内且被访问过 → worth_success=1
+      - last_accessed 空/超过 30 天 → worth_failure=1
+      - 否则 → worth_success=1 (默认偏乐观)
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        count = conn.execute(
+            "SELECT COUNT(1) FROM memories WHERE worth_success=0 AND worth_failure=0"
+        ).fetchone()[0]
+        if count == 0:
+            return
+
+        # 只处理前 20 条（渐进修复，避免一次操作太多）
+        rows = conn.execute(
+            "SELECT id, last_accessed, created_at FROM memories "
+            "WHERE worth_success=0 AND worth_failure=0 LIMIT 20"
+        ).fetchall()
+        conn.close()
+
+        updated = 0
+        now = datetime.now()
+        for mid, last_acc, created_str in rows:
+            try:
+                if last_acc and last_acc.strip():
+                    try:
+                        last_dt = datetime.fromisoformat(last_acc)
+                        days_since = (now - last_dt).days
+                    except (ValueError, TypeError):
+                        days_since = 999
+                else:
+                    # 从未被访问 → 检查创建时间
+                    try:
+                        created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                        if created_dt.tzinfo:
+                            created_dt = created_dt.replace(tzinfo=None)
+                        days_since = (now - created_dt).days
+                    except (ValueError, TypeError):
+                        days_since = 999
+
+                if days_since <= 7:
+                    new_success, new_failure = 1, 0
+                elif days_since > 30:
+                    new_success, new_failure = 0, 1
+                else:
+                    new_success, new_failure = 1, 0  # 默认乐观
+
+                conn2 = sqlite3.connect(DB_PATH)
+                conn2.execute(
+                    "UPDATE memories SET worth_success=?, worth_failure=? WHERE id=?",
+                    (new_success, new_failure, mid)
+                )
+                conn2.commit()
+                conn2.close()
+                updated += 1
+            except Exception:
+                pass
+
+        if updated:
+            print(f"  [WORTH] revived {updated} stale worth records "
+                  f"(remaining: {count - updated})")
+
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_stale_worth error: {e}")
+
+
+# ── Tier 自动升级 ───────────────────────────────────────────
+async def scan_tier_migration():
+    """基于访问活动自动升级记忆 tier。
+
+    L1 → L2: last_accessed 7天内
+    L2 → L3: access_count > 5 且 last_accessed 3天内
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        now = datetime.now()
+        seven_days_ago = (now - timedelta(days=7)).isoformat()
+        three_days_ago = (now - timedelta(days=3)).isoformat()
+
+        # L1 → L2: 最近被访问过
+        upgraded_l1 = conn.execute(
+            "UPDATE memories SET tier='L2' "
+            "WHERE tier='L1' AND last_accessed > ?",
+            (seven_days_ago,)
+        ).rowcount
+
+        # L2 → L3: 高活跃度
+        upgraded_l2 = conn.execute(
+            "UPDATE memories SET tier='L3' "
+            "WHERE tier='L2' AND access_count > 5 AND last_accessed > ?",
+            (three_days_ago,)
+        ).rowcount
+
+        conn.commit()
+        conn.close()
+
+        if upgraded_l1 or upgraded_l2:
+            print(f"  [TIER] L1→L2: {upgraded_l1}, L2→L3: {upgraded_l2}")
+
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_tier_migration error: {e}")
+
+
+# ── 分类队列健康 ───────────────────────────────────────────
+async def scan_category_stuck():
+    """监控 LLM 分类队列健康：检测长期卡住的 llm_pending 和
+    stale 'other' 分类记忆，触发 memory_reclassify。
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+
+        # 1. 检测 llm_pending 卡住情况 (>1h 未处理)
+        stuck_pending = conn.execute(
+            "SELECT COUNT(1) FROM memories "
+            "WHERE tags LIKE '%llm_pending:true%' "
+            "AND tags NOT LIKE '%llm_classified:true%'"
+        ).fetchone()[0]
+
+        if stuck_pending > 5:
+            print(f"  [CAT_STUCK] {stuck_pending} memories stuck in LLM queue "
+                  f"— Ollama may be offline or overloaded")
+
+        # 2. 检测大量 other 分类 (可能是分类管道卡住)
+        other_count = conn.execute(
+            "SELECT COUNT(1) FROM memories WHERE category='other'"
+        ).fetchone()[0]
+
+        # 3. 对长期 other (+ 从未被访问) 触发 reclassify
+        if other_count > 20:
+            rows = conn.execute(
+                "SELECT id FROM memories WHERE category='other' "
+                "AND (last_accessed IS NULL OR last_accessed = '') "
+                "LIMIT 5"
+            ).fetchall()
+            conn.close()
+
+            if rows:
+                from plastic_promise.core.context_engine import ContextEngine
+                from plastic_promise.mcp.tools.memory import handle_memory_reclassify
+                engine = ContextEngine()
+                reclassified = 0
+                for (mid,) in rows:
+                    try:
+                        await handle_memory_reclassify(engine, {"memory_id": mid})
+                        reclassified += 1
+                    except Exception:
+                        pass
+                if reclassified:
+                    print(f"  [CAT_STUCK] reclassified {reclassified} stale 'other' memories")
+        else:
+            conn.close()
+
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_category_stuck error: {e}")
 
 
 # ── LLM 后台分类 ───────────────────────────────────────────
@@ -584,21 +772,34 @@ async def main():
                 await run_audit()
                 tick = 0
         elif tick % safety_net_threshold == 0:
-            # 安全网扫描 — 三个扫描器顺序执行，互不阻塞
+            # 安全网扫描 — 顺序执行，互不阻塞
+            # 优先级：duplicate > worth > tier > category > orphan > issue
             try:
-                await scan_orphan_steps()
-            except Exception:
-                pass  # 单个扫描器失败不影响后续
-            try:
-                await scan_memory_health()
+                await scan_duplicate_clusters()
             except Exception:
                 pass
             try:
-                await scan_llm_classify()
+                await scan_stale_worth()
+            except Exception:
+                pass
+            try:
+                await scan_tier_migration()
+            except Exception:
+                pass
+            try:
+                await scan_category_stuck()
+            except Exception:
+                pass
+            try:
+                await scan_orphan_steps()
             except Exception:
                 pass
             try:
                 await scan_unclosed_issues()
+            except Exception:
+                pass
+            try:
+                await scan_llm_classify()
             except Exception:
                 pass
         else:
