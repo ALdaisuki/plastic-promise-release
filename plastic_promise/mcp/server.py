@@ -881,8 +881,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 lesson = safe.get("reflection", {}).get("lesson", "")
                 if lesson and len(lesson) > 10:
                     try:
-                        new_se = get_skill_engine()
-                        sr_result = await new_se.exec("smart-remember", {
+                        from plastic_promise.skills.engine import SkillEngine
+                        from plastic_promise.skills.session_lifecycle import skill_session_init
+                        from plastic_promise.skills.memory_operations import skill_smart_remember
+                        from plastic_promise.skills.superpowers_stages import SKILL_DEFS as _SP_DEFS
+                        sr_engine = SkillEngine(get_engine())
+                        sr_engine.register(skill_session_init)
+                        sr_engine.register(skill_smart_remember)
+                        for _name, _def in _SP_DEFS.items():
+                            sr_engine.register(_def)
+                        sr_result = await sr_engine.exec("smart-remember", {
                             "content": lesson,
                             "memory_type": "reflection",
                             "source": "step-closure",
@@ -891,8 +899,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         }, caller="claude")
                         if sr_result.success and sr_result.data:
                             smart_memory_id = sr_result.data.get("memory_id", "")
-                    except Exception:
-                        pass  # smart-remember is best-effort, don't fail step-closure
+                        else:
+                            logging.warning(f"step-closure smart-remember failed: errors={sr_result.errors}")
+                    except Exception as e:
+                        logging.warning(f"step-closure smart-remember exception: {e}")
 
             # Build dashboard summary + JSON body
             dashboard = _format_closure_dashboard(safe, _closure_history)
