@@ -1,4 +1,4 @@
-"""Maintenance Daemon — 定时健康审计 + GC + 超时恢复
+"""Maintenance Daemon — 定时健康审计 + GC + 超时恢复 + 安全网扫描
 
 轻量维护进程。MCP Server 是共享记忆唯一真相源，daemon 通过 /notify
 写入审计报告确保 MCP 进程可见。多 Agent 协调通过共享记忆池自治，
@@ -6,6 +6,11 @@
 
 原则 #1 奥卡姆剃刀: 从 pi_daemon(410行)+audit_daemon(226行) 砍掉
 Pi CLI 死代码 (~200行)，合并为 ~180 行维护守护进程。
+
+Phase: Safety-Net Daemon — 新增三个安全网扫描器:
+  - scan_orphan_steps()     : 检测孤儿 step，分级自动修复
+  - scan_memory_health()    : 检测低 worth / 重复 / 衰减记忆
+  - scan_unclosed_issues()  : 检测超时未闭环 issue
 """
 
 import asyncio
@@ -128,9 +133,6 @@ async def run_audit():
         findings.append({"dim": "trust", "detail": str(e)[:80]})
 
     # 2. Pipeline
-    # Health = 1 - stuck / total
-    # total = all tasks in pipeline (pending+accepted+active+done+reviewed)
-    # stuck = tasks currently active (stuck in progress)
     try:
         conn = sqlite3.connect(DB_PATH)
         total = conn.execute("SELECT COUNT(*) FROM memories WHERE tags LIKE '%task:%'").fetchone()[0]
@@ -206,7 +208,247 @@ async def run_audit():
 
     return {"scores": scores, "overall": overall}
 
-# ── 主循环 ────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════
+# 安全网扫描器 (Safety-Net Daemon)
+# ═══════════════════════════════════════════════════════════════
+
+# ── 修复任务发布器 ─────────────────────────────────────────
+async def dispatch_fix_task(task_type: str, detail: str, target_id: str = ""):
+    """发布修复任务到 /notify，由 Pi Daemon 通过标签调度认领。
+
+    Args:
+        task_type: 任务类型 (close_orphan_step / correct_memory / close_stale_issue / gc_run)
+        detail: 任务描述
+        target_id: 目标实体 ID（可选，如 entity_id / memory_id / issue_id）
+    """
+    tags = [
+        "task:pending",
+        "assignee:pi_fixer",
+        "domain:fixing",
+        f"type:{task_type}",
+        f"ts:{datetime.now().strftime('%Y%m%dT%H%M%S')}",
+    ]
+    if target_id:
+        tags.append(f"target:{target_id}")
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{MCP_URL}/notify", json={
+                "type": "fix_task",
+                "task_type": task_type,
+                "content": detail,
+                "tags": tags,
+                "source": "safety_net_daemon",
+                "ts": datetime.now().isoformat(),
+            }, timeout=5)
+        print(f"  [SAFETY_NET] dispatched: {task_type} → pi_fixer ({detail[:80]})")
+    except Exception as e:
+        print(f"  [SAFETY_NET] dispatch error: {e}")
+
+
+# ── 孤儿 step 扫描 ─────────────────────────────────────────
+async def scan_orphan_steps():
+    """检测孤儿 step (status=active 但 >30min 未更新) 并自动修复。
+
+    分级处理:
+      - idle > 120min → 自动 skill_session_complete(abandoned)
+      - idle > 30min  → 发 task:pending 让 Pi 处理
+    """
+    try:
+        from plastic_promise.core.context_engine import ContextEngine
+        from plastic_promise.mcp.tools.skill_tracking import (
+            handle_skill_session_trace,
+            handle_skill_session_complete,
+        )
+        engine = ContextEngine()
+        trace_args = {"session_scope": "all", "include_auto_inject": False}
+        result_list = await handle_skill_session_trace(engine, trace_args)
+        if not result_list:
+            return
+        data = json.loads(result_list[0].text)
+        gaps = data.get("gaps", [])
+        orphans = [g for g in gaps if g.get("type") == "orphan_active"]
+        if not orphans:
+            return
+
+        # 只处理最老的孤儿（安全限制：一次一条）
+        orphan = max(orphans, key=lambda g: g.get("idle_minutes", 0))
+        eid = orphan["entity_id"]
+        idle_m = orphan["idle_minutes"]
+        skill_name = orphan.get("skill_name", "unknown")
+
+        if idle_m > 120:
+            # Tier 1: 自动关闭
+            await handle_skill_session_complete(engine, {
+                "entity_id": eid,
+                "outcome": f"abandoned: safety-net auto-close after {idle_m:.0f}min idle",
+            })
+            print(f"  [SAFETY_NET] auto-closed orphan step: {skill_name} "
+                  f"({eid[:30]}..., idle={idle_m:.0f}min)")
+        elif idle_m > 30:
+            # Tier 2: 发任务给 Pi
+            await dispatch_fix_task(
+                "close_orphan_step",
+                f"孤儿 step: {skill_name} idle={idle_m:.0f}min, entity_id={eid}",
+                target_id=eid,
+            )
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_orphan_steps error: {e}")
+
+
+# ── 记忆健康扫描 ───────────────────────────────────────────
+async def scan_memory_health():
+    """检测问题记忆（低 worth / 重复 / 大量衰减）并自动修复。
+
+    分级处理:
+      - worth < 0.15              → 自动 memory_forget
+      - 重复记忆 (merge 候选)     → 自动 forget 低分那条
+      - worth 0.15~0.30           → 发 task:pending 让 Pi 审查
+      - 大量衰减 (candidates>10)  → 发 task:pending 让 Pi 跑 GC
+    """
+    try:
+        from plastic_promise.core.context_engine import ContextEngine
+        from plastic_promise.mcp.tools.memory import handle_memory_gc, handle_memory_forget
+        engine = ContextEngine()
+
+        # 1. 扫描低 worth 记忆 (SQLite 直查)
+        conn = sqlite3.connect(DB_PATH)
+        low_rows = conn.execute(
+            "SELECT id, content, worth_score FROM memories "
+            "WHERE worth_score < 0.3 ORDER BY worth_score ASC LIMIT 5"
+        ).fetchall()
+        conn.close()
+
+        fixed = False
+        for mid, content, worth in low_rows:
+            if fixed:
+                break
+
+            if worth < 0.15:
+                # Tier 1: 直接清理
+                try:
+                    await handle_memory_forget(engine, {
+                        "memory_id": mid,
+                        "reason": "safety-net: worth too low (<0.15)",
+                    })
+                    print(f"  [SAFETY_NET] auto-forgot low-worth memory: "
+                          f"{mid[:20]}... (worth={worth:.2f})")
+                    fixed = True
+                except Exception as e:
+                    print(f"  [SAFETY_NET] forget failed: {e}")
+            elif worth < 0.30:
+                # Tier 2: 发任务给 Pi
+                preview = (content or "")[:60]
+                await dispatch_fix_task(
+                    "correct_memory",
+                    f"低 worth 记忆: {preview} (worth={worth:.2f})",
+                    target_id=mid,
+                )
+                fixed = True
+
+        if fixed:
+            return
+
+        # 2. 扫描重复/衰减记忆 (MCP memory_gc dry_run)
+        gc_result_list = await handle_memory_gc(engine, {"dry_run": True})
+        if not gc_result_list:
+            return
+        gc_data = json.loads(gc_result_list[0].text)
+        merge_candidates = gc_data.get("merge", {}).get("merged_pairs", [])
+        decay_count = gc_data.get("candidates_count", 0)
+
+        # 处理重复记忆：只处理第一对
+        if merge_candidates:
+            pair = merge_candidates[0]
+            c1 = pair.get("candidate_1", {})
+            c2 = pair.get("candidate_2", {})
+            w1 = c1.get("worth_score", 0.5)
+            w2 = c2.get("worth_score", 0.5)
+            loser = c1 if w1 < w2 else c2
+            loser_id = loser.get("id", "")
+            if loser_id:
+                try:
+                    await handle_memory_forget(engine, {
+                        "memory_id": loser_id,
+                        "reason": "safety-net: duplicate (merged by GC)",
+                    })
+                    print(f"  [SAFETY_NET] auto-forgot duplicate memory: {loser_id[:20]}...")
+                    return
+                except Exception as e:
+                    print(f"  [SAFETY_NET] forget duplicate error: {e}")
+
+        # 大量衰减记忆 → 发任务让 Pi 审查后跑 GC
+        if decay_count > 10:
+            await dispatch_fix_task(
+                "gc_run",
+                f"大量衰减记忆: {decay_count} candidates，建议审查后执行 memory_gc(dry_run=false)",
+                target_id="",
+            )
+
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_memory_health error: {e}")
+
+
+# ── 未闭环 issue 扫描 ──────────────────────────────────────
+async def scan_unclosed_issues():
+    """检测长时间未闭环的 issue 并自动修复。
+
+    分级处理:
+      - open > 48h → 自动 issue_transition → closed (stale)
+      - open > 24h → 发 task:pending 让 Pi 处理
+    """
+    try:
+        from plastic_promise.core.context_engine import ContextEngine
+        from plastic_promise.mcp.tools.management import (
+            handle_issue_list,
+            handle_issue_transition,
+        )
+        engine = ContextEngine()
+        result_list = await handle_issue_list(engine, {"status": "open"})
+        if not result_list:
+            return
+        data = json.loads(result_list[0].text)
+        issues = data.get("issues", []) if isinstance(data, dict) else []
+        if not issues:
+            return
+
+        now = datetime.now()
+        for issue in issues:
+            created_str = issue.get("created_at", "")
+            try:
+                created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                if created.tzinfo is not None:
+                    created = created.replace(tzinfo=None)
+                age_h = (now - created).total_seconds() / 3600
+            except (ValueError, TypeError):
+                continue
+
+            issue_id = issue.get("id", "")
+            title = issue.get("title", "")[:60]
+
+            if age_h > 48:
+                await handle_issue_transition(engine, {
+                    "issue_id": issue_id,
+                    "to_status": "closed",
+                    "comment": f"safety-net: auto-closed stale after {age_h:.0f}h",
+                })
+                print(f"  [SAFETY_NET] auto-closed stale issue: "
+                      f"#{issue_id} ({title}) age={age_h:.0f}h")
+                return  # 一次只处理一个
+            elif age_h > 24:
+                await dispatch_fix_task(
+                    "close_stale_issue",
+                    f"超时未闭环 issue #{issue_id}: {title} (age={age_h:.0f}h)",
+                    target_id=str(issue_id),
+                )
+                return
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_unclosed_issues error: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 主循环
+# ═══════════════════════════════════════════════════════════════
 _audit_seq = [0]
 
 async def main():
@@ -214,14 +456,19 @@ async def main():
     with open(_pid_path, "w") as f:
         f.write(str(os.getpid()))
 
-    print(f"Maintenance Daemon (audit={INTERVAL}s, PID={os.getpid()})")
+    # 安全网扫描间隔 (秒)，可通过环境变量覆盖
+    SAFETY_NET_INTERVAL = int(os.environ.get("SAFETY_NET_INTERVAL", "600"))
+    safety_net_threshold = max(1, SAFETY_NET_INTERVAL // 10)
+
+    print(f"Maintenance Daemon (audit={INTERVAL}s, safety_net={SAFETY_NET_INTERVAL}s, "
+          f"PID={os.getpid()})")
     print(f"  DB: {DB_PATH}")
     print(f"  MCP: {MCP_URL}")
 
     tick = 0
     audit_threshold = max(1, INTERVAL // 10)  # 每 INTERVAL 秒审计一次
 
-    # 冷启动: 30s 后首次审计
+    # 冷启动: 30s 后首次审计，60s 后首次安全网扫描
     await asyncio.sleep(30)
     await run_audit()
 
@@ -235,6 +482,20 @@ async def main():
                 cleanup_old_tags()
                 await run_audit()
                 tick = 0
+        elif tick % safety_net_threshold == 0:
+            # 安全网扫描 — 三个扫描器顺序执行，互不阻塞
+            try:
+                await scan_orphan_steps()
+            except Exception:
+                pass  # 单个扫描器失败不影响后续
+            try:
+                await scan_memory_health()
+            except Exception:
+                pass
+            try:
+                await scan_unclosed_issues()
+            except Exception:
+                pass
         else:
             recover_stuck_tasks()
 
