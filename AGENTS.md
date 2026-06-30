@@ -155,6 +155,77 @@ defense(action="get") → 根据 tier 决定行为
 
 ---
 
+## 外部 Agent 接入约定
+
+> 适用于 Trae 等独立 IDE Agent，通过 MCP 协议接入 Plastic Promise 作为前线作战部队。
+> 核心关系：**Claude Code + Plastic Promise = 战略指挥中心，外部 Agent = 前线作战部队**。
+
+### 标签命名空间
+
+所有外部 Agent 使用统一的标签命名空间实现会话隔离和项目归属：
+
+```
+session:<agent>:<uuid>     → 会话级别隔离，启动时生成
+project:<agent>:<name>     → 跨会话项目归属（可选）
+source:<agent>             → 身份标识（已有字段）
+```
+
+**示例（Trae 执行一条 building 任务）**：
+
+```
+domain:building           ← 行为域（现有 7 域体系）
+source:trae               ← 身份标识（现有字段）
+session:trae:a1b2c3       ← 会话隔离
+project:trae:feature-x    ← 项目归属（可选）
+```
+
+### 通用启动流程
+
+外部 Agent 使用现有 `session-init` 即可，无需专用技能：
+
+```
+1. session-init(task_description)  → 获取上下文 + 原则 + 信任分
+2. memory_recall / context_supply  → 按需获取针对性上下文
+3. defense(action="get")           → 执行前检查信任分
+4. 执行代码操作                     → 读写、终端、诊断
+5. step-closure(mode="full")       → 回流执行结果到记忆池
+```
+
+### 边界定义
+
+**Plastic Promise 独占（外部 Agent 不越界）**：
+- 原则的创建、修改、删除
+- 信任分的评估和调整（`defense(action="adjust")`）
+- 治理决策（任务分配、架构决策）
+- 长期记忆的主动存储（`memory_store`、`smart-remember`）
+
+**外部 Agent 独占（Plastic Promise 不越界）**：
+- 代码文件的读写执行
+- 终端命令执行
+- IDE 诊断信息获取
+- 用户直接交互（问答、澄清、确认）
+
+**MCP 桥接（双向通信）**：
+- 外部 Agent → Plastic Promise：`step-closure` 回流结果、`memory_recall` 查询上下文、`context_supply` 获取上下文包、`defense(action="get")` 查询信任分
+- Plastic Promise → 外部 Agent：上下文供应、原则激活、信任分查询
+
+### 设计原则
+
+- **不建新域**：走现有 7 行为域体系，通过 `source` 字段区分 Agent 身份
+- **不建专用技能**：现有 `session-init` 已覆盖通用启动流程
+- **标签命名空间隔离**：`session:<agent>:<id>` 提供轻量会话隔离
+- **零代码改动**：纯约定层，DomainManager、SkillEngine、Rust Core 均不动
+- **预留扩展**：后续外部 Agent 直接复用此约定，`<agent>` 替换为对应名称即可
+
+### 已接入 Agent
+
+| Agent | 类型 | 接入方式 | 状态 |
+|-------|------|---------|------|
+| Trae | IDE Agent (VS Code) | MCP (run_mcp) | 已接入 |
+| *(预留)* | — | MCP (SSE/stdio) | 待接入 |
+
+---
+
 ## 标签状态机 (多 Agent 任务)
 
 ```
