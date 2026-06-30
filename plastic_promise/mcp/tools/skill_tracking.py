@@ -32,12 +32,22 @@ _skill_state_lock = threading.Lock()
 _current_skill: str | None = None
 _parent_entity_id: str | None = None
 _current_stage: str | None = None  # Last completed SuperPowers stage name
+_current_entity_id: str | None = None  # Currently active session entity_id (hook-created)
 
 
 def get_current_stage() -> str | None:
     """Return the last completed SuperPowers stage name, or None."""
     with _skill_state_lock:
         return _current_stage
+
+
+def get_current_entity_id() -> str | None:
+    """Return the currently active session entity_id (set by hook via /api/skill-track), or None.
+    
+    Used by SkillEngine to skip duplicate skill_session_start when hook already created one.
+    """
+    with _skill_state_lock:
+        return _current_entity_id
 
 
 # ---------------------------------------------------------------------------
@@ -1021,7 +1031,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
     Returns:
         list[TextContent]: tracking status
     """
-    global _current_skill, _parent_entity_id, _current_stage
+    global _current_skill, _parent_entity_id, _current_stage, _current_entity_id
     phase = args.get("phase", "start")
     skill_name = args.get("skill_name", "")
 
@@ -1035,8 +1045,10 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                 })
                 data = json.loads(result[0].text)
                 _current_skill = data.get("entity_id")
+                _current_entity_id = _current_skill  # Mark hook-created session
             except Exception:
                 _current_skill = None
+                _current_entity_id = None
         return [TextContent(type="text", text=json.dumps({
             "entity_id": _current_skill,
             "status": "tracking",
@@ -1058,6 +1070,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
             _parent_entity_id = eid
             _current_stage = skill_name  # Track last completed stage
             _current_skill = None
+            _current_entity_id = None  # Clear hook session marker
         return [TextContent(type="text", text=json.dumps({
             "status": "tracked",
             "phase": "complete",

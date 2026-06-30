@@ -224,29 +224,40 @@ class SkillEngine:
         entity_id: str = ""
         task_description = params.get("task_description", skill_def.description)
 
-        # 3. skill_session_start — failure degrades tracking but does not abort
+        # 3. skill_session_start — skip if hook already created one (via /api/skill-track)
         tracking_degraded = False
-        start_handler = self._atoms.get("skill_session_start")
-        if start_handler:
-            try:
-                start_result = await start_handler(self._ctx, {
-                    "skill_name": skill_name,
-                    "task_description": task_description,
-                })
-                start_data = json.loads(start_result[0].text)
-                entity_id = start_data.get("entity_id", "")
-            except json.JSONDecodeError as e:
-                tracking_degraded = True
-                degrade_log.append(
-                    f"skill_session_start: malformed JSON response — "
-                    f"session tracking disabled for this execution ({e})"
-                )
-            except Exception as e:
-                tracking_degraded = True
-                degrade_log.append(
-                    f"skill_session_start: failed — "
-                    f"session tracking disabled for this execution ({e})"
-                )
+        hook_entity_id: str | None = None
+        try:
+            from plastic_promise.mcp.tools.skill_tracking import get_current_entity_id
+            hook_entity_id = get_current_entity_id()
+        except Exception:
+            pass
+        
+        if hook_entity_id:
+            # Hook already created session — reuse it, skip internal start
+            entity_id = hook_entity_id
+        else:
+            start_handler = self._atoms.get("skill_session_start")
+            if start_handler:
+                try:
+                    start_result = await start_handler(self._ctx, {
+                        "skill_name": skill_name,
+                        "task_description": task_description,
+                    })
+                    start_data = json.loads(start_result[0].text)
+                    entity_id = start_data.get("entity_id", "")
+                except json.JSONDecodeError as e:
+                    tracking_degraded = True
+                    degrade_log.append(
+                        f"skill_session_start: malformed JSON response — "
+                        f"session tracking disabled for this execution ({e})"
+                    )
+                except Exception as e:
+                    tracking_degraded = True
+                    degrade_log.append(
+                        f"skill_session_start: failed — "
+                        f"session tracking disabled for this execution ({e})"
+                    )
 
         try:
             # 4. Call atoms — concurrent or serial based on SkillDef.concurrent
@@ -292,16 +303,17 @@ class SkillEngine:
             # 5. Call handler
             result = await skill_def.handler(self._ctx, params, atom_results)
 
-            # 6. skill_session_complete
-            complete_handler = self._atoms.get("skill_session_complete")
-            if complete_handler and entity_id:
-                try:
-                    await complete_handler(self._ctx, {
-                        "entity_id": entity_id,
-                        "outcome": "",
-                    })
-                except Exception as e:
-                    degrade_log.append(f"skill_session_complete: {e}")
+            # 6. skill_session_complete — skip if hook will handle it
+            if not hook_entity_id:
+                complete_handler = self._atoms.get("skill_session_complete")
+                if complete_handler and entity_id:
+                    try:
+                        await complete_handler(self._ctx, {
+                            "entity_id": entity_id,
+                            "outcome": "",
+                        })
+                    except Exception as e:
+                        degrade_log.append(f"skill_session_complete: {e}")
 
             # 7. Return
             result.audit_trail = {"entity_id": entity_id, "tracking_degraded": tracking_degraded}
@@ -312,7 +324,7 @@ class SkillEngine:
         except Exception as e:
             # Handler-level failure -- still attempt session close
             errors.append(f"handler: {e}")
-            if entity_id:
+            if entity_id and not hook_entity_id:
                 try:
                     complete_handler = self._atoms.get("skill_session_complete")
                     if complete_handler:
