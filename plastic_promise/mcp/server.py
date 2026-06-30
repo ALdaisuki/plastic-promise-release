@@ -1011,7 +1011,7 @@ async def list_resources() -> list[Resource]:
         Resource(
             uri="plastic-promise://principles",
             name="核心原则列表",
-            description="11 条核心原则的完整定义",
+            description="13 条核心原则的完整定义",
             mimeType="application/json",
         ),
         Resource(
@@ -1110,7 +1110,7 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
             messages=[
                 PromptMessage(
                     role="user",
-                    content=f"对于以下决策，逐一检查是否与 11 条核心原则对齐：\n\n"
+                    content=f"对于以下决策，逐一检查是否与 13 条核心原则对齐：\n\n"
                     f"决策: {decision}\n\n"
                     f"对每条原则给出：✅ 对齐 / ⚠️ 部分对齐 / ❌ 冲突。\n"
                     f"如果冲突，说明「如果违反会怎样」的反事实预演。",

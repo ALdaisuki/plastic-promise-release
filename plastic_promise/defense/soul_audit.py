@@ -289,8 +289,8 @@ class SoulAuditor:
                 conn.close()
 
                 if total_activations > 0:
-                    # 激活的 unique 原则数 / 12 条核心原则
-                    ratio = min(1.0, unique_principles / 12.0)
+                    # 激活的 unique 原则数 / 13 条核心原则
+                    ratio = min(1.0, unique_principles / 13.0)
                     activation_density = min(1.0, total_activations / 50.0)
                     score = round(ratio * 0.6 + activation_density * 0.4, 2)
                     return score, {

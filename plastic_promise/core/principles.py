@@ -23,7 +23,7 @@ from plastic_promise.core.context_engine import ContextEngine
 class PrincipleManager:
     """原则管理器 — 遗传系统核心
 
-    管理 11 条核心原则的:
+    管理 13 条核心原则的:
     - 激活 (activate): 根据任务类型激活相关原则并注入图引擎
     - 继承 (inherit): 跨域单向扩散 work->all / life->all
     - 扩散 (diffuse): 原则权重同步衰减传播
@@ -339,6 +339,10 @@ class PrincipleManager:
             12: "Without code as documentation: maintenance costs grow exponentially, "
                 "onboarding becomes impossible, and the gap between documentation and reality "
                 "widens until the codebase becomes unmaintainable.",
+            13: "If the system guesses reflections instead of waiting for explicit post-hoc input: "
+                "the memory pool fills with template garbage, the system makes decisions based on "
+                "fabricated 'lessons', and the self-evolution loop feeds on noise instead of signal. "
+                "The consequence is a feedback loop where bad guesses reinforce bad behavior.",
         }
 
         consequence = consequences.get(
@@ -355,7 +359,7 @@ class PrincipleManager:
             keyword_match = 0.0
 
         # Step 4: Recommendation based on consequence severity and keyword match
-        if principle_id <= 3:
+        if principle_id <= 3 or principle_id == 13:
             recommendation = "strong"
         elif principle_id <= 7:
             recommendation = "moderate"
