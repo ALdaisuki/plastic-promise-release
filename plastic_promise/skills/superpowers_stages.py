@@ -130,6 +130,206 @@ def _make_handler(stage_name):
 
 
 # ═══════════════════════════════════════════════════════════════
+# 审查阶段专用 Handlers
+# ═══════════════════════════════════════════════════════════════
+
+async def _request_review_handler(ctx, params, atom_results):
+    """requesting-code-review 专用 handler — 调用 ReviewEngine.prepare()。
+
+    1. 获取 git diff + 自动化预检
+    2. 生成结构化审查 prompt
+    3. 将审查请求存入记忆池供 Pi Reviewer 发现
+    4. 返回 prompt 供 Claude Code 执行审查
+    """
+    import time
+    import json as _json
+
+    task_desc = params.get("task_description", "代码审查请求")
+    commit_range = params.get("commit_range", "HEAD~1..HEAD")
+
+    # 调用 ReviewEngine.prepare()
+    review_data = None
+    review_error = None
+    try:
+        from plastic_promise.core.review_engine import ReviewEngine
+
+        # 获取 TrustManager (可选)
+        trust_manager = None
+        try:
+            from plastic_promise.defense.soul_enforcer import TrustManager
+            from plastic_promise.defense.trust_store import TrustStore
+            trust_manager = TrustManager(trust_store=TrustStore())
+        except Exception:
+            pass
+
+        review_engine = ReviewEngine(
+            trust_manager=trust_manager,
+            context_engine=ctx,
+        )
+        prep = review_engine.prepare(commit_range)
+        review_data = {
+            "commit_range": commit_range,
+            "files_changed": prep["changed_files"],
+            "files_count": len(prep["changed_files"]),
+            "pre_check": prep["pre_check_results"],
+            "git_available": prep["git_available"],
+            "prompt": prep["structured_prompt"],
+            "prompt_length": len(prep["structured_prompt"]),
+        }
+
+        # 将审查请求存入记忆池 (供 Pi Reviewer 发现)
+        try:
+            ctx.register_memory({
+                "id": f"review_req_{int(time.time())}",
+                "content": prep["structured_prompt"][:500],
+                "memory_type": "task",
+                "source": "claude_code",
+                "tags": [
+                    "task:review", "domain:reflecting",
+                    f"commit:{commit_range}",
+                    "assignee:pi_reviewer",
+                    f"ts:{__import__('datetime').datetime.now().strftime('%Y%m%dT%H%M%S')}",
+                ],
+                "tier": "L1",
+            })
+        except Exception:
+            pass  # 记忆存储失败不阻塞审查流程
+
+    except Exception as e:
+        review_error = str(e)
+
+    # 组装原则激活和记忆存储的原子结果
+    def parse(result):
+        if result and hasattr(result[0], 'text'):
+            try:
+                return _json.loads(result[0].text)
+            except (_json.JSONDecodeError, TypeError):
+                return {"raw": result[0].text}
+        return {}
+
+    principle_data = parse(atom_results.get("principle_activate"))
+    store_data = parse(atom_results.get("memory_store"))
+
+    return SkillResult(
+        skill_name="sp-requesting-code-review",
+        success=True,
+        data={
+            "stage": "requesting-code-review",
+            "domain": "reflecting",
+            "tags": STAGE_TAGS_MAP.get("requesting-code-review", []),
+            "principles": principle_data.get("activated", []),
+            "memory_id": store_data.get("memory_id", ""),
+            "review": review_data,
+            "review_error": review_error,
+            "prompt_ready": review_data is not None,
+            "transition": "→ requesting-code-review",
+        },
+        atom_results={},
+        degrade_log=[],
+        audit_trail={},
+        errors=[review_error] if review_error else [],
+    )
+
+
+async def _receive_review_handler(ctx, params, atom_results):
+    """receiving-code-review 专用 handler — 调用 ReviewEngine.evaluate()+apply()。
+
+    1. 解析 LLM 审查输出为 ReviewReport
+    2. 应用审查结果 (信任分调整 + 发现入池 + fix 任务)
+    3. 调用 post_task() 六联闭环
+    """
+    import json as _json
+
+    task_desc = params.get("task_description", "接收代码审查结果")
+    review_output = params.get("review_output", "")
+    commit_range = params.get("commit_range", "HEAD~1..HEAD")
+    author_target = params.get("author_target", "pi_builder")
+
+    apply_result = None
+    review_error = None
+    report_data = None
+
+    if review_output:
+        try:
+            from plastic_promise.core.review_engine import ReviewEngine
+
+            trust_manager = None
+            try:
+                from plastic_promise.defense.soul_enforcer import TrustManager
+                from plastic_promise.defense.trust_store import TrustStore
+                trust_manager = TrustManager(trust_store=TrustStore())
+            except Exception:
+                pass
+
+            review_engine = ReviewEngine(
+                trust_manager=trust_manager,
+                context_engine=ctx,
+            )
+            prep = review_engine.prepare(commit_range)
+            report = review_engine.evaluate(
+                diff_text=prep["diff_text"],
+                changed_files=prep["changed_files"],
+                pre_check=prep["pre_check_results"],
+                review_output=review_output,
+            )
+            report_data = report.to_dict()
+            apply_result = review_engine.apply(
+                report,
+                author_target=author_target,
+                reviewer_target="pi_reviewer",
+            )
+
+            # 调用 post_task 六联闭环
+            try:
+                from plastic_promise.loop.soul_loop import post_task
+                post_task(
+                    task_description=f"审查完成: {report.status} — {report.summary[:100]}",
+                    git_commit=commit_range,
+                    mode="full",
+                    lesson=review_engine._extract_lesson(report),
+                    improvement=review_engine._extract_improvement(report),
+                )
+            except Exception:
+                pass
+
+        except Exception as e:
+            review_error = str(e)
+
+    def parse(result):
+        if result and hasattr(result[0], 'text'):
+            try:
+                return _json.loads(result[0].text)
+            except (_json.JSONDecodeError, TypeError):
+                return {"raw": result[0].text}
+        return {}
+
+    principle_data = parse(atom_results.get("principle_activate"))
+    store_data = parse(atom_results.get("memory_store"))
+
+    return SkillResult(
+        skill_name="sp-receiving-code-review",
+        success=True,
+        data={
+            "stage": "receiving-code-review",
+            "domain": "reflecting",
+            "tags": STAGE_TAGS_MAP.get("receiving-code-review", []),
+            "principles": principle_data.get("activated", []),
+            "memory_id": store_data.get("memory_id", ""),
+            "review": {
+                "report": report_data,
+                "apply": apply_result,
+                "error": review_error,
+            },
+            "transition": "→ receiving-code-review",
+        },
+        atom_results={},
+        degrade_log=[],
+        audit_trail={},
+        errors=[review_error] if review_error else [],
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
 # 批量注册所有 SuperPowers 阶段技能
 # ═══════════════════════════════════════════════════════════════
 
@@ -143,9 +343,9 @@ STAGE_ATOMS = {
     "verification-before-completion": ["principle_activate", "memory_store"],
     "using-git-worktrees": ["principle_activate", "memory_store"],
     "dispatching-parallel-agents": ["principle_activate", "memory_store"],
-    # 审查阶段: + audit_run
-    "requesting-code-review": ["principle_activate", "audit_run", "memory_store"],
-    "receiving-code-review": ["principle_activate", "audit_run", "memory_store"],
+    # 审查阶段: + audit_run + memory_recall (真实审查管线)
+    "requesting-code-review": ["principle_activate", "memory_recall", "audit_run", "memory_store"],
+    "receiving-code-review": ["principle_activate", "memory_recall", "audit_run", "memory_store"],
     # 治理阶段: + defense
     "finishing-a-development-branch": ["principle_activate", "defense", "memory_store"],
     # 修复阶段
@@ -162,6 +362,14 @@ STAGE_DEGRADE = {
 SKILL_DEFS = {}
 
 for _stage_name, _atoms in STAGE_ATOMS.items():
+    # 审查阶段使用专用 handler，其他阶段使用泛型 handler
+    if _stage_name == "requesting-code-review":
+        _handler = _request_review_handler
+    elif _stage_name == "receiving-code-review":
+        _handler = _receive_review_handler
+    else:
+        _handler = _make_handler(_stage_name)
+
     SKILL_DEFS[_stage_name] = SkillDef(
         name=f"sp-{_stage_name}",
         domain="superpowers_stages",
@@ -169,7 +377,7 @@ for _stage_name, _atoms in STAGE_ATOMS.items():
         tier="P0",
         atoms=_atoms,
         degrade_map=STAGE_DEGRADE,
-        handler=_make_handler(_stage_name),
+        handler=_handler,
         allowed_callers=["claude", "pi", "trae"],
     )
 

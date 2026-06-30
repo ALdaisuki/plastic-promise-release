@@ -126,6 +126,42 @@ TRUST_TIER_LOW = 0.30           # 低信任：收紧约束
 TRUST_TIER_CRITICAL = 0.15      # 临界：几乎全部约束
 
 # ============================================================
+# 审查信任联动 (Review → Trust)
+# ============================================================
+
+TRUST_REVIEW_PASS_BOOST = 0.03     # 审查通过 → 被审查者信任分 boost
+TRUST_REVIEW_FAIL_DECAY = 0.02     # 审查不通过 → 被审查者信任分 decay
+TRUST_REVIEW_BLOCKER_PENALTY = 0.01  # 每个 blocker 额外衰减
+TRUST_REVIEW_REVIEWER_BOOST = 0.01   # 审查完成 → 审查者信任分 boost (激励高质量审查)
+
+# 审查八维度 (覆盖 correctness/security/maintainability/performance/
+#              principle_alignment/test_coverage/spec_compliance/code_quality)
+REVIEW_DIMENSIONS = [
+    "correctness",
+    "security",
+    "principle_alignment",
+    "test_coverage",
+    "code_quality",
+    "maintainability",
+    "spec_compliance",
+    "performance",
+]
+
+REVIEW_DIMENSION_WEIGHTS = {
+    "correctness": 0.22,
+    "security": 0.22,
+    "principle_alignment": 0.13,
+    "test_coverage": 0.13,
+    "code_quality": 0.10,
+    "maintainability": 0.10,
+    "spec_compliance": 0.05,
+    "performance": 0.05,
+}
+
+# 审查严重度排序 (用于排序和优先级)
+REVIEW_SEVERITY_ORDER = {"blocker": 0, "major": 1, "minor": 2, "nit": 3}
+
+# ============================================================
 # 审计维度权重（八维度）
 # ============================================================
 # 维度映射自 SCARF 五维度扩展为八维度审计框架
