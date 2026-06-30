@@ -51,7 +51,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 |------|------|
 | `audit_run` | 执行七维审计（action=full/report），含时间范围过滤 |
 | `audit_pre_check` | 实时合规检查：L0 硬边界 + L1 约束衰减 |
-| `defense` | 防线管理：get/history/adjust/status — 信任分读写 |
+| `defense` | 防线管理：get/history/adjust/status — 信任分读写，支持持久化 |
 
 ### 🔍 自省演化域 (2)
 | 工具 | 用途 |
@@ -137,7 +137,28 @@ defense(action="get") → 根据 tier 决定行为
 | 0.80+ | autonomous | ✅ | ✅ | ✅ | ✅ | 自主执行 |
 | 0.60+ | standard | ✅ | ⚠️确认 | ✅ | ❌ | 正常执行 |
 | 0.30+ | restricted | ⚠️审批 | ❌ | ❌ | ❌ | 每次写前确认 |
-| 0.00+ | readonly | ❌ | ❌ | ❌ | ❌ | 只读 |
+| 0.00+ | readonly | ❌ | ❌ | ❌ | ❌ | 只读，写操作直接拒绝 |
+
+### 信任分调整规则
+
+| 触发事件 | 幅度 |
+|----------|------|
+| 单步 SCARF ≥ 0.80（step-closure 自动） | +0.02 |
+| 单步 SCARF < 0.40（step-closure 自动） | -0.02 |
+| 用户明确表扬/通过验收 | +0.05 |
+| 用户打回/指出错误 | -0.03 |
+| 连续 5 步无失败 | +0.01 |
+
+### 减分机制（已生效）
+
+信任分通过 TrustStore 持久化到 `plastic_memory.db`，MCP 服务重启后不丢失。变更历史记录在 `trust_history` 表中。
+
+| 触发条件 | 幅度 | 触发方式 |
+|---------|------|---------|
+| SCARF < 0.40（step-closure 自动） | -0.02 | SoulLoop.post_task 自动 |
+| L0 防线违规（危险操作被拦截） | -0.05 | SoulEnforcer.pre_check 自动 |
+| L1 信任临界（< 0.15 被封锁） | -0.02 | SoulEnforcer.pre_check 自动 |
+| 时间衰减（24h 无活动） | -0.005/天 | TrustStore.get() 惰性触发，上限 -0.30 |
 
 ---
 
@@ -195,7 +216,6 @@ project:trae:feature-x    ← 项目归属（可选）
 
 **Plastic Promise 独占（外部 Agent 不越界）**：
 - 原则的创建、修改、删除
-- 信任分的评估和调整（`defense(action="adjust")`）
 - 治理决策（任务分配、架构决策）
 - 长期记忆的主动存储（`memory_store`、`smart-remember`）
 
@@ -206,7 +226,7 @@ project:trae:feature-x    ← 项目归属（可选）
 - 用户直接交互（问答、澄清、确认）
 
 **MCP 桥接（双向通信）**：
-- 外部 Agent → Plastic Promise：`step-closure` 回流结果、`memory_recall` 查询上下文、`context_supply` 获取上下文包、`defense(action="get")` 查询信任分
+- 外部 Agent → Plastic Promise：`step-closure` 回流结果、`memory_recall` 查询上下文、`context_supply` 获取上下文包、`defense` 查询/调整信任分
 - Plastic Promise → 外部 Agent：上下文供应、原则激活、信任分查询
 
 ### 设计原则
