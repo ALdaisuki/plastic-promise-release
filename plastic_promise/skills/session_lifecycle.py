@@ -81,4 +81,5 @@ skill_session_init = SkillDef(
     },
     handler=_session_init_handler,
     allowed_callers=["claude", "pi"],
+    concurrent=True,  # 性能优化：7个原子并行执行，将串行耗时降低为单次最长耗时
 )

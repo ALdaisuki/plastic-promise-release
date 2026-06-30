@@ -3,9 +3,8 @@
 包含:
 - constants: 九大系统、三层防线、信任分、审计维度、11条核心原则、SCARF等全部常量
 - context_engine: ContextEngine 上下文供应引擎（Python回退版 + Rust PyO3桥接）
+- lancedb_store: LanceDB 向量存储（延迟导入，避免重型 lancedb/pyarrow 影响启动时间）
 """
-
-from plastic_promise.core.lancedb_store import LanceDBStore, EMB_DIM, TABLE_NAME
 
 from plastic_promise.core.constants import (
     DIGITAL_BODY_SYSTEMS,
@@ -32,6 +31,30 @@ from plastic_promise.core.context_engine import (
     ContextPack,
     ContextItem,
 )
+
+# Lazy imports for heavy modules (lancedb + pyarrow = ~1446ms)
+# Only imported when actually accessed, not at package init time
+_lazy_lancedb = None
+
+
+def __getattr__(name):
+    """Lazy-load heavy modules to avoid 1446ms startup penalty from lancedb/pyarrow."""
+    global _lazy_lancedb
+    if name in ("LanceDBStore", "EMB_DIM", "TABLE_NAME"):
+        if _lazy_lancedb is None:
+            from plastic_promise.core.lancedb_store import (
+                LanceDBStore as _LanceDBStore,
+                EMB_DIM as _EMB_DIM,
+                TABLE_NAME as _TABLE_NAME,
+            )
+            _lazy_lancedb = {
+                "LanceDBStore": _LanceDBStore,
+                "EMB_DIM": _EMB_DIM,
+                "TABLE_NAME": _TABLE_NAME,
+            }
+        return _lazy_lancedb[name]
+    raise AttributeError(f"module 'plastic_promise.core' has no attribute '{name}'")
+
 
 __all__ = [
     "LanceDBStore", "EMB_DIM", "TABLE_NAME",

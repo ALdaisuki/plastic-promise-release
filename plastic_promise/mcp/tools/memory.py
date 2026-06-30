@@ -15,12 +15,49 @@
 - handle_fuzzy_process : 触发模糊缓存区处理流水线
 """
 
+import hashlib
 import json
 import os
 import datetime
+import threading
+import time
 from typing import Any
 
 from mcp.types import TextContent
+
+
+# ---- Query result cache for memory_recall ----
+_query_cache: dict[str, tuple[str, float]] = {}  # hash -> (json_result, timestamp)
+_query_cache_lock = threading.Lock()
+_QUERY_CACHE_SIZE = int(os.environ.get("PP_QUERY_CACHE_SIZE", "32"))
+_QUERY_CACHE_TTL = float(os.environ.get("PP_QUERY_CACHE_TTL", "30"))  # seconds
+
+
+def _cache_key(query: str, task_type: str, max_results: int, scope: str) -> str:
+    raw = f"{query}|{task_type}|{max_results}|{scope}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _cache_get(query: str, task_type: str, max_results: int, scope: str) -> str | None:
+    key = _cache_key(query, task_type, max_results, scope)
+    now = time.time()
+    with _query_cache_lock:
+        if key in _query_cache:
+            result, ts = _query_cache[key]
+            if now - ts < _QUERY_CACHE_TTL:
+                return result
+            del _query_cache[key]
+    return None
+
+
+def _cache_set(query: str, task_type: str, max_results: int, scope: str, result: str):
+    key = _cache_key(query, task_type, max_results, scope)
+    now = time.time()
+    with _query_cache_lock:
+        if len(_query_cache) >= _QUERY_CACHE_SIZE:
+            oldest = min(_query_cache, key=lambda k: _query_cache[k][1])
+            del _query_cache[oldest]
+        _query_cache[key] = (result, now)
 
 
 def _generate_federation_signals(pack, domain_hint, engine, federation):
@@ -56,13 +93,8 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
     Calls ContextEngine.supply() for hybrid retrieval (vector + BM25 + RRF fusion
     + symbolic rules + graph traversal), returns three-layer context pack.
 
-    Args:
-        engine: ContextEngine instance.
-        args: {"query": str, "task_type"?: str, "max_results"?: int,
-               "scope"?: str}.
-
-    Returns:
-        list[TextContent]: MCP response with core/related/divergent layers.
+    Uses a short-lived query cache (PP_QUERY_CACHE_SIZE=32, PP_QUERY_CACHE_TTL=30s)
+    to avoid redundant embedding + retrieval for repeated queries.
     """
     try:
         from plastic_promise.adaptive_retrieval import should_retrieve
@@ -73,10 +105,16 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                  "query": query[:100]},
                 ensure_ascii=False))]
 
-        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
         task_type = args.get("task_type", "general")
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
+
+        # Check query cache
+        cached = _cache_get(query, task_type, max_results, scope)
+        if cached is not None:
+            return [TextContent(type="text", text=cached)]
+
+        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
         domain_hint = args.get("domain_hint", None)
         federation = args.get("federation", True)
 
@@ -88,7 +126,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             vec = embedder.embed(query)
         pack = engine.supply(query, vec, task_type, scope)
 
-        return [TextContent(type="text", text=json.dumps({
+        result_json = json.dumps({
             "core": [{"id": i.id, "content": i.content[:500], "relevance": i.relevance,
                       "source": i.source, "freshness": i.freshness, "worth_score": i.worth_score}
                      for i in pack.core[:max_results]],
@@ -101,7 +139,12 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             "federation_signals": _generate_federation_signals(pack, domain_hint, engine, federation),
             "total_items": pack.total_items,
             "audit": pack.audit_metadata,
-        }, ensure_ascii=False, indent=2))]
+        }, ensure_ascii=False, indent=2)
+
+        # Cache the result
+        _cache_set(query, task_type, max_results, scope, result_json)
+
+        return [TextContent(type="text", text=result_json)]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "memory_recall"}, ensure_ascii=False))]

@@ -59,14 +59,37 @@ class LanceDBStore:
         self._ensure_fts()
 
     def _ensure_fts(self) -> None:
-        """Create FTS index on 'text' column if not already present."""
+        """Create FTS index on 'text' column if not already present.
+
+        Uses a fast check via table schema introspection to avoid
+        attempting to recreate an existing FTS index on every init.
+        """
         try:
-            self._table.create_fts_index(["text"], replace=False)
+            # Fast check: try to list indices; if FTS exists, skip creation
+            try:
+                indices = self._table.list_indices()
+                for idx in indices:
+                    if getattr(idx, 'name', '') == 'text_idx' or (
+                        hasattr(idx, 'column') and 'text' in str(getattr(idx, 'column', ''))
+                    ):
+                        self._fts_ready = True
+                        return
+            except Exception:
+                pass  # list_indices may not be available — fall through to creation
+
+            # LanceDB 0.30+ expects a single column name string, not a list
+            self._table.create_fts_index("text", replace=True)
             self._fts_ready = True
             logger.info("LanceDB: FTS index ready on 'text'")
         except Exception as e:
-            logger.warning("LanceDB: FTS index not available (%s), using fallback", e)
-            self._fts_ready = False
+            # If creation fails but index already exists, mark as ready
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate" in err_msg:
+                self._fts_ready = True
+                logger.info("LanceDB: FTS index already exists on 'text'")
+            else:
+                logger.warning("LanceDB: FTS index not available (%s), using fallback", e)
+                self._fts_ready = False
 
     def search(
         self,

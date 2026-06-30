@@ -213,6 +213,13 @@ class ContextEngine:
         self._memories: Dict[str, Dict[str, Any]] = {}
         self._principle_anchors: Dict[int, List[float]] = {}  # P1: 原则锚点向量
 
+        # Heavy components — lazy-initialized by _ensure_heavy_init()
+        self._dm: Any = None
+        self._dm_ok: bool = False
+        self._domain_hint: Optional[str] = None
+        self._embedder: Any = None
+        self._ldb: Any = None
+
         # SQLite write-through — persists every mutation to disk (default ON)
         if use_sqlite is None:
             use_sqlite = os.environ.get("AGENT_USE_SQLITE", "1") != "0"
@@ -224,6 +231,9 @@ class ContextEngine:
 
         # P0: Rebuild principle↔memory graph edges from persisted memories
         self._rebuild_graph_from_memories()
+
+        # Heavy init deferred to first supply() call
+        self._heavy_init_done = False
 
 
     def _rebuild_graph_from_memories(self):
@@ -289,6 +299,16 @@ class ContextEngine:
             logging.info("_rebuild_graph_from_memories: created %d principle↔memory edges from %d memories",
                          total_edges, len(self._memories))
 
+    def _ensure_heavy_init(self):
+        """Lazy-initialize heavy components: DomainManager, LanceDB, embedder, principle anchors.
+
+        Called once on first supply() call. Avoids expensive embedding/DB init at ContextEngine
+        construction time — critical for fast session-init and high-concurrency scenarios.
+        """
+        if self._heavy_init_done:
+            return
+        self._heavy_init_done = True
+
         # DB path — used by both DomainManager and LanceDBStore
         db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
 
@@ -301,32 +321,30 @@ class ContextEngine:
             logging.error(f"DomainManager init failed: {e} — domain features disabled")
             self._dm = None
             self._dm_ok = False
-        self._domain_hint: Optional[str] = None
 
         # P1: Store embedder for principle anchor computation and intent matching
-        self._embedder = None
-        try:
-            from plastic_promise.core.embedder import get_embedder
-            self._embedder = get_embedder(fallback_on_error=True)
-        except Exception:
-            logging.warning("ContextEngine: embedder unavailable — intent matching disabled")
+        if self._embedder is None:
+            try:
+                from plastic_promise.core.embedder import get_embedder
+                self._embedder = get_embedder(fallback_on_error=True)
+            except Exception:
+                logging.warning("ContextEngine: embedder unavailable — intent matching disabled")
 
         # Initialize LanceDB vector store
-        self._ldb: Optional[object] = None
-        try:
-            from plastic_promise.core.lancedb_store import LanceDBStore
-            ldb_path = os.environ.get("PLASTIC_LANCEDB_PATH",
-                                       os.path.join(os.path.dirname(db_path or "plastic_memory.db"),
-                                                    "plastic_memory.lancedb"))
-            self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
-            # Backfill any memories that bypassed the pipeline
-            self._ldb.backfill(self)
-            logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
-        except Exception as e:
-            logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
-            self._ldb = None
+        if self._ldb is None:
+            try:
+                from plastic_promise.core.lancedb_store import LanceDBStore
+                ldb_path = os.environ.get("PLASTIC_LANCEDB_PATH",
+                                           os.path.join(os.path.dirname(db_path or "plastic_memory.db"),
+                                                        "plastic_memory.lancedb"))
+                self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
+                self._ldb.backfill(self)
+                logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
+            except Exception as e:
+                logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
+                self._ldb = None
 
-        # P1: Build principle anchor embeddings for intent matching
+        # P1: Build principle anchor embeddings for intent matching (cached by embedder)
         self._build_principle_anchors()
 
         self._current_time: str = ""
@@ -686,6 +704,8 @@ class ContextEngine:
         Returns:
             ContextPack: 三层上下文包 (core / related / divergent)
         """
+        # Lazy-heavy-init: first supply() call triggers DomainManager, LanceDB, embedder, anchors
+        self._ensure_heavy_init()
 
         # Phase 0: 原则注入 + 图谱自动注入
         activated = self._activate_principles(task_type, task_description)
@@ -1541,6 +1561,10 @@ class _SQLiteStorage:
 
     Enabled via AGENT_USE_SQLITE=1 env var. Every memory mutation
     (register/store/update/delete) is persisted to disk immediately.
+
+    Batch mode: use ``with storage.batch():`` context manager to defer
+    commits until the block exits. Within a batch, commits are skipped
+    and a single commit is issued at exit.
     """
 
     def __init__(self, db_path: str = None):
@@ -1570,6 +1594,7 @@ class _SQLiteStorage:
             ")"
         )
         self._conn.commit()
+        self._batch_depth = 0  # nesting counter for batch mode
 
         # 迁移: 新增 tags 和 domain 列 (SQLite ALTER TABLE 不支持 IF NOT EXISTS)
         try:
@@ -1663,7 +1688,8 @@ class _SQLiteStorage:
                 data.get("last_accessed", ""),
             ),
         )
-        self._conn.commit()
+        if self._batch_depth <= 0:
+            self._conn.commit()
 
     def get(self, mid: str) -> dict | None:
         """Retrieve a single memory record."""
@@ -1681,7 +1707,8 @@ class _SQLiteStorage:
     def delete(self, mid: str):
         """Delete a memory record."""
         self._conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
-        self._conn.commit()
+        if self._batch_depth <= 0:
+            self._conn.commit()
 
     def iter_all(self):
         """Iterate all memory records."""
@@ -1694,6 +1721,37 @@ class _SQLiteStorage:
         for row in rows:
             d = self._row_to_dict(row)
             yield d["id"], d
+
+    def commit(self):
+        """Explicit commit (useful after batch operations)."""
+        self._conn.commit()
+
+    class _BatchContext:
+        """Context manager for batch writes — defers commits until exit."""
+        def __init__(self, storage):
+            self._storage = storage
+
+        def __enter__(self):
+            self._storage._batch_depth += 1
+            return self
+
+        def __exit__(self, *args):
+            self._storage._batch_depth -= 1
+            if self._storage._batch_depth <= 0:
+                self._storage._batch_depth = 0
+                self._storage._conn.commit()
+
+    def batch(self):
+        """Return a context manager that batches writes into a single commit.
+
+        Usage:
+            with storage.batch():
+                storage.upsert(id1, data1)
+                storage.upsert(id2, data2)
+                # ... more writes ...
+            # single commit() here
+        """
+        return self._BatchContext(self)
 
     def _row_to_dict(self, row) -> dict:
         """Convert a SQLite row to a dict matching the in-memory format."""

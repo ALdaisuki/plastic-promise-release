@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import json
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ class SkillDef:
     description: str
     tier: str  # "P0" | "P1" | "P2"
 
-    # P0/P1 atom dependencies — Engine calls in order
+    # P0/P1 atom dependencies — Engine calls in order (or concurrently if concurrent=True)
     atoms: list[str] = field(default_factory=list)
 
     # Degradation map: atom_name → "skip" | "warn" | "abort" | "fallback:<tool>"
@@ -33,6 +34,9 @@ class SkillDef:
     # Multi-agent
     cross_agent: bool = False
     trust_required: float = 0.0
+
+    # Performance: run all atoms concurrently via asyncio.gather (default: False = serial)
+    concurrent: bool = False
 
 
 @dataclass
@@ -245,56 +249,21 @@ class SkillEngine:
                 )
 
         try:
-            # 4. Call atoms in order with degradation
-            fallback_executed: set[str] = set()  # track atoms already run as fallback
-            for atom_name in skill_def.atoms:
-                # Skip if this atom was already executed as a fallback for a prior atom
-                if atom_name in fallback_executed:
-                    degrade_log.append(f"{atom_name}: skip -- already executed as fallback")
-                    continue
-
-                atom_handler = self._atoms.get(atom_name)
-                if atom_handler is None:
-                    msg = f"Atom '{atom_name}' not in registry"
-                    degrade_log.append(msg)
-                    errors.append(msg)
-                    continue
-
-                try:
-                    result = await atom_handler(self._ctx, params)
-                    atom_results[atom_name] = result
-                except Exception as e:
-                    action = skill_def.degrade_map.get(atom_name, "abort")
-                    if action == "skip":
-                        degrade_log.append(f"{atom_name}: skip -- {e}")
-                        continue
-                    elif action == "warn":
-                        degrade_log.append(f"{atom_name}: warn -- {e}")
-                        continue
-                    elif action.startswith("fallback:"):
-                        fallback_atom = action[len("fallback:"):]
-                        degrade_log.append(f"{atom_name}: fallback to {fallback_atom} -- {e}")
-                        try:
-                            fb_handler = self._atoms.get(fallback_atom)
-                            if fb_handler:
-                                fb_result = await fb_handler(self._ctx, params)
-                                atom_results[atom_name] = fb_result
-                                fallback_executed.add(fallback_atom)
-                        except Exception as fb_e:
-                            degrade_log.append(f"{atom_name}: fallback {fallback_atom} also failed -- {fb_e}")
-                            errors.append(f"{atom_name}: {e}")
-                        continue
-                    else:  # "abort" (default)
-                        errors.append(f"{atom_name}: {e}")
-                        degrade_log.append(f"{atom_name}: abort -- {e}")
-                        # Complete session as failed
+            # 4. Call atoms — concurrent or serial based on SkillDef.concurrent
+            if skill_def.concurrent:
+                atom_results, degrade_log, errors = await self._exec_atoms_concurrent(
+                    skill_def, params, atom_results, degrade_log, errors, entity_id
+                )
+                # Check for abort-level failures from concurrent execution
+                for err in errors:
+                    if "abort --" in err:
                         if entity_id:
                             try:
                                 complete_handler = self._atoms.get("skill_session_complete")
                                 if complete_handler:
                                     await complete_handler(self._ctx, {
                                         "entity_id": entity_id,
-                                        "outcome": f"abandoned: atom {atom_name} failed",
+                                        "outcome": f"abandoned: {err}",
                                     })
                             except Exception as close_err:
                                 degrade_log.append(
@@ -307,6 +276,18 @@ class SkillEngine:
                             audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
                             errors=errors,
                         )
+            else:
+                atom_results, degrade_log, errors, should_abort = await self._exec_atoms_serial(
+                    skill_def, params, atom_results, degrade_log, errors, entity_id
+                )
+                if should_abort:
+                    return SkillResult(
+                        skill_name=skill_name, success=False,
+                        data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
+                        degrade_log=degrade_log,
+                        audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
+                        errors=errors,
+                    )
 
             # 5. Call handler
             result = await skill_def.handler(self._ctx, params, atom_results)
@@ -350,6 +331,103 @@ class SkillEngine:
                 audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
                 errors=errors,
             )
+
+    async def _exec_atoms_serial(
+        self, skill_def: SkillDef, params: dict,
+        atom_results: dict, degrade_log: list, errors: list, entity_id: str,
+    ) -> tuple:
+        """Execute atoms serially with degradation handling. Returns (atom_results, degrade_log, errors, should_abort)."""
+        fallback_executed: set[str] = set()
+        for atom_name in skill_def.atoms:
+            if atom_name in fallback_executed:
+                degrade_log.append(f"{atom_name}: skip -- already executed as fallback")
+                continue
+
+            atom_handler = self._atoms.get(atom_name)
+            if atom_handler is None:
+                msg = f"Atom '{atom_name}' not in registry"
+                degrade_log.append(msg)
+                errors.append(msg)
+                continue
+
+            try:
+                result = await atom_handler(self._ctx, params)
+                atom_results[atom_name] = result
+            except Exception as e:
+                action = skill_def.degrade_map.get(atom_name, "abort")
+                if action == "skip":
+                    degrade_log.append(f"{atom_name}: skip -- {e}")
+                    continue
+                elif action == "warn":
+                    degrade_log.append(f"{atom_name}: warn -- {e}")
+                    continue
+                elif action.startswith("fallback:"):
+                    fallback_atom = action[len("fallback:"):]
+                    degrade_log.append(f"{atom_name}: fallback to {fallback_atom} -- {e}")
+                    try:
+                        fb_handler = self._atoms.get(fallback_atom)
+                        if fb_handler:
+                            fb_result = await fb_handler(self._ctx, params)
+                            atom_results[atom_name] = fb_result
+                            fallback_executed.add(fallback_atom)
+                    except Exception as fb_e:
+                        degrade_log.append(f"{atom_name}: fallback {fallback_atom} also failed -- {fb_e}")
+                        errors.append(f"{atom_name}: {e}")
+                    continue
+                else:
+                    errors.append(f"{atom_name}: {e}")
+                    degrade_log.append(f"{atom_name}: abort -- {e}")
+                    if entity_id:
+                        try:
+                            complete_handler = self._atoms.get("skill_session_complete")
+                            if complete_handler:
+                                await complete_handler(self._ctx, {
+                                    "entity_id": entity_id,
+                                    "outcome": f"abandoned: atom {atom_name} failed",
+                                })
+                        except Exception as close_err:
+                            degrade_log.append(f"skill_session_complete also failed during abort: {close_err}")
+                    return atom_results, degrade_log, errors, True
+        return atom_results, degrade_log, errors, False
+
+    async def _exec_atoms_concurrent(
+        self, skill_def: SkillDef, params: dict,
+        atom_results: dict, degrade_log: list, errors: list, entity_id: str,
+    ) -> tuple:
+        """Execute all atoms concurrently via asyncio.gather with per-atom degrade handling."""
+        async def _run_one_atom(atom_name: str):
+            atom_handler = self._atoms.get(atom_name)
+            if atom_handler is None:
+                return atom_name, None, f"Atom '{atom_name}' not in registry"
+            try:
+                result = await atom_handler(self._ctx, params)
+                return atom_name, result, None
+            except Exception as e:
+                return atom_name, None, str(e)
+
+        tasks = [_run_one_atom(name) for name in skill_def.atoms]
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for item in gathered:
+            if isinstance(item, Exception):
+                errors.append(f"concurrent execution: {item}")
+                continue
+            atom_name, result, error = item
+            if error:
+                action = skill_def.degrade_map.get(atom_name, "abort")
+                if action == "skip":
+                    degrade_log.append(f"{atom_name}: skip -- {error}")
+                elif action == "warn":
+                    degrade_log.append(f"{atom_name}: warn -- {error}")
+                elif action == "abort":
+                    errors.append(f"{atom_name}: abort -- {error}")
+                    degrade_log.append(f"{atom_name}: abort -- {error}")
+                else:
+                    degrade_log.append(f"{atom_name}: {action} -- {error}")
+            else:
+                atom_results[atom_name] = result
+
+        return atom_results, degrade_log, errors
 
 
 def _text_or_str(result: list) -> str:

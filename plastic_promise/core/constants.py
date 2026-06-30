@@ -571,30 +571,41 @@ MERGE_AUDIT_RETENTION_DAYS = 7         # merged records kept in SQLite before pe
 # ============================================================
 
 SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
-    # 起点 skills (无强制前驱)
-    "brainstorming":               {"predecessors": [],           "successors": ["writing-plans"]},
-    "systematic-debugging":        {"predecessors": [],           "successors": ["test-driven-development"]},
-    "requesting-code-review":      {"predecessors": [],           "successors": ["receiving-code-review"]},
-    "writing-skills":              {"predecessors": [],           "successors": []},
-
-    # 中间 skills
-    "writing-plans":               {"predecessors": ["brainstorming"],  "successors": ["subagent-driven-development", "executing-plans"]},
-    "test-driven-development":     {"predecessors": ["systematic-debugging"], "successors": ["verification-before-completion"]},
-    "subagent-driven-development": {"predecessors": ["writing-plans"], "successors": ["finishing-a-development-branch"]},
-    "executing-plans":             {"predecessors": ["writing-plans"], "successors": ["verification-before-completion"]},
+    # ── SuperPowers 原始 skills (概念层) ──
+    "brainstorming":               {"predecessors": [],           "successors": ["using-git-worktrees", "writing-plans"]},
+    "using-git-worktrees":         {"predecessors": ["brainstorming"], "successors": ["writing-plans"]},
+    "writing-plans":               {"predecessors": ["brainstorming", "using-git-worktrees"], "successors": ["subagent-driven-development", "executing-plans"]},
+    "subagent-driven-development": {"predecessors": ["writing-plans"], "successors": ["test-driven-development", "requesting-code-review"]},
+    "executing-plans":             {"predecessors": ["writing-plans"], "successors": ["test-driven-development", "verification-before-completion"]},
+    "test-driven-development":     {"predecessors": ["subagent-driven-development", "executing-plans", "systematic-debugging"], "successors": ["verification-before-completion", "requesting-code-review"]},
     "verification-before-completion": {"predecessors": ["test-driven-development", "executing-plans"], "successors": ["finishing-a-development-branch"]},
-    "receiving-code-review":       {"predecessors": ["requesting-code-review"], "successors": []},
-
-    # 终端 skills
-    "finishing-a-development-branch": {"predecessors": ["subagent-driven-development", "verification-before-completion"], "successors": []},
+    "requesting-code-review":      {"predecessors": [], "successors": ["receiving-code-review"]},
+    "receiving-code-review":       {"predecessors": ["requesting-code-review"], "successors": ["finishing-a-development-branch"]},
+    "finishing-a-development-branch": {"predecessors": ["subagent-driven-development", "verification-before-completion", "receiving-code-review"], "successors": []},
 
     # 辅助 skills (松散约束)
-    "using-git-worktrees":         {"predecessors": [], "successors": []},
+    "systematic-debugging":        {"predecessors": [], "successors": ["test-driven-development"]},
     "dispatching-parallel-agents": {"predecessors": [], "successors": []},
+    "writing-skills":              {"predecessors": [], "successors": []},
     "using-superpowers":           {"predecessors": [], "successors": ["brainstorming", "systematic-debugging", "requesting-code-review"]},
+
+    # ── Plastic Promise Programmatic Skills (sp-* 系列) — 与概念层一一对应 ──
+    "sp-brainstorming":               {"predecessors": [],                    "successors": ["sp-using-git-worktrees", "sp-writing-plans"]},
+    "sp-using-git-worktrees":         {"predecessors": ["sp-brainstorming"],  "successors": ["sp-writing-plans"]},
+    "sp-writing-plans":               {"predecessors": ["sp-brainstorming", "sp-using-git-worktrees"], "successors": ["sp-subagent-driven-development", "sp-executing-plans"]},
+    "sp-subagent-driven-development": {"predecessors": ["sp-writing-plans"],  "successors": ["sp-test-driven-development", "sp-requesting-code-review"]},
+    "sp-executing-plans":             {"predecessors": ["sp-writing-plans"],  "successors": ["sp-test-driven-development", "sp-verification-before-completion"]},
+    "sp-test-driven-development":     {"predecessors": ["sp-subagent-driven-development", "sp-executing-plans", "sp-systematic-debugging"], "successors": ["sp-verification-before-completion", "sp-requesting-code-review"]},
+    "sp-verification-before-completion": {"predecessors": ["sp-test-driven-development", "sp-executing-plans"], "successors": ["sp-finishing-a-development-branch"]},
+    "sp-requesting-code-review":      {"predecessors": [],                    "successors": ["sp-receiving-code-review"]},
+    "sp-receiving-code-review":       {"predecessors": ["sp-requesting-code-review"], "successors": ["sp-finishing-a-development-branch"]},
+    "sp-finishing-a-development-branch": {"predecessors": ["sp-subagent-driven-development", "sp-verification-before-completion", "sp-receiving-code-review"], "successors": []},
+    "sp-systematic-debugging":        {"predecessors": [],                    "successors": ["sp-test-driven-development"]},
+    "sp-dispatching-parallel-agents": {"predecessors": [],                    "successors": []},
 }
 
 SKILL_DOMAIN_MAP: dict[str, str] = {
+    # SuperPowers 原始 skills
     "brainstorming":                  "designing",
     "writing-plans":                  "designing",
     "executing-plans":                "building",
@@ -609,6 +620,20 @@ SKILL_DOMAIN_MAP: dict[str, str] = {
     "finishing-a-development-branch": "governing",
     "writing-skills":                 "designing",
     "using-superpowers":              "governing",
+
+    # Plastic Promise Programmatic Skills (sp-* 系列) — 与概念层一一对应
+    "sp-brainstorming":               "designing",
+    "sp-using-git-worktrees":         "building",
+    "sp-writing-plans":               "designing",
+    "sp-subagent-driven-development": "building",
+    "sp-executing-plans":             "building",
+    "sp-test-driven-development":     "building",
+    "sp-verification-before-completion": "reflecting",
+    "sp-requesting-code-review":      "reflecting",
+    "sp-receiving-code-review":       "reflecting",
+    "sp-systematic-debugging":        "fixing",
+    "sp-dispatching-parallel-agents": "building",
+    "sp-finishing-a-development-branch": "governing",
 }
 
 DOMAIN_TO_TASK_TYPE: dict[str, str] = {

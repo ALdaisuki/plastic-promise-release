@@ -13,6 +13,18 @@ FORCE_RETRIEVE_PATTERNS = [
     "历史", "history", "记录", "record",
 ]
 
+# Task-oriented keywords that always warrant retrieval (high concurrency, intensive ops)
+TASK_KEYWORDS = [
+    "优化", "性能", "并发", "缓存", "数据库", "索引", "查询",
+    "初始化", "启动", "加载", "读取", "写入", "存储", "检索",
+    "架构", "设计", "重构", "修复", "bug", "错误", "异常",
+    "配置", "部署", "测试", "监控", "日志", "安全",
+    "optimize", "performance", "concurrent", "cache", "database",
+    "index", "query", "init", "startup", "load", "read", "write",
+    "architecture", "design", "refactor", "fix", "error", "config",
+    "deploy", "test", "monitor", "log", "security",
+]
+
 SKIP_PATTERNS = [
     r"^/",
     r"^[:\w]+:$",
@@ -45,30 +57,36 @@ def should_retrieve(query: str) -> bool:
         if re.match(pattern, q):
             return False
 
-    # 2. Force-retrieve keywords
+    # 2. Force-retrieve keywords (memory-specific)
     for pattern in FORCE_RETRIEVE_PATTERNS:
         if pattern.lower() in q_lower:
             return True
 
-    # 3. Greetings (short only)
+    # 3. Task-oriented keywords — always retrieve (engineering queries)
+    for kw in TASK_KEYWORDS:
+        if kw.lower() in q_lower:
+            return True
+
+    # 4. Greetings (short only)
     if any(q_lower.startswith(g) for g in GREETINGS) and len(q) <= 15:
         return False
 
-    # 4. Short affirmations
+    # 5. Short affirmations
     stripped = q_lower.rstrip("!.,; :)！，。；：）")
     if stripped in AFFIRMATIONS:
         return False
 
-    # 5. Default: check question marks + length
+    # 6. Default: check question marks + length
     has_question = "?" in q or "？" in q
     cjk_chars = sum(1 for c in q if "一" <= c <= "鿿" or "぀" <= c <= "ゟ")
     ascii_chars = sum(1 for c in q if c.isascii() and c.isalpha())
 
     if has_question:
         return True
-    if cjk_chars >= 8:
+    # Lowered CJK threshold: 4 chars (2-3 word Chinese phrase) is enough for a meaningful query
+    if cjk_chars >= 4:
         return True
-    if ascii_chars >= 20:
+    if ascii_chars >= 12:
         return True
 
     return False

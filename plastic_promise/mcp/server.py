@@ -77,26 +77,20 @@ def get_skill_engine():
     from plastic_promise.skills.engine import SkillEngine
     from plastic_promise.skills.session_lifecycle import skill_session_init
     from plastic_promise.skills.memory_operations import skill_smart_remember
+    from plastic_promise.skills.superpowers_stages import SKILL_DEFS as _SP_DEFS
 
     _skill_engine = SkillEngine(get_engine())
     _skill_engine.register(skill_session_init)
     _skill_engine.register(skill_smart_remember)
-    logging.info("SkillEngine: Phase 1 技能已注册 (session-init, smart-remember)")
+    # 批量注册 12 个 SuperPowers 阶段技能
+    for _name, _def in _SP_DEFS.items():
+        _skill_engine.register(_def)
+    sp_names = ", ".join(_SP_DEFS.keys())
+    logging.info(
+        f"SkillEngine: Phase 1 技能已注册 "
+        f"(session-init, smart-remember, {sp_names})"
+    )
     return _skill_engine
-    """获取 ContextEngine 单例（Rust 优先，Python 回退）"""
-    global _engine
-    if _engine is not None:
-        return _engine
-
-    try:
-        from context_engine_core import ContextEngine as RustEngine
-        _engine = RustEngine()
-        logging.info("ContextEngine: Rust 核心已加载")
-    except ImportError:
-        logging.warning("ContextEngine: Rust 不可用，使用 Python Mock")
-        from plastic_promise.core.context_engine import ContextEngine as PyEngine
-        _engine = PyEngine()
-    return _engine
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +656,23 @@ async def list_tools() -> list[Tool]:
                 "required": ["task_description"],
             },
         ),
+        # === SuperPowers 流水线阶段技能 (统一入口) ===
+        Tool(
+            name="sp-stage",
+            description="SuperPowers 流水线统一阶段入口。stage 参数对应 SuperPowers 标准阶段: brainstorming | writing-plans | executing-plans | subagent-driven-development | test-driven-development | verification-before-completion | finishing-a-development-branch | requesting-code-review | receiving-code-review | systematic-debugging | using-git-worktrees | dispatching-parallel-agents。自动触发 skill_session_start/complete 追踪。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "stage": {
+                        "type": "string",
+                        "description": "SuperPowers 阶段名称",
+                        "enum": ["brainstorming", "writing-plans", "executing-plans", "subagent-driven-development", "test-driven-development", "verification-before-completion", "finishing-a-development-branch", "requesting-code-review", "receiving-code-review", "systematic-debugging", "using-git-worktrees", "dispatching-parallel-agents"],
+                    },
+                    "task_description": {"type": "string", "description": "当前阶段任务描述"},
+                },
+                "required": ["stage", "task_description"],
+            },
+        ),
     ])
 
     return tools
@@ -941,6 +952,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             dashboard = _format_closure_dashboard(safe, _closure_history)
             json_body = json.dumps(safe, ensure_ascii=False, indent=2)
             return [TextContent(type="text", text=dashboard + "\n" + json_body)]
+
+        # === SuperPowers 流水线阶段技能 (统一入口) ===
+        elif name == "sp-stage":
+            stage = arguments.get("stage", "")
+            task_desc = arguments.get("task_description", "")
+            se = get_skill_engine()
+            # 映射到 SkillEngine 注册的技能名
+            skill_name = f"sp-{stage}" if not stage.startswith("sp-") else stage
+            result = await se.exec(skill_name, {"task_description": task_desc}, caller="trae")
+            return [TextContent(type="text", text=json.dumps(
+                {"skill": result.skill_name, "stage": stage, "success": result.success,
+                 "data": result.data, "degrade_log": result.degrade_log,
+                 "errors": result.errors, "audit_trail": result.audit_trail},
+                ensure_ascii=False, indent=2))]
 
         elif name == "memory_sync_files":
             from plastic_promise.mcp.tools.sync import handle_memory_sync_files
