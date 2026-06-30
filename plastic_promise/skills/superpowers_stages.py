@@ -108,7 +108,6 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
             "domain": domain,
             "tags": tags,
             "principles": principle_data.get("activated", []),
-            "context": context_data,
             "memory_id": store_data.get("memory_id", ""),
             "transition": f"→ {stage_name}",
         },

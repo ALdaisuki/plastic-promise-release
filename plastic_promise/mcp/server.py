@@ -980,11 +980,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             se = get_skill_engine()
             skill_name = f"sp-{stage}" if not stage.startswith("sp-") else stage
             result = await se.exec(skill_name, {"task_description": task_desc}, caller="trae")
+            if not result.success:
+                return [TextContent(type="text", text=json.dumps(
+                    {"stage": stage, "success": False, "errors": result.errors},
+                    ensure_ascii=False))]
             return [TextContent(type="text", text=json.dumps(
-                {"skill": result.skill_name, "stage": stage, "success": result.success,
-                 "data": result.data, "degrade_log": result.degrade_log,
-                 "errors": result.errors, "audit_trail": result.audit_trail},
-                ensure_ascii=False, indent=2))]
+                {"stage": stage, "success": True, "data": result.data},
+                ensure_ascii=False))]
 
         elif name == "memory_sync_files":
             from plastic_promise.mcp.tools.sync import handle_memory_sync_files
