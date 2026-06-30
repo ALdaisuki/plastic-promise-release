@@ -1,1 +1,34 @@
-{}
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "name": "sp-session-init",
+        "enabled": true,
+        "command": "python .trae/hooks/sp_hook.py"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "name": "sp-pre-tool-tracking",
+        "enabled": true,
+        "matcher": "run_mcp",
+        "command": "python .trae/hooks/sp_hook.py"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "name": "sp-post-tool-tracking",
+        "enabled": true,
+        "matcher": "run_mcp",
+        "command": "python .trae/hooks/sp_hook.py"
+      }
+    ],
+    "Stop": [
+      {
+        "name": "sp-stop-summary",
+        "enabled": true,
+        "command": "python .trae/hooks/sp_hook.py"
+      }
+    ]
+  }
+}
