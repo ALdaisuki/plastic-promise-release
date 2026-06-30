@@ -53,6 +53,10 @@ class CachedEmbedder(Embedder):
     Caches embeddings by content hash. Thread-safe with TTL-based expiry.
     Configurable via EMBEDDER_CACHE_SIZE (default 256) and EMBEDDER_CACHE_TTL (default 300s).
     Set EMBEDDER_CACHE_SIZE=0 to disable.
+
+    Provides both sync ``embed()`` and async ``embed_async()`` — the async variant
+    runs the delegate's HTTP call in ``asyncio.to_thread()`` to avoid blocking the
+    event loop (critical for SSE/MCP request handlers).
     """
 
     def __init__(self, delegate: Embedder,
@@ -92,6 +96,27 @@ class CachedEmbedder(Embedder):
                 del self._cache[oldest_key]
             self._cache[key] = (vec, now)
         return vec
+
+    async def embed_async(self, text: str) -> list[float]:
+        """Async variant: runs the delegate HTTP call in a thread to avoid
+        blocking the asyncio event loop.  Cache hit returns immediately;
+        cache miss offloads the blocking ``requests.post()`` to a thread.
+
+        Only valid when called from inside a running event loop.
+        """
+        import asyncio as _asyncio
+        # Fast path: cache hit (no I/O)
+        if self._max_size > 0:
+            key = self._key(text)
+            now = time.time()
+            with self._lock:
+                if key in self._cache:
+                    vec, ts = self._cache[key]
+                    if now - ts < self._ttl:
+                        self._hits += 1
+                        return vec
+        # Slow path: delegate embed in thread so event loop stays responsive
+        return await _asyncio.to_thread(self.embed, text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Batch embed with cache check per text."""
@@ -176,7 +201,7 @@ class OllamaEmbedder(Embedder):
         resp = requests.post(
             f"{self._host}/api/embeddings",
             json={"model": self._model, "prompt": text},
-            timeout=30,
+            timeout=10,
         )
         resp.raise_for_status()
         return resp.json()["embedding"]

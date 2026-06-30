@@ -580,15 +580,7 @@ async def handle_skill_session_start(
         engine, entity_id, skill_name, task_description, parent_entity_id,
     )
 
-    # 2. Activate principles for this skill's domain
-    principles = await _activate_skill_principles(
-        engine, skill_name, task_description,
-    )
-
-    # 3. Recall related memories
-    related_memories = await _recall_skill_memories(engine, task_description)
-
-    # 4. Persist as memory record
+    # 2. Persist as memory record (principles + recall handled by sp-stage atoms)
     memory_id = await _store_skill_start(
         engine, entity_id, skill_name, task_description, domain,
     )
@@ -600,8 +592,8 @@ async def handle_skill_session_start(
         "skill_name": skill_name,
         "status": "active",
         "domain": domain,
-        "activated_principles": principles,
-        "related_memories": related_memories,
+        "activated_principles": [],  # handled by atoms, not duplicated here
+        "related_memories": [],      # handled by session-init context_supply
         "tags_applied": tags_applied,
         "chain_warning": chain_warning,
         "memory_id": memory_id,
