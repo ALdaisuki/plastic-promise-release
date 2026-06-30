@@ -433,7 +433,14 @@ class MemoryPipeline:
 
                 # ---- Step 4c: Store ----
                 # Extract category from smart_extractor result (preference/fact/decision/entity/event/pattern)
-                extracted_category = record.get("extracted", {}).get("category", "other")
+                extracted = record.get("extracted", {})
+                extracted_category = extracted.get("category", "other")
+                extracted_confidence = extracted.get("confidence", 0.5)
+
+                # Tag for background LLM refinement when rule classification is uncertain
+                if extracted_category == "other" or extracted_confidence < 0.5:
+                    if "llm_pending:true" not in tags:
+                        tags.append("llm_pending:true")
                 stored = self.rec_mem.store(
                     content=record["content"],
                     memory_type=record["memory_type"],
