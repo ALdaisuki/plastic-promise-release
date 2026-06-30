@@ -389,4 +389,4 @@ def post_task(
     Returns:
         编排报告字典 (alignment, scarf, hormone, trust, reflection, cei, repairs)。
     """
-    return _get_default_loop().post_task(task_description, git_commit)
+    return _get_default_loop().post_task(task_description, git_commit, mode, issue_id)
