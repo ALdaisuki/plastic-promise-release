@@ -15,6 +15,7 @@ import shutil
 import time
 
 INTERVAL = int(os.environ.get("PI_INTERVAL", "10"))
+AUDIT_INTERVAL = int(os.environ.get("AUDIT_INTERVAL_SECONDS", "3600"))
 PI_CMD = shutil.which("pi") or shutil.which("pi.cmd") or r"D:\npm-global\pi.cmd"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -338,6 +339,10 @@ async def main():
     print(f"Auto-chain: {', '.join(f'{k}→{v}' for k,v in AUTO_CHAIN.items())}")
 
     _cleanup_counter = 0
+    # 冷启动: 30s 后执行首次审计（daemon 启动即获得基线）
+    await asyncio.sleep(30)
+    from audit_daemon import run_audit
+    await run_audit()
     while True:
         task = get_pending_task()
         if task:
@@ -379,11 +384,19 @@ async def main():
         # Batch 2: 超时恢复 + 定期清理
         recover_stuck_tasks()
         _cleanup_counter += 1
-        if _cleanup_counter >= 360:  # ~每小时 (360 * 10s = 3600s)
-            cleanup_old_memories()
-            from audit_daemon import run_audit
-            await run_audit()
-            _cleanup_counter = 0
+        # 审计间隔: AUDIT_INTERVAL 秒，带 jitter 防惊群
+        _audit_threshold = AUDIT_INTERVAL // INTERVAL
+        if _cleanup_counter >= _audit_threshold:
+            import random
+            # 10% 概率跳过本次审计（jitter），防止所有实例同时审计
+            if random.random() < 0.1:
+                _cleanup_counter = _audit_threshold - 1  # 下次循环再触发
+            else:
+                cleanup_old_memories()
+                # 使用 packaged audit 入口（audit_daemon.py 在项目根目录，pi_daemon.py 同目录导入）
+                from audit_daemon import run_audit
+                await run_audit()
+                _cleanup_counter = 0
         await asyncio.sleep(INTERVAL)
 
 
