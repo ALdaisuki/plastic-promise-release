@@ -3,6 +3,7 @@
 import json
 
 from plastic_promise.core.constants import DEDUP_SIMILARITY_THRESHOLD
+from plastic_promise.mcp.tools.memory import handle_memory_update
 from plastic_promise.skills.engine import SkillDef, SkillResult
 
 
@@ -39,9 +40,22 @@ async def _smart_remember_handler(ctx, params, atom_results):
             break
 
     if duplicate:
-        # Update existing
-        update_data = parse(atom_results.get("memory_update", atom_results.get("memory_store")))
-        memory_id = update_data.get("memory_id", duplicate.get("id", "?"))
+        # Update existing — call handle_memory_update directly (not as an engine atom)
+        try:
+            update_result = await handle_memory_update(ctx, {
+                "memory_id": duplicate["id"],
+                "content": params.get("content", ""),
+            })
+            update_data = parse(update_result)
+            memory_id = update_data.get("memory_id", duplicate.get("id", "?"))
+        except Exception as e:
+            return SkillResult(
+                skill_name="smart-remember",
+                success=False,
+                data={"action": "update_failed", "duplicate_of": duplicate.get("id")},
+                atom_results={}, degrade_log=[f"handle_memory_update: {e}"],
+                audit_trail={}, errors=[f"memory_update failed: {e}"],
+            )
         return SkillResult(
             skill_name="smart-remember",
             success=True,
@@ -78,14 +92,12 @@ skill_smart_remember = SkillDef(
     atoms=[
         "principle_activate",
         "memory_recall",
-        "memory_store",   # used only if no duplicate
-        "memory_update",  # used only if duplicate found
+        "memory_store",
     ],
     degrade_map={
         "principle_activate": "skip",
         "memory_recall": "fallback:memory_store",  # if recall fails, store anyway (no dedup)
-        "memory_store": "skip",  # gracefully skip store on failure
-        "memory_update": "skip",  # gracefully skip update on failure
+        "memory_store": "abort",  # data integrity: abort on store failure
     },
     handler=_smart_remember_handler,
     allowed_callers=["claude", "pi"],
