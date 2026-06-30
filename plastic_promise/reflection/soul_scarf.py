@@ -7,10 +7,17 @@
 - Relatedness（关联性）—— 当前行为是否与核心约定对齐？
 - Fairness（公平性）—— 当前决策是否公平、一致？
 
+评分策略（混合）：
+1. 关键词匹配 — 显式命中时产生强信号（±0.06~0.08/词）
+2. 语义相似度 — 无关键词命中时，用 embedding 余弦相似度
+   比较上下文与各维度正/负锚点，产生 ±0.15 以内的微调信号
+3. 默认回退 — 既无关键词又无 embedding 时退回 0.65
+
 提供模块级便捷函数 `scarf_reflect` 以及可实例化的 `SCARFReflector` 类。
 """
 
 import datetime
+import math
 from typing import Any, Dict, List, Optional
 
 from plastic_promise.core.constants import SCARF_DIMENSIONS
@@ -92,9 +99,62 @@ _DIMENSION_KEYWORDS: Dict[str, Dict[str, List[str]]] = {
 
 _DEFAULT_SCORE = 0.65
 _STRONG_SIGNAL_THRESHOLD = 3  # 匹配 keyword 数达到此值视为强信号
+_SEMANTIC_SIGNAL_MAX = 0.15   # 语义信号最大偏移量
+_SEMANTIC_SIGNAL_FLOOR = 0.03 # 语义相似度低于此值视为噪声，归零
+
+# Pre-built dimension anchor texts (lazily embedded on first use)
+_ANCHOR_TEXTS: Dict[str, Dict[str, str]] = {}
+for _dk, _kw in _DIMENSION_KEYWORDS.items():
+    _ANCHOR_TEXTS[_dk] = {
+        "positive": " ".join(_kw.get("positive", [])),
+        "negative": " ".join(_kw.get("negative", [])),
+    }
 
 
-def _compute_dimension_score(dim_key: str, context_lower: str) -> Dict[str, Any]:
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Compute cosine similarity between two vectors (manual, no numpy)."""
+    if len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0  # zero-vector fallback → no signal
+    return dot / (norm_a * norm_b)
+
+
+def _compute_semantic_signal(context: str, dim_key: str) -> float:
+    """Compute embedding-based semantic signal for a SCARF dimension.
+
+    Embeds the context text and compares it against pre-built positive/
+    negative anchor embeddings for the dimension. Returns a value in
+    [-_SEMANTIC_SIGNAL_MAX, +_SEMANTIC_SIGNAL_MAX] that nudges the
+    default score when no keywords match.
+
+    Gracefully degrades to 0.0 when the embedder is unavailable or
+    returns zero vectors (FallbackEmbedder).
+    """
+    anchors = _ANCHOR_TEXTS.get(dim_key)
+    if not anchors:
+        return 0.0
+    try:
+        from plastic_promise.core.embedder import get_embedder
+        embedder = get_embedder()
+        ctx_vec = embedder.embed(context)
+        pos_vec = embedder.embed(anchors["positive"])
+        neg_vec = embedder.embed(anchors["negative"])
+        pos_sim = _cosine_similarity(ctx_vec, pos_vec)
+        neg_sim = _cosine_similarity(ctx_vec, neg_vec)
+        raw = pos_sim - neg_sim
+        if abs(raw) < _SEMANTIC_SIGNAL_FLOOR:
+            return 0.0
+        return max(-_SEMANTIC_SIGNAL_MAX, min(_SEMANTIC_SIGNAL_MAX, raw))
+    except Exception:
+        return 0.0
+
+
+def _compute_dimension_score(dim_key: str, context_lower: str,
+                             context_original: str = "") -> Dict[str, Any]:
     """对单个维度计算评分和评估文本。
 
     Args:
@@ -117,9 +177,20 @@ def _compute_dimension_score(dim_key: str, context_lower: str) -> Dict[str, Any]
 
     # Compute score from signal strength
     if pos_count == 0 and neg_count == 0:
-        score = _DEFAULT_SCORE
-        assessment = f"{dim_label}：无明显信号，维持默认评估。"
-        suggestion = f"建议主动检查{dim_label}状态：{dim_question}"
+        # No keyword hits — try semantic embedding signal
+        semantic_signal = _compute_semantic_signal(context_original, dim_key)
+        if semantic_signal != 0.0:
+            score = _DEFAULT_SCORE + semantic_signal
+            direction = "正面" if semantic_signal > 0 else "负面"
+            assessment = (
+                f"{dim_label}：无显式关键词，语义信号{direction}倾向"
+                f"（偏移 {semantic_signal:+.3f}）。"
+            )
+            suggestion = f"建议主动检查{dim_label}状态：{dim_question}"
+        else:
+            score = _DEFAULT_SCORE
+            assessment = f"{dim_label}：无明显信号，维持默认评估。"
+            suggestion = f"建议主动检查{dim_label}状态：{dim_question}"
     elif pos_count >= _STRONG_SIGNAL_THRESHOLD and neg_count == 0:
         score = min(1.0, 0.65 + 0.07 * pos_count)
         assessment = f"{dim_label}：强正面信号（+{pos_count}个积极指标）。"
@@ -210,7 +281,7 @@ class SCARFReflector:
             if dim_key not in SCARF_DIMENSIONS:
                 continue
             dim_results[dim_key] = _compute_dimension_score(
-                dim_key, context_lower
+                dim_key, context_lower, context_original=context
             )
 
         # Build result as flat {dimension: {...}, summary: ..., timestamp: ...}

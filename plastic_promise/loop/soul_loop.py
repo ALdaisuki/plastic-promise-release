@@ -129,6 +129,13 @@ class SoulLoop:
         if self._engine is None:
             self._engine = ContextEngine()
 
+        # 0. Lazy-init TrustManager BEFORE HormoneEngine so hormone-driven
+        #    trust deltas actually reach the TrustStore (was silently dropped).
+        if self._trust_manager is None:
+            from plastic_promise.defense.trust_store import TrustStore
+            from plastic_promise.defense.soul_enforcer import TrustManager
+            self._trust_manager = TrustManager(trust_store=TrustStore())
+
         # 1. 约定对齐检查 — 记录原则遵守
         try:
             activated = self._engine._activate_principles("general", task_description)
@@ -171,12 +178,8 @@ class SoulLoop:
         except Exception as e:
             result["hormone"] = {"error": str(e)}
 
-        # 4. 信任联动
+        # 4. 信任联动 — TrustManager already initialized in step 0
         try:
-            if self._trust_manager is None:
-                from plastic_promise.defense.trust_store import TrustStore
-                from plastic_promise.defense.soul_enforcer import TrustManager
-                self._trust_manager = TrustManager(trust_store=TrustStore())
             if result.get("scarf") and isinstance(result["scarf"], dict):
                 scarf_overall = result["scarf"].get("summary", {}).get("overall_score", 0.6)
                 if scarf_overall >= 0.80:
@@ -211,12 +214,21 @@ class SoulLoop:
                 "step_id": audit_result.step_id,
             }
             result["repairs"] = self._auditor.suggest_repairs(audit_result)
+            # 过滤：如果已有 git commit，不再建议 "缺少 git commit"
+            if git_commit and git_commit.strip():
+                result["repairs"] = [
+                    r for r in result["repairs"]
+                    if r.get("dimension") != "transparency"
+                ]
         except Exception as e:
             result["reflection"] = {"error": str(e)}
 
-        # 6. CEI 更新
+        # 6. CEI 更新 — writes back to _cached_cei so hormone feedback
+        #    uses the real CEI instead of the hardcoded 0.5 initial value.
         try:
             cei = self.calculate_cei()
+            self._cached_cei = cei
+            self._cei_history.append(cei)
             result["cei"] = {"score": cei, "tier": self.cei_tier}
         except Exception as e:
             result["cei"] = {"error": str(e)}
