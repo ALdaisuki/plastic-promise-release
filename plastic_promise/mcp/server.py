@@ -561,6 +561,18 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="memory_sync_files",
+            description="同步文件系统 .md 记忆到 MCP 管道。扫描目录、解析 frontmatter、去重、标记已同步。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_dir": {"type": "string", "description": ".md 记忆文件目录路径"},
+                    "dry_run": {"type": "boolean", "description": "仅扫描不写入 (默认 false)"},
+                },
+                "required": ["source_dir"],
+            },
+        ),
     ])
 
     return tools
@@ -701,6 +713,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "skill_auto_track":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_auto_track
             return await handle_skill_auto_track(engine, arguments)
+
+        elif name == "memory_sync_files":
+            from plastic_promise.mcp.tools.sync import handle_memory_sync_files
+            return await handle_memory_sync_files(engine, arguments)
 
         else:
             return [TextContent(type="text", text=json.dumps(
