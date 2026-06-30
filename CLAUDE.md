@@ -7,6 +7,10 @@
 
 每次会话开始，依次执行：
 
+0. **server up check** — `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9020/health')"`
+   - 不可用（报错）→ 启动: `python -m plastic_promise.mcp.server --sse 9020` (后台运行: Windows 用 `start /B`, Unix 用 `&`)
+   - 仍不可用 → 告警，本次会话使用文件系统降级（写入 `.md` 需加 `[[pending-sync]]` 标记）
+
 1. `auto_context_inject(task_description="<当前任务>", scope="agent:claude", source="claude_code")` — **统一上下文注入**（含原则激活 + 记忆召回 + 实体追踪 + 注入沉淀，替代原步骤 3/4/5 三步手动调用）
 2. `domain(action="stats")` — 域联邦健康度 + 当前活跃域
 3. `system(action="stats")` — 记忆池总量 + 衰减分布 + fuzzy buffer 积压
