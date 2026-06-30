@@ -27,6 +27,11 @@ class Embedder(ABC):
     def embed(self, text: str) -> list[float]:
         """Convert text to an embedding vector."""
 
+    async def aembed(self, text: str) -> list[float]:
+        """Async wrapper: runs embed() in thread pool to avoid event-loop blocking."""
+        import asyncio
+        return await asyncio.to_thread(self.embed, text)
+
     @abstractmethod
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Batch embed multiple texts."""

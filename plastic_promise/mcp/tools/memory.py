@@ -113,10 +113,10 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
 
         try:
             embedder = get_embedder(fallback_on_error=False)
-            vec = embedder.embed(query)
+            vec = await embedder.aembed(query)
         except Exception:
             embedder = FallbackEmbedder()
-            vec = embedder.embed(query)
+            vec = await embedder.aembed(query)
         pack = engine.supply(query, vec, task_type, scope)
 
         result_json = json.dumps({

@@ -34,13 +34,13 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
 
         try:
             embedder = get_embedder(fallback_on_error=False)
-            task_vector = embedder.embed(task_description)
+            task_vector = await embedder.aembed(task_description)
         except Exception:
             # Embedding service unavailable — use zero-vector fallback.
             # ContextEngine._text_retrieval uses pure text matching
             # (CJK bigrams / word split) which works without embeddings.
             embedder = FallbackEmbedder()
-            task_vector = embedder.embed(task_description)
+            task_vector = await embedder.aembed(task_description)
 
         pack = engine.supply(task_description, task_vector, task_type, scope)
 
