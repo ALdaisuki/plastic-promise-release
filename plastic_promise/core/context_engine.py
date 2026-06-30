@@ -633,13 +633,12 @@ class ContextEngine:
         return results
 
     def _reload_from_sqlite(self):
-        """Sync in-memory cache with SQLite: load any new memories written externally."""
+        """Sync in-memory cache with SQLite: load new or updated memories."""
         if not self._sqlite:
             return
         try:
             for mid, data in self._sqlite.iter_all():
-                if mid not in self._memories:
-                    self._memories[mid] = data
+                self._memories[mid] = data  # overwrite existing to catch external updates
         except Exception:
             pass  # graceful degradation
 

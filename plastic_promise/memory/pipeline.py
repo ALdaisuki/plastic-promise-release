@@ -432,6 +432,8 @@ class MemoryPipeline:
                     continue
 
                 # ---- Step 4c: Store ----
+                # Extract category from smart_extractor result (preference/fact/decision/entity/event/pattern)
+                extracted_category = record.get("extracted", {}).get("category", "other")
                 stored = self.rec_mem.store(
                     content=record["content"],
                     memory_type=record["memory_type"],
@@ -439,6 +441,7 @@ class MemoryPipeline:
                     entity_ids=record.get("entity_ids", []),
                     tags=tags,
                     domain=domain_hint,
+                    category=extracted_category,
                 )
 
                 # Attach quality metadata

@@ -438,6 +438,7 @@ class RecMem:
         entity_ids: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         domain: str = "uncategorized",
+        category: str = "other",
     ) -> MemoryRecord:
         """存储一条新记忆。
 
@@ -453,6 +454,7 @@ class RecMem:
             entity_ids: 关联的实体 ID 列表（可选）。
             tags: 语义标签列表（可选）。
             domain: 分配的语义域名称。
+            category: 分类类别（preference/fact/decision/entity/event/pattern/other）。
 
         Returns:
             新创建的 MemoryRecord 实例。
@@ -464,9 +466,11 @@ class RecMem:
                 rust_record = RustMemoryRecord(memory_id, content, memory_type, source)
                 rust_record.tier = "L1"
                 rust_record.scope = "global"
-                rust_record.category = "other"
+                rust_record.category = category
                 rust_record.importance = importance
                 rust_record.entity_ids = entity_ids or []
+                rust_record.domain = domain
+                rust_record.tags = tags or []
                 self._engine.store_memory(rust_record)
             except (ImportError, AttributeError):
                 # Fallback: Python engine
@@ -479,6 +483,9 @@ class RecMem:
                     "worth_success": 0,
                     "worth_failure": 0,
                     "tier": "L1",
+                    "category": category,
+                    "domain": domain,
+                    "tags": tags or [],
                     "entity_ids": entity_ids or [],
                 }
                 self._engine.register_memory(record_dict)

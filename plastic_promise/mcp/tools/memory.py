@@ -587,103 +587,122 @@ async def handle_memory_correct(engine: Any, args: dict) -> list[TextContent]:
 # ═══════════════════════════════════════════════════════════════
 
 async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]:
-    """Force existing memories through the classification pipeline."""
+    """原地重分类存量记忆 — 只走规则分类(大类tier/domain/category)，不创建新记录。
+
+    使用 fuzzy_buffer 的 Stage 2 分类能力（tagged→classified），
+    但直接更新现有 SQLite 记录，不经过 Stage 4 的 store() 创建副本。
+    """
     batch_size = args.get("batch_size", 50)
-    resume_from = args.get("resume_from", None)
+    dry_run = args.get("dry_run", False)
+
+    # Import classification components
+    from plastic_promise.smart_extractor import _classify_by_rules
+    from plastic_promise.memory.soul_memory import MemoryRecord, MemoryTierManager
+    from plastic_promise.core.domain_manager import DomainManager
 
     fb = _get_fuzzy_buffer(engine)
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    tier_mgr = fb._tier_manager
+    dm = getattr(engine, '_dm', None)
+
+    sqlite = getattr(engine, '_sqlite', None)
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     reclassified = 0
     skipped = 0
     errors = 0
-    remaining = 0
+    by_category = {}
+    by_domain = {}
 
     pending = []
     for mid, mem in engine._memories.items():
         if not isinstance(mem, dict):
             continue
-        tags = mem.get("tags", [])
+        tags = list(mem.get("tags", []))
         if "status:replaced" in tags:
             skipped += 1
             continue
-        if resume_from and mid <= resume_from:
-            skipped += 1
-            continue
-        pending.append((mid, dict(mem)))
+        pending.append((mid, mem, tags))
 
-    remaining = max(0, len(pending) - batch_size)
     batch = pending[:batch_size]
+    remaining = max(0, len(pending) - batch_size)
 
-    for mid, mem in batch:
+    for mid, mem, old_tags in batch:
         try:
             content = mem.get("content", "")
             if not content.strip():
                 skipped += 1
                 continue
 
-            old_tags = list(mem.get("tags", []))
-            old_eids = list(mem.get("entity_ids", []))
-            old_source = mem.get("source", "user")
-            old_worth_s = mem.get("worth_success", 0)
-            old_worth_f = mem.get("worth_failure", 0)
-            old_access = mem.get("access_count", 0)
+            # ── 1. Category: rule-based keyword matching ──
+            cat, conf = _classify_by_rules(content)
+            new_category = cat if cat else mem.get("category", "other")
 
-            fb.store_urgent(
-                content=content,
-                memory_type=mem.get("memory_type", "experience"),
-                source=old_source,
-                entity_ids=old_eids,
-                custom_tags=old_tags,
-                domain_hint=None,
-            )
-            fb.process_pipeline()
-
-            new_mid = None
-            for check_mid in engine._memories:
-                if (check_mid not in dict(batch)
-                        and "status:replaced" not in engine._memories[check_mid].get("tags", [])
-                        and content[:50] in engine._memories[check_mid].get("content", "")):
-                    new_mid = check_mid
-                    break
-
-            if new_mid and new_mid in engine._memories:
-                new_mem = engine._memories[new_mid]
-                if "metadata" not in new_mem or not isinstance(new_mem.get("metadata"), dict):
-                    new_mem["metadata"] = {}
-                new_mem["metadata"]["worth_history"] = {
-                    "previous": {"success": old_worth_s, "failure": old_worth_f},
-                    "previous_access_count": old_access,
-                    "reclassified_at": now,
-                }
-
-            engine._memories[mid]["metadata"] = engine._memories[mid].get("metadata", {})
-            if not isinstance(engine._memories[mid]["metadata"], dict):
-                engine._memories[mid]["metadata"] = {}
-            engine._memories[mid]["metadata"]["replaced_by"] = new_mid
-            old_tags_replaced = list(engine._memories[mid].get("tags", []))
-            if "status:replaced" not in old_tags_replaced:
-                old_tags_replaced.append("status:replaced")
-            engine._memories[mid]["tags"] = old_tags_replaced
-
-            sqlite = getattr(engine, '_sqlite', None)
-            if sqlite is not None:
+            # ── 2. Tier: MemoryTierManager.classify_tier ──
+            new_tier = "L1"
+            if tier_mgr is not None:
                 try:
-                    sqlite._conn.execute(
-                        "UPDATE memories SET tags = ?, metadata = ? WHERE id = ?",
-                        (json.dumps(old_tags_replaced),
-                         json.dumps(engine._memories[mid]["metadata"]), mid)
+                    mr = MemoryRecord(
+                        content=content,
+                        memory_type=mem.get("memory_type", "experience"),
+                        source=mem.get("source", "user"),
                     )
-                    if new_mid and new_mid in engine._memories:
-                        sqlite._conn.execute(
-                            "UPDATE memories SET metadata = ? WHERE id = ?",
-                            (json.dumps(engine._memories[new_mid]["metadata"]), new_mid)
-                        )
-                    sqlite._conn.commit()
+                    mr.access_count = mem.get("access_count", 0)
+                    mr.worth_success = mem.get("worth_success", 0)
+                    mr.worth_failure = mem.get("worth_failure", 0)
+                    new_tier = tier_mgr.classify_tier(mr)
                 except Exception:
                     pass
 
-            reclassified += 1
+            # ── 3. Domain: DomainManager.assign ──
+            new_domain = mem.get("domain", "uncategorized")
+            new_tags = list(old_tags)
+            if cat and f"cat:{cat}" not in new_tags:
+                new_tags.append(f"cat:{cat}")
+
+            if dm is not None and (new_domain == "uncategorized" or new_domain is None):
+                try:
+                    assigned = dm.assign(new_tags, agent_id="system")
+                    if assigned and assigned != "uncategorized":
+                        new_domain = assigned
+                except Exception:
+                    pass
+
+            # ── 4. Apply changes in-place ──
+            changed = (
+                new_category != mem.get("category", "other")
+                or new_tier != mem.get("tier", "L1")
+                or new_domain != mem.get("domain", "uncategorized")
+                or set(new_tags) != set(old_tags)
+            )
+
+            if changed and not dry_run:
+                # Update in-memory engine dict
+                engine._memories[mid]["category"] = new_category
+                engine._memories[mid]["tier"] = new_tier
+                engine._memories[mid]["domain"] = new_domain
+                engine._memories[mid]["tags"] = new_tags
+
+                # Update SQLite
+                if sqlite is not None:
+                    try:
+                        sqlite._conn.execute(
+                            "UPDATE memories SET category = ?, tier = ?, domain = ?, tags = ? WHERE id = ?",
+                            (new_category, new_tier, new_domain, json.dumps(new_tags), mid)
+                        )
+                        sqlite._conn.commit()
+                    except Exception:
+                        pass
+
+                by_category[new_category] = by_category.get(new_category, 0) + 1
+                by_domain[new_domain] = by_domain.get(new_domain, 0) + 1
+                reclassified += 1
+            elif changed and dry_run:
+                reclassified += 1
+                by_category[new_category] = by_category.get(new_category, 0) + 1
+                by_domain[new_domain] = by_domain.get(new_domain, 0) + 1
+            else:
+                skipped += 1
+
         except Exception:
             errors += 1
 
@@ -693,8 +712,11 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
         "skipped": skipped,
         "errors": errors,
         "batch_size": batch_size,
-        "last_id": batch[-1][0] if batch else None,
+        "dry_run": dry_run,
         "total": len(engine._memories),
+        "last_id": batch[-1][0] if batch else None,
+        "category_distribution": by_category,
+        "domain_distribution": by_domain,
     }, ensure_ascii=False))]
 
 
