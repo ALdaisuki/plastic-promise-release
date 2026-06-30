@@ -589,13 +589,18 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="step-closure",
-            description="每步完成后的六联闭环：原则对齐检查 → SCARF 五维自省 → 激素更新 → 信任分联动 → 反思记忆存储 → CEI 复合指数。mode=light 仅做对齐+注入，mode=full 走完整六联。",
+            description="每步完成后的六联闭环：原则对齐检查 → SCARF 五维自省 → 激素更新 → 信任分联动 → LLM反思生成(经验/优化/根因) → CEI 复合指数。mode=light 仅做对齐+注入，mode=full 走完整六联。",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_description": {"type": "string", "description": "本步操作描述"},
                     "git_commit": {"type": "string", "description": "关联的 git commit hash (可选)"},
-                    "mode": {"type": "string", "description": "light (仅对齐+注入) | full (完整六联闭环，默认)"},
+                    "mode": {"type": "string", "description": "light (仅对齐+注入) | full (完整六联闭环+LLM反思，默认)"},
+                    "lesson": {"type": "string", "description": "经验教训 — 执行者自己反思：本次学到了什么？"},
+                    "improvement": {"type": "string", "description": "优化建议 — 下次如何做得更好？"},
+                    "root_cause": {"type": "string", "description": "根因分析 — 如果存在问题，根本原因是什么？"},
+                    "optimization": {"type": "string", "description": "优化动作 — 立即可执行的一个具体改进"},
+                    "trick": {"type": "string", "description": "窍门/技巧 (可选)"},
                 },
                 "required": ["task_description"],
             },
@@ -654,7 +659,7 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
     - Trend arrows (↗↘→) comparing current vs previous closure
     - Sigma marker (⚡) for values beyond ±2σ of sliding window
     - First-closure graceful degradation
-    - SCARF dimension bar charts
+    - Reflection fields: lesson, improvement, root_cause, optimization
     """
     scarf = result.get("scarf", {})
     scarf_overall = scarf.get("summary", {}).get("overall_score", 0)
@@ -663,10 +668,12 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
     cei = result.get("cei", {})
     cei_score = cei.get("score", 0)
     cei_tier = cei.get("tier", "?")
-    alignment = result.get("alignment", {})
-    principles = alignment.get("principles", [])
     reflection = result.get("reflection", {})
     lesson = reflection.get("lesson", "")
+    improvement = reflection.get("improvement", "")
+    root_cause = reflection.get("root_cause", "")
+    optimization = reflection.get("optimization", "")
+    source = reflection.get("source", "")
 
     step_n = len(history) + 1  # history hasn't been updated yet
     is_first = len(history) == 0
@@ -697,29 +704,48 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
     trust_trend = trend(trust_score, "trust")
     cei_trend = trend(cei_score, "cei")
 
+    source_tag = " [🤖LLM]" if source == "llm" else " [🧑执行者]" if source == "executor" else ""
+
     lines = []
     lines.append("")
-    lines.append(f"╔══ Step #{step_n} Closure {'(baseline)' if is_first else ''} ═══════════════════════════════════════╗")
+    lines.append(f"╔══ Step #{step_n} {'(baseline)' if is_first else ''} ═══════════════════╗")
     lines.append(f"║  SCARF {scarf_overall:.2f}  {bar(scarf_overall)}  ({scarf_trend})")
     lines.append(f"║  Trust {trust_score:.3f}  {bar(trust_score)}  ({trust_trend})")
     lines.append(f"║  CEI   {cei_score:.2f}  {bar(cei_score)}  ({cei_tier} · {cei_trend})")
-    if is_first:
-        lines.append(f"║  💡 首次闭环 — 基线已建立。下次将显示趋势。")
-    else:
-        lines.append(f"║  {'─' * 62}")
-        dims = []
-        for dim_name in ["Status", "Certainty", "Autonomy", "Relatedness", "Fairness"]:
-            d = scarf.get(dim_name, {})
-            s = d.get("score", 0)
-            dims.append(f"{dim_name[:4]} {s:.2f} {bar(s)}")
-        lines.append(f"║  {' │ '.join(dims[:3])}")
-        lines.append(f"║  {' │ '.join(dims[3:])}")
+    lines.append(f"║  ──────────────────────────────────────────────")
+
+    # Show SCARF dimension bars if available
+    dims_shown = 0
+    for dim_name in ["Status", "Certainty", "Autonomy", "Relatedness", "Fairness"]:
+        if dim_name in scarf and isinstance(scarf[dim_name], dict):
+            s = scarf[dim_name].get("score", 0)
+            lines.append(f"║  {dim_name[:4]:4s} {s:.2f} {bar(s)}")
+            dims_shown += 1
+
+    lines.append(f"║  ──────────────────────────────────────────────")
+
+    # Show reflection fields (LLM or template generated)
     if lesson:
-        lines.append(f"║  💡 {lesson[:58]}{'…' if len(lesson) > 58 else ''}")
-    if principles:
-        p_names = [p[:12] for p in principles[:4]]
-        lines.append(f"║  📊 {len(principles)}/12 原则: {', '.join(p_names)}{'…' if len(principles) > 4 else ''}")
-    lines.append("╚══════════════════════════════════════════════════════════════╝")
+        label = "💡 经验" if source == "llm" else "💡 教训"
+        lines.append(f"║  {label}: {lesson[:80]}{'…' if len(lesson) > 80 else ''}{source_tag}")
+        source_tag = ""  # only show tag once
+    if improvement:
+        lines.append(f"║  📐 优化: {improvement[:80]}{'…' if len(improvement) > 80 else ''}")
+    if root_cause:
+        lines.append(f"║  🔍 根因: {root_cause[:80]}{'…' if len(root_cause) > 80 else ''}")
+    if optimization:
+        lines.append(f"║  🎯 动作: {optimization[:80]}{'…' if len(optimization) > 80 else ''}")
+
+    # Show repair suggestions if any
+    repairs = result.get("repairs", [])
+    if repairs:
+        lines.append(f"║  ──────────────────────────────────────────────")
+        for r in repairs[:3]:
+            dim = r.get("dimension", "?")
+            sug = r.get("suggestion", "")
+            lines.append(f"║  🔧 {dim}: {sug[:70]}{'…' if len(sug) > 70 else ''}")
+
+    lines.append(f"╚{'═' * 52}╝")
 
     return "\n".join(lines)
 
@@ -871,11 +897,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             mode = arguments.get("mode", "full")
             lesson = arguments.get("lesson", "")
             improvement = arguments.get("improvement", "")
+            root_cause = arguments.get("root_cause", "")
+            optimization = arguments.get("optimization", "")
             trick = arguments.get("trick", "")
             result = await asyncio.to_thread(
                 post_task, task_desc, git_commit, mode,
                 None,  # issue_id
-                lesson, improvement, trick,
+                lesson, improvement, root_cause, optimization, trick,
             )
 
             def safe_serialize(obj):
@@ -903,11 +931,28 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "cei": safe.get("cei", {}).get("score", 0),
             })
 
-            # 5. 反思持久化 — 将 lesson/improvement/trick 通过 smart-remember 走完整分类管线入池
+            # 5. 反思持久化 — 执行者 (Claude) 提供的 lesson/improvement/root_cause/optimization
+            #    合并为一条结构化记忆，通过 smart-remember 走完整分类管线入池
             smart_memory_id = None
             if mode == "full":
-                lesson_text = safe.get("reflection", {}).get("lesson", "")
-                if lesson_text and len(lesson_text) > 10:
+                # 读取执行者传入的反思字段
+                lesson_text = arguments.get("lesson", "")
+                improvement_text = arguments.get("improvement", "")
+                root_cause_text = arguments.get("root_cause", "")
+                optimization_text = arguments.get("optimization", "")
+                trick_text = arguments.get("trick", "")
+
+                if trick_text and lesson_text:
+                    lesson_text = f"{lesson_text} | 窍门: {trick_text}"
+
+                # 至少有一个字段有内容才入库
+                any_content = (
+                    (lesson_text and len(lesson_text) > 5) or
+                    (improvement_text and len(improvement_text) > 5) or
+                    (root_cause_text and len(root_cause_text) > 5) or
+                    (optimization_text and len(optimization_text) > 5)
+                )
+                if any_content:
                     try:
                         from plastic_promise.skills.engine import SkillEngine
                         from plastic_promise.skills.session_lifecycle import skill_session_init
@@ -918,25 +963,31 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         sr_engine.register(skill_smart_remember)
                         for _name, _def in _SP_DEFS.items():
                             sr_engine.register(_def)
+
+                        # 组装一条结构化反思记忆
+                        parts = []
+                        if lesson_text:
+                            parts.append(f"[经验] {lesson_text}")
+                        if improvement_text:
+                            parts.append(f"[优化] {improvement_text}")
+                        if root_cause_text:
+                            parts.append(f"[根因] {root_cause_text}")
+                        if optimization_text:
+                            parts.append(f"[动作] {optimization_text}")
+                        structured_content = "\n".join(parts)
+
+                        step_id = safe.get("reflection", {}).get("step_id", "")
+                        tags = ["closure", "domain:reflecting", f"step:{step_id}"]
+
                         sr_result = await sr_engine.exec("smart-remember", {
-                            "content": lesson_text,
+                            "content": structured_content,
                             "memory_type": "reflection",
                             "source": "step-closure",
                             "scope": "global",
-                            "tags": ["lesson", "closure", "domain:reflecting", f"step:{safe.get('reflection',{}).get('step_id','')}"],
+                            "tags": tags,
                         }, caller="claude")
                         if sr_result.success and sr_result.data:
                             smart_memory_id = sr_result.data.get("memory_id", "")
-                        # 也记录 improvement 和 trick（如果调用方提供了）
-                        improvement_text = safe.get("reflection", {}).get("improvement", "")
-                        if improvement_text and len(improvement_text) > 5:
-                            await sr_engine.exec("smart-remember", {
-                                "content": improvement_text,
-                                "memory_type": "reflection",
-                                "source": "step-closure",
-                                "scope": "global",
-                                "tags": ["improvement", "closure", "domain:reflecting"],
-                            }, caller="claude")
                     except Exception as e:
                         logging.warning(f"step-closure smart-remember exception: {e}")
 
@@ -944,8 +995,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             dashboard = _format_closure_dashboard(safe, _closure_history)
             if smart_memory_id:
                 dashboard += f"\n  💾 反思已入池: {smart_memory_id[:20]}..."
-            json_body = json.dumps(safe, ensure_ascii=False, indent=2)
-            return [TextContent(type="text", text=dashboard + "\n" + json_body)]
+            return [TextContent(type="text", text=dashboard)]
 
         # === 审查域 ===
         elif name == "review_run":

@@ -114,7 +114,8 @@ class SoulLoop:
         return pack
 
     def post_task(self, task_description: str = "", git_commit: str = "", mode: str = "full", issue_id: str = None,
-                  lesson: str = "", improvement: str = "", trick: str = "") -> dict:
+                  lesson: str = "", improvement: str = "", root_cause: str = "",
+                  optimization: str = "", trick: str = "") -> dict:
         """六联闭环 — 每步完成后的约定工程全层连线。
 
         Returns:
@@ -193,7 +194,7 @@ class SoulLoop:
         except Exception as e:
             result["trust"] = {"error": str(e)}
 
-        # 5. 反思记忆存储 — 仅当调用方显式传入 lesson/improvement/trick 时才记录
+        # 5. 反思记忆存储 — StepAuditor 评分 + 反思任务标记
         try:
             if self._auditor is None:
                 self._auditor = StepAuditor(trust_manager=self._trust_manager, engine=self._engine)
@@ -203,15 +204,23 @@ class SoulLoop:
                 lesson=lesson,
                 improvement=improvement,
             )
+
+            # 反思字段由执行者 (Claude) 提供 — 不猜测、不代理、不填模板
             final_lesson = lesson or ""
             final_improvement = improvement or ""
+            final_root_cause = root_cause or ""
+            final_optimization = optimization or ""
             if trick:
                 final_lesson = f"{final_lesson} | 窍门: {trick}" if final_lesson else f"窍门: {trick}"
+
             result["reflection"] = {
                 "overall_score": audit_result.overall_score,
                 "lesson": final_lesson[:200],
                 "improvement": final_improvement[:200],
+                "root_cause": final_root_cause[:200],
+                "optimization": final_optimization[:200],
                 "step_id": audit_result.step_id,
+                "source": "executor" if final_lesson else "",
             }
             result["repairs"] = self._auditor.suggest_repairs(audit_result)
             # 过滤：如果已有 git commit，不再建议 "缺少 git commit"
@@ -393,6 +402,8 @@ def post_task(
     issue_id: str = None,
     lesson: str = "",
     improvement: str = "",
+    root_cause: str = "",
+    optimization: str = "",
     trick: str = "",
 ) -> dict:
     """模块级便捷函数：执行任务后编排管线（六联闭环）。
@@ -408,4 +419,5 @@ def post_task(
         编排报告字典 (alignment, scarf, hormone, trust, reflection, cei, repairs)。
     """
     return _get_default_loop().post_task(task_description, git_commit, mode, issue_id,
-                                          lesson, improvement, trick)
+                                          lesson, improvement, root_cause,
+                                          optimization, trick)

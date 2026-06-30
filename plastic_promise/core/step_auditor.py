@@ -312,67 +312,15 @@ class StepAuditor:
     # ============================================================
 
     def _derive_root_cause(self, task: str) -> str:
-        # 调用方未显式传入根因 → 返回空串，不猜测
+        # 根因由 LLMReflector 生成，此处不填模板
         return ""
 
     def _derive_improvement(self, task: str) -> str:
-        """从任务描述中推导具体可执行的改良措施。
-
-        策略：
-        1. 检查历史是否有相似任务的改良记录
-        2. 基于任务类型给出通用改良方向
-        3. 回退返回空（不猜测）
-        """
-        if not task:
-            return ""
-
-        task_lower = task.lower()
-
-        # 从历史中查找相似任务的成功改良记录
-        hist_improvement = self._infer_from_history(task, field="improvement")
-        if hist_improvement:
-            return hist_improvement
-
-        # 基于任务类型给出方向性改良建议
-        if any(kw in task_lower for kw in ("fix", "bug", "修复", "错误")):
-            return "下次修复类任务：先写复现测试，再定位根因，最后修改代码"
-        if any(kw in task_lower for kw in ("新增", "添加", "实现", "feature", "build")):
-            return "下次新增功能：需求拆解为独立小步骤，每步独立可测试"
-        if any(kw in task_lower for kw in ("重构", "refactor", "优化")):
-            return "下次重构：先确保测试覆盖，小步提交，每步保持可回滚"
-        if any(kw in task_lower for kw in ("review", "审查", "检查")):
-            return "下次审查：按 checklist 逐项检查，不跳项，不做假设性通过"
-
+        # 优化建议由 LLMReflector 生成，此处不填模板
         return ""
 
     def _derive_lesson(self, task: str) -> str:
-        """从任务描述和历史教训中提炼可迁移规律。
-
-        策略：
-        1. 查找历史相似任务存储的教训
-        2. 基于任务类型匹配通用教训模式
-        3. 回退返回空（不强猜）
-        """
-        if not task:
-            return ""
-
-        # 从历史中查找相似任务的已存储教训
-        hist_lesson = self._infer_from_history(task, field="lesson")
-        if hist_lesson:
-            return hist_lesson
-
-        task_lower = task.lower()
-
-        # 通用教训模式匹配
-        if any(kw in task_lower for kw in ("fix", "bug", "修复", "错误")):
-            return "修复前应先理解根因而非表象；没有复现测试的修复是不可靠的"
-        if any(kw in task_lower for kw in ("测试", "test", "tdd")):
-            return "先写测试后写代码：测试定义了接口契约，代码只是满足契约的实现"
-        if any(kw in task_lower for kw in ("重构", "refactor")):
-            return "重构不改行为：重构的目的是让代码更容易修改，不是修改代码本身"
-        if any(kw in task_lower for kw in ("文档", "doc", "注释")):
-            return "代码即文档：自解释的命名比冗长注释更有价值；注释应解释'为什么'而非'是什么'"
-
+        # 经验教训由 LLMReflector 生成，此处不填模板
         return ""
 
     def _infer_from_history(self, task: str, field: str = "root_cause") -> str:
