@@ -128,20 +128,18 @@ async def run_audit():
         findings.append({"dim": "trust", "detail": str(e)[:80]})
 
     # 2. Pipeline
-    # Health = 1 - stuck / (total_active + resolved)
-    # resolved = done + reviewed tasks (positive signal, prevents small-N bias)
+    # Health = 1 - stuck / total
+    # total = all tasks in pipeline (pending+accepted+active+done+reviewed)
+    # stuck = tasks currently active (stuck in progress)
     try:
         conn = sqlite3.connect(DB_PATH)
         total = conn.execute("SELECT COUNT(*) FROM memories WHERE tags LIKE '%task:%'").fetchone()[0]
         stuck = conn.execute("SELECT COUNT(*) FROM memories WHERE tags LIKE '%task:active%'").fetchone()[0]
-        resolved = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE tags LIKE '%task:done%' OR tags LIKE '%task:reviewed%'"
-        ).fetchone()[0]
         conn.close()
-        denom = max(total + resolved, 1)
+        denom = max(total, 1)
         scores["pipeline"] = round(1.0 - stuck / denom, 2)
         if stuck > 0:
-            findings.append({"dim": "pipeline", "detail": f"{stuck} stuck active of {total} ({total + resolved} moving)",
+            findings.append({"dim": "pipeline", "detail": f"{stuck} stuck active of {total} total tasks",
                              "auto_fix": True})
     except Exception:
         scores["pipeline"] = 1.0
