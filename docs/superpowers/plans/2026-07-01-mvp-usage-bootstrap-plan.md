@@ -6,13 +6,32 @@
 
 **Architecture:** 三层防线 (CLAUDE.md 启动检查 → 存量同步工具 → 写入健康检查) + daemon 间隔 jitter
 
-**Tech Stack:** Python 3.13, SQLite, MCP SSE
+**Tech Stack:** Python 3.13, SQLite, MCP SSE, httpx, pyyaml, psutil
 
 ## Global Constraints
 
 - 所有变更向后兼容，不破坏现有 MCP 工具签名
 - 新增 `memory_sync_files` 工具注册到 MCP server
+- 所有 CLI 命令使用 Python 内置库，跨平台兼容（Windows PowerShell + Unix Bash）
 - Batch 2 (编码修复、域污染) 本次不动
+
+## 建议执行顺序
+
+| 顺序 | 任务 | 说明 |
+|------|------|------|
+| 1 | Task 4（审计间隔） | 独立，可先做 |
+| 2 | Task 3（写入健康检查） | 独立，可先做 |
+| 3 | Task 2（memory_sync_files） | 核心功能，需要 pyyaml |
+| 4 | Task 1（CLAUDE.md） | 依赖 Task 3 的 health check |
+| 5 | Task 5（验证） | 最后执行 |
+
+## 依赖确认
+
+| 依赖 | 状态 | 说明 |
+|------|------|------|
+| pyyaml | ✅ 已安装 | Task 2 `_parse_frontmatter` 使用 `yaml.safe_load` |
+| httpx | ✅ 已安装 | Task 3 异步健康检查 |
+| psutil | ✅ 已安装 | Task 5 跨平台进程管理 |
 
 ---
 
@@ -26,11 +45,11 @@
 
 - [ ] **Step 1: 在 CLAUDE.md 插入第 0 步**
 
-CLAUDE.md 第 6 行 "## 会话启动" 下面的步骤列表，在 "1." 之前插入：
+CLAUDE.md 第 6 行 "## 会话启动" 下面的步骤列表，在 "1." 之前插入。使用 Python 内置 `urllib` 替代 `curl`，确保 Windows/Linux/macOS 全平台兼容：
 
 ```markdown
-0. **server up check** — `curl -s http://127.0.0.1:9020/health` 
-   - 不可用 → 启动: `python -m plastic_promise.mcp.server --sse 9020 &`
+0. **server up check** — `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9020/health')"`
+   - 不可用（报错）→ 启动: `python -m plastic_promise.mcp.server --sse 9020` (后台运行: Windows 用 `start /B`, Unix 用 `&`)
    - 仍不可用 → 告警，本次会话使用文件系统降级（写入 `.md` 需加 `[[pending-sync]]` 标记）
 ```
 
@@ -43,7 +62,7 @@ python -c "
 with open('CLAUDE.md', 'r') as f:
     content = f.read()
 assert 'server up check' in content
-assert 'curl -s http://127.0.0.1:9020/health' in content
+assert 'urllib.request.urlopen' in content
 print('PASS: CLAUDE.md updated')
 "
 ```
@@ -177,35 +196,23 @@ python -m pytest tests/test_memory_sync.py -v
 
 import json
 import os
-import re
 from typing import Any
 from mcp.types import TextContent
 
 
 def _parse_frontmatter(content: str) -> dict:
-    """解析 YAML-like frontmatter。返回 {name, description, type}."""
-    result = {}
+    """使用 yaml 标准库解析 frontmatter。失败时降级返回空 dict。"""
     if not content.startswith("---"):
-        return result
+        return {}
     parts = content.split("---", 2)
     if len(parts) < 3:
-        return result
-    fm = parts[1]
-    for line in fm.strip().split("\n"):
-        line = line.strip()
-        if ":" in line:
-            key, _, val = line.partition(":")
-            key = key.strip()
-            val = val.strip().strip('"').strip("'")
-            if key in ("name", "description"):
-                result[key] = val
-            elif key == "type" and "metadata" not in line:
-                result["type"] = val
-    # Extract type from metadata block
-    m = re.search(r'type:\s*(\w+)', fm)
-    if m:
-        result["type"] = m.group(1)
-    return result
+        return {}
+    try:
+        import yaml
+        result = yaml.safe_load(parts[1])
+        return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}  # 降级：解析失败不阻塞同步
 
 
 async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]:
@@ -250,7 +257,9 @@ async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]
 
         fm = _parse_frontmatter(content)
         name = fm.get("name", fname.replace(".md", ""))
-        mem_type = fm.get("type", "reference")
+        # type 在嵌套的 metadata block 中: metadata: {type: reference}
+        metadata = fm.get("metadata", {})
+        mem_type = metadata.get("type", "reference") if isinstance(metadata, dict) else "reference"
         description = fm.get("description", "")
 
         # 提取 body（frontmatter 之后的部分）
@@ -384,23 +393,29 @@ try:
     ...
 ```
 
-在 noise_filter 检查之后、memory_type 提取之前，加入：
+在 noise_filter 检查之后、memory_type 提取之前，加入异步健康检查：
 
 ```python
-    # Health check: warn if server persistence may fail
+    # Health check: 异步检测 MCP 服务器可用性（不阻塞事件循环）
     server_ok = True
     try:
         import httpx
-        # 同步健康检查（更可靠）
-        import urllib.request
-        urllib.request.urlopen("http://127.0.0.1:9020/health", timeout=2)
+        async with httpx.AsyncClient() as client:
+            await client.get("http://127.0.0.1:9020/health", timeout=2.0)
     except Exception:
         server_ok = False
 ```
 
 然后在返回 dict 中加入 `"server_ok": server_ok`。
 
-这些是轻量级修改 — 不改变函数签名，只在返回值中增加健康状态。
+```python
+        return [TextContent(type="text", text=json.dumps({
+            "stored": True,
+            "memory_id": fuzzy_id,
+            ...
+            "server_ok": server_ok,  # 新增字段
+        }, ensure_ascii=False))]
+```
 
 - [ ] **Step 2: 验证**
 
@@ -430,38 +445,40 @@ git commit -m "feat: add server_ok health check to handle_memory_store response"
 ```python
 INTERVAL = int(os.environ.get("PI_INTERVAL", "10"))
 AUDIT_INTERVAL = int(os.environ.get("AUDIT_INTERVAL_SECONDS", "3600"))
-AUDIT_JITTER = int(os.environ.get("AUDIT_JITTER_SECONDS", "300"))
 ```
 
-修改审计触发逻辑 (`pi_daemon.py:381-387`):
+修改审计触发逻辑 (`pi_daemon.py:381-387`)。使用概率跳过替代负数计数器避免计数器异常：
 
 ```python
         _cleanup_counter += 1
-        # 审计间隔: AUDIT_INTERVAL 秒 + jitter
+        # 审计间隔: AUDIT_INTERVAL 秒，带 jitter 防惊群
         _audit_threshold = AUDIT_INTERVAL // INTERVAL
         if _cleanup_counter >= _audit_threshold:
-            # Jitter: ±AUDIT_JITTER 防惊群
             import random
-            jitter_iterations = random.randint(-AUDIT_JITTER // INTERVAL, AUDIT_JITTER // INTERVAL)
-            _cleanup_counter = jitter_iterations  # 下次审计时间偏移
-            cleanup_old_memories()
-            from audit_daemon import run_audit
-            await run_audit()
+            # 10% 概率跳过本次审计（jitter），防止所有实例同时审计
+            if random.random() < 0.1:
+                _cleanup_counter = _audit_threshold - 1  # 下次循环再触发
+            else:
+                cleanup_old_memories()
+                # 使用 packaged audit 入口（audit_daemon.py 在项目根目录，pi_daemon.py 同目录导入）
+                from audit_daemon import run_audit
+                await run_audit()
+                _cleanup_counter = 0
 ```
 
-- [ ] **Step 2: 验证**
+- [ ] **Step 2: 验证常量**
 
 ```bash
 python -c "
 import os
 os.environ['AUDIT_INTERVAL_SECONDS'] = '3600'
-os.environ['AUDIT_JITTER_SECONDS'] = '300'
 os.environ['PI_INTERVAL'] = '10'
-# 验证常量设置
-exec(open('pi_daemon.py').read().split('async def main')[0])
-print(f'INTERVAL={INTERVAL}, AUDIT_INTERVAL={AUDIT_INTERVAL}, AUDIT_JITTER={AUDIT_JITTER}')
+# 读取 pi_daemon 头部常量
+code = open('pi_daemon.py').read().split('async def main')[0]
+exec(code)
+print(f'INTERVAL={INTERVAL}, AUDIT_INTERVAL={AUDIT_INTERVAL}')
 _threshold = AUDIT_INTERVAL // INTERVAL
-print(f'Audit every {_threshold} iterations = {_threshold * INTERVAL}s')
+print(f'Audit every ~{_threshold} iterations = ~{_threshold * INTERVAL}s with 10% skip jitter')
 assert _threshold == 360
 print('PASS')
 "
@@ -472,17 +489,19 @@ print('PASS')
 在 `pi_daemon.py` 的 `main()` 函数中，while 循环之前插入：
 
 ```python
-    # 冷启动: 30s 后执行首次审计
+    # 冷启动: 30s 后执行首次审计（daemon 启动即获得基线）
     await asyncio.sleep(30)
     from audit_daemon import run_audit
     await run_audit()
 ```
 
+> **审计导入说明**: `audit_daemon.py` 位于项目根目录 (`F:\Agent\Memory system\audit_daemon.py`)，与 `pi_daemon.py` 同级。`pi_daemon.py` 当前已使用 `from audit_daemon import run_audit`，此行已验证可用。`plastic_promise.cron.audit_daily` 是另一个审计入口，供 cron 调度使用，daemon 循环使用根目录版本。
+
 - [ ] **Step 4: Commit**
 
 ```bash
 git add pi_daemon.py
-git commit -m "feat: AUDIT_INTERVAL env var + jitter + cold-start audit"
+git commit -m "feat: audit interval control via AUDIT_INTERVAL_SECONDS + jitter + cold-start"
 ```
 
 ---
@@ -526,17 +545,40 @@ asyncio.run(main())
 "
 ```
 
-- [ ] **Step 3: 重启 MCP 服务器加载新工具**
+- [ ] **Step 3: 重启 MCP 服务器加载新工具（跨平台）**
 
 ```bash
-# 找到并终止旧进程
-PID=$(netstat -ano | grep ':9020' | grep LISTENING | awk '{print $NF}')
-taskkill //PID $PID //F 2>/dev/null
+python -c "
+import subprocess, os, sys
+
+def kill_on_port(port=9020):
+    '''跨平台终止占用指定端口的进程。'''
+    try:
+        import psutil
+        for conn in psutil.net_connections():
+            if conn.laddr.port == port and conn.status == 'LISTEN':
+                p = psutil.Process(conn.pid)
+                p.terminate()
+                p.wait(timeout=5)
+                print(f'Killed PID {conn.pid} on port {port}')
+                return
+    except Exception:
+        pass
+    # Fallback: platform-specific
+    if sys.platform == 'win32':
+        subprocess.run(['taskkill', '//F', '//PID', 
+            subprocess.run(['netstat','-ano'], capture_output=True, text=True).stdout], 
+            shell=True)
+    else:
+        subprocess.run(['fuser', '-k', f'{port}/tcp'], stderr=subprocess.DEVNULL)
+
+kill_on_port(9020)
+print('Port 9020 freed')
+"
 sleep 1
-# 启动新服务器
 python -m plastic_promise.mcp.server --sse 9020 &
 sleep 2
-curl -s http://127.0.0.1:9020/health
+python -c "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:9020/health'); print(r.read().decode())"
 ```
 
 - [ ] **Step 4: 提交最终验证结果**
