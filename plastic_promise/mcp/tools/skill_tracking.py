@@ -1019,10 +1019,14 @@ async def handle_skill_session_audit(
 # ---------------------------------------------------------------------------
 
 async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
-    """Auto-track Skill calls via Claude Code PreToolUse/PostToolUse hooks.
+    """Auto-track Skill calls via Trae/Claude Code PreToolUse/PostToolUse hooks.
 
-    Called by mcp_tool hook type — no manual invocation needed.
+    Called by hook system — no manual invocation needed.
     Manages a linear skill chain via module-level state.
+
+    **Lightweight design**: Creates only the entity marker without doing
+    the full skill_session_start pipeline (no memory_recall, no memory_store).
+    The heavy work is deferred to the SkillEngine atoms that run after hooks.
 
     Args:
         engine: ContextEngine instance.
@@ -1037,20 +1041,34 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
 
     if phase == "start":
         with _skill_state_lock:
+            # ── Lightweight start: just create entity + activate principles ──
+            # Normalize skill_name (strip "sp-" prefix for lookup)
+            lookup_name = skill_name.replace("sp-", "") if skill_name.startswith("sp-") else skill_name
+            domain = SKILL_DOMAIN_MAP.get(lookup_name, "general")
+            entity_id = _make_entity_id(lookup_name)
+
+            # Register entity in context graph (fast, in-memory)
             try:
-                result = await handle_skill_session_start(engine, {
-                    "skill_name": skill_name,
-                    "task_description": f"auto-tracked: {skill_name}",
-                    "parent_entity_id": _parent_entity_id,
-                })
-                data = json.loads(result[0].text)
-                _current_skill = data.get("entity_id")
-                _current_entity_id = _current_skill  # Mark hook-created session
+                _inject_skill_entity(
+                    engine, entity_id, lookup_name,
+                    f"auto-tracked: {lookup_name}", None,
+                )
             except Exception:
-                _current_skill = None
-                _current_entity_id = None
+                pass
+
+            # Activate principles (fast, in-memory)
+            try:
+                await _activate_skill_principles(engine, lookup_name, f"auto-tracked: {lookup_name}")
+            except Exception:
+                pass
+
+            # NOTE: memory_recall and memory_store are intentionally SKIPPED here.
+            # The SkillEngine atoms (principle_activate + memory_store) run after
+            # hooks and handle the heavy work. Doing it here would double the cost.
+            _current_skill = entity_id
+            _current_entity_id = entity_id
         return [TextContent(type="text", text=json.dumps({
-            "entity_id": _current_skill,
+            "entity_id": entity_id,
             "status": "tracking",
             "phase": "start",
         }, ensure_ascii=False))]
@@ -1060,6 +1078,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
         with _skill_state_lock:
             if eid:
                 try:
+                    # Lightweight complete: run the session_complete handler
                     await handle_skill_session_complete(engine, {
                         "entity_id": eid,
                         "outcome": "auto-tracked",

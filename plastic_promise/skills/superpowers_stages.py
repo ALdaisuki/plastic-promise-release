@@ -81,7 +81,9 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
     """通用 SuperPowers 阶段处理器。
 
     组装 atom_results 并返回统一的阶段追踪结果。
+    注意: ctx 是 ContextEngine 实例，atom handlers 直接调用 ctx 的方法。
     """
+    task_desc = params.get("task_description", f"sp-{stage_name} execution")
     domain = STAGE_DOMAIN_MAP.get(stage_name, "building")
     tags = STAGE_TAGS_MAP.get(stage_name, [f"stage:{stage_name}"])
 
