@@ -1,7 +1,7 @@
 import importlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 
 class SkillRegistrationError(Exception):
@@ -246,7 +246,13 @@ class SkillEngine:
 
         try:
             # 4. Call atoms in order with degradation
+            fallback_executed: set[str] = set()  # track atoms already run as fallback
             for atom_name in skill_def.atoms:
+                # Skip if this atom was already executed as a fallback for a prior atom
+                if atom_name in fallback_executed:
+                    degrade_log.append(f"{atom_name}: skip -- already executed as fallback")
+                    continue
+
                 atom_handler = self._atoms.get(atom_name)
                 if atom_handler is None:
                     msg = f"Atom '{atom_name}' not in registry"
@@ -273,6 +279,7 @@ class SkillEngine:
                             if fb_handler:
                                 fb_result = await fb_handler(self._ctx, params)
                                 atom_results[atom_name] = fb_result
+                                fallback_executed.add(fallback_atom)
                         except Exception as fb_e:
                             degrade_log.append(f"{atom_name}: fallback {fallback_atom} also failed -- {fb_e}")
                             errors.append(f"{atom_name}: {e}")

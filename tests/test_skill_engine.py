@@ -2,7 +2,6 @@ import json
 
 import pytest
 from plastic_promise.skills.engine import SkillDef, SkillResult, SkillRegistrationError
-from dataclasses import FrozenInstanceError
 
 
 class TestSkillDef:
