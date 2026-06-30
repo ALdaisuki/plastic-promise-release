@@ -188,16 +188,33 @@ def _inject_skill_entity(
     """Register skill_session entity in the context graph.
 
     Directly calls engine.register_entity() (sync, no lazy import needed).
+    Additionally creates a parent_of edge when parent_entity_id is provided,
+    so skill_session_trace can reconstruct the execution chain.
     """
     related = [parent_entity_id] if parent_entity_id else []
     try:
-        return engine.register_entity(
+        result = engine.register_entity(
             entity_type="skill_session",
             entity_id=entity_id,
             entity_name=skill_name,
             entity_description=task_description,
             related_entities=related,
         )
+        # Create explicit parent_of edge for chain traceability
+        # register_entity creates "supports" edges (child→parent);
+        # skill_session_trace expects "parent_of" edges (parent→child)
+        if parent_entity_id:
+            child_node = f"skill_session:{entity_id}"
+            parent_node = f"skill_session:{parent_entity_id}"
+            parent_edge = {
+                "from": parent_node,
+                "to": child_node,
+                "relation": "parent_of",
+                "weight": 1.0,
+            }
+            if parent_edge not in engine._graph_edges:
+                engine._graph_edges.append(parent_edge)
+        return result
     except Exception as e:
         return {"error": str(e)}
 

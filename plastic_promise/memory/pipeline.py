@@ -6,6 +6,7 @@ raw → tagged(关键词) → classified(大类L1/L3) → embedded(细分向量)
 
 import uuid
 import datetime
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -192,6 +193,13 @@ class MemoryPipeline:
           2. 语义层 (可选): Ollama LLM 提取 3-5 个语义标签
         合并去重，上限 10 个。
         """
+        # Guard: structured markers carry their own semantics via custom_tags;
+        # word-splitting them produces garbage like "[SKILL", "START]".
+        if content.startswith(("[SKILL START]", "[SKILL COMPLETE]",
+                               "[SKILL ARTIFACT]", "[SKILL ABANDONED]",
+                               "[AUTO INJECT]")):
+            return []
+
         tags: list[str] = []
         seen: set[str] = set()
 
@@ -337,11 +345,21 @@ class MemoryPipeline:
                                 )
                                 # Fix #6: Update last_accessed so Direction A reinforcement isn't broken
                                 engine._memories[dup_id]["last_accessed"] = now_iso
+                                # Fix #7: Merge entity_ids from new record into existing one
+                                existing_eids = set(engine._memories[dup_id].get("entity_ids", []))
+                                new_eids = set(record.get("entity_ids", []))
+                                if new_eids - existing_eids:
+                                    engine._memories[dup_id]["entity_ids"] = list(existing_eids | new_eids)
                             if dup_id in getattr(self.rec_mem, '_records', {}):
                                 py_rec = self.rec_mem._records[dup_id]
                                 py_rec.access_count += 1
                                 py_rec.worth_success += 1
                                 py_rec.last_accessed = now_iso
+                                # Merge entity_ids into Python record as well
+                                py_eids = set(getattr(py_rec, 'entity_ids', []))
+                                new_eids = set(record.get("entity_ids", []))
+                                if new_eids - py_eids:
+                                    py_rec.entity_ids = list(py_eids | new_eids)
                                 # ---- Gap 1 fix: Recompute effective_half_life via AccessReinforcement ----
                                 try:
                                     from plastic_promise.core.decay_engine import AccessReinforcement
@@ -361,15 +379,26 @@ class MemoryPipeline:
                                         engine._memories[dup_id]["effective_half_life"] = new_hl
                                 except Exception:
                                     pass  # Graceful: boost is a quality improvement, not a hard gate
-                            # SQLite incremental update — includes last_accessed (Fix #6)
+                            # SQLite incremental update — includes last_accessed (Fix #6) and entity_ids merge (Fix #7)
                             sqlite = getattr(engine, '_sqlite', None)
                             if sqlite is not None:
                                 try:
+                                    # Merge entity_ids
+                                    existing_row = sqlite._conn.execute(
+                                        "SELECT entity_ids FROM memories WHERE id = ?", (dup_id,)
+                                    ).fetchone()
+                                    merged_eids = list(set(record.get("entity_ids", [])))
+                                    if existing_row and existing_row[0]:
+                                        try:
+                                            old_eids = json.loads(existing_row[0]) if isinstance(existing_row[0], str) else existing_row[0]
+                                            merged_eids = list(set(old_eids + merged_eids))
+                                        except Exception:
+                                            pass
                                     sqlite._conn.execute(
                                         "UPDATE memories SET access_count = access_count + 1, "
                                         "worth_success = worth_success + 1, "
-                                        "last_accessed = ? WHERE id = ?",
-                                        (now_iso, dup_id)
+                                        "last_accessed = ?, entity_ids = ? WHERE id = ?",
+                                        (now_iso, json.dumps(merged_eids), dup_id)
                                     )
                                     sqlite._conn.commit()
                                 except Exception:
@@ -407,6 +436,7 @@ class MemoryPipeline:
                     content=record["content"],
                     memory_type=record["memory_type"],
                     source=record["source"],
+                    entity_ids=record.get("entity_ids", []),
                     tags=tags,
                     domain=domain_hint,
                 )

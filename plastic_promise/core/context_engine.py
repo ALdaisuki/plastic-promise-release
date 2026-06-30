@@ -313,6 +313,7 @@ class ContextEngine:
             "category": record.get("category", "other"),  # deprecated — use domain
             "tags": record.get("tags", []),
             "domain": record.get("domain", "uncategorized"),
+            "entity_ids": record.get("entity_ids", []),
             "worth_success": record.get("worth_success", 0),
             "worth_failure": record.get("worth_failure", 0),
             "activation_weight": record.get("activation_weight", 0.5),

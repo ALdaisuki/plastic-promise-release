@@ -165,6 +165,7 @@ class MemoryRecord:
         metadata: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
         domain: str = "uncategorized",
+        entity_ids: Optional[List[str]] = None,
         decay_multiplier: float = 1.0,
         effective_half_life: float = 3.0,
     ) -> None:
@@ -182,6 +183,7 @@ class MemoryRecord:
             metadata: 附加元数据字典（如标签、关联实体、创建时间等）。
             tags: 语义标签列表。
             domain: 分配的语义域名称。
+            entity_ids: 关联实体 ID 列表（如 skill session entity_id）。
             decay_multiplier: 衰减乘数，控制记忆衰退速率。
             effective_half_life: 有效半衰期（天），记忆价值衰减到一半所需天数。
         """
@@ -196,6 +198,7 @@ class MemoryRecord:
         self.metadata = metadata if metadata is not None else {}
         self.tags = tags if tags is not None else []
         self.domain = domain
+        self.entity_ids = entity_ids if entity_ids is not None else []
         self.created_at = datetime.datetime.now().isoformat()
         self.last_accessed = self.created_at
         self.access_count = 0
@@ -236,6 +239,7 @@ class MemoryRecord:
             "metadata": dict(self.metadata),
             "tags": list(self.tags),
             "domain": self.domain,
+            "entity_ids": list(self.entity_ids),
             "created_at": self.created_at,
             "last_accessed": self.last_accessed,
             "access_count": self.access_count,
@@ -272,6 +276,7 @@ class MemoryRecord:
         record.created_at = data.get("created_at", record.created_at)
         record.last_accessed = data.get("last_accessed", record.last_accessed)
         record.access_count = data.get("access_count", 0)
+        record.entity_ids = data.get("entity_ids", [])
         return record
 
 
@@ -461,6 +466,7 @@ class RecMem:
                 rust_record.scope = "global"
                 rust_record.category = "other"
                 rust_record.importance = importance
+                rust_record.entity_ids = entity_ids or []
                 self._engine.store_memory(rust_record)
             except (ImportError, AttributeError):
                 # Fallback: Python engine
@@ -473,6 +479,7 @@ class RecMem:
                     "worth_success": 0,
                     "worth_failure": 0,
                     "tier": "L1",
+                    "entity_ids": entity_ids or [],
                 }
                 self._engine.register_memory(record_dict)
 
@@ -494,6 +501,7 @@ class RecMem:
                 tier="L1",
                 tags=tags or [],
                 domain=domain or "uncategorized",
+                entity_ids=entity_ids or [],
             )
             self._records[memory_id] = record
             return record
@@ -506,6 +514,7 @@ class RecMem:
                 tier="L1",
                 tags=tags or [],
                 domain=domain or "uncategorized",
+                entity_ids=entity_ids or [],
             )
             self._records[record.memory_id] = record
             return record
