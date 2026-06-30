@@ -27,7 +27,7 @@ from plastic_promise.core.constants import (
 
 @dataclass
 class ContextItem:
-    """上下文包中的单个条目"""
+    """上下文包中的单个条目 — 含完整生命轨迹 (P3a + P3b)"""
     id: str
     content: str
     relevance: float
@@ -37,10 +37,25 @@ class ContextItem:
     is_principle: bool = False
     worth_score: float = 0.0
     is_auto_recall: bool = True  # True = internal retrieval, False = user-initiated
+    # P3a: 发散联想灵感质量
+    novelty_score: float = 0.0       # 与检索集中其他项的不相似度 [0,1]
+    confidence: float = 0.5           # 检索置信度（来源质量+worth+相关性）
+    inspiration_score: float = 0.0    # novelty * confidence（灵感综合分）
+    # P3b: 生命轨迹
+    adoption_count: int = 0           # 被采纳次数 (← worth_success)
+    rejection_count: int = 0          # 被拒绝次数 (← worth_failure)
+    times_retrieved: int = 0          # 被检索次数 (← access_count)
+    decay_status: str = "healthy"     # fresh|healthy|stale|decaying|expired
 
     def to_prompt_line(self) -> str:
+        """Render one context item with life-trajectory annotations (P3b)."""
         mark = " 🧬" if self.is_principle else ""
-        return f"- [{self.relevance:.2f}]{mark} [{self.source}] {self.content[:200]}"
+        traj = ""
+        if self.adoption_count > 0 or self.rejection_count > 0:
+            traj = f" [✓{self.adoption_count}✗{self.rejection_count}]"
+        if self.decay_status in ("stale", "decaying", "expired"):
+            traj += f" ⚠{self.decay_status}"
+        return f"- [{self.relevance:.2f}]{mark}{traj} [{self.source}] {self.content[:200]}"
 
 
 @dataclass
@@ -210,6 +225,7 @@ class ContextEngine:
         # P0: Rebuild principle↔memory graph edges from persisted memories
         self._rebuild_graph_from_memories()
 
+
     def _rebuild_graph_from_memories(self):
         """Rebuild graph edges from persisted memories on init.
 
@@ -265,6 +281,14 @@ class ContextEngine:
                     "description": mem.get("content", "")[:200],
                 }
 
+        # Pass 3: principle ↔ memory edges (P0 deep grammar)
+        total_edges = 0
+        for mid, mem in self._memories.items():
+            total_edges += self._build_principle_edges_for_memory(mid, mem)
+        if total_edges > 0:
+            logging.info("_rebuild_graph_from_memories: created %d principle↔memory edges from %d memories",
+                         total_edges, len(self._memories))
+
         # DB path — used by both DomainManager and LanceDBStore
         db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
 
@@ -279,22 +303,31 @@ class ContextEngine:
             self._dm_ok = False
         self._domain_hint: Optional[str] = None
 
+        # P1: Store embedder for principle anchor computation and intent matching
+        self._embedder = None
+        try:
+            from plastic_promise.core.embedder import get_embedder
+            self._embedder = get_embedder(fallback_on_error=True)
+        except Exception:
+            logging.warning("ContextEngine: embedder unavailable — intent matching disabled")
+
         # Initialize LanceDB vector store
         self._ldb: Optional[object] = None
         try:
             from plastic_promise.core.lancedb_store import LanceDBStore
-            from plastic_promise.core.embedder import get_embedder
             ldb_path = os.environ.get("PLASTIC_LANCEDB_PATH",
                                        os.path.join(os.path.dirname(db_path or "plastic_memory.db"),
                                                     "plastic_memory.lancedb"))
-            embedder = get_embedder(fallback_on_error=True)
-            self._ldb = LanceDBStore(ldb_path, embedder)
+            self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
             # Backfill any memories that bypassed the pipeline
             self._ldb.backfill(self)
             logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
         except Exception as e:
             logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
             self._ldb = None
+
+        # P1: Build principle anchor embeddings for intent matching
+        self._build_principle_anchors()
 
         self._current_time: str = ""
 
@@ -325,6 +358,8 @@ class ContextEngine:
         self._memories[mid] = data
         if self._sqlite:
             self._sqlite.upsert(mid, data)
+        # P0: Auto-create principle↔memory graph edges for new memories
+        self._build_principle_edges_for_memory(mid, data)
         return mid
 
     def register_memories(self, records: List[Dict[str, Any]]) -> List[str]:
@@ -336,6 +371,132 @@ class ContextEngine:
 
     def set_current_time(self, iso_timestamp: str):
         self._current_time = iso_timestamp
+
+    # ========== P0: 原则↔记忆图谱边 (深层语法) ==========
+
+    def _build_principle_edges_for_memory(
+        self, memory_id: str, memory_data: dict
+    ) -> int:
+        """Create bidirectional principle↔memory edges based on keyword overlap.
+
+        For each of the 12 core principles, computes the overlap between
+        the principle's keywords and the memory content. If at least
+        PRINCIPLE_EDGE_MIN_KEYWORD_HITS keywords match, creates two edges:
+
+            principle:{id} → memory:{id}  (relation="governs")
+            memory:{id} → principle:{id}  (relation="embodies")
+
+        Edge weight = PRINCIPLE_EDGE_BASE_WEIGHT + PRINCIPLE_EDGE_SCALE_WEIGHT * keyword_ratio
+        capped at 1.0. Edges already existing are skipped (dedup).
+
+        Returns:
+            Number of new edges created.
+        """
+        from plastic_promise.core.constants import (
+            CORE_PRINCIPLES,
+            PRINCIPLE_EDGE_MIN_KEYWORD_HITS,
+            PRINCIPLE_EDGE_BASE_WEIGHT,
+            PRINCIPLE_EDGE_SCALE_WEIGHT,
+        )
+
+        content = memory_data.get("content", "")
+        if not content:
+            return 0
+
+        edges_created = 0
+        for p in CORE_PRINCIPLES:
+            keywords = p.get("keywords", [])
+            if isinstance(keywords, str):
+                keywords = [k.strip() for k in keywords.split(",")]
+            if not keywords:
+                continue
+
+            # Count keyword hits in memory content
+            hits = sum(1 for kw in keywords if kw in content)
+            if hits < PRINCIPLE_EDGE_MIN_KEYWORD_HITS:
+                continue
+
+            keyword_ratio = min(hits / len(keywords), 1.0)
+            weight = min(PRINCIPLE_EDGE_BASE_WEIGHT + PRINCIPLE_EDGE_SCALE_WEIGHT * keyword_ratio, 1.0)
+            principle_node = f"principle:{p['id']}"
+            memory_node = memory_id
+
+            # Ensure principle node exists in graph
+            if principle_node not in self._graph_nodes:
+                self._graph_nodes[principle_node] = {
+                    "type": "principle",
+                    "name": p["name"],
+                    "description": p["content"],
+                    "domain": p.get("domain", "all"),
+                }
+
+            # Edge 1: principle → memory (governs)
+            edge_g = {
+                "from": principle_node,
+                "to": memory_node,
+                "relation": "governs",
+                "weight": weight,
+            }
+            if edge_g not in self._graph_edges:
+                self._graph_edges.append(edge_g)
+                edges_created += 1
+
+            # Edge 2: memory → principle (embodies)
+            edge_e = {
+                "from": memory_node,
+                "to": principle_node,
+                "relation": "embodies",
+                "weight": weight,
+            }
+            if edge_e not in self._graph_edges:
+                self._graph_edges.append(edge_e)
+                edges_created += 1
+
+        return edges_created
+
+    def _build_principle_anchors(self):
+        """P1: Pre-compute embedding vectors for each principle's content.
+
+        Called once at engine init. Stores results in self._principle_anchors
+        as {principle_id: list[float]}. If the embedder is unavailable, the
+        dict is left empty and intent matching gracefully degrades to
+        keyword-only mode.
+        """
+        if self._embedder is None:
+            self._principle_anchors = {}
+            return
+
+        from plastic_promise.core.constants import CORE_PRINCIPLES
+
+        anchors: Dict[int, List[float]] = {}
+        try:
+            for p in CORE_PRINCIPLES:
+                vec = self._embedder.embed(p["content"])
+                if vec and any(v != 0.0 for v in vec):
+                    anchors[p["id"]] = vec
+            if anchors:
+                logging.info("_build_principle_anchors: computed %d/%d principle anchors",
+                            len(anchors), len(CORE_PRINCIPLES))
+        except Exception as e:
+            logging.warning("_build_principle_anchors failed: %s — intent matching disabled", e)
+            anchors = {}
+
+        self._principle_anchors = anchors
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        """Compute cosine similarity between two vectors.
+
+        Returns 0.0 if either vector is zero-length.
+        """
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return dot / (norm_a * norm_b)
 
     # ========== 图管理 ==========
 
@@ -379,6 +540,8 @@ class ContextEngine:
         self._memories[mid] = data
         if self._sqlite:
             self._sqlite.upsert(mid, data)
+        # P0: Auto-create principle↔memory graph edges
+        self._build_principle_edges_for_memory(mid, data)
         return mid
 
     def get_memory(self, memory_id: str):
@@ -559,15 +722,19 @@ class ContextEngine:
         # Phase 3: 符号规则调整
         all_results = self._apply_symbol_rules(all_results, task_description)
 
-        # Phase 4: 反馈权重
+        # Phase 4: 反馈权重 (P2: worth_score as single source of truth)
         all_results = self._apply_feedback(all_results)
 
-        # Phase 5: 分层
+        # P2: Evolve edge weights based on feedback patterns
+        self._apply_edge_feedback()
+
+        # Phase 5: 分层 + 生命轨迹 (P3a + P3b)
         pack = ContextPack(activated_principles=activated)
 
         for item_id, score, content, source in all_results:
             is_principle = item_id.startswith("principle:")
-            worth = self._memories.get(item_id, {}).get("worth_score", 0.0)
+            mem = self._memories.get(item_id, {})
+            worth = mem.get("worth_score", 0.0)
             freshness = self._calc_freshness(item_id)
 
             item = ContextItem(
@@ -578,6 +745,15 @@ class ContextEngine:
                 freshness=freshness,
                 is_principle=is_principle,
                 worth_score=worth,
+                # P3a: defaults (computed below for divergent layer)
+                novelty_score=0.0,
+                confidence=0.5,
+                inspiration_score=0.0,
+                # P3b: life trajectory from MemoryRecord
+                adoption_count=mem.get("worth_success", 0),
+                rejection_count=int(mem.get("worth_failure", 0)),
+                times_retrieved=mem.get("access_count", 0),
+                decay_status=self._calc_decay_status(item_id, mem),
             )
 
             if score >= CONTEXT_LAYERS["core"]["min_relevance"]:
@@ -589,6 +765,13 @@ class ContextEngine:
             elif score >= CONTEXT_LAYERS["divergent"]["min_relevance"]:
                 item.layer = "divergent"
                 pack.divergent.append(item)
+
+        # P3a: Compute divergent quality and filter low-inspiration items
+        if pack.divergent:
+            all_retrieved = pack.core + pack.related + pack.divergent
+            pack.divergent = self._compute_divergent_quality(
+                pack.divergent, all_retrieved
+            )
 
         # Phase 6: 审计元数据
         pack.audit_metadata = {
@@ -825,34 +1008,63 @@ class ContextEngine:
         return edges_created
 
     def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
-        from plastic_promise.core.constants import CORE_PRINCIPLES
+        """P1: Three-channel principle activation.
 
-        # All 3 core principles apply to every task type
-        recommendations = {
-            "code_generation": [1, 2, 3],
-            "code_review": [1, 2, 3],
-            "debugging": [1, 2, 3],
-            "architecture": [1, 2, 3],
-            "refactoring": [1, 2, 3],
-            "learning": [1, 2, 3],
-            "collaboration": [1, 2, 3],
-        }
-        ids = recommendations.get(task_type, [1, 2, 3])
+        Channel 1 — Static task-type mapping: differentiated principle
+        recommendations per task type (from TASK_TYPE_PRINCIPLE_MAP).
 
-        # 关键词额外匹配
+        Channel 2 — Keyword matching: literal keyword overlap between
+        task description and principle keywords (preserved from v1).
+
+        Channel 3 — Intent vector matching: cosine similarity between
+        task embedding and pre-computed principle anchor embeddings.
+        Surfaces principles whose intent aligns with the task even when
+        no keyword matches (e.g., "拆成小类" → Occam's Razor).
+
+        Falls back to channels 1+2 when embedder is unavailable.
+        """
+        from plastic_promise.core.constants import (
+            CORE_PRINCIPLES,
+            TASK_TYPE_PRINCIPLE_MAP,
+            PRINCIPLE_INTENT_THRESHOLD,
+        )
+
+        activated_ids: set[int] = set()
+
+        # Channel 1: Static task-type mapping (differentiated per task type)
+        static_ids = TASK_TYPE_PRINCIPLE_MAP.get(task_type, [1, 2, 3])
+        activated_ids.update(static_ids)
+
+        # Channel 2: Keyword matching (literal)
         for p in CORE_PRINCIPLES:
-            if p["id"] not in ids:
-                keywords = p.get("keywords", [])
-                if isinstance(keywords, str):
-                    keywords = [k.strip() for k in keywords.split(",")]
-                for kw in keywords:
-                    if kw.strip() in task_description:
-                        ids.append(p["id"])
-                        break
+            if p["id"] in activated_ids:
+                continue
+            keywords = p.get("keywords", [])
+            if isinstance(keywords, str):
+                keywords = [k.strip() for k in keywords.split(",")]
+            for kw in keywords:
+                if kw.strip() in task_description:
+                    activated_ids.add(p["id"])
+                    break
 
+        # Channel 3: Intent vector matching (semantic)
+        if self._principle_anchors and self._embedder is not None:
+            try:
+                task_vec = self._embedder.embed(task_description)
+                if task_vec and any(v != 0.0 for v in task_vec):
+                    for pid, anchor_vec in self._principle_anchors.items():
+                        if pid in activated_ids:
+                            continue
+                        sim = self._cosine_similarity(task_vec, anchor_vec)
+                        if sim >= PRINCIPLE_INTENT_THRESHOLD:
+                            activated_ids.add(pid)
+            except Exception:
+                pass  # Intent matching is best-effort; degrade gracefully
+
+        # Resolve IDs to names
         result = []
         for p in CORE_PRINCIPLES:
-            if p["id"] in ids:
+            if p["id"] in activated_ids:
                 result.append(p["name"])
         return result
 
@@ -979,9 +1191,17 @@ class ContextEngine:
                 sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
 
     def _graph_traversal(self, task_type: str) -> List[tuple]:
-        """细匹配: principle association + entity link traversal."""
+        """Fine-grained: principle association + entity link + deep-grammar traversal.
+
+        P0 enhancement — follows three edge types:
+          1. task_type → principle (activates): direct principle activation
+          2. memory → entity (references): data-flow driven entity links
+          3. principle → memory (governs): deep-grammar — principles surface
+             the memories they govern, even without keyword match in the query
+        """
         results = []
         visited = set()
+        principle_nodes = set()
 
         # 1. Task type → principles (direct activation edges)
         target = f"task_type:{task_type}"
@@ -989,22 +1209,37 @@ class ContextEngine:
             if edge.get("from") == target:
                 node_id = edge["to"]
                 visited.add(node_id)
+                if node_id.startswith("principle:"):
+                    principle_nodes.add(node_id)
                 node = self._graph_nodes.get(node_id, {})
                 results.append((node_id, edge.get("weight", 0.5),
                                 node.get("description", node_id),
                                 "graph"))
 
-        # 2. Memory → entity (auto-extracted references) — 数据流驱动的关联遍历
+        # 2. Memory → entity (auto-extracted references) — data-flow driven
         for edge in self._graph_edges:
             if edge.get("relation") == "references":
                 memory_id = edge.get("from", "")
                 entity_id = edge.get("to", "")
-                # If this entity was already found via principles, pull in the memory
                 if entity_id in visited and memory_id in self._memories:
                     mem = self._memories[memory_id]
                     results.append((memory_id, 0.6,
                                     mem.get("content", "")[:300],
                                     "entity-link"))
+
+        # 3. P0: Principle → memory (governs) — deep grammar traversal
+        # When a principle is activated, surface all memories it governs
+        for edge in self._graph_edges:
+            if edge.get("relation") == "governs":
+                principle_id = edge.get("from", "")
+                memory_id = edge.get("to", "")
+                if principle_id in principle_nodes and memory_id in self._memories:
+                    mem = self._memories[memory_id]
+                    edge_weight = edge.get("weight", 0.3)
+                    results.append((memory_id, edge_weight,
+                                    mem.get("content", "")[:300],
+                                    "graph"))
+
         return results
 
     def _layered_fuse(self, graph_results, text_results, vector_results) -> List[tuple]:
@@ -1049,12 +1284,107 @@ class ContextEngine:
         return result
 
     def _apply_feedback(self, items: List[tuple]) -> List[tuple]:
-        return [(
-            item_id,
-            min(1.0, max(0.0, score + self._feedback.get(item_id, 0.0))),
-            content,
-            source,
-        ) for item_id, score, content, source in items]
+        """P2: Apply feedback using MemoryRecord.worth_score as single source of truth.
+
+        Old formula: score + self._feedback.get(item_id, 0.0)  — stale dict, never synced.
+        New formula: score * (MULTIPLIER_MIN + MULTIPLIER_RANGE * worth_score)
+
+        A memory with worth_score=1.0 (frequently adopted) retains full score.
+        A memory with worth_score=0.5 (no observations) gets a slight neutral discount.
+        A memory with worth_score=0.0 (frequently rejected) gets a 30% discount.
+        """
+        from plastic_promise.core.constants import (
+            FEEDBACK_SCORE_MULTIPLIER_MIN,
+            FEEDBACK_SCORE_MULTIPLIER_RANGE,
+        )
+
+        result = []
+        for item_id, score, content, source in items:
+            mem = self._memories.get(item_id, {})
+            if mem:
+                ws = mem.get("worth_success", 0)
+                wf = mem.get("worth_failure", 0)
+                total = ws + wf
+                worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+            else:
+                worth = 0.5  # No memory record → neutral
+            multiplier = FEEDBACK_SCORE_MULTIPLIER_MIN + FEEDBACK_SCORE_MULTIPLIER_RANGE * worth
+            adjusted = min(1.0, score * multiplier)
+            result.append((item_id, adjusted, content, source))
+        return result
+
+    def _apply_edge_feedback(self):
+        """P2: Evolve graph edge weights based on memory adoption patterns.
+
+        For each edge whose relation involves memories (governs, embodies, references),
+        update the edge weight via EMA: new_weight = (1-α)*old_weight + α*worth_score.
+        Clamp to [FEEDBACK_EDGE_WEIGHT_MIN, FEEDBACK_EDGE_WEIGHT_MAX].
+
+        Called at the end of each supply() call — lightweight and reactive.
+        """
+        from plastic_promise.core.constants import (
+            FEEDBACK_EDGE_EMA_ALPHA,
+            FEEDBACK_EDGE_WEIGHT_MIN,
+            FEEDBACK_EDGE_WEIGHT_MAX,
+        )
+
+        memory_relations = {"governs", "embodies", "references"}
+        alpha = FEEDBACK_EDGE_EMA_ALPHA
+
+        for edge in self._graph_edges:
+            if edge.get("relation") not in memory_relations:
+                continue
+
+            # Determine which node is the memory
+            memory_id = None
+            if edge["from"].startswith("memory:") or not edge["from"].startswith("principle:") and not edge["from"].startswith("task_type:"):
+                memory_id = edge["from"]
+            elif edge["to"].startswith("memory:") or not edge["to"].startswith("principle:") and not edge["to"].startswith("task_type:"):
+                memory_id = edge["to"]
+
+            if memory_id and memory_id in self._memories:
+                mem = self._memories[memory_id]
+                ws = mem.get("worth_success", 0)
+                wf = mem.get("worth_failure", 0)
+                total = ws + wf
+                worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+
+                old_weight = edge.get("weight", 0.5)
+                new_weight = (1.0 - alpha) * old_weight + alpha * worth
+                edge["weight"] = max(FEEDBACK_EDGE_WEIGHT_MIN,
+                                    min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight))
+
+    def _apply_edge_feedback_for_memory(self, memory_id: str):
+        """P2: Update all graph edges involving a specific memory.
+
+        Called after handle_feedback_apply() updates a MemoryRecord's worth counters.
+        Only recomputes edges connected to the given memory_id — O(E) but focused.
+        """
+        from plastic_promise.core.constants import (
+            FEEDBACK_EDGE_EMA_ALPHA,
+            FEEDBACK_EDGE_WEIGHT_MIN,
+            FEEDBACK_EDGE_WEIGHT_MAX,
+        )
+
+        if memory_id not in self._memories:
+            return
+
+        mem = self._memories[memory_id]
+        ws = mem.get("worth_success", 0)
+        wf = mem.get("worth_failure", 0)
+        total = ws + wf
+        worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+        alpha = FEEDBACK_EDGE_EMA_ALPHA
+
+        memory_relations = {"governs", "embodies", "references"}
+        for edge in self._graph_edges:
+            if edge.get("relation") not in memory_relations:
+                continue
+            if edge.get("from") == memory_id or edge.get("to") == memory_id:
+                old_weight = edge.get("weight", 0.5)
+                new_weight = (1.0 - alpha) * old_weight + alpha * worth
+                edge["weight"] = max(FEEDBACK_EDGE_WEIGHT_MIN,
+                                    min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight))
 
     def _calc_freshness(self, item_id: str) -> str:
         mem = self._memories.get(item_id, {})
@@ -1083,6 +1413,103 @@ class ContextEngine:
         except (ValueError, IndexError):
             pass
         return "valid"
+
+    def _calc_decay_status(self, item_id: str, mem: dict) -> str:
+        """P3b: Compute decay status label from memory age and tier.
+
+        Uses a simplified Weibull-inspired decay model:
+          fresh: created today or decay_multiplier >= 0.90
+          healthy: decay >= 0.60
+          stale: decay >= 0.30
+          decaying: decay >= 0.10
+          expired: below 0.10
+        """
+        from plastic_promise.core.constants import DECAY_STATUS_THRESHOLDS, DECAY_CONFIG
+
+        created = mem.get("created_at", "")
+        tier = mem.get("tier", "L1")
+        if not created or not self._current_time:
+            return "healthy"
+
+        try:
+            created_date = created[:10]
+            now_date = self._current_time[:10]
+            created_parts = created_date.split("-")
+            now_parts = now_date.split("-")
+            if len(created_parts) != 3 or len(now_parts) != 3:
+                return "healthy"
+
+            created_days = int(created_parts[0]) * 365 + int(created_parts[1]) * 30 + int(created_parts[2])
+            now_days = int(now_parts[0]) * 365 + int(now_parts[1]) * 30 + int(now_parts[2])
+            age_days = max(0, now_days - created_days)
+
+            tier_config = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])
+            half_life = tier_config.get("half_life_days", 14)
+            # Simple exponential decay: decay = 2^(-age/half_life)
+            decay = 2.0 ** (-age_days / half_life) if half_life > 0 else 1.0
+
+            for label, threshold in sorted(DECAY_STATUS_THRESHOLDS.items(),
+                                           key=lambda x: x[1], reverse=True):
+                if decay >= threshold:
+                    return label
+            return "expired"
+        except (ValueError, IndexError):
+            return "healthy"
+
+    def _compute_divergent_quality(
+        self,
+        divergent_items: List[ContextItem],
+        all_retrieved: List[ContextItem],
+    ) -> List[ContextItem]:
+        """P3a: Score divergent items on novelty + confidence, filter noise.
+
+        For each divergent item:
+          novelty = 1.0 - max_content_similarity (via embedder or fallback)
+          confidence = 0.4*worth_score + 0.3*source_quality + 0.3*relevance
+          inspiration = novelty * confidence
+
+        Items with inspiration < DIVERGENT_QUALITY_THRESHOLD are removed.
+        Surviving items get their novelty/confidence/inspiration fields populated.
+        """
+        from plastic_promise.core.constants import (
+            DIVERGENT_QUALITY_THRESHOLD,
+            SOURCE_QUALITY_MAP,
+        )
+
+        if not divergent_items:
+            return divergent_items
+
+        for item in divergent_items:
+            # Confidence: blend worth_score, source quality, relevance
+            source_quality = SOURCE_QUALITY_MAP.get(item.source, 0.5)
+            confidence = 0.4 * item.worth_score + 0.3 * source_quality + 0.3 * item.relevance
+            item.confidence = confidence
+
+            # Novelty: compute via embedder if available, else fallback
+            if self._embedder is not None and len(all_retrieved) > 1:
+                try:
+                    item_vec = self._embedder.embed(item.content)
+                    max_sim = 0.0
+                    for other in all_retrieved:
+                        if other.id == item.id:
+                            continue
+                        other_vec = self._embedder.embed(other.content) if self._embedder else None
+                        if other_vec:
+                            sim = self._cosine_similarity(item_vec, other_vec)
+                            max_sim = max(max_sim, sim)
+                    item.novelty_score = 1.0 - max_sim
+                except Exception:
+                    # Fallback: domain-based heuristic — different source = more novel
+                    item.novelty_score = 0.3 if item.source not in ("graph", "entity-link") else 0.6
+            else:
+                # No embedder: heuristic — vector-sourced items are more novel
+                item.novelty_score = 0.4 if item.source in ("graph", "text") else 0.6
+
+            item.inspiration_score = item.novelty_score * item.confidence
+
+        # Filter: keep only items above quality threshold
+        return [item for item in divergent_items
+                if item.inspiration_score >= DIVERGENT_QUALITY_THRESHOLD]
 
 
 # ============================================================
