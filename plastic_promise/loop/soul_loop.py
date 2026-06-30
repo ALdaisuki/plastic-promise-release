@@ -156,6 +156,11 @@ class SoulLoop:
         if mode == "light":
             if issue_id:
                 result["issue_id"] = issue_id
+            # Return empty dicts (not None) for keys not computed in light mode,
+            # so downstream `.get()` chains don't fail with NoneType errors.
+            for k in ("scarf", "hormone", "trust", "reflection", "cei"):
+                if result[k] is None:
+                    result[k] = {}
             return result
 
         # 2. SCARF 五维自省
