@@ -120,3 +120,61 @@ class AtomRegistry:
             handler = getattr(module, func_name)
             registry[atom_name] = handler
         return registry
+
+
+class SkillEngine:
+    """Programmatic skill orchestration engine.
+
+    Responsibilities:
+    1. Skill registry — organized by 8 domains, declares P0/P1 atom dependencies
+    2. Execution chain — atoms in order → handler → audit trail
+    3. Degradation paths — per-atom degrade_map on failure
+    4. Audit tracking — automatic skill_session_start/complete wrapping
+    5. P2 scheduling — P2 skills only callable by daemon/admin
+    """
+
+    def __init__(self, engine):
+        """Initialize the skill engine.
+
+        Args:
+            engine: ContextEngine instance (provides list_tools, memory CRUD, etc.)
+        """
+        self._ctx = engine
+        self._registry: dict[str, SkillDef] = {}
+        self._atoms: dict[str, "Callable"] = AtomRegistry.build(engine)
+
+    def register(self, skill_def: SkillDef) -> None:
+        """Register a skill definition. Validates dependencies and permissions.
+
+        Raises SkillRegistrationError if:
+        - skill name already registered
+        - any declared atom is not available in the MCP tool set
+        - P2 skill allows non-daemon/admin callers
+        """
+        # 1. Check for duplicate name
+        if skill_def.name in self._registry:
+            raise SkillRegistrationError(
+                f"Skill '{skill_def.name}' already registered"
+            )
+
+        # 2. Validate all declared atoms exist
+        for atom in skill_def.atoms:
+            if atom not in self._atoms:
+                available = sorted(self._atoms.keys())
+                raise SkillRegistrationError(
+                    f"Atom '{atom}' required by skill '{skill_def.name}' "
+                    f"not found in MCP tools. Available: {available}"
+                )
+
+        # 3. P2 tier enforcement — only daemon or admin
+        if skill_def.tier == "P2":
+            invalid = set(skill_def.allowed_callers) - {"daemon", "admin"}
+            if invalid:
+                raise SkillRegistrationError(
+                    f"P2 skill '{skill_def.name}' allows non-daemon/admin "
+                    f"callers: {invalid}. P2 skills must use ['daemon'] or ['admin']."
+                )
+            if not skill_def.allowed_callers:
+                skill_def.allowed_callers = ["daemon"]
+
+        self._registry[skill_def.name] = skill_def

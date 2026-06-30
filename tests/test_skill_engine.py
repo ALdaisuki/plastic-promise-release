@@ -173,3 +173,104 @@ class TestAtomRegistry:
         engine.list_tools = MagicMock(return_value=[])
         registry = AtomRegistry.build(engine)
         assert "nonexistent" not in registry
+
+
+# ──────────────────────────────────────────────
+# SkillEngine.register tests (Task 3)
+# ──────────────────────────────────────────────
+
+
+class TestSkillEngineRegister:
+    @pytest.fixture
+    def mock_engine(self):
+        engine = MagicMock()
+        # Mock list_tools to return a tool set that includes the atoms we test with
+        mock_tools = [_make_mock_tool(n) for n in [
+            "memory_store", "memory_recall", "principle_activate",
+            "context_supply", "domain", "system", "defense", "memory_gc",
+            "skill_session_start", "skill_session_complete", "issue_create",
+        ]]
+        engine.list_tools = MagicMock(return_value=mock_tools)
+        return engine
+
+    def _noop_handler(self):
+        async def h(ctx, params, atoms):
+            return SkillResult(skill_name="test", success=True, data={},
+                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+        return h
+
+    def test_register_valid_skill(self, mock_engine):
+        """A valid P0 skill should register without error."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+        sd = SkillDef(
+            name="session-init", domain="session_lifecycle",
+            description="Test", tier="P0",
+            atoms=["principle_activate", "context_supply", "memory_store"],
+            degrade_map={"domain": "skip"},
+            handler=self._noop_handler(),
+            allowed_callers=["claude"],
+        )
+        se.register(sd)  # should not raise
+        assert "session-init" in se._registry
+
+    def test_register_duplicate_raises(self, mock_engine):
+        """Registering the same skill name twice must raise SkillRegistrationError."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+        sd = SkillDef(
+            name="session-init", domain="session_lifecycle",
+            description="Test", tier="P0",
+            atoms=["principle_activate"],
+            degrade_map={},
+            handler=self._noop_handler(),
+            allowed_callers=["claude"],
+        )
+        se.register(sd)
+        with pytest.raises(SkillRegistrationError, match="already registered"):
+            se.register(sd)
+
+    def test_register_missing_atom_raises(self, mock_engine):
+        """A skill declaring an atom not in MCP tools must raise."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+        sd = SkillDef(
+            name="bad-skill", domain="session_lifecycle",
+            description="Test", tier="P0",
+            atoms=["nonexistent_atom"],
+            degrade_map={},
+            handler=self._noop_handler(),
+            allowed_callers=["claude"],
+        )
+        with pytest.raises(SkillRegistrationError, match="nonexistent_atom"):
+            se.register(sd)
+
+    def test_register_p2_with_non_daemon_caller_raises(self, mock_engine):
+        """P2 skills must only allow daemon or admin callers."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+        sd = SkillDef(
+            name="scheduled-gc", domain="system_health",
+            description="GC", tier="P2",
+            atoms=["memory_gc"],
+            degrade_map={"memory_gc": "abort"},
+            handler=self._noop_handler(),
+            allowed_callers=["claude"],  # invalid for P2
+        )
+        with pytest.raises(SkillRegistrationError, match="P2"):
+            se.register(sd)
+
+    def test_register_p2_with_daemon_succeeds(self, mock_engine):
+        """P2 skills with daemon caller must succeed."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+        sd = SkillDef(
+            name="scheduled-gc", domain="system_health",
+            description="GC", tier="P2",
+            atoms=["memory_gc"],
+            degrade_map={"memory_gc": "abort"},
+            handler=self._noop_handler(),
+            allowed_callers=["daemon"],
+        )
+        se.register(sd)  # should not raise
+        assert "scheduled-gc" in se._registry
