@@ -44,8 +44,11 @@ class TrustStore:
     def __init__(self, db_path: Optional[str] = None) -> None:
         if db_path is None:
             db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+        # Resolve to absolute path to prevent split-brain when CWD differs
+        db_path = os.path.abspath(db_path)
         self._conn = sqlite3.connect(db_path)
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._db_path = db_path
         self._create_tables()
 
     def _create_tables(self) -> None:
