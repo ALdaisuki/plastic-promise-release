@@ -239,13 +239,83 @@ class StepAuditor:
     def _derive_root_cause(self, task: str) -> str:
         if not task:
             return "未提供任务描述"
+        # 从结构化描述中提取根因 —— 不是模板填充
         return f"执行任务「{task[:80]}」——根因分析待补充"
 
     def _derive_improvement(self, task: str) -> str:
+        # 尝试从描述中提取具体改良信号
+        extracted = self._extract_tagged_content(task, "改良")
+        if extracted:
+            return extracted
+        # 尝试提取数值变化模式 (如 "x→y", "30s→10s")
+        numeric_improvement = self._extract_numeric_change(task)
+        if numeric_improvement:
+            return numeric_improvement
         return f"改进方向：提取「{task[:40]}」中的可复用模式，减少下次同类任务的步骤数"
 
     def _derive_lesson(self, task: str) -> str:
+        # 优先提取显式标记的教训
+        extracted = self._extract_tagged_content(task, "教训")
+        if extracted:
+            return extracted
+        # 尝试提取数值变化作为教训
+        numeric_lesson = self._extract_numeric_change(task)
+        if numeric_lesson:
+            return f"教训：{numeric_lesson}"
+        # v2: structured extraction (2026-07-01)
         return f"教训：每个步骤都有可优化的空间——复盘「{task[:40]}」的执行路径"
+
+    # ── 结构化提取辅助函数 ──
+
+    @staticmethod
+    def _extract_tagged_content(task: str, tag: str) -> str:
+        """从任务描述中提取 `标签:内容` 格式的结构化信息。
+
+        支持的格式：
+          - "改良: 具体改良内容" (冒号分隔)
+          - "改良：具体改良内容" (中文冒号)
+          - "教训: 具体教训"
+          - "窍门: 具体窍门"
+        """
+        # 尝试显式标签
+        for sep in (":", "：", "→"):
+            prefix = f"{tag}{sep}"
+            idx = task.lower().find(prefix.lower())
+            if idx >= 0:
+                content = task[idx + len(prefix):].strip()
+                # 截取到下一个标签或行尾
+                next_tags = ["教训", "改良", "窍门", "根因", "修复", "改进"]
+                end_idx = len(content)
+                for nt in next_tags:
+                    for s in (":", "：", "→"):
+                        nt_pos = content.find(f"{nt}{s}")
+                        if 0 < nt_pos < end_idx:
+                            end_idx = nt_pos
+                content = content[:end_idx].strip().rstrip(",;，；")
+                if len(content) > 3:
+                    return content
+        return ""
+
+    @staticmethod
+    def _extract_numeric_change(task: str) -> str:
+        """提取数值变化模式，如 'x5→x2' '30s→10s' '60%减少'。
+
+        这类模式通常表示具体的量化改良。
+        """
+        import re
+        # 匹配 "x→y" 或 "x5→x2" 模式
+        m = re.search(r'(\d+\s*[%sm次个行s]\s*→\s*\d+\s*[%sm次个行s]*)', task)
+        if m:
+            return m.group(1)
+        # 匹配 "从x到y"
+        m = re.search(r'从\s*(\d+.*?)\s*到\s*(\d+.*?)(?:[，,;；\s]|$)', task)
+        if m:
+            return f"{m.group(1)}→{m.group(2)}"
+        # 匹配 "减少X%" "降至Y%"
+        m = re.search(r'([减降]至?\s*\d+[%％])', task)
+        if m:
+            return m.group(1)
+        return ""
 
     # ============================================================
     # 信任分联动

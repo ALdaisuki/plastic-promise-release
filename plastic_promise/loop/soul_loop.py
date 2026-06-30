@@ -113,6 +113,10 @@ class SoulLoop:
 
         return pack
 
+    def _extract_structured_reflection(self, task_description: str) -> dict:
+        """从任务描述中提取 教训/改良/窍门 标签。"""
+        return extract_structured_reflection(task_description)
+
     def post_task(self, task_description: str = "", git_commit: str = "", mode: str = "full", issue_id: str = None) -> dict:
         """六联闭环 — 每步完成后的约定工程全层连线。
 
@@ -197,9 +201,17 @@ class SoulLoop:
                 task_description=task_description,
                 git_commit=git_commit,
             )
+            # 结构化提取：从任务描述中提取具体的教训/改良/窍门，覆盖模板输出
+            structured = self._extract_structured_reflection(task_description)
+            lesson = structured.get("lesson") or audit_result.lesson
+            improvement = structured.get("improvement") or audit_result.improvement
+            trick = structured.get("trick", "")
+            if trick:
+                lesson = f"{lesson} | 窍门: {trick}"
             result["reflection"] = {
                 "overall_score": audit_result.overall_score,
-                "lesson": audit_result.lesson[:200],
+                "lesson": lesson[:200],
+                "improvement": improvement[:200],
                 "step_id": audit_result.step_id,
             }
             result["repairs"] = self._auditor.suggest_repairs(audit_result)
@@ -385,3 +397,40 @@ def post_task(
         编排报告字典 (alignment, scarf, hormone, trust, reflection, cei, repairs)。
     """
     return _get_default_loop().post_task(task_description, git_commit, mode, issue_id)
+
+# ── 结构化反思提取 ───────────────────────────────────────
+
+def extract_structured_reflection(task: str) -> dict:
+    """从任务描述中提取 `标签:内容` 格式的结构化反思。
+
+    返回: {"lesson": str, "improvement": str, "trick": str}
+    """
+    import re
+    result = {"lesson": "", "improvement": "", "trick": ""}
+
+    def _extract(tag: str) -> str:
+        for sep in (":", "：", "→"):
+            prefix = f"{tag}{sep}"
+            idx = task.find(prefix)
+            if idx >= 0:
+                content = task[idx + len(prefix):]
+                next_tags = ["教训", "改良", "窍门", "根因", "修复", "改进"]
+                end = len(content)
+                for nt in next_tags:
+                    for s in (":", "：", "→"):
+                        pos = content.find(f"{nt}{s}")
+                        if 0 < pos < end:
+                            end = pos
+                content = content[:end].strip().rstrip(",;，；")
+                return content if len(content) > 3 else ""
+        return ""
+
+    # 也尝试数值变化作为备用
+    def _numeric() -> str:
+        m = re.search(r'(\d+\s*[%sm次个行s%％]\s*→\s*\d+\s*[%sm次个行s%％]*)', task)
+        return m.group(1) if m else ""
+
+    result["lesson"] = _extract("教训") or _numeric()
+    result["improvement"] = _extract("改良") or _numeric()
+    result["trick"] = _extract("窍门")
+    return result
