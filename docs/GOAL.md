@@ -13,27 +13,32 @@
   12 条核心原则（行为域分布: all/governing/building/designing/reflecting）
   原则遗传（跨 Agent 扩散 + principle_inherit）
   原则遵守量化追踪（PrincipleTracker） ✅
+  原则反事实评估（principle_evaluate） ✅
 
 实践层 — 外显于行
   多 Agent 开发组（Claude PM + Pi Builder/Fixer/Reviewer） ✅
   自治流水线（标签驱动, 零Token Daemon, 自动衔接） ✅
-  post_task 六联闭环（light委派+full验收） ✅
+  step-closure 六联闭环（原则对齐→SCARF→激素→信任→反思→CEI） ✅
   动态信任-自由度矩阵（4档映射到工具权限） ✅
-  11 维审计（每小时自动 + Tier1 修复） ✅
+  11 维审计（7维基础 + 4维多Agent, 每小时自动 + Tier1 修复） ✅
+  Skill 调用链追踪（14 技能映射 + 链完整性检测） ✅
 
 演化层 — 迭代进步
-  worth 反馈闭环 ✅
-  AgentBehaviorTracker ✅
+  worth 反馈闭环（采纳/拒绝/忽略 三态计数器） ✅
+  SCARF 五维自省（地位/确定性/自主/关联/公平） ✅
+  CEI 复合执行指数 ✅
+  Weibull 记忆衰减（L1 β=1.5/3d, L3 β=0.7/90d） ✅
   curiosity 自适应探索 ✅
-  PrincipleTracker 趋势分析 ✅
 
 基础设施
   SQLite 写穿透 + schema_version 迁移链 ✅
+  LanceDB 向量存储（ANN + FTS + RRF 混合融合） ✅
+  记忆质量管道（6类提取→向量去重→QualityGate→衰减初始化→双写） ✅
   域联邦（7域 + 自演化 + 联邦信号） ✅
   标签状态机（task:pending→done→reviewed） ✅
   双向桥（/notify→SSE /events 实时推送） ✅
   灾难恢复（rebuild_from_memories） ✅
-  经验包（流式导出 + version_mapper + strategy） ✅
+  经验包（流式导出 + version_mapper + strategy, 跨Agent知识传递） ✅
 ```
 
 ## 三、当前状态
@@ -41,12 +46,12 @@
 ### 已完成 (2026-06-29)
 
 **内核：**
-- 34 个 MCP 工具（10 域，含 Skill Tracking + Auto Context Inject）
 - 12 条核心原则（按行为域分布）
-- 7 维审计 + 5 维 SCARF 自省 + 11 维多 Agent 审计
+- 11 维审计（7维基础 + 4维多Agent）
 - 域联邦系统（自演化 + 联邦信号）
-- 三层防线（L0 + L1 信任约束 + L2 免疫巡检）
+- 三层防线（L0 硬边界 + L1 信任约束 + L2 免疫巡检）
 - 韧性专项（灾难恢复 + 跨版本 + 静默失效）
+- 经验包系统（流式导出 + version_mapper + 跨Agent知识传递）
 
 **多 Agent 开发组：**
 - Pi CLI 原生执行（替代自建 agent.py）
@@ -60,13 +65,21 @@
 - SuperPowers 流水线映射（planner→builder→fixer→reviewer）
 
 ### 已完成 (2026-06-30)
-- TODO #6: LanceDB 向量存储 + 混合融合检索 (ANN + FTS + 优雅降级)
+- TODO #6: LanceDB 向量存储 + 混合融合检索 (ANN + FTS + RRF + 优雅降级)
 - TODO #7: HTML 仪表盘 (/dashboard, 记忆池 + 身体系统 + 信任分)
-- 方向 A: 记忆生命周期引擎 — Weibull 衰减 (L1 β=1.5/3d, L3 β=0.7/90d) + 访问强化 (间隔重复) + 三因素复合评分 (wilson×0.6 + freshness×0.25 + reinforcement×0.15) + SQLite 迁移 + 存量衰减计算
-- 方向 B: 记忆质量管道 — smart_extractor 接入 pipeline + 向量去重 (cos≥0.85) + QualityGate 四维入池评分 (置信度/相关性/新鲜度/信息密度, 等权0.25) + MemoryGC.merge_similar() 相似合并 (cos≥0.70) + 方向 A-B 全集成 (tier-aware freshness + decay init on store + dedup→AccessReinforcement boost)
+- **方向 A**: 记忆生命周期引擎 — Weibull 衰减 (L1 β=1.5/3d, L3 β=0.7/90d) + 访问强化 (间隔重复) + 三因素复合评分 (wilson×0.6 + freshness×0.25 + reinforcement×0.15) + SQLite 迁移 + 存量衰减计算
+- **方向 B**: 记忆质量管道 — smart_extractor 接入 pipeline + 向量去重 (cos≥0.85) + QualityGate 四维入池评分 (置信度/相关性/新鲜度/信息密度, 等权0.25) + MemoryGC.merge_similar() 相似合并 (cos≥0.70) + 方向 A-B 全集成 (tier-aware freshness + decay init on store + dedup→AccessReinforcement boost)
 - 存量回填策略 (LanceDB 空时自动从 SQLite 回填)
-- **Skill Tracking**: SuperPowers 流程可追踪化 — 4 个 MCP 工具 (skill_session_start/complete/trace/audit) + SKILL_CHAIN_MAP (14 技能) + skill_session 实体类型 + audit 第八维 skill_trace (权重 0.10) + CLAUDE.md Skill 调用协议 + 12 测试。MCP 工具总数: 33。
-- **Auto Context Inject**: 统一自动化上下文注入 — 1 个 MCP 工具 (auto_context_inject) + SoulBridge/Pi Daemon/Claude Code 三路径统一 + 自反馈循环 + CLAUDE.md 启动序列简化 (7→5 步) + 18 测试。MCP 工具总数: 34。
+- **Skill Tracking**: SuperPowers 流程可追踪化 — 5 个 MCP 工具 (skill_session_start/complete/trace/audit + skill_auto_track) + SKILL_CHAIN_MAP (14 技能) + skill_session 实体类型 + audit 第八维 skill_trace (权重 0.10) + CLAUDE.md Skill 调用协议
+
+### 已完成 (2026-07-01)
+- **Auto Context Inject**: 统一自动化上下文注入 — 1 个 MCP 工具 (auto_context_inject) + SoulBridge/Pi Daemon/Claude Code 三路径统一 + 自反馈循环 + CLAUDE.md 启动序列简化
+- **step-closure**: 六联闭环引擎 — 原则对齐检查 → SCARF 五维自省 → 激素更新 → 信任分联动 → 反思记忆存储 → CEI 复合指数。支持 full/light 双模式
+- **smart-remember**: 智能记忆存储 — 自动去重检查 (相似度 ≥ 0.85 则更新已有记忆)，通过完整质量管道
+- **session-init**: 统一会话启动 — 一条调用替代原有 5 步（原则激活 + context_supply + memory_store 注入 + domain stats + system stats + defense + memory_gc preview）
+- **memory_sync_files**: 文件系统 .md 记忆同步到 MCP 管道
+
+**MCP 工具总数: 40（10 域）**
 
 ### 进行中
 - 无。所有已交付。
@@ -114,7 +127,7 @@ task:rejected → Fixer认领 → task:accepted → 修复循环
 ### 启动团队
 ```bash
 python -m plastic_promise.mcp.server --sse 9020   # 共享记忆
-python pi_daemon.py                                 # 自治流水线
+python daemons/pi_daemon.py                                 # 自治流水线
 ```
 
 ### Claude 发任务
@@ -131,5 +144,5 @@ memory_store(tags=["task:pending","assignee:pi_builder","domain:building"])
 
 ### 当前指令
 - 推送到 main 分支
-- Daemon 持续运行 (pi_daemon.py)
+- Daemon 持续运行 (daemons/pi_daemon.py)
 - 审计每小时自动执行

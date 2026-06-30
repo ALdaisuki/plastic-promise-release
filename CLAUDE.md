@@ -1,6 +1,6 @@
 # CLAUDE.md — Plastic Promise 操作指令
 
-> 📋 完整架构、当前状态、路线图见 **[GOAL.md](GOAL.md)**。
+> 📋 完整架构、当前状态、路线图见 **[GOAL.md](docs/GOAL.md)**。
 > 核心范式：**约定工程** — 内化约定替代外部约束。
 
 ## 会话启动
@@ -16,24 +16,26 @@
 > **重要**: 具体任务时重新调用 `context_supply(task_description, task_type, scope)` 获取针对性上下文。
 > - 编码/实施 → `task_type="code_generation"`
 > - 修复/调试 → `task_type="debugging"`
-> - 设计/规划 → `domain_hint="designing"`
-> - 审查/复盘 → `domain_hint="reflecting"`
-> - 发布/合入 → `domain_hint="governing"`
+> - 设计/规划 → `task_type="architecture"`, `scope="designing"`
+> - 审查/复盘 → `task_type="code_review"`, `scope="reflecting"`
+> - 发布/合入 → `scope="governing"`
+>
+> `principle_activate` 使用 `domain_hint` 参数限定原则域: `building` | `fixing` | `designing` | `reflecting` | `governing` | `connecting` | `all`
 
-## MCP 工具 (36 个, 10 域)
+## MCP 工具 (40 个, 10 域)
 
 | 域 | 工具 |
 |------|------|
-| Memory (10) | memory_recall, memory_store, memory_update, memory_forget, memory_stats, memory_list, memory_gc, memory_correct, fuzzy_status, fuzzy_process |
+| Memory (10) | memory_recall, memory_store, memory_update, memory_forget, memory_stats, memory_list, memory_gc, memory_correct, memory_reclassify, memory_sync_files |
 | Domain (1) | domain(action=stats\|merge\|unmerge\|rename\|rebuild) |
 | Principles (4) | principle_activate(+domain_hint), principle_inherit, principle_diffuse, principle_evaluate |
-| Context (4) | context_supply, context_inject, context_graph, context_ready |
-| Audit (4) | audit_run(action=full\|report), audit_pre_check, defense(action=get\|history\|adjust\|status) |
+| Context (5) | context_supply, context_inject, context_graph, context_ready, auto_context_inject |
+| Audit (3) | audit_run(action=full\|report), audit_pre_check, defense(action=get\|history\|adjust\|status) |
 | Reflection (2) | scarf_reflect(mode=standard\|inertia), feedback_apply |
 | System (4) | system(action=stats\|backup\|migrate), issue_create, issue_transition, issue_list |
 | Pack (3) | pack_export(streaming), pack_import(strategy), pack_recall(strict) |
-| **Skill Track (4)** | **skill_session_start, skill_session_complete, skill_session_trace, skill_session_audit** |
-| **Skills (2)** | **session-init, smart-remember** |
+| **Skill Track (5)** | **skill_session_start, skill_session_complete, skill_session_trace, skill_session_audit, skill_auto_track** |
+| **Skills (3)** | **session-init, smart-remember, step-closure** |
 
 ## 记忆质量管道 (方向 A + B)
 
@@ -91,7 +93,7 @@ Claude: memory_store(content="SPEC: ...", tags=["task:pending","assignee:pi_buil
 ### 启动团队
 ```bash
 python -m plastic_promise.mcp.server --sse 9020   # 共享记忆引擎
-python pi_daemon.py                                 # 自治流水线
+python daemons/pi_daemon.py                          # 自治流水线
 ```
 
 ### 验收反馈
@@ -202,8 +204,8 @@ defense(action="get") → 根据 tier 决定行为:
 - **写前查信任** — 写操作前 `defense(action="get")`，低于阈值拒绝或确认
 - **信任动态** — 信任分影响检索范围 (high=1.3x, critical=0.5x)
 - **域联邦** — 同名域自动融合, 信号 ≤200字符不深入细节
-- **宪法人人遵守** — issue_validator 管 Claude 也管 Pi
-- **快速失败** — DomainManager 不可用时降级为全量检索
+- **宪法人人遵守** — 12条原则统一约束 Claude 和 Pi，无例外
+- **快速失败** — 子系统不可用时优雅降级，不阻塞主流程
 - **不重复造轮子** — 先查记忆, 再查网上, 没有再创新
 
 ## Skill 调用追踪

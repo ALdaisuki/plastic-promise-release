@@ -30,7 +30,7 @@ if "%STATUS_ONLY%"=="1" (
     goto :end
 )
 
-cd /d "%SCRIPT_DIR%"
+cd /d "%SCRIPT_DIR%.."
 
 echo [launcher] Starting event-bus...
 start "event-bus" /B npx tsx bridge/event-bus.ts > NUL 2>&1

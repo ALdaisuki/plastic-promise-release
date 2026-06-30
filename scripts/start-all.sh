@@ -103,7 +103,7 @@ if [ "$STATUS_ONLY" -eq 1 ]; then
 fi
 
 # Start services
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 
 start_service "event-bus" "npx tsx bridge/event-bus.ts" || true
 

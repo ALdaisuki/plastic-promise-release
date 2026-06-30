@@ -55,3 +55,25 @@ plastic_memory.lancedb/
 
 # Telemetry (runtime generated)
 .interop/
+
+# Tools & linting
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Environment
+.python-version
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Docker
+.dockerignore

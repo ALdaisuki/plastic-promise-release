@@ -1,52 +1,227 @@
-# Agent Interop — AGENTS.md (Claude Code)
+# AGENTS.md — Plastic Promise 多 Agent 互操作协议
+
+> 本文档面向所有接入 Plastic Promise MCP Server 的 Agent（Pi Builder/Fixer/Reviewer、子 Agent、外部 Agent）。
+> Claude Code 操作指令见 **[CLAUDE.md](CLAUDE.md)**，架构与状态见 **[GOAL.md](docs/GOAL.md)**。
 
 ## 项目概述
 
-Agent Interop 是 Pi Agent 与 Claude Code 的互通桥梁。
-通过 Plastic Promise MCP Server 实现：
+Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治理系统。通过共享 MCP Server 实现：
 
-- **共享记忆**: Pi 和 Claude 读写同一记忆池
-- **共享原则**: 11 条核心原则在两边同时生效
-- **上下文供应**: 任一方调用 context_supply 获取智能上下文包
-- **审计同步**: 七维度审计结果双方可见
+- **共享记忆**: 所有 Agent 读写同一记忆池（SQLite + LanceDB）
+- **共享原则**: 12 条核心原则在所有 Agent 同时生效
+- **上下文供应**: 任一方调用 `context_supply` 获取智能三层上下文包
+- **审计同步**: 11 维审计结果所有 Agent 可见
+- **自治流水线**: 标签驱动、零 Token Daemon、自动衔接
 
-## Plastic Promise MCP 工具
+## MCP 工具目录 (40 工具, 10 域)
 
-Claude Code 可以直接调用以下 Plastic Promise MCP 工具：
+### 🧠 记忆域 (10)
+| 工具 | 用途 |
+|------|------|
+| `memory_recall` | 混合检索记忆（文本 + 图遍历双通道），返回三层上下文包 |
+| `memory_store` | 存储记忆 → 自动经过质量管道（提取→去重→门控→衰减→双写） |
+| `memory_update` | 更新已有记忆，可选重置 worth 计数器 |
+| `memory_forget` | 软删除记忆（标记衰退，7天后 GC） |
+| `memory_stats` | 记忆池统计：总量、健康/衰退分布、worth 分布 |
+| `memory_list` | 按条件列出记忆（类型/来源/时间范围/worth） |
+| `memory_gc` | 触发垃圾回收（dry_run 预览 / 实际执行合并+清理） |
+| `memory_correct` | 纠正记忆：编辑内容、标记为错误/废弃/已纠正 |
+| `memory_reclassify` | 强制已有记忆重跑分类管线（tier/domain/category） |
+| `memory_sync_files` | 同步文件系统 .md 记忆到 MCP 管道 |
 
-### 记忆域 (7 工具)
-- `memory_recall` — 混合检索记忆，返回三层上下文包
-- `memory_store` — 存储记忆到记忆池
-- `memory_update` — 更新已有记忆
-- `memory_forget` — 软删除记忆
-- `memory_stats` — 记忆池统计信息
-- `memory_list` — 按条件列出记忆
-- `memory_gc` — 手动触发垃圾回收
+### 📐 原则域 (4)
+| 工具 | 用途 |
+|------|------|
+| `principle_activate` | 根据任务类型激活相关原则，支持 domain_hint 限定域 |
+| `principle_inherit` | 原则单向扩散：work→all / life→all（衰减系数 0.70） |
+| `principle_diffuse` | 查询原则在域间的传播状态 |
+| `principle_evaluate` | 反事实评估：「如果违反会怎样」预演 |
 
-### 原则域 (4 工具)
-- `principle_activate` — 根据任务类型激活核心原则
-- `principle_inherit` — 原则单向扩散
-- `principle_diffuse` — 查询原则传播状态
-- `principle_evaluate` — 反事实评估
+### 🔗 上下文域 (5)
+| 工具 | 用途 |
+|------|------|
+| `context_supply` | **核心工具** — 调用 ContextEngine.supply()，返回三层结构化上下文包 |
+| `context_inject` | 向 EntityGraph 注入原则关联边或注册新实体节点 |
+| `context_graph` | 查询实体关联图谱（遍历/节点信息/边列表/激活原则） |
+| `context_ready` | 返回或刷新上下文预备区缓存 |
+| `auto_context_inject` | 统一自动化上下文注入（SoulBridge/Pi Daemon/Claude Code 三路径） |
 
-### 上下文域 (3 工具)
-- `context_supply` — 调用 ContextEngine 返回三层上下文包
-- `context_inject` — 注入实体关联
-- `context_graph` — 查询实体关联图谱
+### 🛡️ 审计防线域 (3)
+| 工具 | 用途 |
+|------|------|
+| `audit_run` | 执行七维审计（action=full/report），含时间范围过滤 |
+| `audit_pre_check` | 实时合规检查：L0 硬边界 + L1 约束衰减 |
+| `defense` | 防线管理：get/history/adjust/status — 信任分读写 |
 
-### 审计与防线 (5 工具)
-- `audit_run` / `audit_pre_check` / `audit_report`
-- `defense_trust` / `defense_status`
+### 🔍 自省演化域 (2)
+| 工具 | 用途 |
+|------|------|
+| `scarf_reflect` | SCARF 五维自省（地位/确定性/自主/关联/公平），mode=standard/inertia |
+| `feedback_apply` | 向记忆或上下文条目手动应用反馈（adopted/ignored/rejected） |
 
-### 自省与演化 (3 工具)
-- `scarf_reflect` / `inertia_check` / `feedback_apply`
+### ⚙️ 系统管理域 (4)
+| 工具 | 用途 |
+|------|------|
+| `system` | 系统操作：stats/backup/migrate |
+| `issue_create` | 创建 Issue，关联原则和依赖关系 |
+| `issue_transition` | 推进 Issue 状态：open→in_progress→resolved→closed |
+| `issue_list` | 列出 Issue，按状态和 owner 筛选 |
 
-### 管理域 (3 工具)
-- `system_stats` / `system_backup` / `system_migrate`
+### 📦 经验包域 (3)
+| 工具 | 用途 |
+|------|------|
+| `pack_export` | 导出记忆为可分享 JSON 经验包（流式，按 tags/memory_ids 筛选） |
+| `pack_import` | 导入经验包（strategy: skip/replace/merge） |
+| `pack_recall` | 仅从存储记忆中检索（strict 模式：无匹配返回空） |
+
+### 🎯 技能追踪域 (5)
+| 工具 | 用途 |
+|------|------|
+| `skill_session_start` | 创建技能执行实例实体，激活关联原则 |
+| `skill_session_complete` | 标记技能完成，处理标签转换和 worth 更新 |
+| `skill_session_trace` | 追踪技能执行链（完整性检测/违反警告） |
+| `skill_session_audit` | 事后间隙扫描：检测缺失 session 实体，支持自动补录 |
+| `skill_auto_track` | Hook 自动追踪（PreToolUse/PostToolUse），零摩擦 |
+
+### ⭐ Phase 1 程序化技能 (3)
+| 工具 | 用途 |
+|------|------|
+| `session-init` | 统一会话启动 — 原则激活+上下文注入+域健康+信任分+GC预览 |
+| `smart-remember` | 智能记忆存储 — 自动去重（相似度≥0.85则更新）+ 完整质量管道 |
+| `step-closure` | 六联闭环 — 原则对齐→SCARF→激素→信任→反思→CEI（full/light双模式） |
+
+### 🌐 域联邦域 (1)
+| 工具 | 用途 |
+|------|------|
+| `domain` | 域联邦管理：stats/merge/unmerge/rename/rebuild |
+
+---
 
 ## 工作流约定
 
-1. **每次任务前**: 调用 `context_supply` 获取相关上下文
-2. **每次决策前**: 调用 `principle_activate` 检查原则对齐
-3. **重要操作后**: 调用 `memory_store` 记录经验
-4. **每日/每会话结束**: 调用 `audit_run` 执行审计
+### 1. 每次任务开始
+```
+1. context_supply(task_description="<任务描述>", task_type="<类型>")
+2. principle_activate(task_type="<类型>", task_description="<任务描述>")
+3. 审查返回的 🔵核心上下文 + 🟡关联上下文 + 🧬激活原则
+```
+
+### 2. 每次决策前
+```
+principle_activate(task_type="<类型>") → 检查对齐状态
+必要时 principle_evaluate(principle_id, scenario) → 反事实评估
+```
+
+### 3. 重要操作后
+```
+memory_store(content="<做了什么+为什么>", memory_type="experience", source="<agent_name>")
+```
+
+### 4. 每步闭环（有实质产出时）
+```
+step-closure(task_description="<本步操作>", mode="full")
+```
+轻量步骤（查询/阅读）：`mode="light"`
+
+### 5. 写操作前检查信任分
+```
+defense(action="get") → 根据 tier 决定行为
+```
+
+---
+
+## 信任-自由度矩阵
+
+| 信任分 | 等级 | 写文件 | 删文件 | 发Issue | 分配任务 | 行为 |
+|--------|------|--------|--------|---------|----------|------|
+| 0.80+ | autonomous | ✅ | ✅ | ✅ | ✅ | 自主执行 |
+| 0.60+ | standard | ✅ | ⚠️确认 | ✅ | ❌ | 正常执行 |
+| 0.30+ | restricted | ⚠️审批 | ❌ | ❌ | ❌ | 每次写前确认 |
+| 0.00+ | readonly | ❌ | ❌ | ❌ | ❌ | 只读 |
+
+---
+
+## 子 Agent 派发协议
+
+派发任何子 Agent 前，**必须**注入上下文：
+
+```
+1. memory_recall(query="<任务关键词>", task_type="<类型>", max_results=5)
+2. context_supply(task_description="<任务描述>", task_type="<类型>")
+3. 将 🔵核心上下文 + 🟡关联上下文 + 🧬激活原则 写入派发 prompt
+```
+
+**最低要求**: 至少包含激活的原则列表 + 2 条最相关的核心记忆。
+
+---
+
+## 标签状态机 (多 Agent 任务)
+
+```
+task:pending → task:accepted → task:active → task:done → task:review → task:reviewed
+    ↑ Claude发布  ↑ Daemon认领   ↑ Pi执行    ↑ 完成   ↑ Reviewer审  ↑ Claude验收
+
+task:rejected → Fixer认领 → task:accepted → 修复循环
+
+超时: task:active>5min → pending | task:reviewed>10min → active
+清理: task:accepted/reviewed>7天 → 移除标签
+```
+
+---
+
+## 12 条核心约定
+
+| # | 原则 | 域 | 一句话 |
+|---|------|------|--------|
+| 1 | 奥卡姆剃刀 | all | 如无必要，勿增实体 |
+| 2 | 全过程可查可透明 | all | 每步有 git 痕迹、可追溯审计日志 |
+| 3 | 自我审计闭环 | reflecting | 根因→改良→教训→评分 |
+| 4 | 上下文驱动决策 | designing | 无上下文不行动，不足时标注而非猜测 |
+| 5 | 约定优于约束 | governing | 检验存在不等于有效 |
+| 6 | 数据流驱动 | designing | 追踪真实数据流，非假设架构图 |
+| 7 | 器官互保 | building | 每个子系统保护整个系统 |
+| 8 | 工具即感官 | all | LLM 能力边界由工具链决定 |
+| 9 | 信任驱动约束 | governing | 动态信任分调节自主权 |
+| 10 | 自演化闭环 | reflecting | 评价驱动行为修正 |
+| 11 | 原则遗传 | governing | 核心约定跨 Agent 代际传递 |
+| 12 | 代码即文档 | building | 代码本身是最权威的文档 |
+
+---
+
+## 快速开始
+
+```bash
+# 启动共享记忆服务器
+python -m plastic_promise.mcp.server --sse 9020
+
+# 启动自治流水线
+python daemons/pi_daemon.py
+
+# 发任务 (标签驱动)
+memory_store(tags=["task:pending", "assignee:pi_builder", "domain:building"])
+```
+
+## 架构
+
+```
+Claude Code / Pi Agent / 外部 Agent
+        │
+        ▼ MCP (stdio | SSE)
+┌──────────────────────────────────────┐
+│ Plastic Promise MCP Server (40工具)   │
+│  ┌────┐┌────┐┌────┐┌────┐┌────┐    │
+│  │记忆││原则││上下文││审计││技能│    │  10 域
+│  │ 10 ││ 4  ││ 5  ││ 3  ││ 5  │    │
+│  └────┘└────┘└────┘└────┘└────┘    │
+│  ┌────┐┌────┐┌────┐┌────┐┌────┐    │
+│  │自省││管理││经验包││联邦││技能│    │
+│  │ 2  ││ 4  ││ 3  ││ 1  ││ 3  │    │
+│  └────┘└────┘└────┘└────┘└────┘    │
+│        共享 ContextEngine            │
+│   ├ 实体图谱 EntityGraph             │
+│   ├ 混合检索 (LanceDB向量 + BM25)    │
+│   ├ Memory Worth 双计数器            │
+│   └ RRF 融合 / 符号规则双通道        │
+└──────────────────────────────────────┘
+        ↓ SQLite + LanceDB
+```

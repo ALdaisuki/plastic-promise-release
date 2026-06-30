@@ -1,0 +1,33 @@
+# ============================================================
+# Plastic Promise — MCP Server 依赖清单
+# ============================================================
+# 安装：  pip install -r requirements.txt
+# Rust 核心（可选）：cd rust/context-engine-core && pip install maturin && maturin develop
+# ============================================================
+
+# ---- MCP 核心 (必须) ----
+mcp>=1.0.0,<2.0.0
+
+# ---- 向量/全文检索 (必须) ----
+# LanceDB = 向量 + BM25 全文 + 标量过滤, 单库搞定混合检索
+lancedb>=0.6.0
+# sentence-transformers 用于本地嵌入 (也可走 openai)
+sentence-transformers>=2.2.0
+
+# ---- HTTP / SSE 服务 (可选, 仅在启动 SSE 多 Agent 共享模式时用) ----
+uvicorn[standard]>=0.27.0
+starlette>=0.36.0
+httpx>=0.27.0
+
+# ---- 数据存储 (必须) ----
+# SQLite 由 Python stdlib 提供 (sqlite3). 以下为高级特性:
+# SQLite 向量扩展 (可选, 仅当 LanceDB 不可用时作退化方案)
+# sqlite-vss>=0.1.2
+
+# ---- LLM 集成 (可选, 用于 embedder / cross-encoder rerank) ----
+# openai>=1.12.0
+# anthropic>=0.18.0
+
+# ---- 其它 (开发/测试用) ----
+# pytest>=8.0.0
+# pytest-asyncio>=0.23.0
