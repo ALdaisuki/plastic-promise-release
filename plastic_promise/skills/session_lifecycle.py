@@ -10,6 +10,7 @@ async def _session_init_handler(ctx, params, atom_results):
 
     Atoms called before this handler:
     - principle_activate: {activated: [...], count: N}
+    - scarf_reflect: {overall_score, dimensions: {Status, Certainty, ...}}
     - context_supply: ContextPack JSON (core/related/divergent)
     - memory_store: {stored: true, memory_id: "..."}
     - domain: {domains: {...}}
@@ -28,6 +29,7 @@ async def _session_init_handler(ctx, params, atom_results):
         return {}
 
     principle_data = parse(atom_results.get("principle_activate"))
+    scarf_data = parse(atom_results.get("scarf_reflect"))
     context_data = {}
     context_raw = atom_results.get("context_supply")
     if context_raw and hasattr(context_raw[0], 'text'):
@@ -60,6 +62,7 @@ async def _session_init_handler(ctx, params, atom_results):
         success=True,
         data={
             "principles": principle_data.get("activated", []),
+            "scarf_baseline": scarf_data,
             "context": context_data,
             "inject_memory_id": memory_data.get("memory_id", ""),
             "domain_health": domain_data,
@@ -84,6 +87,7 @@ skill_session_init = SkillDef(
     tier="P0",
     atoms=[
         "principle_activate",
+        "scarf_reflect",
         "context_supply",
         "memory_store",
         "domain",
@@ -96,8 +100,9 @@ skill_session_init = SkillDef(
         "system": "skip",
         "memory_gc": "skip",
         "defense": "warn",
+        "scarf_reflect": "warn",
     },
     handler=_session_init_handler,
     allowed_callers=["claude", "pi"],
-    concurrent=True,  # 性能优化：7个原子并行执行，将串行耗时降低为单次最长耗时
+    concurrent=True,  # 性能优化：8个原子并行执行，将串行耗时降低为单次最长耗时
 )

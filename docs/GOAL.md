@@ -78,9 +78,9 @@
 
 ### 已完成 (2026-07-01)
 - **Auto Context Inject**: 统一自动化上下文注入 — 1 个 MCP 工具 (auto_context_inject) + SoulBridge/Pi Daemon/Claude Code 三路径统一 + 自反馈循环 + CLAUDE.md 启动序列简化
-- **step-closure**: 六联闭环引擎 — 原则对齐检查 → SCARF 五维自省 → 激素更新 → 信任分联动 → 反思记忆存储 → CEI 复合指数。支持 full/light 双模式
+- **step-closure**: 六联闭环引擎 — 原则对齐检查 → SCARF 五维自省 → 激素更新 → 信任分联动 → 反思记忆存储（执行者提供 lesson/improvement/root_cause/optimization，结构化格式入池） → CEI 复合指数。支持 full/light 双模式
 - **smart-remember**: 智能记忆存储 — 自动去重检查 (相似度 ≥ 0.85 则更新已有记忆)，通过完整质量管道
-- **session-init**: 统一会话启动 — 一条调用替代原有 5 步（原则激活 + context_supply + memory_store 注入 + domain stats + system stats + defense + memory_gc preview）
+- **session-init**: 统一会话启动 — 一条调用替代原有 5 步（原则激活 + context_supply + SCARF 基线自省 + memory_store 注入 + domain stats + system stats + defense + memory_gc preview）
 - **memory_sync_files**: 文件系统 .md 记忆同步到 MCP 管道
 
 **MCP 工具总数: 41（10 域 + SuperPowers）**

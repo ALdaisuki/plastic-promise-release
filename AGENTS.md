@@ -86,9 +86,9 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 ### ⭐ Phase 1 程序化技能 (3)
 | 工具 | 用途 |
 |------|------|
-| `session-init` | 统一会话启动 — 原则激活+上下文注入+域健康+信任分+GC预览+chain_state |
+| `session-init` | 统一会话启动 — 原则激活+上下文注入+SCARF基线+域健康+信任分+GC预览+chain_state |
 | `smart-remember` | 智能记忆存储 — 自动去重（相似度≥0.85则更新）+ 完整质量管道 |
-| `step-closure` | 六联闭环 — 原则对齐→SCARF→激素→信任→反思→CEI（full/light双模式） |
+| `step-closure` | 六联闭环 — 原则对齐→SCARF→激素→信任→反思(执行者提供lesson/improvement/root_cause/optimization)→CEI，结构化记忆入池 |
 
 ### 🦸 SuperPowers 流水线 (1)
 | 工具 | 用途 |
@@ -110,7 +110,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 
 ### 1. 每次任务开始
 ```
-1. session-init(task_description="<任务描述>")  → 获取 chain_state + 原则 + 信任分
+1. session-init(task_description="<任务描述>")  → 获取 chain_state + 原则 + SCARF基线 + 信任分
 2. sp-stage(stage="brainstorming", task_description="<任务描述>")  → 进入 SuperPowers 流水线
 3. 按 SKILL_CHAIN_MAP 顺序推进后续阶段
 ```
@@ -139,8 +139,18 @@ memory_store(content="<做了什么+为什么>", memory_type="experience", sourc
 ```
 
 ### 5. 每步闭环（有实质产出时）
+
+执行者必须提供反思四字段——不填模板、不委托 Agent：
 ```
-step-closure(task_description="<本步操作>", mode="full")
+step-closure(
+  task_description="<本步操作>",
+  git_commit="<关联 commit>",
+  mode="full",
+  lesson="<本次学到的具体经验>",
+  improvement="<下次可以改进的具体做法>",
+  root_cause="<如果存在问题，根本原因是什么>",
+  optimization="<立即可执行的一个具体改进动作>",
+)
 ```
 轻量步骤（查询/阅读）：`mode="light"`
 
@@ -230,7 +240,7 @@ project:trae:feature-x    ← 项目归属（可选）
 2. memory_recall / context_supply  → 按需获取针对性上下文
 3. defense(action="get")           → 执行前检查信任分
 4. 执行代码操作                     → 读写、终端、诊断
-5. step-closure(mode="full")       → 回流执行结果到记忆池
+5. step-closure(mode="full", lesson="...", improvement="...", root_cause="...", optimization="...")  → 执行者回流经验+记忆池
 ```
 
 ### 边界定义

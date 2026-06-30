@@ -133,7 +133,13 @@ CLAUDE.md 步骤 1 (session-init skill)
   ├─① principle_activate(task_type, task_description)
   │    └─→ 匹配 12 原则 → 返回激活列表 + 违反后果 + 遵循建议
   │
-  ├─② context_supply(task_description, task_type)
+  ├─② scarf_reflect(task_description)
+  │    └─→ SCARFReflector.reflect() → 五维自省基线
+  │         ├─ 关键词匹配 (中英文正/负信号)
+  │         ├─ Embedding 语义相似度回退 (余弦相似度 ±0.15 微调)
+  │         └─→ Status/Certainty/Autonomy/Relatedness/Fairness 评分
+  │
+  ├─③ context_supply(task_description, task_type)
   │    └─→ ContextEngine.supply()
   │         ├─ embedder.embed(query) → 向量
   │         ├─ LanceDB ANN 检索
@@ -143,7 +149,7 @@ CLAUDE.md 步骤 1 (session-init skill)
   │         ├─ 图谱遍历扩展
   │         └─→ ContextPack (核心/关联/发散 三层)
   │
-  ├─③ memory_store(content="[AUTO INJECT]...")
+  ├─④ memory_store(content="[AUTO INJECT]...")
   │    └─→ noise_filter → fuzzy_buffer.store_urgent()
   │         └─→ pipeline: raw → tagged → classified → embedded → migrate
   │              ├─ smart_extractor: 6 类提取 (preference/fact/decision/entity/event/pattern)
@@ -152,16 +158,16 @@ CLAUDE.md 步骤 1 (session-init skill)
   │              ├─ Weibull 衰减初始化 (L1 β=1.5/3d, L3 β=0.7/90d)
   │              └─→ SQLite + LanceDB 双写
   │
-  ├─④ domain(action="stats")
+  ├─⑤ domain(action="stats")
   │    └─→ DomainManager.stats() → 8 域健康度 + 融合信号
   │
-  ├─⑤ system(action="stats")
+  ├─⑥ system(action="stats")
   │    └─→ memory_stats + graph_stats + fuzzy_buffer 积压 + 数字身体系统快照
   │
-  ├─⑥ defense(action="get")
+  ├─⑦ defense(action="get")
   │    └─→ TrustManager.get() → 信任分 + tier + autonomy_level
   │
-  └─⑦ memory_gc(dry_run=True)
+  └─⑧ memory_gc(dry_run=True)
        └─→ MemoryGC.collect(dry_run=True)
             ├─ mark_decaying: Weibull 批量衰减
             ├─ merge_similar: cos≥0.70 合并候选
@@ -206,43 +212,40 @@ CLAUDE.md 步骤 1 (session-init skill)
 
 ### 3.3 每步闭环链路 (step-closure)
 
+执行者（Claude）调用时提供反思四字段——不填模板、不委托 Agent：
 ```
-step-closure(task_description, git_commit, mode="full")
+step-closure(
+  task_description, git_commit, mode="full",
+  lesson, improvement, root_cause, optimization
+)
   │
   ├─① 原则对齐检查 (alignment)
   │    └─→ principle_activate → PrincipleTracker.record(pid, obeyed, context)
   │
   ├─② SCARF 五维自省
   │    └─→ SCARFReflector.reflect(task_description)
-  │         地位 (Status)      — 本步是否增强了在系统中的位置？
-  │         确定性 (Certainty)  — 本步是否减少了不确定性？
-  │         自主 (Autonomy)    — 本步是否展现了自主判断？
-  │         关联 (Relatedness) — 本步是否加强了关联？
-  │         公平 (Fairness)    — 本步是否公平地分配了资源？
-  │         → summary.overall_score (0.0-1.0)
+  │         ├─ 关键词匹配 (中英文正/负信号)
+  │         ├─ Embedding 语义相似度回退 (无关键词时)
+  │         └─→ Status/Certainty/Autonomy/Relatedness/Fairness 评分
   │
   ├─③ 激素更新 (hormone)
   │    └─→ HormoneEngine.apply_feedback(adopted/ignored/rejected)
-  │         ├─ curiosity 自适应探索率
-  │         ├─ cortisol 压力水平
-  │         └─→ 影响后续检索的 explore/exploit 比例
+  │         基于 CEI 决定反馈类型 (≥0.6 adopted, ≥0.4 ignored, <0.4 rejected)
+  │         → dopamine/cortisol 波动 → trust_delta → TrustStore 持久化
   │
   ├─④ 信任分联动 (trust)
   │    └─→ SCARF overall ≥ 0.80 → TrustManager.boost(+0.02)
   │         SCARF overall < 0.40 → TrustManager.decay(-0.02)
-  │         → 信任分波动 → 权限变化 → 检索范围缩放
+  │         激素 trust_delta 同步写入 (不再被 None trust_manager 丢弃)
   │
   ├─⑤ 反思记忆存储 (reflection)
-  │    └─→ StepAuditor.audit_step(task_description, git_commit)
-  │         → memory_store(审计结果) → 进入记忆池
+  │    └─→ 执行者提供的四字段 → 结构化格式:
+  │         "[经验] ...\n[优化] ...\n[根因] ...\n[动作] ..."
+  │         → smart-remember 走完整质量管线 (分类→去重→嵌入→门控→入池)
   │
   └─⑥ CEI 复合执行指数 (cei)
-       └─→ 加权计算:
-            feedback_closure:     0.15
-            trust_alignment:      0.10
-            principle_inheritance: 0.10
-            safety_trace:         0.15
-            → 综合评分 (0.0-1.0) → 驱动下次 step-closure 的 mode 选择
+       └─→ 加权计算 → 写回 _cached_cei (不再卡在 0.5)
+            → 反馈类型动态切换 → 自演化回路闭合
 ```
 
 ### 3.4 审计链路

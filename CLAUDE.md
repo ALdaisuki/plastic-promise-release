@@ -11,7 +11,7 @@
    - 不可用（报错）→ 启动: `python -m plastic_promise.mcp.server --sse 9020` (后台运行: Windows 用 `start /B`, Unix 用 `&`)
    - 仍不可用 → 告警，本次会话使用文件系统降级（写入 `.md` 需加 `[[pending-sync]]` 标记）
 
-1. `session-init(task_description="<当前任务>")` — **Phase 1 技能：一条调用替代原有 5 步**（原则激活 + context_supply + memory_store 注入 + domain stats + system stats + defense + memory_gc preview）。报告 `data.principles`、`data.domain_health`、`data.system_stats`、`data.trust`、`data.gc_preview`。
+1. `session-init(task_description="<当前任务>")` — **Phase 1 技能：一条调用替代原有 5 步**（原则激活 + SCARF 基线自省 + context_supply + memory_store 注入 + domain stats + system stats + defense + memory_gc preview）。报告 `data.principles`、`data.scarf_baseline`、`data.domain_health`、`data.system_stats`、`data.trust`、`data.gc_preview`。
 
 > **重要**: 具体任务时重新调用 `context_supply(task_description, task_type, scope)` 获取针对性上下文。
 > - 编码/实施 → `task_type="code_generation"`
