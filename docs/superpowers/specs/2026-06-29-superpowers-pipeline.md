@@ -1,27 +1,125 @@
-# SuperPowers Pipeline — 多 Agent 标准化流程
+# SuperPowers Pipeline — 完整标准化流程
 
-> 状态: 已确认 | 日期: 2026-06-29
+> 状态: 已确认 | 更新: 2026-07-01 | 对齐: [obra/superpowers](https://github.com/obra/superpowers)
 
 ## 一、核心设计
 
-SuperPowers 标准化流程 (brainstorming→spec→plans→execute→review→acceptance) 映射到多 Agent 标签状态机。同一个 Pi 进程通过 `--mode` 参数扮演不同角色。
+完整继承 SuperPowers 12 阶段流水线，通过 `sp-stage` MCP 工具统一入口。
+Claude Code 使用 SuperPowers 插件 + `Skill` 工具，Trae 使用 `sp-stage` MCP 工具。
+两者通过 hook 桥接走同一 `skill_auto_track` 追踪管道。
 
-**设计约束：零新代码——纯配置 + prompt + 标签。**
+## 二、完整流水线
 
-## 二、阶段映射
+```
+using-superpowers
+       │
+       ▼
+brainstorming ──→ using-git-worktrees ──→ writing-plans
+                                              │
+                               ┌──────────────┼──────────────┐
+                               │              │              │
+                               ▼              ▼              │
+                      subagent-driven   executing-plans      │
+                      -development          │               │
+                               │            │               │
+                               ▼            ▼               │
+                      test-driven-development               │
+                               │                            │
+                               ▼                            │
+                      verification-before-completion        │
+                               │                            │
+                               ▼                            ▼
+                      finishing-a-development-branch
+                               ▲
+                               │
+               requesting-code-review ──→ receiving-code-review
+```
 
-| SuperPowers | 现有映射 | Tag | 谁做 | Mode | 输出物 |
-|------------|---------|-----|------|------|--------|
-| Brainstorming | 内存对话 + memory_store | 无 | Claude | - | 需求澄清 |
-| Spec | designing 域 | `task:spec` | Claude (未来 Pi-Designer) | - | 技术规格 |
-| Writing Plans | building 域 | `task:plan` | Pi-Planner | `planner` | 原子任务列表 |
-| Execute | building/fixing | `task:active` | Pi-Builder/Fixer | `builder`/`fixer` | 代码/修复 |
-| Review | reflecting 域 | `task:review` | Pi-Reviewer | `reviewer` | 审查报告 |
-| Acceptance | governing 域 | `task:reviewed` | Claude | - | 验收/打回 |
+**辅助阶段（随时可切入）**：
 
-**生命周期：brainstorming → spec → plan → active → review → reviewed（或 rejected → fixed → review 循环）**
+| 阶段 | 切入时机 | 切出 |
+|------|---------|------|
+| `systematic-debugging` | 任何阶段遇到 bug | → `test-driven-development` |
+| `dispatching-parallel-agents` | 需要并行任务时 | 独立，不链入主线 |
+| `writing-skills` | 需要创建新 Skill 时 | 独立 |
 
-## 三、Pi Mode 语义
+## 三、阶段定义
+
+| # | 阶段 | 域 | 原子操作 | 谁做 | 输出物 |
+|---|------|-----|---------|------|--------|
+| 1 | `brainstorming` | designing | principle + context + memory | Claude / Trae | 需求澄清 |
+| 2 | `using-git-worktrees` | building | principle + context + memory | Claude / Trae | 独立 worktree 分支 |
+| 3 | `writing-plans` | designing | principle + context + memory | Claude / Trae / Pi-Planner | 原子任务列表 |
+| 4a | `executing-plans` | building | principle + context + memory | Pi-Builder | 代码实施 |
+| 4b | `subagent-driven-development` | building | principle + context + memory | Claude（派发子 Agent） | 并行执行结果 |
+| 5 | `test-driven-development` | building | principle + context + memory | Pi-Builder | 测试+代码+重构 |
+| 6 | `verification-before-completion` | reflecting | principle + context + memory | Claude / Trae | 三重验收报告 |
+| 7 | `finishing-a-development-branch` | governing | + defense | Claude / Trae | 合入 + 信任分调整 |
+| 8 | `requesting-code-review` | reflecting | + audit_run | Claude / Trae | 审查请求 |
+| 9 | `receiving-code-review` | reflecting | + audit_run | Claude / Trae | 审查反馈处理 |
+
+**两条主路径**：
+
+- **单人路径**：`brainstorming → worktrees → plans → executing → TDD → verify → finish`
+- **多人路径**：`brainstorming → worktrees → plans → subagent → TDD → request-review → receive-review → finish`
+
+## 四、使用方式
+
+### Claude Code（SuperPowers 插件）
+
+```
+/SuperPowers:brainstorming     # 自动触发 Skill 工具 + hook → skill_auto_track
+/SuperPowers:writing-plans
+/SuperPowers:executing-plans
+```
+
+### Trae（sp-stage MCP 工具）
+
+```
+sp-stage(stage="brainstorming", task_description="...")
+sp-stage(stage="using-git-worktrees", task_description="...")
+sp-stage(stage="writing-plans", task_description="...")
+```
+
+### 追踪验证
+
+```
+skill_session_trace(session_scope="full")  # 检查调用链完整性
+```
+
+## 五、Hook 追踪管道
+
+```
+Claude Code:  Skill("brainstorming") → PreToolUse hook → mcp_tool: skill_auto_track("start")
+Trae:         sp-stage(stage="brainstorming") → PreToolUse hook → sp_hook.py → POST /api/skill-track
+                                                          ↓
+                                  MCP 服务端: handle_skill_auto_track → skill_session_start
+                                                          ↓
+                                  阶段执行 (principle_activate + context_supply + memory_store)
+                                                          ↓
+Claude Code:  PostToolUse hook → mcp_tool: skill_auto_track("complete")
+Trae:         PostToolUse hook → sp_hook.py → POST /api/skill-track
+                                                          ↓
+                                  MCP 服务端: handle_skill_auto_track → skill_session_complete
+```
+
+## 六、多 Agent 标签状态机
+
+| SuperPowers 阶段 | 标签 | 域 | Pi Mode |
+|-----------------|------|-----|---------|
+| brainstorming | `stage:brainstorming` | designing | - |
+| writing-plans | `task:plan` | designing | `planner` |
+| executing-plans | `task:active` | building | `builder` |
+| test-driven-development | `task:active` | building | `builder` |
+| subagent-driven-development | `task:active` | building | - |
+| verification-before-completion | `task:verify` | reflecting | - |
+| requesting-code-review | `task:review` | reflecting | `reviewer` |
+| receiving-code-review | `task:reviewed` | reflecting | - |
+| finishing-a-development-branch | `task:reviewed` | governing | - |
+
+**状态流转**：`task:pending → task:accepted → task:active → task:done → task:review → task:reviewed`
+
+## 七、Pi Mode 语义
 
 | Mode | 输入查询 | 输出标签 | 域 |
 |------|---------|---------|-----|
@@ -30,37 +128,12 @@ SuperPowers 标准化流程 (brainstorming→spec→plans→execute→review→a
 | `fixer` | `tag:rejected domain:fixing` | `task:fixed` | fixing |
 | `reviewer` | `tag:active domain:building` | `task:review` | reflecting |
 
-## 四、pi_worker.ps1 mode 参数
+## 八、启动方式
 
 ```powershell
-param(
-    [string]$mode = "builder",
-    [int]$interval = 30
-)
+# MCP 服务器
+python -m plastic_promise.mcp.server --sse 9020
 
-$modeMap = @{
-    "planner"  = @{ role="pi_planner";  domain="designing";  query="tag:spec domain:designing" }
-    "builder"  = @{ role="pi_builder";  domain="building";   query="tag:plan domain:building" }
-    "fixer"    = @{ role="pi_fixer";    domain="fixing";     query="tag:rejected domain:fixing" }
-    "reviewer" = @{ role="pi_reviewer"; domain="reflecting"; query="tag:active domain:building" }
-}
-```
-
-## 五、示例：JWT 登录模块全流程
-
-```
-1. Claude brainstorming → memory_store("JWT 登录需求", tags=[])
-2. Claude spec        → memory_store("规格: auth/jwt.py, login(email, password)", tags=["task:spec","assignee:pi_builder","domain:designing"])
-3. Pi-Planner          → 读取 spec → memory_store("Task 1: create auth/jwt.py\nTask 2: login()\nTask 3: tests", tags=["task:plan","assignee:pi_builder","domain:building"])
-4. Pi-Builder          → 执行 → auth/jwt.py + memory_store("done", tags=["task:active","owner:pi_builder","domain:building"])
-5. Pi-Reviewer         → 审查 → memory_store("pass, add type hint at :45", tags=["task:review","domain:reflecting"])
-6. Claude acceptance   → memory_store("accepted", tags=["task:reviewed","reviewer:claude","domain:governing"])
-                       → defense(adjust, +0.02, target="pi_builder")
-```
-
-## 六、启动方式
-
-```powershell
 # Planner + Builder + Reviewer 并行
 .\pi_worker.ps1 -mode planner
 .\pi_worker.ps1 -mode builder
@@ -70,9 +143,14 @@ $modeMap = @{
 .\pi_worker.ps1 -mode fixer
 ```
 
-## 七、未来扩展
+## 九、示例：JWT 登录模块全流程
 
-```powershell
-# Pi-Designer (选择 2 接口已预留)
-$modeMap["designer"] = @{ role="pi_designer"; domain="designing"; query="tag:brainstorm domain:designing" }
+```
+1. brainstorming          → sp-stage(stage="brainstorming", task="JWT 登录需求")
+2. using-git-worktrees    → sp-stage(stage="using-git-worktrees", task="创建 feat/jwt 分支")
+3. writing-plans          → memory_store("Task 1: auth/jwt.py\nTask 2: login()\nTask 3: tests", tags=["task:plan"])
+4. executing-plans        → Pi-Builder 执行 → auth/jwt.py + tests
+5. test-driven-development → TDD 循环
+6. verification-before-completion → 三重验收
+7. finishing-a-development-branch → defense(adjust, +0.02, target="pi_builder")
 ```
