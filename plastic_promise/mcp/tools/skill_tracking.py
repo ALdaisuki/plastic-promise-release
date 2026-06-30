@@ -523,24 +523,37 @@ async def handle_skill_session_start(
     task_description = args.get("task_description", "")
     parent_entity_id = args.get("parent_entity_id", None)
 
+    # Normalize: strip plugin namespace prefix (e.g. "superpowers:brainstorming" → "brainstorming")
+    _normalized_name = skill_name
+    _known_prefixes = ("superpowers:",)
+    for prefix in _known_prefixes:
+        if skill_name.startswith(prefix):
+            _normalized_name = skill_name[len(prefix):]
+            break
+
     # Validate skill_name (auto_inject:* is always allowed)
-    if (not skill_name.startswith("auto_inject:")
-            and skill_name not in SKILL_DOMAIN_MAP):
+    if (not _normalized_name.startswith("auto_inject:")
+            and _normalized_name not in SKILL_DOMAIN_MAP):
         return [TextContent(type="text", text=json.dumps({
             "error": (
-                f"Unknown skill_name '{skill_name}'. "
+                f"Unknown skill_name '{_normalized_name}' (raw: '{skill_name}'). "
                 f"Known skills: {list(SKILL_DOMAIN_MAP.keys())}"
             ),
             "tool": "skill_session_start",
         }, ensure_ascii=False))]
 
-    # Derive domain and entity_id
+    # Derive domain and entity_id (entity_id keeps original full name for traceability)
     # auto_inject:* prefix → "reflecting" domain (context audit snapshot)
-    if skill_name.startswith("auto_inject:"):
+    if _normalized_name.startswith("auto_inject:"):
         domain = "reflecting"
     else:
-        domain = SKILL_DOMAIN_MAP.get(skill_name, "general")
-    entity_id = _make_entity_id(skill_name)
+        domain = SKILL_DOMAIN_MAP.get(_normalized_name, "general")
+    # Use the normalized name for entity_id (avoids colons breaking parse)
+    # Store original name in the entity description for traceability
+    entity_id = _make_entity_id(_normalized_name)
+    # Build description with original full name if different
+    if _normalized_name != skill_name:
+        task_description = f"[{skill_name}] {task_description}"
 
     # Parent chain validation (warning, not blocking)
     chain_warning = _validate_parent(skill_name, parent_entity_id, engine)
