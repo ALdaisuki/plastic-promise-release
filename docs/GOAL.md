@@ -19,6 +19,7 @@
   多 Agent 开发组（Claude PM + Pi Builder/Fixer/Reviewer） ✅
   自治流水线（标签驱动, 零Token Daemon, 自动衔接） ✅
   step-closure 六联闭环（原则对齐→SCARF→激素→信任→反思→CEI） ✅
+  Safety-Net Daemon 全域创新引擎（多Agent调度 + 打回区 + 6维模式识别 + 11扫描器） ✅
   动态信任-自由度矩阵（4档映射到工具权限 + TrustStore 持久化） ✅
   11 维审计（7维基础 + 4维多Agent, 每小时自动 + Tier1 修复） ✅
   Skill 调用链追踪（14 技能映射 + 链完整性检测 + sp-stage 校验） ✅
@@ -82,6 +83,9 @@
 - **smart-remember**: 智能记忆存储 — 自动去重检查 (相似度 ≥ 0.85 则更新已有记忆)，通过完整质量管道
 - **session-init**: 统一会话启动 — 一条调用替代原有 5 步（原则激活 + context_supply + SCARF 基线自省 + memory_store 注入 + domain stats + system stats + defense + memory_gc preview）
 - **memory_sync_files**: 文件系统 .md 记忆同步到 MCP 管道
+- **Safety-Net Daemon ≤ Phase 1**: 兜底审查 — scan_orphan_steps (孤儿step自动闭环) + scan_unclosed_issues (超时issue自动close) + recover_stuck_tasks (5min超时恢复) + dispatch_fix_task (标签调度pi_fixer)
+- **Safety-Net Daemon Phase 2**: 免疫系统化 — scan_duplicate_clusters (SQL GROUP BY 清理 31 条重复记忆) + scan_stale_worth (复活 47 条 (0,0) worth) + scan_tier_migration (126 L1→L2, 3 L2→L3) + scan_category_stuck (LLM队列监控) + scan_self_noise (自身审计报告去重)
+- **Safety-Net Daemon Phase 3**: 全域创新引擎 — 标签调度引擎 `dispatch_fix_task` (fixer/reviewer/builder/claude 4路由) + 打回区 `tag_for_redo`+`scan_redo_queue` (12h提醒→24h强调) + `scan_innovation_opportunities` (6维跨域模式识别: 重复Bug/记忆退化/技能链/信任分异常/僵尸域/分类瓶颈) + `tag_audit_finding` (审计发现可追溯化) + `_store_tagged_memory` (统一/notify写入)
 
 **MCP 工具总数: 41（10 域 + SuperPowers）**
 
