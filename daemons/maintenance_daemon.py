@@ -311,18 +311,21 @@ async def scan_memory_health():
         from plastic_promise.mcp.tools.memory import handle_memory_gc, handle_memory_forget
         engine = ContextEngine()
 
-        # 1. 扫描低 worth 记忆 (SQLite 直查)
+        # 1. 扫描低 worth 记忆 (SQLite 直查，动态计算 worth_score)
         conn = sqlite3.connect(DB_PATH)
-        low_rows = conn.execute(
-            "SELECT id, content, worth_score FROM memories "
-            "WHERE worth_score < 0.3 ORDER BY worth_score ASC LIMIT 5"
+        rows = conn.execute(
+            "SELECT id, content, worth_success, worth_failure FROM memories "
+            "WHERE worth_success + worth_failure >= 3 "
+            "ORDER BY CAST(worth_success AS REAL) / (worth_success + worth_failure) ASC LIMIT 5"
         ).fetchall()
         conn.close()
 
         fixed = False
-        for mid, content, worth in low_rows:
+        for mid, content, ws, wf in rows:
             if fixed:
                 break
+            total = ws + wf
+            worth = ws / total if total > 0 else 0
 
             if worth < 0.15:
                 # Tier 1: 直接清理
