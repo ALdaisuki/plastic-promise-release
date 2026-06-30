@@ -42,7 +42,7 @@ def _make_entity_id(skill_name: str) -> str:
 
     Format: skill:<skill_name>:<ISO timestamp with microseconds>
     """
-    ts = datetime.datetime.utcnow().isoformat()
+    ts = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
     return f"skill:{skill_name}:{ts}"
 
 
@@ -244,7 +244,7 @@ async def handle_skill_session_trace(
         if not current_branch:
             session_scope = "current"  # fallback when not in a git repo
 
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
 
     # -- Collect skill_session entities from graph nodes --------------------
     sessions: list[dict] = []
@@ -389,6 +389,8 @@ async def handle_skill_session_trace(
         if s["status"] == "active" and s["last_accessed"]:
             try:
                 la = datetime.datetime.fromisoformat(s["last_accessed"])
+                if la.tzinfo is not None:
+                    la = la.replace(tzinfo=None)
                 idle_minutes = (now - la).total_seconds() / 60.0
                 if idle_minutes > ORPHAN_THRESHOLD_MINUTES:
                     gaps.append({
@@ -693,7 +695,7 @@ async def handle_skill_session_complete(
         engine._memories[memory_id]["content"] = new_content
         engine._memories[memory_id]["tags"] = tags
         engine._memories[memory_id]["last_accessed"] = (
-            datetime.datetime.utcnow().isoformat()
+            datetime.datetime.now(datetime.UTC).isoformat()
         )
 
         return [TextContent(type="text", text=json.dumps({
@@ -716,7 +718,7 @@ async def handle_skill_session_complete(
     if created_at:
         try:
             start_dt = datetime.datetime.fromisoformat(created_at)
-            now = datetime.datetime.utcnow()
+            now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
             # start_dt may be offset-aware or naive; strip tzinfo for safety
             if start_dt.tzinfo is not None:
                 start_dt = start_dt.replace(tzinfo=None)

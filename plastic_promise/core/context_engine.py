@@ -210,6 +210,61 @@ class ContextEngine:
         # P0: Rebuild principle↔memory graph edges from persisted memories
         self._rebuild_graph_from_memories()
 
+    def _rebuild_graph_from_memories(self):
+        """Rebuild graph edges from persisted memories on init.
+
+        After loading memories from SQLite, reconstruct:
+        1. ``memory → entity`` edges (relation: "references") so
+           ``_graph_traversal`` can pull memories linked to activated entities.
+        2. ``skill_session`` entity nodes for any skill-tagged memories
+           that reference entity_ids not yet in the graph.
+        """
+        # Pass 1: memory → entity references edges
+        for mid, mem in self._memories.items():
+            entity_ids = mem.get("entity_ids", [])
+            if not entity_ids:
+                continue
+            for eid in entity_ids:
+                # Determine the correct node prefix for this entity
+                if eid.startswith("skill:"):
+                    node_id = f"skill_session:{eid}"
+                elif eid.startswith("principle:"):
+                    node_id = eid  # already prefixed
+                elif eid.startswith("task:"):
+                    node_id = eid  # already prefixed
+                else:
+                    # Generic entity — store as-is or skip unknown patterns
+                    node_id = eid
+
+                edge = {
+                    "from": mid,
+                    "to": node_id,
+                    "relation": "references",
+                    "weight": 0.6,
+                }
+                if edge not in self._graph_edges:
+                    self._graph_edges.append(edge)
+
+        # Pass 2: ensure skill_session nodes exist for orphan entity_ids
+        for mid, mem in self._memories.items():
+            entity_ids = mem.get("entity_ids", [])
+            tags = mem.get("tags", [])
+            for eid in entity_ids:
+                if not eid.startswith("skill:"):
+                    continue
+                node_id = f"skill_session:{eid}"
+                if node_id in self._graph_nodes:
+                    continue
+                # Extract skill name from entity_id
+                # Format: skill:<skill_name>:<timestamp>
+                parts = eid.split(":")
+                skill_name = parts[1] if len(parts) >= 2 else "unknown"
+                self._graph_nodes[node_id] = {
+                    "type": "skill_session",
+                    "name": skill_name,
+                    "description": mem.get("content", "")[:200],
+                }
+
         # DB path — used by both DomainManager and LanceDBStore
         db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
 
@@ -264,6 +319,7 @@ class ContextEngine:
             "created_at": record.get("created_at", datetime.datetime.now().isoformat()),
             "decay_multiplier": record.get("decay_multiplier", 1.0),
             "effective_half_life": record.get("effective_half_life", 3.0),
+            "last_accessed": record.get("last_accessed", datetime.datetime.now().isoformat()),
         }
         self._memories[mid] = data
         if self._sqlite:
@@ -317,6 +373,7 @@ class ContextEngine:
             "domain": record.domain,
             "decay_multiplier": getattr(record, "decay_multiplier", 1.0),
             "effective_half_life": getattr(record, "effective_half_life", 3.0),
+            "last_accessed": getattr(record, "last_accessed", datetime.datetime.now().isoformat()),
         }
         self._memories[mid] = data
         if self._sqlite:
@@ -1060,7 +1117,8 @@ class _SQLiteStorage:
             "  access_count INTEGER,"
             "  worth_success INTEGER,"
             "  worth_failure INTEGER,"
-            "  activation_weight REAL"
+            "  activation_weight REAL,"
+            "  last_accessed TEXT"
             ")"
         )
         self._conn.commit()
@@ -1088,6 +1146,13 @@ class _SQLiteStorage:
         try:
             self._conn.execute(
                 "ALTER TABLE memories ADD COLUMN effective_half_life REAL NOT NULL DEFAULT 3.0"
+            )
+        except Exception:
+            pass  # 列已存在
+        # 迁移: 新增 last_accessed 列 (Fix: pipeline writes to this column for decay tracking)
+        try:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN last_accessed TEXT NOT NULL DEFAULT ''"
             )
         except Exception:
             pass  # 列已存在
@@ -1124,8 +1189,9 @@ class _SQLiteStorage:
         self._conn.execute(
             "INSERT OR REPLACE INTO memories (id, content, memory_type, source, owner, "
             "tier, scope, category, tags, domain, importance, entity_ids, created_at, access_count, "
-            "worth_success, worth_failure, activation_weight, decay_multiplier, effective_half_life) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "worth_success, worth_failure, activation_weight, decay_multiplier, effective_half_life, "
+            "last_accessed) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 data.get("content", ""),
@@ -1146,6 +1212,7 @@ class _SQLiteStorage:
                 data.get("activation_weight", 0.5),
                 data.get("decay_multiplier", 1.0),
                 data.get("effective_half_life", 3.0),
+                data.get("last_accessed", ""),
             ),
         )
         self._conn.commit()
@@ -1156,7 +1223,7 @@ class _SQLiteStorage:
             "SELECT id, content, memory_type, source, owner, tier, scope, category, "
             "tags, domain, importance, entity_ids, created_at, access_count, "
             "worth_success, worth_failure, activation_weight, "
-            "decay_multiplier, effective_half_life "
+            "decay_multiplier, effective_half_life, last_accessed "
             "FROM memories WHERE id = ?", (mid,)
         ).fetchone()
         if row is None:
@@ -1174,7 +1241,7 @@ class _SQLiteStorage:
             "SELECT id, content, memory_type, source, owner, tier, scope, category, "
             "tags, domain, importance, entity_ids, created_at, access_count, "
             "worth_success, worth_failure, activation_weight, "
-            "decay_multiplier, effective_half_life FROM memories"
+            "decay_multiplier, effective_half_life, last_accessed FROM memories"
         ).fetchall()
         for row in rows:
             d = self._row_to_dict(row)
@@ -1203,4 +1270,5 @@ class _SQLiteStorage:
             "activation_weight": row[16] or 0.5,
             "decay_multiplier": row[17] if len(row) > 17 else 1.0,
             "effective_half_life": row[18] if len(row) > 18 else 3.0,
+            "last_accessed": row[19] if len(row) > 19 else "",
         }

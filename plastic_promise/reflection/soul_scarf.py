@@ -226,7 +226,7 @@ class SCARFReflector:
                 round(max(scores), 4) if scores else _DEFAULT_SCORE,
             ),
         }
-        result["timestamp"] = datetime.datetime.utcnow().isoformat() + "Z"
+        result["timestamp"] = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
 
         self.history.append(result)
         return result

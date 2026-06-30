@@ -47,7 +47,7 @@ class DomainInfo:
     ):
         self.name = name
         self.score = score
-        self.tags: set[str] = tags or set()
+        self.tags: set[str] = set(tags) if tags else set()  # defensive copy
         self.aliases: list[dict] = aliases or []  # [{"alias":"x","expires_at":"..."}]
         self.merged_from: list[str] = merged_from or []
         self.parent = parent

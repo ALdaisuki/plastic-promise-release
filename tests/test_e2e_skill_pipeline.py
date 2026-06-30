@@ -25,7 +25,7 @@ from mcp.types import TextContent
 # 时间工具: 使用今天的真实日期，避免孤儿检测的时序问题
 # ═══════════════════════════════════════════════════════════
 
-_NOW = datetime.datetime.utcnow()  # naive UTC — matches utcnow() in handler code
+_NOW = datetime.datetime.now(datetime.UTC)  # UTC timestamp used throughout tests
 _TODAY = _NOW.strftime("%Y-%m-%d")
 _T = lambda h, m, s=0: f"{_TODAY}T{h:02d}:{m:02d}:{s:02d}"
 _OLD = lambda hours_ago: (_NOW - datetime.timedelta(hours=hours_ago)).isoformat()

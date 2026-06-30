@@ -879,7 +879,7 @@ async def run_sse(port: int = 9020):
     from starlette.applications import Starlette
     from starlette.requests import Request
     from starlette.responses import Response
-    from starlette.routing import Route
+    from starlette.routing import Route, Mount
 
     logger = logging.getLogger("plastic-promise-sse")
     import signal
@@ -899,6 +899,11 @@ async def run_sse(port: int = 9020):
         except Exception:
             pass
 
+    class _NoOpResponse(Response):
+        """Sentinel response — the SSE transport already handled the send via request._send."""
+        async def __call__(self, scope, receive, send):
+            pass  # response already sent by SSE transport — do nothing
+
     async def handle_sse(request: Request):
         async with sse.connect_sse(
             request.scope, request.receive, request._send
@@ -907,11 +912,7 @@ async def run_sse(port: int = 9020):
             await server.run(
                 read_stream, write_stream, init_options, raise_exceptions=False
             )
-        # SSE transport already sends the response — don"t return Response()
-
-    async def handle_messages(request: Request):
-        await sse.handle_post_message(request.scope, request.receive, request._send)
-        # SSE transport already sends the response — don"t return Response()
+        return _NoOpResponse()
 
     async def handle_events(request: Request):
         """SSE event stream — push notifications to connected clients.
@@ -1155,6 +1156,16 @@ setInterval(refresh, 5000);
 
     async def shutdown():
         logger.info("Shutting down Plastic Promise SSE server...")
+
+    async def handle_messages(request: Request):
+        """Wrap sse.handle_post_message as a Starlette Route endpoint.
+
+        sse.handle_post_message is an ASGI app that sends its own response
+        via request._send.  Starlette's request_response wrapper would try
+        to call the return value as a Response, so we return a no-op sentinel.
+        """
+        await sse.handle_post_message(request.scope, request.receive, request._send)
+        return _NoOpResponse()
 
     app = Starlette(routes=[
         Route("/sse", endpoint=handle_sse, methods=["GET"]),

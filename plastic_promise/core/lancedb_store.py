@@ -134,7 +134,8 @@ class LanceDBStore:
                 raw = self._table.search(query, query_type="fts").limit(k).to_list()
             else:
                 # Fallback: substring match via pyarrow compute
-                pattern = f"%{query}%"
+                safe_query = query.replace("'", "''")  # escape single quotes
+                pattern = f"%{safe_query}%"
                 raw = self._table.search().where(
                     f"text LIKE '{pattern}'", prefilter=True
                 ).limit(k).to_list()

@@ -41,7 +41,7 @@ class TestResilienceE2E:
         # stats() via domain tool should return error, not crash
         from plastic_promise.mcp.tools.domain import handle_domain
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handle_domain(e, {"action": "stats"})
         )
         assert len(result) > 0

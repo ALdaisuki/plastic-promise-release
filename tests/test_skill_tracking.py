@@ -164,7 +164,7 @@ class TestSkillSessionComplete:
         if created_at is None:
             # Use an ISO timestamp ~1 hour ago so duration_ms > 0
             import datetime as _dt
-            created_at = (_dt.datetime.utcnow() - _dt.timedelta(hours=1)).isoformat()
+            created_at = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=1)).isoformat()
         if tags is None:
             tags = ["task:active", "skill:brainstorming", "domain:designing"]
 
@@ -490,7 +490,7 @@ class TestSkillSessionTrace:
 
         import datetime as _dt
         # last_accessed = 45 minutes ago
-        la_ts = (_dt.datetime.utcnow() - _dt.timedelta(minutes=45)).isoformat()
+        la_ts = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(minutes=45)).isoformat()
 
         engine._memories = {
             "mem_orphan": {

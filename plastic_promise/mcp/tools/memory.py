@@ -254,6 +254,14 @@ async def handle_memory_forget(engine: Any, args: dict) -> list[TextContent]:
         memory_id = args["memory_id"]
         reason = args.get("reason", "")
 
+        # Clean LanceDB vector store first (prevents orphan vector entries)
+        ldb = getattr(engine, '_ldb', None)
+        if ldb is not None:
+            try:
+                ldb.delete(memory_id)
+            except Exception:
+                pass
+
         success = engine.delete_memory(memory_id)
 
         return [TextContent(type="text", text=json.dumps({
@@ -356,38 +364,28 @@ async def handle_memory_list(engine: Any, args: dict) -> list[TextContent]:
 async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
     """Run garbage collection on decaying memories.
 
-    Lists all memories, identifies candidates with worth_score < 0.15
-    and zero access count, then deletes them unless dry_run is True.
+    Delegates to MemoryGC.collect() which performs:
+    1. Mark decaying candidates (worth_score < threshold)
+    2. Merge similar memories (cosine similarity >= 0.70)
+    3. Remove decayed records and persist merged metadata to SQLite
 
     Args:
         engine: ContextEngine instance.
         args: {"dry_run"?: bool, "force"?: bool}.
 
     Returns:
-        list[TextContent]: MCP response with GC results.
+        list[TextContent]: MCP response with GC results from MemoryGC.
     """
     try:
         dry_run = args.get("dry_run", True)
+        force = args.get("force", False)
 
-        # Fetch all memories (up to a high limit)
-        all_mems = engine.list_memories(limit=10000)
+        from plastic_promise.memory.soul_memory import RecMem, MemoryGC
+        rm = RecMem(engine)
+        gc = MemoryGC(rm)
+        result = gc.collect(dry_run=dry_run, force=force)
 
-        # Identify decaying candidates: low worth and never accessed
-        decaying = [m for m in all_mems
-                    if m.worth_score() < 0.15 and m.access_count == 0]
-
-        freed_ids = []
-        if not dry_run:
-            for m in decaying:
-                engine.delete_memory(m.id)
-                freed_ids.append(m.id)
-
-        return [TextContent(type="text", text=json.dumps({
-            "dry_run": dry_run,
-            "candidates": len(decaying),
-            "deleted": 0 if dry_run else len(decaying),
-            "freed_ids": freed_ids,
-        }, ensure_ascii=False))]
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "memory_gc"}, ensure_ascii=False))]
@@ -435,7 +433,11 @@ def _get_fuzzy_buffer(engine: Any):
             from plastic_promise.core.embedder import FallbackEmbedder
             embedder = FallbackEmbedder()
         tier_mgr = MemoryTierManager(rec_mem)
-        engine._fuzzy_buffer = MemoryPipeline(rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr)
+        engine._fuzzy_buffer = MemoryPipeline(
+            rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr,
+            domain_manager=getattr(engine, '_dm', None),
+            lancedb=getattr(engine, '_ldb', None),
+        )
         engine._rec_mem = rec_mem
     return engine._fuzzy_buffer
 
