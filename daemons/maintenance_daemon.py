@@ -7,11 +7,14 @@
 原则 #1 奥卡姆剃刀: 从 pi_daemon(410行)+audit_daemon(226行) 砍掉
 Pi CLI 死代码 (~200行)，合并为维护守护进程。
 
-Phase: 免疫系统化 — 记忆池质量工程师:
+Phase: 免疫系统化 + 标签调度 + 全域创新 — 记忆池质量工程师 + 多Agent调度 + 模式识别:
+  - 标签调度引擎: dispatch_fix_task(fixer|reviewer|builder|claude) + tag_for_redo + tag_audit_finding
+  - scan_redo_queue()          : 打回区超时升级 (12h→claude提醒, 24h→强制task:pending)
   - scan_duplicate_clusters()  : 检测并清理完全重复的记忆集群
   - scan_stale_worth()         : 复活 (0,0) worth 记录
   - scan_tier_migration()      : 基于访问活动自动升级 tier
   - scan_category_stuck()      : 监控分类队列健康 + 触发 reclassify
+  - scan_innovation_opportunities() : 跨域模式识别(recurring_fix/worth_decline/trust/僵尸域/瓶颈)
   - scan_orphan_steps()        : 检测孤儿 step，分级自动修复
   - scan_unclosed_issues()     : 检测超时未闭环 issue
   - scan_llm_classify()        : 后台 LLM 分类队列处理
@@ -252,37 +255,197 @@ async def run_audit():
 # 安全网扫描器 (Safety-Net Daemon)
 # ═══════════════════════════════════════════════════════════════
 
-# ── 修复任务发布器 ─────────────────────────────────────────
-async def dispatch_fix_task(task_type: str, detail: str, target_id: str = ""):
-    """发布修复任务到 /notify，由 Pi Daemon 通过标签调度认领。
+# ═══════════════════════════════════════════════════════════════
+# 标签调度引擎 — 多 Agent 调度 + 打回区 + 审计记忆化
+# ═══════════════════════════════════════════════════════════════
 
-    Args:
-        task_type: 任务类型 (close_orphan_step / correct_memory / close_stale_issue / gc_run)
-        detail: 任务描述
-        target_id: 目标实体 ID（可选，如 entity_id / memory_id / issue_id）
+# 调度目标 → Agent 映射
+_DISPATCH_MAP = {
+    "fixer":    {"assignee": "pi_fixer",    "domain": "fixing"},
+    "reviewer": {"assignee": "pi_reviewer", "domain": "reflecting"},
+    "builder":  {"assignee": "pi_builder",  "domain": "building"},
+    "claude":   {"assignee": "claude",      "domain": "governing"},
+}
+
+async def _store_tagged_memory(content: str, tags: list, memory_type: str = "experience",
+                                target_id: str = ""):
+    """通过 /notify 将带标签的记忆写入 MCP 记忆池，使其可被其他 Agent 召回。
+
+    这是 daemon 的"出声"机制 — 不直接写 SQLite，而是通过 MCP 接口确保
+    索引、embedding、质量管道全部触发。
     """
-    tags = [
-        "task:pending",
-        "assignee:pi_fixer",
-        "domain:fixing",
-        f"type:{task_type}",
-        f"ts:{datetime.now().strftime('%Y%m%dT%H%M%S')}",
-    ]
+    payload_tags = list(tags)
     if target_id:
-        tags.append(f"target:{target_id}")
+        payload_tags.append(f"target:{target_id}")
+    payload_tags.append(f"ts:{datetime.now().strftime('%Y%m%dT%H%M%S')}")
     try:
         async with httpx.AsyncClient() as client:
             await client.post(f"{MCP_URL}/notify", json={
-                "type": "fix_task",
-                "task_type": task_type,
-                "content": detail,
-                "tags": tags,
-                "source": "safety_net_daemon",
+                "type": "memory_store",
+                "content": content,
+                "memory_type": memory_type,
+                "tags": payload_tags,
+                "source": "maintenance_daemon",
                 "ts": datetime.now().isoformat(),
             }, timeout=5)
-        print(f"  [SAFETY_NET] dispatched: {task_type} → pi_fixer ({detail[:80]})")
+        return True
     except Exception as e:
-        print(f"  [SAFETY_NET] dispatch error: {e}")
+        print(f"  [TAG] store error: {e}")
+        return False
+
+
+async def dispatch_fix_task(task_type: str, detail: str, target_id: str = "",
+                             assignee: str = "fixer", severity: str = "warning",
+                             redo: bool = False):
+    """标签驱动的多 Agent 调度引擎 — 通过 /notify 写入带标签的记忆。
+
+    Args:
+        task_type: 任务类型 (close_orphan_step / correct_memory / close_stale_issue / gc_run
+                    / review_memory / rebuild_memory / classify_stuck)
+        detail: 任务描述
+        target_id: 目标实体 ID（memory_id / entity_id / issue_id）
+        assignee: 调度目标 — "fixer" | "reviewer" | "builder" | "claude"
+        severity: "critical" | "warning" | "info"
+        redo: 是否同时加入打回区 (redo:required)
+    """
+    agent = _DISPATCH_MAP.get(assignee, _DISPATCH_MAP["fixer"])
+    tags = [
+        "task:pending",
+        f"assignee:{agent['assignee']}",
+        f"domain:{agent['domain']}",
+        f"type:{task_type}",
+        f"dispatch:{assignee}",
+        f"severity:{severity}",
+    ]
+    if redo:
+        tags.append("redo:required")
+        tags.append(f"redo:assigned:{agent['assignee']}")
+
+    stored = await _store_tagged_memory(
+        content=f"[DISPATCH] {task_type}: {detail}",
+        tags=tags,
+        memory_type="task",
+        target_id=target_id,
+    )
+    if stored:
+        tag_info = f"{assignee}({'redo+' if redo else ''}sev:{severity})"
+        print(f"  [DISPATCH] {task_type} → {tag_info} ({detail[:80]})")
+
+
+async def tag_for_redo(memory_id: str, reason: str, assignee: str = "reviewer",
+                        severity: str = "warning"):
+    """标记记忆进入打回区 — 写入 redo:required 标签，等待 Agent 认领审查。
+
+    打回区生命周期:
+      redo:required → redo:assigned:<agent> → redo:done | redo:escalated
+    超时 24h → scan_redo_queue 自动升级为 task:pending
+    """
+    tags = [
+        "redo:required",
+        f"redo:assigned:{_DISPATCH_MAP.get(assignee, _DISPATCH_MAP['reviewer'])['assignee']}",
+        f"reason:{reason[:60].replace(' ', '_')}",
+        f"severity:{severity}",
+    ]
+    stored = await _store_tagged_memory(
+        content=f"[REDO] {reason}: memory_id={memory_id}",
+        tags=tags,
+        memory_type="task",
+        target_id=memory_id,
+    )
+    if stored:
+        print(f"  [REDO] tagged memory for {assignee} review: "
+              f"{memory_id[:20]}... ({reason[:60]})")
+
+
+async def tag_audit_finding(dimension: str, detail: str, severity: str = "info"):
+    """将审计发现存储为可追溯的带标签记忆。
+
+    替代纯 print() 审计输出 — 使 Claude 和其他 Agent 可通过
+    memory_recall 回溯 daemon 发现过什么问题。
+    """
+    tags = [
+        "audit:flagged",
+        f"audit_dim:{dimension}",
+        f"severity:{severity}",
+        "source:maintenance_daemon",
+    ]
+    await _store_tagged_memory(
+        content=f"[AUDIT_FINDING] {dimension}: {detail}",
+        tags=tags,
+        memory_type="reflection",
+    )
+
+
+# ── 打回区扫描 ──────────────────────────────────────────────
+async def scan_redo_queue():
+    """扫描打回区：超时未处理的 redo 条目自动升级为 task:pending。
+
+    生命周期:
+      - redo:required > 24h → 升级为 task:pending + dispatch:fixer (不再等 Reviewer)
+      - redo:required > 12h → 追加 dispatch:claude 标签 (提醒 Claude 注意)
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            "SELECT id, tags, created_at FROM memories "
+            "WHERE tags LIKE '%redo:required%' "
+            "AND tags NOT LIKE '%redo:done%' "
+            "AND tags NOT LIKE '%redo:escalated%'"
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return
+
+        now = datetime.now()
+        escalated = 0
+        for mid, tags_raw, created_str in rows:
+            try:
+                created_dt = datetime.fromisoformat(
+                    created_str.replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+                age_h = (now - created_dt).total_seconds() / 3600
+            except (ValueError, TypeError):
+                continue
+
+            tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+
+            if age_h > 24:
+                # 超时升级 → task:pending（强制调度）
+                new_tags = [t for t in tags if t != "redo:required"]
+                new_tags.append("redo:escalated")
+                new_tags.append("task:pending")
+                new_tags.append("assignee:pi_fixer")
+                new_tags.append("domain:fixing")
+                conn2 = sqlite3.connect(DB_PATH)
+                conn2.execute(
+                    "UPDATE memories SET tags = ? WHERE id = ?",
+                    (json.dumps(new_tags), mid)
+                )
+                conn2.commit()
+                conn2.close()
+                escalated += 1
+                print(f"  [REDO_QUEUE] escalated stale redo → task:pending "
+                      f"({age_h:.0f}h, {mid[:20]}...)")
+            elif age_h > 12:
+                # 提醒 Claude
+                if "dispatch:claude" not in tags:
+                    tags.append("dispatch:claude")
+                    conn2 = sqlite3.connect(DB_PATH)
+                    conn2.execute(
+                        "UPDATE memories SET tags = ? WHERE id = ?",
+                        (json.dumps(tags), mid)
+                    )
+                    conn2.commit()
+                    conn2.close()
+                    print(f"  [REDO_QUEUE] added claude attention: "
+                          f"{mid[:20]}... (age={age_h:.0f}h)")
+
+        if escalated:
+            print(f"  [REDO_QUEUE] escalated {escalated} stale redo items")
+
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_redo_queue error: {e}")
 
 
 # ── 孤儿 step 扫描 ─────────────────────────────────────────
@@ -675,6 +838,150 @@ async def scan_llm_classify():
         print(f"  [SAFETY_NET] scan_llm_classify error: {e}")
 
 
+# ── 全域模式识别 & 创新提案 ────────────────────────────────
+async def scan_innovation_opportunities():
+    """跨域模式识别：从记忆池中检测可优化模式并自动提案。
+
+    检测维度:
+      1. 重复 Bug 模式 — 同一类 fix/error 反复出现 → 提出架构改良
+      2. 记忆池退化趋势 — worth 持续下降/衰减加速 → 提出 GC 参数调优
+      3. 技能链断裂 — 多个 session 缺 step → 提出流程改进
+      4. 信任分异常 — 某 Agent 信任分持续下降 → 提出行为审计
+      5. 僵尸域 — 域访问量归零 > 3天 → 提出域联邦合并
+      6. 跨域创新 — 两个不相关域的标签突然共现 → 提出交叉创新点
+    """
+    INNOVATION_THRESHOLD = int(os.environ.get("INNOVATION_THRESHOLD", "3"))
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        proposals = []
+
+        # 1. 重复 fix/bug 模式 — 同一类 type:correct_memory 记忆 > 阈值
+        fix_tasks = conn.execute(
+            "SELECT COUNT(1) as cnt, SUBSTR(content, 1, 80) as preview "
+            "FROM memories WHERE tags LIKE '%type:correct_memory%' "
+            "OR tags LIKE '%type:close_orphan_step%' "
+            "GROUP BY preview HAVING cnt >= ? ORDER BY cnt DESC LIMIT 3",
+            (INNOVATION_THRESHOLD,)
+        ).fetchall()
+        for cnt, preview in fix_tasks:
+            proposals.append({
+                "type": "recurring_fix",
+                "detail": f"同一类修复出现 {cnt} 次: {preview}",
+                "suggestion": "考虑从根因修复：架构 review 或代码重构",
+                "assignee": "reviewer",
+                "severity": "warning" if cnt < 5 else "critical",
+            })
+
+        # 2. 记忆池退化趋势 — 最近 100 条记忆的 worth 趋势
+        worth_trend = conn.execute(
+            "SELECT AVG(CAST(worth_success AS REAL) / "
+            "MAX(1, worth_success + worth_failure)) as avg_worth "
+            "FROM (SELECT worth_success, worth_failure FROM memories "
+            "WHERE worth_success + worth_failure > 0 "
+            "ORDER BY created_at DESC LIMIT 50)"
+        ).fetchone()
+        if worth_trend and worth_trend[0] is not None:
+            avg_w = worth_trend[0]
+            if avg_w < 0.45:
+                proposals.append({
+                    "type": "worth_decline",
+                    "detail": f"最近 50 条记忆平均 worth={avg_w:.2f} (<0.45)",
+                    "suggestion": "建议 memory_gc 清理 + 提高 quality_gate 阈值",
+                    "assignee": "fixer",
+                    "severity": "critical" if avg_w < 0.35 else "warning",
+                })
+
+        # 3. 技能链断裂 — 检测多个 orphan step
+        orphan_count = conn.execute(
+            "SELECT COUNT(1) FROM memories WHERE tags LIKE '%task:active%' "
+            "AND tags NOT LIKE '%task:done%'"
+        ).fetchone()[0]
+        if orphan_count > 5:
+            proposals.append({
+                "type": "skill_chain_gap",
+                "detail": f"检测到 {orphan_count} 个未闭环的 task:active",
+                "suggestion": "建议审查 DAEMON 超时恢复参数，排查 Pi 执行卡死",
+                "assignee": "reviewer",
+                "severity": "warning",
+            })
+
+        # 4. 信任分异常 — 检查 trust_history 趋势
+        try:
+            trust_row = conn.execute(
+                "SELECT target_id, trust_score FROM trust_scores "
+                "WHERE trust_score < 0.5 ORDER BY updated_at DESC LIMIT 5"
+            ).fetchall()
+            if trust_row:
+                low_agents = [f"{r[0]}({r[1]:.2f})" for r in trust_row]
+                proposals.append({
+                    "type": "trust_decline",
+                    "detail": f"低信任分 Agent: {', '.join(low_agents)}",
+                    "suggestion": "建议 Claude 审计对应 Agent 的行为记录",
+                    "assignee": "claude",
+                    "severity": "critical",
+                })
+        except Exception:
+            pass
+
+        # 5. 僵尸域 — 域标签 > 3天未活动
+        try:
+            three_days_ago = (datetime.now() - timedelta(days=3)).isoformat()
+            zombie_domains = conn.execute(
+                "SELECT DISTINCT domain FROM domain_stats "
+                "WHERE last_active < ? AND status='active' LIMIT 5",
+                (three_days_ago,)
+            ).fetchall()
+            if zombie_domains:
+                zd = [r[0] for r in zombie_domains]
+                proposals.append({
+                    "type": "zombie_domain",
+                    "detail": f"僵尸域: {', '.join(zd)} (3天无活动)",
+                    "suggestion": "建议 domain(action='merge') 合并到活跃域",
+                    "assignee": "claude",
+                    "severity": "info",
+                })
+        except Exception:
+            pass
+
+        # 6. 分类管道瓶颈 — 大量 other 未分类
+        other_stale = conn.execute(
+            "SELECT COUNT(1) FROM memories WHERE category='other' "
+            "AND created_at < ?",
+            ((datetime.now() - timedelta(hours=2)).isoformat(),)
+        ).fetchone()[0]
+        if other_stale > 15:
+            proposals.append({
+                "type": "classify_bottleneck",
+                "detail": f"{other_stale} 条记忆超过 2h 仍为 'other' 分类",
+                "suggestion": "Ollama 分类管道可能卡住，建议检查 LLM 服务",
+                "assignee": "fixer",
+                "severity": "warning",
+            })
+
+        conn.close()
+
+        # 输出提案 — 通过标签调度分发
+        for i, prop in enumerate(proposals):
+            assignee = prop["assignee"]
+            severity = prop["severity"]
+            proposal_id = f"innov-{datetime.now().strftime('%Y%m%d%H%M%S')}-{i}"
+
+            await dispatch_fix_task(
+                task_type=f"innovation:{prop['type']}",
+                detail=f"{prop['detail']} | 建议: {prop['suggestion']}",
+                target_id=proposal_id,
+                assignee=assignee,
+                severity=severity,
+            )
+
+        if proposals:
+            print(f"  [INNOVATE] detected {len(proposals)} cross-domain patterns")
+
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_innovation_opportunities error: {e}")
+
+
 # ── 未闭环 issue 扫描 ──────────────────────────────────────
 async def scan_unclosed_issues():
     """检测长时间未闭环的 issue 并自动修复。
@@ -773,7 +1080,11 @@ async def main():
                 tick = 0
         elif tick % safety_net_threshold == 0:
             # 安全网扫描 — 顺序执行，互不阻塞
-            # 优先级：duplicate > worth > tier > category > orphan > issue
+            # 优先级：innovation > duplicate > worth > tier > category > redo > orphan > issue
+            try:
+                await scan_innovation_opportunities()
+            except Exception:
+                pass
             try:
                 await scan_duplicate_clusters()
             except Exception:
@@ -788,6 +1099,10 @@ async def main():
                 pass
             try:
                 await scan_category_stuck()
+            except Exception:
+                pass
+            try:
+                await scan_redo_queue()
             except Exception:
                 pass
             try:
