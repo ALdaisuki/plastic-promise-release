@@ -875,8 +875,29 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "cei": safe.get("cei", {}).get("score", 0),
             })
 
+            # 5. 反思持久化 — 将 lesson 通过 smart-remember 走完整分类管线入池
+            smart_memory_id = None
+            if mode == "full":
+                lesson = safe.get("reflection", {}).get("lesson", "")
+                if lesson and len(lesson) > 10:
+                    try:
+                        new_se = get_skill_engine()
+                        sr_result = await new_se.exec("smart-remember", {
+                            "content": lesson,
+                            "memory_type": "reflection",
+                            "source": "step-closure",
+                            "scope": "global",
+                            "tags": ["lesson", "closure", "domain:reflecting", f"step:{safe.get('reflection',{}).get('step_id','')}"],
+                        }, caller="claude")
+                        if sr_result.success and sr_result.data:
+                            smart_memory_id = sr_result.data.get("memory_id", "")
+                    except Exception:
+                        pass  # smart-remember is best-effort, don't fail step-closure
+
             # Build dashboard summary + JSON body
             dashboard = _format_closure_dashboard(safe, _closure_history)
+            if smart_memory_id:
+                dashboard += f"\n  💾 反思已入池: {smart_memory_id[:20]}..."
             json_body = json.dumps(safe, ensure_ascii=False, indent=2)
             return [TextContent(type="text", text=dashboard + "\n" + json_body)]
 
@@ -1203,6 +1224,26 @@ async def run_sse(port: int = 9020):
                         "tags": ["audit", "domain:governing", f"score:{event.get('overall',0):.2f}"],
                         "source": "maintenance_daemon",
                     })
+                except Exception:
+                    pass
+
+            # Refresh in-memory cache when daemon updates classification via SQLite
+            if event.get("type") == "llm_classified":
+                try:
+                    engine = get_engine()
+                    mid = event.get("memory_id", "")
+                    new_category = event.get("new_category", "")
+                    if mid and mid in engine._memories:
+                        engine._memories[mid]["category"] = new_category
+                        # Update tags to reflect classification state
+                        tags = list(engine._memories[mid].get("tags", []))
+                        if "llm_pending:true" in tags:
+                            tags.remove("llm_pending:true")
+                        if "llm_classified:true" not in tags:
+                            tags.append("llm_classified:true")
+                        if new_category and f"cat:{new_category}" not in tags:
+                            tags.append(f"cat:{new_category}")
+                        engine._memories[mid]["tags"] = tags
                 except Exception:
                     pass
 
