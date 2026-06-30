@@ -108,3 +108,30 @@ class TestDomainManager:
         assert r in ("fixing", "building")  # 预定义域匹配确定
         ok = dm.merge("fixing", "building", agent_id="agent_pi")
         assert ok is True
+
+    # ======== domain:xxx prefix mapping (Batch 2 Task 1) ========
+
+    def test_assign_domain_prefix_direct(self):
+        """domain:building tag → direct match 'building'"""
+        dm = DomainManager(db_path=":memory:")
+        result = dm.assign(["domain:building"])
+        assert result == "building"
+
+    def test_assign_domain_prefix_overrides_other_matches(self):
+        """domain:xxx takes priority over tag-based matching"""
+        dm = DomainManager(db_path=":memory:")
+        # tags match "fixing" better, but domain:building overrides
+        result = dm.assign(["domain:building", "debug", "fix", "crash"])
+        assert result == "building"
+
+    def test_assign_domain_prefix_unknown_falls_through(self):
+        """domain:unknown (nonexistent domain) falls through to normal matching"""
+        dm = DomainManager(db_path=":memory:")
+        result = dm.assign(["domain:nonexistent", "debug", "fix"])
+        assert result == "fixing"
+
+    def test_assign_domain_prefix_all_still_excluded(self):
+        """domain:all still excluded — returns uncategorized"""
+        dm = DomainManager(db_path=":memory:")
+        result = dm.assign(["domain:all", "code", "build"])
+        assert result == "uncategorized"

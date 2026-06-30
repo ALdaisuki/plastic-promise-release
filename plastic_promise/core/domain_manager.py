@@ -383,6 +383,23 @@ class DomainManager:
             域名字符串。
         """
         with self._lock:
+            # Fast-path: domain:xxx tag prefix mapping
+            for tag in tags:
+                if tag.startswith("domain:"):
+                    domain_name = tag[7:]  # strip "domain:" prefix
+                    if domain_name == "all":
+                        return "uncategorized"
+                    if domain_name in self.domains and self.domains[domain_name].status == "active":
+                        dom = self.domains[domain_name]
+                        dom.access_count += 1
+                        dom.last_accessed = datetime.datetime.now().isoformat()
+                        dom.memory_count += 1
+                        dom.last_active = datetime.datetime.now().isoformat()
+                        self._persist_domain(domain_name)
+                        return domain_name
+                    # Non-existent or inactive domain: continue scanning
+                    # for other domain:xxx tags before falling through
+
             # 1. 统计每个 active 域（排除 all 和 candidate）匹配的标签数
             scores: dict[str, int] = {}
             for name, dom in self.domains.items():
