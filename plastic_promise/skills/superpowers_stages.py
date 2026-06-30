@@ -94,10 +94,8 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
         return {}
 
     principle_data = parse(atom_results.get("principle_activate"))
-    context_data = {}
-    context_raw = atom_results.get("context_supply")
-    if context_raw and hasattr(context_raw[0], 'text'):
-        context_data = {"prompt": context_raw[0].text}
+    # context_supply removed from atoms — its heavy retrieval was pure overhead
+    # since the output was already trimmed from sp-stage response
     store_data = parse(atom_results.get("memory_store"))
 
     return SkillResult(
@@ -134,28 +132,26 @@ def _make_handler(stage_name):
 # ═══════════════════════════════════════════════════════════════
 
 STAGE_ATOMS = {
-    # 设计阶段: 激活原则 + 上下文 + 记忆
-    "brainstorming": ["principle_activate", "context_supply", "memory_store"],
-    "writing-plans": ["principle_activate", "context_supply", "memory_store"],
-    # 构建阶段: 同上
-    "executing-plans": ["principle_activate", "context_supply", "memory_store"],
-    "subagent-driven-development": ["principle_activate", "context_supply", "memory_store"],
-    "test-driven-development": ["principle_activate", "context_supply", "memory_store"],
-    "verification-before-completion": ["principle_activate", "context_supply", "memory_store"],
-    "using-git-worktrees": ["principle_activate", "context_supply", "memory_store"],
-    "dispatching-parallel-agents": ["principle_activate", "context_supply", "memory_store"],
+    # 所有阶段统一: 原则激活 + 记忆存储 (context 已 trim，不再白算)
+    "brainstorming": ["principle_activate", "memory_store"],
+    "writing-plans": ["principle_activate", "memory_store"],
+    "executing-plans": ["principle_activate", "memory_store"],
+    "subagent-driven-development": ["principle_activate", "memory_store"],
+    "test-driven-development": ["principle_activate", "memory_store"],
+    "verification-before-completion": ["principle_activate", "memory_store"],
+    "using-git-worktrees": ["principle_activate", "memory_store"],
+    "dispatching-parallel-agents": ["principle_activate", "memory_store"],
     # 审查阶段: + audit_run
-    "requesting-code-review": ["principle_activate", "context_supply", "audit_run", "memory_store"],
-    "receiving-code-review": ["principle_activate", "context_supply", "audit_run", "memory_store"],
+    "requesting-code-review": ["principle_activate", "audit_run", "memory_store"],
+    "receiving-code-review": ["principle_activate", "audit_run", "memory_store"],
     # 治理阶段: + defense
-    "finishing-a-development-branch": ["principle_activate", "context_supply", "defense", "memory_store"],
-    # 修复阶段: 原则 + 上下文
-    "systematic-debugging": ["principle_activate", "context_supply", "memory_store"],
+    "finishing-a-development-branch": ["principle_activate", "defense", "memory_store"],
+    # 修复阶段
+    "systematic-debugging": ["principle_activate", "memory_store"],
 }
 
 STAGE_DEGRADE = {
     "principle_activate": "skip",
-    "context_supply": "warn",
     "memory_store": "warn",
     "audit_run": "skip",
     "defense": "warn",
