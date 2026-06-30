@@ -600,6 +600,27 @@ async def list_tools() -> list[Tool]:
                 "required": ["task_description"],
             },
         ),
+        # === 审查域 ===
+        Tool(
+            name="review_run",
+            description="执行结构化代码审查 — 三阶段管线 (prepare→evaluate→apply)。获取 git diff + 12原则检查 + 安全审查 + 信任分联动 + 发现入池 + fix任务创建。支持 action=prepare|evaluate|apply|full。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "审查阶段: prepare(获取diff+生成prompt) | evaluate(解析审查输出) | apply(信任分+记忆+fix任务) | full(完整管线)",
+                        "enum": ["prepare", "evaluate", "apply", "full"],
+                    },
+                    "commit_range": {"type": "string", "description": "审查的 git commit 范围, 如 HEAD~3..HEAD"},
+                    "review_output": {"type": "string", "description": "LLM 审查输出文本 (JSON 格式, evaluate/apply/full 时需要)"},
+                    "author_target": {"type": "string", "description": "被审查的 agent trust target (默认 pi_builder)"},
+                    "reviewer_target": {"type": "string", "description": "审查者 agent trust target (默认 pi_reviewer)"},
+                    "spec_path": {"type": "string", "description": "spec 文件路径 (可选, 用于 spec 合规检查)"},
+                },
+                "required": ["action"],
+            },
+        ),
         # === SuperPowers 流水线阶段技能 (统一入口) ===
         Tool(
             name="sp-stage",
@@ -848,7 +869,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             task_desc = arguments.get("task_description", "")
             git_commit = arguments.get("git_commit", "")
             mode = arguments.get("mode", "full")
-            result = await asyncio.to_thread(post_task, task_desc, git_commit, mode)
+            lesson = arguments.get("lesson", "")
+            improvement = arguments.get("improvement", "")
+            trick = arguments.get("trick", "")
+            result = await asyncio.to_thread(
+                post_task, task_desc, git_commit, mode,
+                None,  # issue_id
+                lesson, improvement, trick,
+            )
 
             def safe_serialize(obj):
                 if isinstance(obj, dict):
@@ -875,11 +903,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "cei": safe.get("cei", {}).get("score", 0),
             })
 
-            # 5. 反思持久化 — 将 lesson 通过 smart-remember 走完整分类管线入池
+            # 5. 反思持久化 — 将 lesson/improvement/trick 通过 smart-remember 走完整分类管线入池
             smart_memory_id = None
             if mode == "full":
-                lesson = safe.get("reflection", {}).get("lesson", "")
-                if lesson and len(lesson) > 10:
+                lesson_text = safe.get("reflection", {}).get("lesson", "")
+                if lesson_text and len(lesson_text) > 10:
                     try:
                         from plastic_promise.skills.engine import SkillEngine
                         from plastic_promise.skills.session_lifecycle import skill_session_init
@@ -891,7 +919,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         for _name, _def in _SP_DEFS.items():
                             sr_engine.register(_def)
                         sr_result = await sr_engine.exec("smart-remember", {
-                            "content": lesson,
+                            "content": lesson_text,
                             "memory_type": "reflection",
                             "source": "step-closure",
                             "scope": "global",
@@ -899,8 +927,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         }, caller="claude")
                         if sr_result.success and sr_result.data:
                             smart_memory_id = sr_result.data.get("memory_id", "")
-                        else:
-                            logging.warning(f"step-closure smart-remember failed: errors={sr_result.errors}")
+                        # 也记录 improvement 和 trick（如果调用方提供了）
+                        improvement_text = safe.get("reflection", {}).get("improvement", "")
+                        if improvement_text and len(improvement_text) > 5:
+                            await sr_engine.exec("smart-remember", {
+                                "content": improvement_text,
+                                "memory_type": "reflection",
+                                "source": "step-closure",
+                                "scope": "global",
+                                "tags": ["improvement", "closure", "domain:reflecting"],
+                            }, caller="claude")
                     except Exception as e:
                         logging.warning(f"step-closure smart-remember exception: {e}")
 
@@ -910,6 +946,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 dashboard += f"\n  💾 反思已入池: {smart_memory_id[:20]}..."
             json_body = json.dumps(safe, ensure_ascii=False, indent=2)
             return [TextContent(type="text", text=dashboard + "\n" + json_body)]
+
+        # === 审查域 ===
+        elif name == "review_run":
+            from plastic_promise.mcp.tools.review import handle_review_run
+            return await handle_review_run(engine, arguments)
 
         # === SuperPowers 流水线阶段技能 (统一入口) ===
         elif name == "sp-stage":

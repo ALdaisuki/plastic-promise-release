@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
+import sqlite3
 from typing import Any, Dict, List, Optional
 
 from plastic_promise.core.constants import (
     AUDIT_DIMENSIONS,
     PRE_CHECK_ALERT_THRESHOLD,
+    WORTH_MIN_OBSERVATIONS,
 )
 
 
@@ -124,25 +127,315 @@ class SoulAuditor:
         _last_audit_time: 最近一次审计时间
     """
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str = "", engine: Any = None) -> None:
         """初始化审计引擎。
 
-        初始化空的报告历史和审计时间戳。
+        Args:
+            db_path: SQLite 数据库路径，为空则使用环境变量 PLASTIC_DB_PATH
+            engine: ContextEngine 实例引用，用于动态查询
         """
         self._reports: List[AuditReport] = []
         self._last_audit_time: Optional[datetime.datetime] = None
+        self._db_path = db_path or os.environ.get(
+            "PLASTIC_DB_PATH",
+            os.path.join(os.path.dirname(__file__), "..", "..", "plastic_memory.db"),
+        )
+        self._engine = engine
 
-    # Baseline heuristic scores for the 8 audit dimensions
-    _BASELINE_SCORES: Dict[str, float] = {
-        "simplicity": 0.70,
-        "transparency": 0.75,
-        "audit_closure": 0.70,
-        "principle_activation": 0.70,
-        "memory_supply": 0.75,
-        "constraint_compliance": 0.80,
-        "feedback_closure": 0.65,
-        "skill_trace": 0.70,
-    }
+    # ── 动态评分：从真实数据源计算每个维度 ────────────────────
+
+    def _score_simplicity(self) -> tuple[float, Dict[str, Any]]:
+        """动态计算奥卡姆剃刀评分。
+
+        数据源：step_audit_log.jsonl 中的 simplicity_score 平均值。
+        无历史数据时回退到 0.70。
+        """
+        import json as _json
+        scores = []
+        audit_log = os.path.join(os.path.dirname(self._db_path), "step_audit_log.jsonl")
+        try:
+            with open(audit_log, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        entry = _json.loads(line.strip())
+                        s = entry.get("simplicity", entry.get("simplicity_score"))
+                        if isinstance(s, (int, float)):
+                            scores.append(float(s))
+                    except Exception:
+                        continue
+        except FileNotFoundError:
+            pass
+
+        if scores:
+            avg = sum(scores) / len(scores)
+            return round(avg, 2), {"source": "audit_log", "samples": len(scores)}
+
+        # 回退：从记忆池估算 — 简单记忆（短内容）比例越高，simplicity 越好
+        try:
+            conn = sqlite3.connect(self._db_path)
+            total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            short_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE length(content) < 300"
+            ).fetchone()[0]
+            conn.close()
+            ratio = short_count / max(total, 1)
+            # 短记忆比例 0~1 映射到分数 0.4~0.9
+            score = 0.4 + ratio * 0.5
+            return round(score, 2), {"source": "memory_length", "short_ratio": round(ratio, 2)}
+        except Exception:
+            return 0.70, {"source": "default"}
+
+    def _score_transparency(self) -> tuple[float, Dict[str, Any]]:
+        """动态计算透明度评分。
+
+        数据源：audit_log 中有 git_commit 的步骤比例 + git log 可用性。
+        """
+        import json as _json
+
+        audit_log = os.path.join(os.path.dirname(self._db_path), "step_audit_log.jsonl")
+        total = 0
+        with_commit = 0
+        try:
+            with open(audit_log, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        entry = _json.loads(line.strip())
+                        total += 1
+                        if entry.get("git_commit"):
+                            with_commit += 1
+                    except Exception:
+                        continue
+        except FileNotFoundError:
+            pass
+
+        if total > 0:
+            ratio = with_commit / total
+            return round(0.4 + ratio * 0.6, 2), {
+                "source": "audit_log",
+                "total_steps": total,
+                "with_commit": with_commit,
+                "commit_ratio": round(ratio, 2),
+            }
+
+        # 回退：检查 git 仓库是否存在
+        try:
+            git_dir = os.path.join(os.path.dirname(self._db_path), "..", ".git")
+            if os.path.isdir(git_dir):
+                return 0.75, {"source": "git_dir_exists"}
+            return 0.50, {"source": "no_git_dir"}
+        except Exception:
+            return 0.50, {"source": "default"}
+
+    def _score_audit_closure(self) -> tuple[float, Dict[str, Any]]:
+        """动态计算自我审计闭环评分。
+
+        数据源：audit_log 中 root_cause/improvement/lesson 的填充率。
+        """
+        import json as _json
+
+        audit_log = os.path.join(os.path.dirname(self._db_path), "step_audit_log.jsonl")
+        total = 0
+        complete = 0  # 三项全有
+        partial = 0   # 至少一项有
+
+        try:
+            with open(audit_log, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        entry = _json.loads(line.strip())
+                        total += 1
+                        has_rc = bool(entry.get("root_cause"))
+                        has_imp = bool(entry.get("improvement"))
+                        has_les = bool(entry.get("lesson"))
+                        filled = sum([has_rc, has_imp, has_les])
+                        if filled == 3:
+                            complete += 1
+                        elif filled > 0:
+                            partial += 1
+                    except Exception:
+                        continue
+        except FileNotFoundError:
+            pass
+
+        if total > 0:
+            score = (complete * 1.0 + partial * 0.5) / total
+            return round(score, 2), {
+                "source": "audit_log",
+                "total_steps": total,
+                "complete": complete,
+                "partial": partial,
+            }
+
+        return 0.70, {"source": "default"}
+
+    def _score_principle_activation(self) -> tuple[float, Dict[str, Any]]:
+        """动态计算原则激活率。
+
+        数据源：原则激活表中的记录数 + 域健康度。
+        """
+        try:
+            conn = sqlite3.connect(self._db_path)
+            # 检查 principle_activation 表
+            has_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='principle_activations'"
+            ).fetchone()
+            if has_table:
+                total_activations = conn.execute(
+                    "SELECT COUNT(*) FROM principle_activations"
+                ).fetchone()[0]
+                unique_principles = conn.execute(
+                    "SELECT COUNT(DISTINCT principle_id) FROM principle_activations"
+                ).fetchone()[0]
+                conn.close()
+
+                if total_activations > 0:
+                    # 激活的 unique 原则数 / 12 条核心原则
+                    ratio = min(1.0, unique_principles / 12.0)
+                    activation_density = min(1.0, total_activations / 50.0)
+                    score = round(ratio * 0.6 + activation_density * 0.4, 2)
+                    return score, {
+                        "source": "principle_activations",
+                        "total": total_activations,
+                        "unique": unique_principles,
+                    }
+            conn.close()
+        except Exception:
+            pass
+
+        return 0.65, {"source": "default"}
+
+    def _score_memory_supply(self) -> tuple[float, Dict[str, Any]]:
+        """动态计算记忆供给质量。
+
+        数据源：记忆 worth_success/worth_failure 比值。
+        """
+        try:
+            conn = sqlite3.connect(self._db_path)
+            rows = conn.execute(
+                "SELECT worth_success, worth_failure FROM memories "
+                "WHERE worth_success + worth_failure >= ?",
+                (WORTH_MIN_OBSERVATIONS,),
+            ).fetchall()
+            conn.close()
+
+            if rows:
+                worth_scores = []
+                for ws, wf in rows:
+                    total = ws + wf
+                    if total > 0:
+                        worth_scores.append(ws / total)
+
+                if worth_scores:
+                    avg_worth = sum(worth_scores) / len(worth_scores)
+                    return round(avg_worth, 2), {
+                        "source": "memory_worth",
+                        "samples": len(worth_scores),
+                        "avg_worth": round(avg_worth, 2),
+                    }
+        except Exception:
+            pass
+
+        return 0.60, {"source": "default"}
+
+    def _score_constraint_compliance(self) -> tuple[float, Dict[str, Any]]:
+        """动态计算约束合规度。
+
+        数据源：trust_scores 表健康度 + defense 状态。
+        """
+        try:
+            conn = sqlite3.connect(self._db_path)
+            has_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='trust_scores'"
+            ).fetchone()
+            if has_table:
+                rows = conn.execute(
+                    "SELECT agent_id, trust_score FROM trust_scores"
+                ).fetchall()
+                conn.close()
+
+                if rows:
+                    trust_vals = [score for _, score in rows]
+                    avg_trust = sum(trust_vals) / len(trust_vals)
+                    # 信任分越高，合规度越高
+                    return round(min(1.0, avg_trust), 2), {
+                        "source": "trust_scores",
+                        "agents": len(rows),
+                        "avg_trust": round(avg_trust, 2),
+                    }
+            conn.close()
+        except Exception:
+            pass
+
+        return 0.75, {"source": "default"}
+
+    def _score_feedback_closure(self) -> tuple[float, Dict[str, Any]]:
+        """动态计算反馈闭环率。
+
+        数据源：审计日志中 repairs/suggestions 的比例 + 趋势。
+        """
+        try:
+            conn = sqlite3.connect(self._db_path)
+            has_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='trust_history'"
+            ).fetchone()
+            if has_table:
+                # 反馈信号 = 信任分有增有减，说明反馈在起作用
+                total_events = conn.execute(
+                    "SELECT COUNT(*) FROM trust_history"
+                ).fetchone()[0]
+                boost_events = conn.execute(
+                    "SELECT COUNT(*) FROM trust_history WHERE delta > 0"
+                ).fetchone()[0]
+                conn.close()
+
+                if total_events > 0:
+                    # 有增有减 = 反馈闭环在工作
+                    has_both = boost_events > 0 and (total_events - boost_events) > 0
+                    diversity = 1.0 if has_both else 0.6
+                    activity = min(1.0, total_events / 20.0)
+                    score = round(diversity * 0.5 + activity * 0.5, 2)
+                    return score, {
+                        "source": "trust_history",
+                        "total_events": total_events,
+                        "boost_events": boost_events,
+                    }
+            conn.close()
+        except Exception:
+            pass
+
+        return 0.50, {"source": "default"}
+
+    def _score_skill_trace(self) -> tuple[float, Dict[str, Any]]:
+        """动态计算 Skill 可追溯评分。
+
+        数据源：skill_session 表完整性。
+        """
+        try:
+            from plastic_promise.mcp.tools.skill_tracking import (
+                handle_skill_session_trace,
+            )
+            from plastic_promise.mcp.server import get_engine
+            import asyncio
+
+            engine = get_engine()
+            trace_result = asyncio.run(handle_skill_session_trace(
+                engine, {"session_scope": "all"},
+            ))
+            trace_data = json.loads(trace_result[0].text)
+            gaps = trace_data.get("gaps", [])
+            chain_valid = trace_data.get("chain_valid", True)
+            total = trace_data.get("total_count", 0)
+
+            if total == 0:
+                return 0.0, {"source": "skill_trace", "reason": "no_sessions"}
+            elif len(gaps) == 0 and chain_valid:
+                return 1.0, {"source": "skill_trace", "sessions": total, "gaps": 0}
+            elif len(gaps) > 0:
+                return 0.3, {"source": "skill_trace", "sessions": total, "gaps": len(gaps)}
+            else:
+                return 0.7, {"source": "skill_trace", "sessions": total, "chain_valid": chain_valid}
+        except Exception as e:
+            return 0.5, {"source": "skill_trace", "error": str(e)[:80]}
 
     async def run_audit(
         self,
@@ -151,10 +444,8 @@ class SoulAuditor:
     ) -> AuditReport:
         """执行一次完整审计，覆盖八维度逐项评分。
 
-        对 AUDIT_DIMENSIONS 中定义的八个维度逐一评分，其中 skill_trace
-        维度通过实时调用 handle_skill_session_trace 动态计算，其余维度
-        使用启发式基线分数。按权重计算综合评分，并将低于 0.60 的维度标记
-        为 P0 发现。
+        每个维度现在通过动态数据源计算，而非硬编码基线。
+        skill_trace 维度通过实时 API 调用，其余维度从 SQLite/JSONL 文件查询。
 
         Args:
             scope: 审计范围 — 'full' 全面审计 | 'quick' 快速巡检 | 'targeted' 定向审计
@@ -166,49 +457,31 @@ class SoulAuditor:
         report = AuditReport()
         report.scope = scope
 
-        # -- Pre-compute skill_trace score (dynamic, may fail gracefully) --
-        skill_trace_score: float = 0.5
-        skill_trace_details: Dict[str, Any] = {}
-        try:
-            from plastic_promise.mcp.tools.skill_tracking import (
-                handle_skill_session_trace,
-            )
-            from plastic_promise.mcp.server import get_engine
-            engine = get_engine()
-            trace_result = await handle_skill_session_trace(
-                engine, {"session_scope": "all"},
-            )
-            trace_data = json.loads(trace_result[0].text)
-            gaps = trace_data.get("gaps", [])
-            chain_valid = trace_data.get("chain_valid", True)
-            total = trace_data.get("total_count", 0)
-
-            if total == 0:
-                skill_trace_score = 0.0
-            elif len(gaps) == 0 and chain_valid:
-                skill_trace_score = 1.0
-            elif len(gaps) > 0:
-                skill_trace_score = 0.3
-            else:
-                skill_trace_score = 0.7
-
-            skill_trace_details = {
-                "total_sessions": total,
-                "gaps": len(gaps),
-                "chain_valid": chain_valid,
-            }
-        except Exception:
-            skill_trace_score = 0.5
-            skill_trace_details = {"error": "trace unavailable"}
+        # 动态评分映射：维度 → 评分方法
+        dynamic_scorers = {
+            "simplicity": self._score_simplicity,
+            "transparency": self._score_transparency,
+            "audit_closure": self._score_audit_closure,
+            "principle_activation": self._score_principle_activation,
+            "memory_supply": self._score_memory_supply,
+            "constraint_compliance": self._score_constraint_compliance,
+            "feedback_closure": self._score_feedback_closure,
+            "skill_trace": self._score_skill_trace,
+        }
 
         weighted_sum = 0.0
         total_weight = 0.0
 
         for dim_key, dim_config in AUDIT_DIMENSIONS.items():
-            if dim_key == "skill_trace":
-                score = skill_trace_score
+            scorer = dynamic_scorers.get(dim_key)
+            if scorer:
+                try:
+                    score, details = scorer()
+                except Exception:
+                    score, details = 0.50, {"source": "error"}
             else:
-                score = self._BASELINE_SCORES.get(dim_key, 0.60)
+                score, details = 0.60, {"source": "unknown_dimension"}
+
             weight = dim_config["weight"]
 
             report.dimensions[dim_key] = {
@@ -216,11 +489,8 @@ class SoulAuditor:
                 "score": score,
                 "weight": weight,
                 "description": dim_config["description"],
+                "details": details,
             }
-
-            # Attach skill_trace diagnostic details
-            if dim_key == "skill_trace" and skill_trace_details:
-                report.dimensions[dim_key]["details"] = skill_trace_details
 
             weighted_sum += score * weight
             total_weight += weight
@@ -237,6 +507,7 @@ class SoulAuditor:
                         f"{dim_config['name']} scored {score:.2f}, "
                         f"below critical threshold 0.60"
                     ),
+                    "suggestion": self._suggest_fix(dim_key, score, details),
                 })
 
         report.overall_score = round(
@@ -248,6 +519,20 @@ class SoulAuditor:
         self._last_audit_time = report.timestamp
 
         return report
+
+    def _suggest_fix(self, dim_key: str, score: float, details: Dict[str, Any]) -> str:
+        """为低分维度生成具体的修复建议。"""
+        suggestions = {
+            "simplicity": "减少不必要的中间步骤和实体，检查是否有过度抽象",
+            "transparency": "确保每步有 git commit，补充审计日志中的 git_commit 字段",
+            "audit_closure": "在 step-closure 时填写 root_cause/improvement/lesson 三个字段",
+            "principle_activation": "在任务开始时使用 principle_activate(task_type=...) 激活原则",
+            "memory_supply": "提升记忆质量：淘汰低 worth 记忆，合并重复记忆，执行 memory_gc",
+            "constraint_compliance": "检查 trust_scores 表，提升低信任分 Agent 的信任度",
+            "feedback_closure": "增加 step-closure 调用频率，确保每步产生反馈信号",
+            "skill_trace": "检查孤儿 skill session，调用 skill_session_audit 自动补录",
+        }
+        return suggestions.get(dim_key, "检查该维度相关配置和数据源")
 
     def pre_check(
         self,

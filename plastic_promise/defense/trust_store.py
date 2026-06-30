@@ -129,10 +129,14 @@ class TrustStore:
 
         try:
             last_updated = datetime.fromisoformat(last_updated_str)
+            # SQLite 的 datetime('now') 是 naive；对齐为 naive 比较
+            if last_updated.tzinfo is not None:
+                last_updated = last_updated.replace(tzinfo=None)
         except (ValueError, TypeError):
             return current
 
-        delta = now - last_updated
+        now_naive = now.replace(tzinfo=None)
+        delta = now_naive - last_updated
         hours = delta.total_seconds() / 3600.0
         if hours < self.TIME_DECAY_THRESHOLD_HOURS:
             return current

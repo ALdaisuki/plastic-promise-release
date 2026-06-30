@@ -14,6 +14,8 @@
 
 import datetime
 import json
+import os
+import sqlite3
 from typing import Optional
 from dataclasses import dataclass, field
 
@@ -138,17 +140,35 @@ class StepAuditor:
         self._save(result)
 
         # 7. 反思记忆存储 — 将教训提炼自动存入记忆池（原则 #10 自演化闭环）
-        if self._engine is not None and lesson and lesson != self._derive_lesson(task_description):
-            try:
-                self._engine.register_memory({
-                    "id": f"reflection_{result.step_id}",
-                    "content": lesson,
-                    "memory_type": "reflection",
-                    "source": "step_auditor",
-                    "tier": "L3",
-                })
-            except Exception:
-                pass
+        derived_lesson = self._derive_lesson(task_description)
+        derived_improvement = self._derive_improvement(task_description)
+        if self._engine is not None:
+            # 当调用方传入的 lesson/improvement 比自动推导更有价值时，存储调用方的版本
+            content_to_store = lesson or derived_lesson
+            if content_to_store:
+                try:
+                    self._engine.register_memory({
+                        "id": f"reflection_{result.step_id}",
+                        "content": content_to_store,
+                        "memory_type": "reflection",
+                        "source": "step_auditor",
+                        "tier": "L3",
+                    })
+                except Exception:
+                    pass
+            # 如果有有价值的改良措施，也一并存储
+            improvement_to_store = improvement or derived_improvement
+            if improvement_to_store and improvement_to_store != content_to_store:
+                try:
+                    self._engine.register_memory({
+                        "id": f"improvement_{result.step_id}",
+                        "content": improvement_to_store,
+                        "memory_type": "improvement",
+                        "source": "step_auditor",
+                        "tier": "L3",
+                    })
+                except Exception:
+                    pass
 
         # 域联邦自进化: 每次审计后触发衰减检测
         try:
@@ -174,148 +194,224 @@ class StepAuditor:
     def _score_simplicity(self, task: str, rationale: str, git_commit: str) -> float:
         """奥卡姆剃刀评分。
 
-        评分标准：
-        - 0.9-1.0: 步骤必要且方案极简，无冗余
-        - 0.7-0.8: 步骤必要，有轻微冗余但可接受
-        - 0.5-0.6: 步骤可能非必要，或有明显简化空间
-        - 0.3-0.4: 步骤冗余，方案复杂化
-        - 0.0-0.2: 严重违反剃刀原则，过度设计
+        评分策略：
+        1. 有 rationale → 关键字分析 + 基准加分
+        2. 无 rationale → 从历史取基准分
+        3. task 为空 → 扣分
+        4. 有 git_commit → 轻微加分（有意识的步骤）
         """
-        # 启发式：默认 0.75，有理据时提高
-        score = 0.75
+        score = self._get_historical_benchmark("simplicity") or 0.70
+
         if rationale:
-            # 检查是否提到了简约/最少/核心等关键词
-            simplicity_keywords = ["简洁", "最少", "核心", "必要", "精简", "最简", "剃刀", "仅", "只用了"]
-            hits = sum(1 for kw in simplicity_keywords if kw in rationale)
-            score = min(1.0, 0.75 + hits * 0.05)
+            # 关键词加分
+            simplicity_keywords = [
+                "简洁", "最少", "核心", "必要", "精简", "最简", "剃刀", "仅", "只用了",
+                "simple", "minimal", "bare", "essential", "lean",
+            ]
+            hits = sum(1 for kw in simplicity_keywords if kw.lower() in rationale.lower())
+            # 每条关键词 +0.04，上限 1.0
+            score = min(1.0, score + hits * 0.04)
+
+            # 惩罚：检测到可能过度设计的信号
+            overengineering_signals = [
+                "抽象", "工厂", "建造者", "访问者", "策略模式", "装饰器",
+                "abstract", "factory", "builder", "visitor", "strategy", "decorator",
+            ]
+            signal_count = sum(1 for kw in overengineering_signals if kw.lower() in rationale.lower())
+            if signal_count > 1:
+                score = max(0.3, score - signal_count * 0.05)
+
         if not task:
-            score -= 0.1  # 缺少任务描述扣分
+            score -= 0.10
         if git_commit:
-            score += 0.05  # 有 git 痕迹轻微加分（说明是有意识的步骤）
+            score += 0.03
         return round(max(0.0, min(1.0, score)), 4)
 
     def _score_transparency(self, git_commit: str, rationale: str) -> float:
         """全过程可查可透明评分。
 
-        评分标准：
-        - git_commit 存在 → 至少 0.80（有痕迹）
-        - 无 git → 最多 0.50（缺乏追溯）
-        - rationale 提到日志/记录/验证 → 加分
+        评分策略：
+        1. git_commit 存在 → 高分 (0.80+)
+        2. rationale 提到审计元素 → 加分
+        3. 无 git → 上限 0.55
         """
-        score = 0.50  # 基础分
+        historical = self._get_historical_benchmark("transparency")
+
         if git_commit:
-            score = 0.85  # 有 git commit 大幅加分
+            score = max(0.80, historical or 0.80)
+        else:
+            score = min(0.55, historical or 0.50)
+
         if rationale:
-            transparency_keywords = ["日志", "记录", "trace", "log", "commit", "审计", "可查", "可验", "复现"]
+            transparency_keywords = [
+                "日志", "记录", "trace", "log", "commit", "审计", "可查", "可验",
+                "复现", "验证", "review", "sign-off", "approval", "test",
+            ]
             hits = sum(1 for kw in transparency_keywords if kw.lower() in rationale.lower())
             score = min(1.0, score + hits * 0.03)
+
         return round(max(0.0, min(1.0, score)), 4)
 
     def _score_audit_closure(self, root_cause: str, improvement: str, lesson: str, rationale: str) -> float:
         """自我审计闭环评分。
 
-        评分标准：
-        - 根因+改良+教训全部非空 → 至少 0.70
-        - 缺少任一 → 扣 0.20
-        - rationale 有深度分析 → 加分
+        评分策略：
+        1. 三项全有 → >= 0.75
+        2. 缺一项 → 扣 0.15
+        3. rationale 有深度关键词 → 加分
         """
-        score = 0.70
-        if not root_cause:
-            score -= 0.20
-        if not improvement:
-            score -= 0.20
-        if not lesson:
-            score -= 0.20
+        score = 0.65
+
+        filled_count = sum([
+            1 if root_cause else 0,
+            1 if improvement else 0,
+            1 if lesson else 0,
+        ])
+        score += filled_count * 0.08
+
         if rationale:
-            closure_keywords = ["因果", "改进", "迁移", "规律", "下次", "避免", "根源", "深层"]
-            hits = sum(1 for kw in closure_keywords if kw in rationale)
-            score = min(1.0, score + hits * 0.03)
+            closure_keywords = [
+                "因果", "改进", "迁移", "规律", "下次", "避免", "根源", "深层",
+                "root", "cause", "lesson", "improve", "avoid", "prevent",
+            ]
+            hits = sum(1 for kw in closure_keywords if kw.lower() in rationale.lower())
+            score = min(1.0, score + hits * 0.02)
+
         return round(max(0.0, min(1.0, score)), 4)
 
+    def _get_historical_benchmark(self, dimension: str) -> Optional[float]:
+        """从历史审计记录中获取某维度的平均值作为基准线。
+
+        Args:
+            dimension: "simplicity" | "transparency" | "audit_closure"
+
+        Returns:
+            历史平均值 (0.0~1.0)，无数据则返回 None
+        """
+        if not self._history:
+            return None
+
+        field_map = {
+            "simplicity": "simplicity_score",
+            "transparency": "transparency_score",
+            "audit_closure": "audit_closure_score",
+        }
+        field = field_map.get(dimension)
+        if not field:
+            return None
+
+        scores = [getattr(r, field, None) for r in self._history]
+        scores = [s for s in scores if s is not None]
+        if not scores:
+            return None
+
+        return round(sum(scores) / len(scores), 4)
+
     # ============================================================
-    # 自动推导（当用户未提供时）
+    # 自动推导（当用户未提供时）—— 基于历史模式 + 语义分析
     # ============================================================
 
     def _derive_root_cause(self, task: str) -> str:
-        if not task:
-            return "未提供任务描述"
-        # 从结构化描述中提取根因 —— 不是模板填充
-        return f"执行任务「{task[:80]}」——根因分析待补充"
+        # 调用方未显式传入根因 → 返回空串，不猜测
+        return ""
 
     def _derive_improvement(self, task: str) -> str:
-        # 尝试从描述中提取具体改良信号
-        extracted = self._extract_tagged_content(task, "改良")
-        if extracted:
-            return extracted
-        # 尝试提取数值变化模式 (如 "x→y", "30s→10s")
-        numeric_improvement = self._extract_numeric_change(task)
-        if numeric_improvement:
-            return numeric_improvement
-        return f"改进方向：提取「{task[:40]}」中的可复用模式，减少下次同类任务的步骤数"
+        """从任务描述中推导具体可执行的改良措施。
+
+        策略：
+        1. 检查历史是否有相似任务的改良记录
+        2. 基于任务类型给出通用改良方向
+        3. 回退返回空（不猜测）
+        """
+        if not task:
+            return ""
+
+        task_lower = task.lower()
+
+        # 从历史中查找相似任务的成功改良记录
+        hist_improvement = self._infer_from_history(task, field="improvement")
+        if hist_improvement:
+            return hist_improvement
+
+        # 基于任务类型给出方向性改良建议
+        if any(kw in task_lower for kw in ("fix", "bug", "修复", "错误")):
+            return "下次修复类任务：先写复现测试，再定位根因，最后修改代码"
+        if any(kw in task_lower for kw in ("新增", "添加", "实现", "feature", "build")):
+            return "下次新增功能：需求拆解为独立小步骤，每步独立可测试"
+        if any(kw in task_lower for kw in ("重构", "refactor", "优化")):
+            return "下次重构：先确保测试覆盖，小步提交，每步保持可回滚"
+        if any(kw in task_lower for kw in ("review", "审查", "检查")):
+            return "下次审查：按 checklist 逐项检查，不跳项，不做假设性通过"
+
+        return ""
 
     def _derive_lesson(self, task: str) -> str:
-        # 优先提取显式标记的教训
-        extracted = self._extract_tagged_content(task, "教训")
-        if extracted:
-            return extracted
-        # 尝试提取数值变化作为教训
-        numeric_lesson = self._extract_numeric_change(task)
-        if numeric_lesson:
-            return f"教训：{numeric_lesson}"
-        # v2: structured extraction (2026-07-01)
-        return f"教训：每个步骤都有可优化的空间——复盘「{task[:40]}」的执行路径"
+        """从任务描述和历史教训中提炼可迁移规律。
 
-    # ── 结构化提取辅助函数 ──
-
-    @staticmethod
-    def _extract_tagged_content(task: str, tag: str) -> str:
-        """从任务描述中提取 `标签:内容` 格式的结构化信息。
-
-        支持的格式：
-          - "改良: 具体改良内容" (冒号分隔)
-          - "改良：具体改良内容" (中文冒号)
-          - "教训: 具体教训"
-          - "窍门: 具体窍门"
+        策略：
+        1. 查找历史相似任务存储的教训
+        2. 基于任务类型匹配通用教训模式
+        3. 回退返回空（不强猜）
         """
-        # 尝试显式标签
-        for sep in (":", "：", "→"):
-            prefix = f"{tag}{sep}"
-            idx = task.lower().find(prefix.lower())
-            if idx >= 0:
-                content = task[idx + len(prefix):].strip()
-                # 截取到下一个标签或行尾
-                next_tags = ["教训", "改良", "窍门", "根因", "修复", "改进"]
-                end_idx = len(content)
-                for nt in next_tags:
-                    for s in (":", "：", "→"):
-                        nt_pos = content.find(f"{nt}{s}")
-                        if 0 < nt_pos < end_idx:
-                            end_idx = nt_pos
-                content = content[:end_idx].strip().rstrip(",;，；")
-                if len(content) > 3:
-                    return content
+        if not task:
+            return ""
+
+        # 从历史中查找相似任务的已存储教训
+        hist_lesson = self._infer_from_history(task, field="lesson")
+        if hist_lesson:
+            return hist_lesson
+
+        task_lower = task.lower()
+
+        # 通用教训模式匹配
+        if any(kw in task_lower for kw in ("fix", "bug", "修复", "错误")):
+            return "修复前应先理解根因而非表象；没有复现测试的修复是不可靠的"
+        if any(kw in task_lower for kw in ("测试", "test", "tdd")):
+            return "先写测试后写代码：测试定义了接口契约，代码只是满足契约的实现"
+        if any(kw in task_lower for kw in ("重构", "refactor")):
+            return "重构不改行为：重构的目的是让代码更容易修改，不是修改代码本身"
+        if any(kw in task_lower for kw in ("文档", "doc", "注释")):
+            return "代码即文档：自解释的命名比冗长注释更有价值；注释应解释'为什么'而非'是什么'"
+
         return ""
 
-    @staticmethod
-    def _extract_numeric_change(task: str) -> str:
-        """提取数值变化模式，如 'x5→x2' '30s→10s' '60%减少'。
+    def _infer_from_history(self, task: str, field: str = "root_cause") -> str:
+        """从历史审计记录中查找相似任务的经验。
 
-        这类模式通常表示具体的量化改良。
+        简单的文本相似度匹配：Jaccard 系数 > 0.25 视为相关。
         """
-        import re
-        # 匹配 "x→y" 或 "x5→x2" 模式
-        m = re.search(r'(\d+\s*[%sm次个行s]\s*→\s*\d+\s*[%sm次个行s]*)', task)
-        if m:
-            return m.group(1)
-        # 匹配 "从x到y"
-        m = re.search(r'从\s*(\d+.*?)\s*到\s*(\d+.*?)(?:[，,;；\s]|$)', task)
-        if m:
-            return f"{m.group(1)}→{m.group(2)}"
-        # 匹配 "减少X%" "降至Y%"
-        m = re.search(r'([减降]至?\s*\d+[%％])', task)
-        if m:
-            return m.group(1)
-        return ""
+        if len(self._history) < 2:
+            return ""
+
+        task_words = set(task.lower().split())
+        if len(task_words) < 2:
+            return ""
+
+        best_match = ""
+        best_score = 0.0
+
+        for r in self._history:
+            hist_task = r.task_description or ""
+            hist_words = set(hist_task.lower().split())
+            if not hist_words:
+                continue
+
+            # Jaccard 相似度
+            intersection = task_words & hist_words
+            union = task_words | hist_words
+            score = len(intersection) / len(union) if union else 0
+
+            if score > 0.25 and score > best_score:
+                best_score = score
+                target = getattr(r, field, "")
+                if target and target not in (
+                    f"执行任务「{task[:80]}」——根因分析待补充",
+                    "",
+                    "未提供任务描述",
+                ):
+                    best_match = target
+
+        return best_match
 
     # ============================================================
     # 信任分联动
