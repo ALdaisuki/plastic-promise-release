@@ -659,6 +659,15 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
             if cat and f"cat:{cat}" not in new_tags:
                 new_tags.append(f"cat:{cat}")
 
+            # ── 3.5. LLM pending: tag uncertain classifications for background refinement ──
+            if new_category == "other" or conf < 0.5:
+                if "llm_pending:true" not in new_tags:
+                    new_tags.append("llm_pending:true")
+            else:
+                # Remove llm_pending if category is now confident
+                if "llm_pending:true" in new_tags:
+                    new_tags.remove("llm_pending:true")
+
             if dm is not None and (new_domain == "uncategorized" or new_domain is None):
                 try:
                     assigned = dm.assign(new_tags, agent_id="system")

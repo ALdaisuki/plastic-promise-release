@@ -389,6 +389,101 @@ async def scan_memory_health():
         print(f"  [SAFETY_NET] scan_memory_health error: {e}")
 
 
+# ── LLM 后台分类 ───────────────────────────────────────────
+async def scan_llm_classify():
+    """后台 LLM 分类：处理标记为 llm_pending 的记忆。
+
+    队列机制:
+      - memory_store / memory_reclassify 将低置信度/other 记忆标记为 llm_pending:true
+      - 本扫描器定期取 N 条 (默认3)，调用 Ollama LLM 做 6 类文字分类
+      - 成功分类后: 更新 category + 替换标签为 llm_classified:true
+      - 每个周期最多处理 LLM_BATCH_SIZE 条，避免阻塞其他审计任务
+
+    响应时间: Ollama API 调用约 2-5s/条 (qwen2.5:3b), 不阻塞其他扫描器。
+    """
+    LLM_BATCH_SIZE = int(os.environ.get("LLM_CLASSIFY_BATCH", "3"))
+    OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+    OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # Find memories tagged for LLM classification (exclude already-classified)
+        rows = conn.execute(
+            "SELECT id, content, tags, category FROM memories "
+            "WHERE tags LIKE '%llm_pending:true%' "
+            "AND tags NOT LIKE '%llm_classified:true%' "
+            "ORDER BY created_at ASC LIMIT ?",
+            (LLM_BATCH_SIZE,)
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return
+
+        from plastic_promise.smart_extractor import _llm_classify
+        import requests
+
+        classified = 0
+        for mid, content, tags_raw, old_category in rows:
+            try:
+                tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+
+                # Call Ollama LLM for classification
+                new_cat = _llm_classify(
+                    content, OLLAMA_HOST, OLLAMA_MODEL, timeout=15
+                )
+
+                if new_cat and new_cat != old_category:
+                    # Update SQLite in-place
+                    conn2 = sqlite3.connect(DB_PATH)
+                    conn2.execute(
+                        "UPDATE memories SET category = ? WHERE id = ?",
+                        (new_cat, mid)
+                    )
+                    conn2.commit()
+                    conn2.close()
+                    print(f"  [LLM_CLASSIFY] {mid[:12]}... {old_category} → {new_cat} "
+                          f"({(content or '')[:40]}...)")
+
+                # Replace llm_pending with llm_classified (even if LLM returned same/None)
+                tags = [t for t in tags if t != "llm_pending:true"]
+                if "llm_classified:true" not in tags:
+                    tags.append("llm_classified:true")
+                if new_cat and f"cat:{new_cat}" not in tags:
+                    tags.append(f"cat:{new_cat}")
+
+                conn2 = sqlite3.connect(DB_PATH)
+                conn2.execute(
+                    "UPDATE memories SET tags = ? WHERE id = ?",
+                    (json.dumps(tags), mid)
+                )
+                conn2.commit()
+                conn2.close()
+
+                # Notify MCP to refresh in-memory cache
+                try:
+                    async with httpx.AsyncClient() as client:
+                        await client.post(f"{MCP_URL}/notify", json={
+                            "type": "llm_classified",
+                            "memory_id": mid,
+                            "new_category": new_cat,
+                            "ts": datetime.now().isoformat(),
+                        }, timeout=3)
+                except Exception:
+                    pass  # notify is best-effort
+
+                classified += 1
+
+            except Exception as e:
+                print(f"  [LLM_CLASSIFY] error for {mid[:12]}...: {e}")
+
+        if classified:
+            print(f"  [LLM_CLASSIFY] batch done: {classified} classified")
+
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_llm_classify error: {e}")
+
+
 # ── 未闭环 issue 扫描 ──────────────────────────────────────
 async def scan_unclosed_issues():
     """检测长时间未闭环的 issue 并自动修复。
@@ -459,9 +554,12 @@ async def main():
     # 安全网扫描间隔 (秒)，可通过环境变量覆盖
     SAFETY_NET_INTERVAL = int(os.environ.get("SAFETY_NET_INTERVAL", "600"))
     safety_net_threshold = max(1, SAFETY_NET_INTERVAL // 10)
+    # LLM 分类间隔 (秒)，默认 120s 一次
+    LLM_CLASSIFY_INTERVAL = int(os.environ.get("LLM_CLASSIFY_INTERVAL", "120"))
+    llm_classify_threshold = max(1, LLM_CLASSIFY_INTERVAL // 10)
 
     print(f"Maintenance Daemon (audit={INTERVAL}s, safety_net={SAFETY_NET_INTERVAL}s, "
-          f"PID={os.getpid()})")
+          f"llm_classify={LLM_CLASSIFY_INTERVAL}s, PID={os.getpid()})")
     print(f"  DB: {DB_PATH}")
     print(f"  MCP: {MCP_URL}")
 
@@ -490,6 +588,10 @@ async def main():
                 pass  # 单个扫描器失败不影响后续
             try:
                 await scan_memory_health()
+            except Exception:
+                pass
+            try:
+                await scan_llm_classify()
             except Exception:
                 pass
             try:
