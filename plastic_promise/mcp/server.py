@@ -646,6 +646,19 @@ async def list_tools() -> list[Tool]:
                 "required": ["content", "memory_type"],
             },
         ),
+        Tool(
+            name="step-closure",
+            description="每步完成后的六联闭环：原则对齐检查 → SCARF 五维自省 → 激素更新 → 信任分联动 → 反思记忆存储 → CEI 复合指数。mode=light 仅做对齐+注入，mode=full 走完整六联。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_description": {"type": "string", "description": "本步操作描述"},
+                    "git_commit": {"type": "string", "description": "关联的 git commit hash (可选)"},
+                    "mode": {"type": "string", "description": "light (仅对齐+注入) | full (完整六联闭环，默认)"},
+                },
+                "required": ["task_description"],
+            },
+        ),
     ])
 
     return tools
@@ -807,6 +820,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                  "data": result.data, "degrade_log": result.degrade_log,
                  "errors": result.errors, "audit_trail": result.audit_trail},
                 ensure_ascii=False, indent=2))]
+        elif name == "step-closure":
+            import asyncio
+            from plastic_promise.loop.soul_loop import post_task
+            task_desc = arguments.get("task_description", "")
+            git_commit = arguments.get("git_commit", "")
+            mode = arguments.get("mode", "full")
+            result = await asyncio.to_thread(post_task, task_desc, git_commit, mode)
+            return [TextContent(type="text", text=json.dumps(
+                result, ensure_ascii=False, indent=2))]
 
         elif name == "memory_sync_files":
             from plastic_promise.mcp.tools.sync import handle_memory_sync_files
