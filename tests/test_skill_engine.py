@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from plastic_promise.skills.engine import SkillDef, SkillResult, SkillRegistrationError
 from dataclasses import FrozenInstanceError
@@ -274,3 +276,197 @@ class TestSkillEngineRegister:
         )
         se.register(sd)  # should not raise
         assert "scheduled-gc" in se._registry
+
+
+# ──────────────────────────────────────────────
+# SkillEngine.exec tests (Task 4)
+# ──────────────────────────────────────────────
+
+from mcp.types import TextContent
+
+
+class TestSkillEngineExec:
+    @pytest.fixture
+    def mock_engine(self):
+        engine = MagicMock()
+        mock_tools = [_make_mock_tool(n) for n in [
+            "principle_activate", "context_supply", "memory_store",
+            "memory_recall", "domain", "system", "defense", "memory_gc",
+            "skill_session_start", "skill_session_complete",
+        ]]
+        engine.list_tools = MagicMock(return_value=mock_tools)
+        return engine
+
+    @pytest.mark.asyncio
+    async def test_exec_successful_skill(self, mock_engine):
+        """A simple skill with one atom must execute and return success."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+
+        # Override atom with a mock that succeeds
+        async def mock_principle_activate(engine, args):
+            return [TextContent(type="text", text=json.dumps(
+                {"task_type": "general", "activated": [{"id": 1, "name": "test-principle"}]}
+            ))]
+
+        se._atoms["principle_activate"] = mock_principle_activate
+
+        # Mock skill_session_start/complete to record calls
+        session_calls = []
+        async def mock_session_start(engine, args):
+            session_calls.append(("start", args))
+            return [TextContent(type="text", text=json.dumps(
+                {"entity_id": "skill:test:2026-01-01T00:00:00", "status": "active"}
+            ))]
+        async def mock_session_complete(engine, args):
+            session_calls.append(("complete", args))
+            return [TextContent(type="text", text=json.dumps({"status": "done"}))]
+        se._atoms["skill_session_start"] = mock_session_start
+        se._atoms["skill_session_complete"] = mock_session_complete
+
+        async def handler(ctx, params, atom_results):
+            return SkillResult(
+                skill_name="test-skill", success=True,
+                data={"activated": json.loads(atom_results["principle_activate"][0].text)},
+                atom_results={k: v[0].text for k, v in atom_results.items()},
+                degrade_log=[], audit_trail={}, errors=[],
+            )
+
+        sd = SkillDef(
+            name="test-skill", domain="session_lifecycle",
+            description="Test", tier="P0",
+            atoms=["principle_activate"],
+            degrade_map={},
+            handler=handler,
+            allowed_callers=["claude"],
+        )
+        se.register(sd)
+
+        result = await se.exec("test-skill", params={"task_description": "test"}, caller="claude")
+        assert result.success is True
+        assert result.skill_name == "test-skill"
+        assert len(session_calls) == 2  # start + complete
+        assert session_calls[0][0] == "start"
+        assert session_calls[1][0] == "complete"
+
+    @pytest.mark.asyncio
+    async def test_exec_unauthorized_caller_blocked(self, mock_engine):
+        """Caller not in allowed_callers must be rejected before any atom call."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+        async def handler(ctx, params, atoms):
+            return SkillResult(skill_name="test", success=True, data={},
+                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+
+        sd = SkillDef(
+            name="daemon-only", domain="system_health",
+            description="Test", tier="P2",
+            atoms=["memory_gc"],
+            degrade_map={},
+            handler=handler,
+            allowed_callers=["daemon"],
+        )
+        se.register(sd)
+
+        result = await se.exec("daemon-only", params={}, caller="claude")
+        assert result.success is False
+        assert "not in allowed_callers" in result.errors[0]
+
+    @pytest.mark.asyncio
+    async def test_exec_unknown_skill_returns_error(self, mock_engine):
+        """Calling a non-existent skill must return a failure result."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+        result = await se.exec("nonexistent", params={}, caller="claude")
+        assert result.success is False
+        assert "Unknown skill" in result.errors[0]
+
+    @pytest.mark.asyncio
+    async def test_exec_atom_degraded_skip(self, mock_engine):
+        """When an atom fails with degrade_map='skip', execution continues."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+
+        call_order = []
+        async def mock_failing_atom(engine, args):
+            call_order.append("failing")
+            raise RuntimeError("simulated failure")
+
+        async def mock_ok_atom(engine, args):
+            call_order.append("ok")
+            return [TextContent(type="text", text=json.dumps({"status": "ok"}))]
+
+        async def mock_session_start(engine, args):
+            return [TextContent(type="text", text=json.dumps({"entity_id": "skill:test:..."}))]
+        async def mock_session_complete(engine, args):
+            return [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+        se._atoms["atom_a"] = mock_failing_atom
+        se._atoms["atom_b"] = mock_ok_atom
+        se._atoms["skill_session_start"] = mock_session_start
+        se._atoms["skill_session_complete"] = mock_session_complete
+
+        async def handler(ctx, params, atoms):
+            return SkillResult(
+                skill_name="test", success=True, data={},
+                atom_results={}, degrade_log=[], audit_trail={}, errors=[],
+            )
+
+        sd = SkillDef(
+            name="degrade-skip-test", domain="session_lifecycle",
+            description="Test", tier="P0",
+            atoms=["atom_a", "atom_b"],
+            degrade_map={"atom_a": "skip"},
+            handler=handler,
+            allowed_callers=["claude"],
+        )
+        se.register(sd)
+
+        result = await se.exec("degrade-skip-test", params={}, caller="claude")
+        assert result.success is True
+        assert call_order == ["failing", "ok"]  # atom_b executed despite atom_a failure
+        assert any("atom_a" in log for log in result.degrade_log)
+
+    @pytest.mark.asyncio
+    async def test_exec_atom_degraded_abort(self, mock_engine):
+        """When an atom fails with default degrade='abort', execution stops."""
+        from plastic_promise.skills.engine import SkillEngine
+        se = SkillEngine(mock_engine)
+
+        call_order = []
+        async def mock_failing_atom(engine, args):
+            call_order.append("failing")
+            raise RuntimeError("simulated failure")
+
+        async def mock_never_reached(engine, args):
+            call_order.append("never")
+            return [TextContent(type="text", text="ok")]
+
+        async def mock_session_start(engine, args):
+            return [TextContent(type="text", text=json.dumps({"entity_id": "skill:test:..."}))]
+        async def mock_session_complete(engine, args):
+            return [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+        se._atoms["atom_a"] = mock_failing_atom
+        se._atoms["atom_b"] = mock_never_reached
+        se._atoms["skill_session_start"] = mock_session_start
+        se._atoms["skill_session_complete"] = mock_session_complete
+
+        async def handler(ctx, params, atoms):
+            return SkillResult(skill_name="test", success=True, data={},
+                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+
+        sd = SkillDef(
+            name="degrade-abort-test", domain="session_lifecycle",
+            description="Test", tier="P0",
+            atoms=["atom_a", "atom_b"],
+            degrade_map={},  # atom_a defaults to "abort"
+            handler=handler,
+            allowed_callers=["claude"],
+        )
+        se.register(sd)
+
+        result = await se.exec("degrade-abort-test", params={}, caller="claude")
+        assert result.success is False
+        assert call_order == ["failing"]  # atom_b was never called
+        assert "atom_a" in result.errors[0]

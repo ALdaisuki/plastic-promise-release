@@ -1,4 +1,5 @@
 import importlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -178,3 +179,155 @@ class SkillEngine:
                 skill_def.allowed_callers = ["daemon"]
 
         self._registry[skill_def.name] = skill_def
+
+    async def exec(self, skill_name: str, params: dict = None,
+                   caller: str = "claude") -> SkillResult:
+        """Execute a registered skill.
+
+        Execution flow:
+        1. Look up SkillDef -- return failure if unknown
+        2. Caller authorization check -- reject if caller not in allowed_callers
+        3. skill_session_start -- create tracking entity
+        4. For each atom in atoms: call with error handling per degrade_map
+        5. Call SkillDef.handler(ctx, params, atom_results)
+        6. skill_session_complete -- mark done
+        7. Return SkillResult with audit trail
+        """
+        if params is None:
+            params = {}
+
+        # 1. Lookup
+        skill_def = self._registry.get(skill_name)
+        if skill_def is None:
+            return SkillResult(
+                skill_name=skill_name, success=False,
+                data={}, atom_results={}, degrade_log=[],
+                audit_trail={}, errors=[f"Unknown skill: {skill_name}"],
+            )
+
+        # 2. Caller authorization
+        if caller not in skill_def.allowed_callers:
+            return SkillResult(
+                skill_name=skill_name, success=False,
+                data={}, atom_results={}, degrade_log=[],
+                audit_trail={},
+                errors=[f"Caller '{caller}' not in allowed_callers {skill_def.allowed_callers} for skill '{skill_name}'"],
+            )
+
+        atom_results: dict[str, Any] = {}
+        degrade_log: list[str] = []
+        errors: list[str] = []
+        entity_id: str = ""
+        task_description = params.get("task_description", skill_def.description)
+
+        # 3. skill_session_start
+        start_handler = self._atoms.get("skill_session_start")
+        if start_handler:
+            try:
+                start_result = await start_handler(self._ctx, {
+                    "skill_name": skill_name,
+                    "task_description": task_description,
+                })
+                start_data = json.loads(start_result[0].text)
+                entity_id = start_data.get("entity_id", "")
+            except Exception as e:
+                degrade_log.append(f"skill_session_start: {e}")
+
+        try:
+            # 4. Call atoms in order with degradation
+            for atom_name in skill_def.atoms:
+                atom_handler = self._atoms.get(atom_name)
+                if atom_handler is None:
+                    msg = f"Atom '{atom_name}' not in registry"
+                    degrade_log.append(msg)
+                    errors.append(msg)
+                    continue
+
+                try:
+                    result = await atom_handler(self._ctx, params)
+                    atom_results[atom_name] = result
+                except Exception as e:
+                    action = skill_def.degrade_map.get(atom_name, "abort")
+                    if action == "skip":
+                        degrade_log.append(f"{atom_name}: skip -- {e}")
+                        continue
+                    elif action == "warn":
+                        degrade_log.append(f"{atom_name}: warn -- {e}")
+                        continue
+                    elif action.startswith("fallback:"):
+                        fallback_atom = action[len("fallback:"):]
+                        degrade_log.append(f"{atom_name}: fallback to {fallback_atom} -- {e}")
+                        try:
+                            fb_handler = self._atoms.get(fallback_atom)
+                            if fb_handler:
+                                fb_result = await fb_handler(self._ctx, params)
+                                atom_results[atom_name] = fb_result
+                        except Exception as fb_e:
+                            degrade_log.append(f"{atom_name}: fallback {fallback_atom} also failed -- {fb_e}")
+                            errors.append(f"{atom_name}: {e}")
+                        continue
+                    else:  # "abort" (default)
+                        errors.append(f"{atom_name}: {e}")
+                        degrade_log.append(f"{atom_name}: abort -- {e}")
+                        # Complete session as failed
+                        if entity_id:
+                            try:
+                                complete_handler = self._atoms.get("skill_session_complete")
+                                if complete_handler:
+                                    await complete_handler(self._ctx, {
+                                        "entity_id": entity_id,
+                                        "outcome": f"abandoned: atom {atom_name} failed",
+                                    })
+                            except Exception:
+                                pass
+                        return SkillResult(
+                            skill_name=skill_name, success=False,
+                            data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
+                            degrade_log=degrade_log, audit_trail={"entity_id": entity_id}, errors=errors,
+                        )
+
+            # 5. Call handler
+            result = await skill_def.handler(self._ctx, params, atom_results)
+
+            # 6. skill_session_complete
+            complete_handler = self._atoms.get("skill_session_complete")
+            if complete_handler and entity_id:
+                try:
+                    await complete_handler(self._ctx, {
+                        "entity_id": entity_id,
+                        "outcome": "",
+                    })
+                except Exception as e:
+                    degrade_log.append(f"skill_session_complete: {e}")
+
+            # 7. Return
+            result.audit_trail = {"entity_id": entity_id}
+            result.degrade_log = result.degrade_log or degrade_log
+            result.errors = result.errors or errors
+            return result
+
+        except Exception as e:
+            # Handler-level failure -- still attempt session close
+            errors.append(f"handler: {e}")
+            if entity_id:
+                try:
+                    complete_handler = self._atoms.get("skill_session_complete")
+                    if complete_handler:
+                        await complete_handler(self._ctx, {
+                            "entity_id": entity_id,
+                            "outcome": f"abandoned: handler error -- {e}",
+                        })
+                except Exception:
+                    pass
+            return SkillResult(
+                skill_name=skill_name, success=False,
+                data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
+                degrade_log=degrade_log, audit_trail={"entity_id": entity_id}, errors=errors,
+            )
+
+
+def _text_or_str(result: list) -> str:
+    """Extract text from a list of TextContent, or return str representation."""
+    if result and hasattr(result[0], 'text'):
+        return result[0].text
+    return str(result)
