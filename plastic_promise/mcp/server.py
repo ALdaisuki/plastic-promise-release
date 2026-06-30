@@ -184,6 +184,21 @@ async def list_tools() -> list[Tool]:
         ),
     ])
 
+    # === 记忆重分类 ===
+    tools.extend([
+        Tool(
+            name="memory_reclassify",
+            description="强制已有记忆重跑分类管线——重新分配 tier、domain、category。支持分批处理。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "batch_size": {"type": "integer", "description": "单次处理数量 (默认 50)"},
+                    "resume_from": {"type": "string", "description": "从指定 memory_id 继续（断点续传）"},
+                },
+            },
+        ),
+    ])
+
     # === 原则域 ===
     tools.extend([
         Tool(
@@ -618,6 +633,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_correct":
             from plastic_promise.mcp.tools.memory import handle_memory_correct
             return await handle_memory_correct(engine, arguments)
+        elif name == "memory_reclassify":
+            from plastic_promise.mcp.tools.reclassify import handle_memory_reclassify
+            return await handle_memory_reclassify(engine, arguments)
 
         # Principle domain
         elif name == "principle_activate":
