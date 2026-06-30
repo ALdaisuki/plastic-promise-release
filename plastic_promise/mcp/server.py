@@ -45,9 +45,41 @@ from plastic_promise.core.constants import (
 # ---------------------------------------------------------------------------
 
 _engine = None  # 延迟初始化
+_skill_engine = None  # 延迟初始化 — SkillEngine 单例
 
 
 def get_engine():
+    """获取 ContextEngine 单例（Rust 优先，Python 回退）"""
+    global _engine
+    if _engine is not None:
+        return _engine
+
+    try:
+        from context_engine_core import ContextEngine as RustEngine
+        _engine = RustEngine()
+        logging.info("ContextEngine: Rust 核心已加载")
+    except ImportError:
+        logging.warning("ContextEngine: Rust 不可用，使用 Python Mock")
+        from plastic_promise.core.context_engine import ContextEngine as PyEngine
+        _engine = PyEngine()
+    return _engine
+
+
+def get_skill_engine():
+    """获取 SkillEngine 单例，自动注册所有 Phase 1 技能。"""
+    global _skill_engine
+    if _skill_engine is not None:
+        return _skill_engine
+
+    from plastic_promise.skills.engine import SkillEngine
+    from plastic_promise.skills.session_lifecycle import skill_session_init
+    from plastic_promise.skills.memory_operations import skill_smart_remember
+
+    _skill_engine = SkillEngine(get_engine())
+    _skill_engine.register(skill_session_init)
+    _skill_engine.register(skill_smart_remember)
+    logging.info("SkillEngine: Phase 1 技能已注册 (session-init, smart-remember)")
+    return _skill_engine
     """获取 ContextEngine 单例（Rust 优先，Python 回退）"""
     global _engine
     if _engine is not None:
@@ -588,6 +620,32 @@ async def list_tools() -> list[Tool]:
                 "required": ["source_dir"],
             },
         ),
+        # === Skills 域 (程序化技能 — Phase 1) ===
+        Tool(
+            name="session-init",
+            description="会话启动 — 封装 CLAUDE.md 步骤 0-5：原则激活 + 上下文注入 + 域健康 + 信任分 + GC 预览。替代原有的 6 个独立 MCP 调用。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_description": {"type": "string", "description": "当前任务描述"},
+                    "task_type": {"type": "string", "description": "任务类型: general/code_generation/debugging/architecture"},
+                },
+                "required": ["task_description"],
+            },
+        ),
+        Tool(
+            name="smart-remember",
+            description="智能记忆存储 — 自动去重检查（相似度 ≥ 0.85 则更新已有记忆），通过完整质量管道（分类+向量+门控）。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "记忆内容"},
+                    "memory_type": {"type": "string", "description": "类型: task/experience/principle/code"},
+                    "source": {"type": "string", "description": "来源: user/system/claude_code"},
+                },
+                "required": ["content", "memory_type"],
+            },
+        ),
     ])
 
     return tools
@@ -731,6 +789,24 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "skill_auto_track":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_auto_track
             return await handle_skill_auto_track(engine, arguments)
+
+        # === Skills 域 (Phase 1) ===
+        elif name == "session-init":
+            se = get_skill_engine()
+            result = await se.exec("session-init", arguments, caller="claude")
+            return [TextContent(type="text", text=json.dumps(
+                {"skill": result.skill_name, "success": result.success,
+                 "data": result.data, "degrade_log": result.degrade_log,
+                 "errors": result.errors, "audit_trail": result.audit_trail},
+                ensure_ascii=False, indent=2))]
+        elif name == "smart-remember":
+            se = get_skill_engine()
+            result = await se.exec("smart-remember", arguments, caller="claude")
+            return [TextContent(type="text", text=json.dumps(
+                {"skill": result.skill_name, "success": result.success,
+                 "data": result.data, "degrade_log": result.degrade_log,
+                 "errors": result.errors, "audit_trail": result.audit_trail},
+                ensure_ascii=False, indent=2))]
 
         elif name == "memory_sync_files":
             from plastic_promise.mcp.tools.sync import handle_memory_sync_files
