@@ -100,3 +100,76 @@ class TestSkillRegistrationError:
         with pytest.raises(SkillRegistrationError) as exc:
             raise SkillRegistrationError("Atom 'nonexistent' not found")
         assert "nonexistent" in str(exc.value)
+
+
+# ──────────────────────────────────────────────
+# AtomRegistry tests (Task 2)
+# ──────────────────────────────────────────────
+
+from unittest.mock import MagicMock
+
+
+def _make_mock_tool(name: str):
+    """Create a minimal mock tool with a .name attribute — mimics MCP Tool objects."""
+    tool = MagicMock()
+    tool.name = name
+    return tool
+
+
+class TestAtomRegistry:
+    def test_build_returns_core_atoms(self):
+        """AtomRegistry.build() must include all P0 atoms."""
+        from plastic_promise.skills.engine import AtomRegistry
+
+        engine = MagicMock()
+        mock_tools = [_make_mock_tool(n) for n in [
+            "principle_activate", "context_supply", "memory_store",
+            "memory_recall", "memory_stats", "defense", "domain",
+            "system", "skill_session_start", "skill_session_complete", "memory_gc",
+        ]]
+        engine.list_tools = MagicMock(return_value=mock_tools)
+
+        registry = AtomRegistry.build(engine)
+        assert "principle_activate" in registry
+        assert "context_supply" in registry
+        assert "memory_store" in registry
+        assert "memory_recall" in registry
+        assert callable(registry["principle_activate"])
+
+    def test_build_includes_p1_p2_atoms(self):
+        """All tools from the MCP server tool list must be included."""
+        from plastic_promise.skills.engine import AtomRegistry
+
+        engine = MagicMock()
+        mock_tools = [_make_mock_tool(n) for n in [
+            "audit_run", "pack_export", "skill_session_trace", "memory_gc",
+        ]]
+        engine.list_tools = MagicMock(return_value=mock_tools)
+
+        registry = AtomRegistry.build(engine)
+        assert "audit_run" in registry
+        assert "pack_export" in registry
+        assert "skill_session_trace" in registry
+        assert "memory_gc" in registry
+
+    def test_build_returns_different_callables(self):
+        """Each atom callable must be a distinct function."""
+        from plastic_promise.skills.engine import AtomRegistry
+
+        engine = MagicMock()
+        mock_tools = [_make_mock_tool(n) for n in [
+            "principle_activate", "memory_store",
+        ]]
+        engine.list_tools = MagicMock(return_value=mock_tools)
+
+        registry = AtomRegistry.build(engine)
+        assert registry["principle_activate"] is not registry["memory_store"]
+
+    def test_unknown_atom_raises(self):
+        """Calling an unregistered atom should raise KeyError."""
+        from plastic_promise.skills.engine import AtomRegistry
+
+        engine = MagicMock()
+        engine.list_tools = MagicMock(return_value=[])
+        registry = AtomRegistry.build(engine)
+        assert "nonexistent" not in registry
