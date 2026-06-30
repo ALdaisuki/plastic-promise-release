@@ -957,8 +957,27 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "sp-stage":
             stage = arguments.get("stage", "")
             task_desc = arguments.get("task_description", "")
+            # ── Chain validation: reject invalid stage transitions ──
+            from plastic_promise.mcp.tools.skill_tracking import get_current_stage
+            from plastic_promise.core.constants import SKILL_CHAIN_MAP as _CHAIN_MAP
+            current = get_current_stage()
+            if current and current != stage:
+                # Strip "sp-" prefix for lookup if needed
+                lookup_current = current.replace("sp-", "")
+                lookup_stage = stage.replace("sp-", "")
+                chain = _CHAIN_MAP.get(lookup_current) or _CHAIN_MAP.get(f"sp-{lookup_current}", {})
+                valid_next = chain.get("successors", [])
+                # Normalize: remove sp- prefix for comparison
+                valid_next_normalized = [s.replace("sp-", "") for s in valid_next]
+                if lookup_stage not in valid_next and lookup_stage not in valid_next_normalized:
+                    return [TextContent(type="text", text=json.dumps({
+                        "error": "chain_violation",
+                        "message": f"Stage '{stage}' is not a valid successor of '{current}'. Valid next stages: {valid_next}",
+                        "current_stage": current,
+                        "valid_next": valid_next,
+                    }, ensure_ascii=False))]
+            # ── End chain validation ──
             se = get_skill_engine()
-            # 映射到 SkillEngine 注册的技能名
             skill_name = f"sp-{stage}" if not stage.startswith("sp-") else stage
             result = await se.exec(skill_name, {"task_description": task_desc}, caller="trae")
             return [TextContent(type="text", text=json.dumps(

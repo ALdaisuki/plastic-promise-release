@@ -38,6 +38,23 @@ async def _session_init_handler(ctx, params, atom_results):
     defense_data = parse(atom_results.get("defense"))
     gc_data = parse(atom_results.get("memory_gc"))
 
+    # ── Chain state: report current SKILL_CHAIN_MAP position ──
+    try:
+        from plastic_promise.mcp.tools.skill_tracking import get_current_stage
+        from plastic_promise.core.constants import SKILL_CHAIN_MAP as _CHAIN_MAP
+        current_stage = get_current_stage()
+        chain_state = None
+        if current_stage:
+            lookup = current_stage.replace("sp-", "")
+            chain = _CHAIN_MAP.get(lookup) or _CHAIN_MAP.get(f"sp-{lookup}", {})
+            chain_state = {
+                "current_stage": current_stage,
+                "valid_next": chain.get("successors", []),
+                "predecessors": chain.get("predecessors", []),
+            }
+    except Exception:
+        chain_state = None
+
     return SkillResult(
         skill_name="session-init",
         success=True,
@@ -49,6 +66,7 @@ async def _session_init_handler(ctx, params, atom_results):
             "system_stats": system_data,
             "trust": defense_data,
             "gc_preview": gc_data,
+            "chain_state": chain_state,
         },
         atom_results={},
         degrade_log=[],

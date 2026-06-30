@@ -31,6 +31,13 @@ from plastic_promise.core.constants import (
 _skill_state_lock = threading.Lock()
 _current_skill: str | None = None
 _parent_entity_id: str | None = None
+_current_stage: str | None = None  # Last completed SuperPowers stage name
+
+
+def get_current_stage() -> str | None:
+    """Return the last completed SuperPowers stage name, or None."""
+    with _skill_state_lock:
+        return _current_stage
 
 
 # ---------------------------------------------------------------------------
@@ -1014,7 +1021,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
     Returns:
         list[TextContent]: tracking status
     """
-    global _current_skill, _parent_entity_id
+    global _current_skill, _parent_entity_id, _current_stage
     phase = args.get("phase", "start")
     skill_name = args.get("skill_name", "")
 
@@ -1049,11 +1056,13 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                 except Exception:
                     pass
             _parent_entity_id = eid
+            _current_stage = skill_name  # Track last completed stage
             _current_skill = None
         return [TextContent(type="text", text=json.dumps({
             "status": "tracked",
             "phase": "complete",
             "next_parent": _parent_entity_id,
+            "current_stage": _current_stage,
         }, ensure_ascii=False))]
 
     return [TextContent(type="text", text=json.dumps(
