@@ -719,22 +719,44 @@ class ContextEngine:
             fused_results = [(mid, score * 0.8, content, source) for mid, score, content, source in text_results]
         all_results = self._layered_fuse(graph_results, fused_results, [])
 
-        # Phase 3: 符号规则调整
-        all_results = self._apply_symbol_rules(all_results, task_description)
-
-        # Phase 4: 反馈权重 (P2: worth_score as single source of truth)
-        all_results = self._apply_feedback(all_results)
-
         # P2: Evolve edge weights based on feedback patterns
         self._apply_edge_feedback()
 
-        # Phase 5: 分层 + 生命轨迹 (P3a + P3b)
+        # Phase 3-5 fused: symbol rules + feedback + ContextItem building (was 3 passes, now 1)
+        from plastic_promise.core.constants import (
+            FEEDBACK_SCORE_MULTIPLIER_MIN,
+            FEEDBACK_SCORE_MULTIPLIER_RANGE,
+        )
         pack = ContextPack(activated_principles=activated)
 
         for item_id, score, content, source in all_results:
+            # --- Symbol rule boost (was _apply_symbol_rules) ---
+            boost = 1.0
+            for category, keywords in SYMBOL_RULE_KEYWORDS.items():
+                if any(kw in task_description for kw in keywords) or any(kw in content for kw in keywords):
+                    if category == "security":
+                        boost *= 1.5
+                    elif category == "commitment":
+                        boost *= 1.4
+                    elif category == "quality":
+                        boost *= 1.2
+            score = min(score * boost, 1.0)
+
+            # --- Feedback multiplier (was _apply_feedback) ---
+            mem = self._memories.get(item_id, {}) if not item_id.startswith("principle:") else {}
+            if mem:
+                ws = mem.get("worth_success", 0)
+                wf = mem.get("worth_failure", 0)
+                total = ws + wf
+                worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+            else:
+                worth = 0.5
+            multiplier = FEEDBACK_SCORE_MULTIPLIER_MIN + FEEDBACK_SCORE_MULTIPLIER_RANGE * worth
+            score = score * multiplier
+
+            # --- ContextItem construction (was separate Phase 5 loop) ---
             is_principle = item_id.startswith("principle:")
-            mem = self._memories.get(item_id, {})
-            worth = mem.get("worth_score", 0.0)
+            worth_score = mem.get("worth_score", 0.0) if mem else 0.0
             freshness = self._calc_freshness(item_id)
 
             item = ContextItem(
@@ -744,16 +766,14 @@ class ContextEngine:
                 source=source,
                 freshness=freshness,
                 is_principle=is_principle,
-                worth_score=worth,
-                # P3a: defaults (computed below for divergent layer)
+                worth_score=worth_score,
                 novelty_score=0.0,
                 confidence=0.5,
                 inspiration_score=0.0,
-                # P3b: life trajectory from MemoryRecord
-                adoption_count=mem.get("worth_success", 0),
-                rejection_count=int(mem.get("worth_failure", 0)),
-                times_retrieved=mem.get("access_count", 0),
-                decay_status=self._calc_decay_status(item_id, mem),
+                adoption_count=mem.get("worth_success", 0) if mem else 0,
+                rejection_count=int(mem.get("worth_failure", 0)) if mem else 0,
+                times_retrieved=mem.get("access_count", 0) if mem else 0,
+                decay_status=self._calc_decay_status(item_id, mem) if mem else "healthy",
             )
 
             if score >= CONTEXT_LAYERS["core"]["min_relevance"]:
@@ -1087,6 +1107,13 @@ class ContextEngine:
             return results
 
         current_owner = os.environ.get("AGENT_OWNER", "")
+        # Hoist repeated lookups outside hot loop
+        domain_hint = getattr(self, '_domain_hint', None)
+        dm = getattr(self, '_dm', None)
+        has_dm = dm is not None and domain_hint and domain_hint != "all"
+        hint_dom = dm.domains.get(domain_hint) if has_dm else None
+
+        accessed: list[str] = []  # defer access tracking to post-loop
 
         for mid, mem in self._memories.items():
             # Owner filter: only own memories + shared (owner="shared" or owner="")
@@ -1111,19 +1138,22 @@ class ContextEngine:
                     score = score * 0.8 * trust_boost  # long-term slightly de-prioritized
 
                 # 域加权: 同域 ×1.3, 融合域 (同标签) ×1.1
-                domain_hint = getattr(self, '_domain_hint', None)
-                if domain_hint and domain_hint != "all":
+                if has_dm:
                     mem_domain = mem.get("domain", "uncategorized")
                     if mem_domain == domain_hint:
                         score = min(score * 1.3, 1.0)
-                    elif hasattr(self, '_dm') and self._dm:
+                    elif hint_dom:
                         mem_tags = set(mem.get("tags", []))
-                        hint_dom = self._dm.domains.get(domain_hint)
-                        if hint_dom and mem_tags & hint_dom.tags:
+                        if mem_tags & hint_dom.tags:
                             score = min(score * 1.1, 1.0)
 
                 results.append((mid, min(score, 1.0), content[:300], mem["source"]))
-                # Auto access tracking — 越用越聪明
+                accessed.append(mid)
+
+        # Deferred access tracking — batch update outside hot loop
+        for mid in accessed:
+            mem = self._memories.get(mid)
+            if mem:
                 mem["access_count"] = mem.get("access_count", 0) + 1
                 if mem.get("access_count", 0) >= 5:
                     mem["worth_success"] = mem.get("worth_success", 0) + 1
@@ -1193,52 +1223,42 @@ class ContextEngine:
     def _graph_traversal(self, task_type: str) -> List[tuple]:
         """Fine-grained: principle association + entity link + deep-grammar traversal.
 
-        P0 enhancement — follows three edge types:
-          1. task_type → principle (activates): direct principle activation
-          2. memory → entity (references): data-flow driven entity links
-          3. principle → memory (governs): deep-grammar — principles surface
-             the memories they govern, even without keyword match in the query
+        P0 enhancement — follows three edge types, two passes (was three):
+          Pass 1: task_type → principle (activates) — populates principle_nodes
+          Pass 2: memory → entity (references) + principle → memory (governs)
         """
         results = []
         visited = set()
         principle_nodes = set()
-
-        # 1. Task type → principles (direct activation edges)
         target = f"task_type:{task_type}"
-        for edge in self._graph_edges:
-            if edge.get("from") == target:
-                node_id = edge["to"]
-                visited.add(node_id)
-                if node_id.startswith("principle:"):
-                    principle_nodes.add(node_id)
-                node = self._graph_nodes.get(node_id, {})
-                results.append((node_id, edge.get("weight", 0.5),
-                                node.get("description", node_id),
-                                "graph"))
 
-        # 2. Memory → entity (auto-extracted references) — data-flow driven
+        # Pass 1: task_type → principles — must run first to populate principle_nodes
         for edge in self._graph_edges:
-            if edge.get("relation") == "references":
-                memory_id = edge.get("from", "")
-                entity_id = edge.get("to", "")
-                if entity_id in visited and memory_id in self._memories:
-                    mem = self._memories[memory_id]
-                    results.append((memory_id, 0.6,
-                                    mem.get("content", "")[:300],
-                                    "entity-link"))
+            src = edge.get("from", "")
+            if src == target:
+                dst = edge.get("to", "")
+                visited.add(dst)
+                if dst.startswith("principle:"):
+                    principle_nodes.add(dst)
+                node = self._graph_nodes.get(dst, {})
+                results.append((dst, edge.get("weight", 0.5),
+                                node.get("description", dst), "graph"))
 
-        # 3. P0: Principle → memory (governs) — deep grammar traversal
-        # When a principle is activated, surface all memories it governs
+        # Pass 2: references + governs — now principle_nodes is fully populated
         for edge in self._graph_edges:
-            if edge.get("relation") == "governs":
-                principle_id = edge.get("from", "")
-                memory_id = edge.get("to", "")
-                if principle_id in principle_nodes and memory_id in self._memories:
-                    mem = self._memories[memory_id]
-                    edge_weight = edge.get("weight", 0.3)
-                    results.append((memory_id, edge_weight,
-                                    mem.get("content", "")[:300],
-                                    "graph"))
+            rel = edge.get("relation", "")
+            src = edge.get("from", "")
+            dst = edge.get("to", "")
+
+            if rel == "references":
+                if dst in visited and src in self._memories:
+                    mem = self._memories[src]
+                    results.append((src, 0.6, mem.get("content", "")[:300], "entity-link"))
+            elif rel == "governs":
+                if src in principle_nodes and dst in self._memories:
+                    mem = self._memories[dst]
+                    results.append((dst, edge.get("weight", 0.3),
+                                    mem.get("content", "")[:300], "graph"))
 
         return results
 
