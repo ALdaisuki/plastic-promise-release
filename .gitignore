@@ -31,6 +31,7 @@ desktop.ini
 *.db-wal
 *.sqlite3
 data/
+.data/
 logs/
 
 # Claude
