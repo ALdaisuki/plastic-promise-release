@@ -22,7 +22,7 @@
 >
 > `principle_activate` 使用 `domain_hint` 参数限定原则域: `building` | `fixing` | `designing` | `reflecting` | `governing` | `connecting` | `all`
 
-## MCP 工具 (40 个, 10 域)
+## MCP 工具 (41 个, 10 域 + 1 SuperPowers)
 
 | 域 | 工具 |
 |------|------|
@@ -36,6 +36,61 @@
 | Pack (3) | pack_export(streaming), pack_import(strategy), pack_recall(strict) |
 | **Skill Track (5)** | **skill_session_start, skill_session_complete, skill_session_trace, skill_session_audit, skill_auto_track** |
 | **Skills (3)** | **session-init, smart-remember, step-closure** |
+| **SuperPowers (1)** | **sp-stage(stage, task_description) — 12 阶段统一入口** |
+
+## SuperPowers 流水线
+
+`sp-stage` 是 SuperPowers 12 阶段的统一 MCP 入口。Claude Code 用 SuperPowers 插件 + `Skill` 工具，Trae 用 `sp-stage` MCP 工具，两者走同一 `skill_auto_track` 追踪管道。
+
+### 工作流
+
+```
+session-init → chain_state 初始化
+  ↓
+brainstorming → using-git-worktrees → writing-plans
+                                         ├→ executing-plans → TDD → verify → finish
+                                         └→ subagent-driven → TDD → request-review → receive-review → finish
+```
+
+辅助: `systematic-debugging`, `dispatching-parallel-agents`
+
+### 使用方式
+
+```
+# Trae (sp-stage MCP 工具)
+sp-stage(stage="brainstorming", task_description="澄清需求")
+sp-stage(stage="using-git-worktrees", task_description="创建分支")
+sp-stage(stage="writing-plans", task_description="拆解任务")
+
+# Claude Code (SuperPowers 插件)
+/SuperPowers:brainstorming
+```
+
+每次调用耗时 **0.2~0.4s**（冷启动 ~3s 加载 embedding 模型）。
+
+### 链约束（跳步自动拒绝）
+
+`SKILL_CHAIN_MAP` 定义前置/后继关系。`sp-stage` handler 在执行前校验 —— 跳步返回 `chain_violation` 并提示正确下一步。worktrees 是强制必经阶段。
+
+```
+# 跳步被拒示例
+sp-stage(stage="executing-plans", ...)  ← 当前在 brainstorming
+→ error: "chain_violation: requires ['sp-writing-plans'], but current='brainstorming'"
+→ "Valid next: ['sp-using-git-worktrees']"
+```
+
+### 追踪管道
+
+```
+Trae:  sp-stage → PreToolUse hook → sp_hook.py → POST /api/skill-track → skill_auto_track
+Claude: Skill() → PreToolUse hook → mcp_tool: skill_auto_track → skill_session_start
+                                                          ↓
+                  SkillEngine.exec: principle_activate + memory_store (无 context_supply)
+                                                          ↓
+                  PostToolUse hook → skill_session_complete → 更新 _current_stage
+```
+
+> **注**: `context_supply` 已从 sp-stage 原子中移除 — 其 `engine.supply()` 三路检索 + Ollama rerank 耗时 5~60s，且结果已不返回给调用方。context 在 `session-init` 时注入一次。
 
 ## 记忆质量管道 (方向 A + B)
 

@@ -19,9 +19,10 @@
   多 Agent 开发组（Claude PM + Pi Builder/Fixer/Reviewer） ✅
   自治流水线（标签驱动, 零Token Daemon, 自动衔接） ✅
   step-closure 六联闭环（原则对齐→SCARF→激素→信任→反思→CEI） ✅
-  动态信任-自由度矩阵（4档映射到工具权限） ✅
+  动态信任-自由度矩阵（4档映射到工具权限 + TrustStore 持久化） ✅
   11 维审计（7维基础 + 4维多Agent, 每小时自动 + Tier1 修复） ✅
-  Skill 调用链追踪（14 技能映射 + 链完整性检测） ✅
+  Skill 调用链追踪（14 技能映射 + 链完整性检测 + sp-stage 校验） ✅
+  SuperPowers 12 阶段流水线（sp-stage 统一入口 + 链约束 + Trae hook） ✅
 
 演化层 — 迭代进步
   worth 反馈闭环（采纳/拒绝/忽略 三态计数器） ✅
@@ -71,6 +72,9 @@
 - **方向 B**: 记忆质量管道 — smart_extractor 接入 pipeline + 向量去重 (cos≥0.85) + QualityGate 四维入池评分 (置信度/相关性/新鲜度/信息密度, 等权0.25) + MemoryGC.merge_similar() 相似合并 (cos≥0.70) + 方向 A-B 全集成 (tier-aware freshness + decay init on store + dedup→AccessReinforcement boost)
 - 存量回填策略 (LanceDB 空时自动从 SQLite 回填)
 - **Skill Tracking**: SuperPowers 流程可追踪化 — 5 个 MCP 工具 (skill_session_start/complete/trace/audit + skill_auto_track) + SKILL_CHAIN_MAP (14 技能) + skill_session 实体类型 + audit 第八维 skill_trace (权重 0.10) + CLAUDE.md Skill 调用协议
+- **信任分持久化**: TrustStore (SQLite trust_scores + trust_history 表) + 时间衰减 (-0.005/天) + SCARF 联动 boost/decay + L0/L1 违规驱动减分 + MCP 重启后不丢失
+- **SuperPowers Pipeline**: `sp-stage` MCP 工具 (1 工具 12 阶段统一入口) + 链校验 (SKILL_CHAIN_MAP, 跳步自动拒绝) + Trae hook 桥接 (sp_hook.py → /api/skill-track) + context_supply 原子移除优化 (5~60s → 0.2~0.4s)
+- **全链路契约校验**: 对照 CLAUDE.md 逐项检查各子系统实现/约定/缺陷状态，修复 step-closure mode 参数丢失 bug
 
 ### 已完成 (2026-07-01)
 - **Auto Context Inject**: 统一自动化上下文注入 — 1 个 MCP 工具 (auto_context_inject) + SoulBridge/Pi Daemon/Claude Code 三路径统一 + 自反馈循环 + CLAUDE.md 启动序列简化
@@ -79,7 +83,7 @@
 - **session-init**: 统一会话启动 — 一条调用替代原有 5 步（原则激活 + context_supply + memory_store 注入 + domain stats + system stats + defense + memory_gc preview）
 - **memory_sync_files**: 文件系统 .md 记忆同步到 MCP 管道
 
-**MCP 工具总数: 40（10 域）**
+**MCP 工具总数: 41（10 域 + SuperPowers）**
 
 ### 进行中
 - 无。所有已交付。

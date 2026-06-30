@@ -13,7 +13,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 - **审计同步**: 11 维审计结果所有 Agent 可见
 - **自治流水线**: 标签驱动、零 Token Daemon、自动衔接
 
-## MCP 工具目录 (40 工具, 10 域)
+## MCP 工具目录 (41 工具, 10 域 + SuperPowers)
 
 ### 🧠 记忆域 (10)
 | 工具 | 用途 |
@@ -86,9 +86,18 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 ### ⭐ Phase 1 程序化技能 (3)
 | 工具 | 用途 |
 |------|------|
-| `session-init` | 统一会话启动 — 原则激活+上下文注入+域健康+信任分+GC预览 |
+| `session-init` | 统一会话启动 — 原则激活+上下文注入+域健康+信任分+GC预览+chain_state |
 | `smart-remember` | 智能记忆存储 — 自动去重（相似度≥0.85则更新）+ 完整质量管道 |
 | `step-closure` | 六联闭环 — 原则对齐→SCARF→激素→信任→反思→CEI（full/light双模式） |
+
+### 🦸 SuperPowers 流水线 (1)
+| 工具 | 用途 |
+|------|------|
+| `sp-stage` | SuperPowers 12 阶段统一入口 — brainstorming→worktrees→plans→execute→TDD→verify→finish。链校验自动拒绝跳步，hook 自动追踪 |
+
+> **性能**: 热调用 0.2~0.4s，冷启动 ~3s。`context_supply` 已从原子中移除（session-init 时注入一次）。
+> **链约束**: `SKILL_CHAIN_MAP` 定义前置/后继，跳步返回 `chain_violation` + 正确下一步提示。
+> **追踪**: `sp_hook.py → POST /api/skill-track → skill_auto_track → skill_session_start/complete`（与 Claude Code hook 走同一管道）
 
 ### 🌐 域联邦域 (1)
 | 工具 | 用途 |
@@ -101,29 +110,41 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 
 ### 1. 每次任务开始
 ```
-1. context_supply(task_description="<任务描述>", task_type="<类型>")
-2. principle_activate(task_type="<类型>", task_description="<任务描述>")
-3. 审查返回的 🔵核心上下文 + 🟡关联上下文 + 🧬激活原则
+1. session-init(task_description="<任务描述>")  → 获取 chain_state + 原则 + 信任分
+2. sp-stage(stage="brainstorming", task_description="<任务描述>")  → 进入 SuperPowers 流水线
+3. 按 SKILL_CHAIN_MAP 顺序推进后续阶段
 ```
 
-### 2. 每次决策前
+### 2. SuperPowers 阶段推进
+```
+sp-stage(stage="brainstorming", task_description="...")      → 阶段 1: 需求澄清
+sp-stage(stage="using-git-worktrees", task_description="...") → 阶段 2: 创建 worktree（强制必经）
+sp-stage(stage="writing-plans", task_description="...")       → 阶段 3: 任务拆解
+sp-stage(stage="executing-plans", task_description="...")     → 阶段 4: 执行实施
+sp-stage(stage="test-driven-development", task_description="...") → 阶段 5: TDD
+sp-stage(stage="verification-before-completion", task_description="...") → 阶段 6: 验收
+sp-stage(stage="finishing-a-development-branch", task_description="...") → 阶段 7: 合入
+```
+跳步会被 `sp-stage` handler 自动拒绝并返回正确下一步。
+
+### 3. 每次决策前
 ```
 principle_activate(task_type="<类型>") → 检查对齐状态
 必要时 principle_evaluate(principle_id, scenario) → 反事实评估
 ```
 
-### 3. 重要操作后
+### 4. 重要操作后
 ```
 memory_store(content="<做了什么+为什么>", memory_type="experience", source="<agent_name>")
 ```
 
-### 4. 每步闭环（有实质产出时）
+### 5. 每步闭环（有实质产出时）
 ```
 step-closure(task_description="<本步操作>", mode="full")
 ```
 轻量步骤（查询/阅读）：`mode="light"`
 
-### 5. 写操作前检查信任分
+### 6. 写操作前检查信任分
 ```
 defense(action="get") → 根据 tier 决定行为
 ```
@@ -299,11 +320,11 @@ Claude Code / Pi Agent / 外部 Agent
         │
         ▼ MCP (stdio | SSE)
 ┌──────────────────────────────────────┐
-│ Plastic Promise MCP Server (40工具)   │
-│  ┌────┐┌────┐┌────┐┌────┐┌────┐    │
-│  │记忆││原则││上下文││审计││技能│    │  10 域
-│  │ 10 ││ 4  ││ 5  ││ 3  ││ 5  │    │
-│  └────┘└────┘└────┘└────┘└────┘    │
+│ Plastic Promise MCP Server (41工具)   │
+│  ┌────┐┌────┐┌────┐┌────┐┌────┐┌────┐│
+│  │记忆││原则││上下文││审计││技能││SP  ││  10 域 + SuperPowers
+│  │ 10 ││ 4  ││ 5  ││ 3  ││ 5  ││ 1  ││
+│  └────┘└────┘└────┘└────┘└────┘└────┘│
 │  ┌────┐┌────┐┌────┐┌────┐┌────┐    │
 │  │自省││管理││经验包││联邦││技能│    │
 │  │ 2  ││ 4  ││ 3  ││ 1  ││ 3  │    │
