@@ -827,8 +827,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             git_commit = arguments.get("git_commit", "")
             mode = arguments.get("mode", "full")
             result = await asyncio.to_thread(post_task, task_desc, git_commit, mode)
+            # post_task returns objects that aren't JSON-serializable — safe conversion
+            def safe_serialize(obj):
+                if isinstance(obj, dict):
+                    return {k: safe_serialize(v) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [safe_serialize(i) for i in obj]
+                elif hasattr(obj, '__dict__'):
+                    return {k: safe_serialize(v) for k, v in obj.__dict__.items()
+                            if not k.startswith('_')}
+                elif callable(obj) and not isinstance(obj, (str, int, float, bool, list, dict, type(None))):
+                    return str(obj)
+                else:
+                    try:
+                        json.dumps(obj)
+                        return obj
+                    except (TypeError, ValueError):
+                        return str(obj)
+            safe = safe_serialize(result)
             return [TextContent(type="text", text=json.dumps(
-                result, ensure_ascii=False, indent=2))]
+                safe, ensure_ascii=False, indent=2))]
 
         elif name == "memory_sync_files":
             from plastic_promise.mcp.tools.sync import handle_memory_sync_files
