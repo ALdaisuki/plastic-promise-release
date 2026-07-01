@@ -44,6 +44,7 @@ class MemoryPipeline:
         entity_ids: list[str] = None, custom_tags: list[str] = None,
         domain_hint: str = None,
         max_llm_calls: int = 3,
+        skip_embed: bool = False,
     ) -> Optional[str]:
         """Store a memory with smart extraction, then through pipeline.
 
@@ -107,6 +108,7 @@ class MemoryPipeline:
                 "domain": domain_hint or "uncategorized",
                 "created_at": datetime.datetime.now().isoformat(),
                 "processed_at": None,
+                "skip_embed": skip_embed,
             }
 
             # Attach extraction metadata if available
@@ -293,8 +295,18 @@ class MemoryPipeline:
         for i in range(0, len(items), self._batch_size):
             batch = items[i:i + self._batch_size]
             contents = [r["content"] for _, r in batch]
+            # Skip Ollama embed for items marked skip_embed (e.g. auto_inject structured content)
+            skip_set = {mid for mid, r in batch if r.get("skip_embed")}
             try:
-                vectors = self.embedder.embed_batch(contents)
+                if skip_set:
+                    vectors = []
+                    for mid, r in batch:
+                        if mid in skip_set:
+                            vectors.append([0.0] * self.embedder.dim)
+                        else:
+                            vectors.append(self.embedder.embed(r["content"]))
+                else:
+                    vectors = self.embedder.embed_batch(contents)
             except Exception:
                 vectors = [[0.0] * self.embedder.dim for _ in batch]
             for (mid, record), vec in zip(batch, vectors):

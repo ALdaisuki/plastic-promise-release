@@ -298,8 +298,11 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
             "tags": tags,
             "max_llm_calls": 0,  # skip LLM classify — auto_inject content is structured already
         })
-        store_data = json.loads(store_result[0].text)
-        inject_memory_id = store_data.get("memory_id")
+        if store_result and len(store_result) > 0:
+            store_data = json.loads(store_result[0].text)
+            inject_memory_id = store_data.get("memory_id") if isinstance(store_data, dict) else None
+        else:
+            inject_memory_id = None
     except Exception as e:
         errors.append(f"memory_store: {e}")
 
