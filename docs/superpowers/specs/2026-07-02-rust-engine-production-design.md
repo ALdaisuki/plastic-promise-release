@@ -532,3 +532,37 @@ Phase 4c: Document eventual consistency + audit metadata preservation      (~0.5
 | `_rust_lock` prevents races | 5 threads probe simultaneously -> only 1 RustEngine created |
 | Boundary CI guard still passes | `python -m pytest tests/test_boundary.py -v` |
 | audit_metadata preserved | Verify engine_version, timestamp in returned ContextPack |
+
+---
+
+## Phase 4 Results (2026-07-02)
+
+### Summary
+
+All 7 scenarios passed. Rust accelerates `supply()` by ~35% at 1000 memories, with PyO3 pass overhead at 1.6ms for 1000 items. Concurrent access is safe (0 errors in 10-thread stress). Degradation recovery works correctly — reset forces immediate re-probe, recovery succeeds. Empty-retriever fallback correctly returns all memories in `related` tier.
+
+### Results Table
+
+| # | Scenario | Metric | Threshold | Actual | Status |
+|---|----------|--------|-----------|--------|--------|
+| 1 | 1000-memory supply() | Rust vs Python p50 | Rust <= Python | Rust: 2.4ms, Python: 3.7ms | PASS — Rust 35% faster |
+| 2 | 10 concurrent supply() | Error rate | < 1% | 0 errors in 8.1ms total | PASS |
+| 3 | Cold start health check | Latency | < 200ms | 78.6ms | PASS |
+| 4 | Degradation recovery | Auto-recover | No errors | healthy=None after reset, recovers to True on re-probe | PASS |
+| 5 | PyO3 pass overhead | 1000-item pass | < 100ms | p50=1.6ms | PASS |
+| 6 | Empty pool supply() | Latency | < 500ms | 0.4ms avg | PASS |
+| 7 | Empty-retriever fallback | 100 items returned | All in related | 100 items in related | PASS |
+
+### Environment
+
+- **OS**: Windows 11 Pro (x86_64)
+- **Python**: 3.13.7
+- **Rust**: 1.96 (pyo3 0.20)
+- **Vector dim**: 1024 (mxbai-embed-large)
+- **Embedder**: Offline (explicit vectors used; HuggingFace blocked in test environment)
+
+### Baseline Tests
+
+- `tests/test_rust_integration.py`: 6/6 passed
+- `tests/test_boundary.py`: 1/1 passed
+- Total: 7 passed, 0 failures
