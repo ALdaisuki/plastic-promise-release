@@ -76,15 +76,19 @@ class ContextPack:
         if self.activated_principles:
             lines.append("## 🧬 核心约定参考（约定优于约束——决策前主动查阅）")
             from plastic_promise.core.constants import CORE_PRINCIPLES
-            for name in self.activated_principles:
-                # Find principle by name and show full reference
-                match = next((p for p in CORE_PRINCIPLES if p["name"] == name), None)
-                if match:
-                    lines.append(f"### {name}")
-                    lines.append(f"> {match['content']}")
-                    lines.append(f"**⚠️ 违反后果**：{match.get('consequence', '未知后果')}")
+            for p in self.activated_principles:
+                if isinstance(p, dict):
+                    name = p.get("name", "?")
+                    content = p.get("content", "")
+                    consequence = p.get("consequence", "违反约定可能导致系统退化")
                 else:
-                    lines.append(f"- {name}")
+                    name = p
+                    match = next((cp for cp in CORE_PRINCIPLES if cp["name"] == name), None)
+                    content = match["content"] if match else ""
+                    consequence = match.get("consequence", "违反约定可能导致系统退化") if match else ""
+                lines.append(f"### {name}")
+                lines.append(f"> {content}")
+                lines.append(f"**⚠️ 违反后果**：{consequence}")
             lines.append("")
         if self.core:
             lines.append("## 🔵 核心上下文（必读）")
@@ -1728,11 +1732,17 @@ class ContextEngine:
             except Exception:
                 pass  # Intent matching is best-effort; degrade gracefully
 
-        # Resolve IDs to names
+        # Resolve IDs to full principle dicts
         result = []
         for p in CORE_PRINCIPLES:
             if p["id"] in activated_ids:
-                result.append(p["name"])
+                result.append({
+                    "name": p["name"],
+                    "content": p["content"],
+                    "consequence": p.get("consequence", ""),
+                    "domain": p.get("domain", "all"),
+                    "keywords": p.get("keywords", ""),
+                })
         return result
 
     def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> List[tuple]:
