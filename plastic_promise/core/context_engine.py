@@ -11,8 +11,11 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 from plastic_promise.core.constants import (
     CONTEXT_LAYERS,
@@ -229,6 +232,13 @@ class ContextEngine:
         # RLock (reentrant) because increment_field calls update_memory_fields,
         # and both acquire the lock.
         self._write_lock = threading.RLock()
+
+        # Rust engine integration — stateless accelerator for supply()
+        self._rust_healthy: bool | None = None       # None = unchecked, True = healthy, None on failure
+        self._rust_health_checked_at: float = 0.0     # epoch timestamp of last health check
+        self._rust_health_ttl: float = 300.0          # cache TTL in seconds (5 minutes)
+        self._rust_engine_instance = None              # cached Rust engine instance (reused)
+        self._rust_lock = threading.Lock()             # protects all _rust_* fields from concurrent access
 
 
     def _rebuild_graph_from_memories(self):
@@ -1404,6 +1414,60 @@ class ContextEngine:
         """Commit any pending SQLite transaction."""
         if self._sqlite:
             self._sqlite.commit()
+
+    # ---- Rust engine health probe -------------------------------------------
+
+    def _check_rust_health(self) -> Optional[bool]:
+        """Probe Rust core availability. Caches result for TTL seconds.
+
+        Thread-safe: acquires _rust_lock to protect _rust_engine_instance
+        and health state against concurrent MCP/Daemon access.
+
+        On failure: sets _rust_healthy = None (NOT False) to force
+        immediate re-probe on the next supply() call. This avoids the
+        defect where setting healthy=False traps the system in a
+        degraded state until TTL expires.
+        """
+        with self._rust_lock:
+            now = time.time()
+            # Return cached result if within TTL
+            if self._rust_healthy is not None and \
+               (now - self._rust_health_checked_at) < self._rust_health_ttl:
+                return self._rust_healthy
+
+            try:
+                from context_engine_core import ContextEngine as RustEngine
+                # Smoke test: supply with empty memories — validates import + PyO3 bridge
+                engine = RustEngine()
+                engine.set_current_time(datetime.datetime.now().isoformat())
+                pack = engine.supply("test", [0.0] * 1024, "general", "global", [])
+                # Validate response shape — must have core + related attributes
+                assert hasattr(pack, 'core'), "Rust ContextPack missing 'core'"
+                assert hasattr(pack, 'related'), "Rust ContextPack missing 'related'"
+                assert hasattr(pack, 'divergent'), "Rust ContextPack missing 'divergent'"
+                assert hasattr(pack, 'activated_principles'), "Rust ContextPack missing 'activated_principles'"
+                self._rust_engine_instance = engine
+                self._rust_healthy = True
+            except Exception as e:
+                logger.warning("Rust engine health check failed: %s", e)
+                # Set to None (not False) — forces immediate re-probe on next supply()
+                self._rust_healthy = None
+                self._rust_engine_instance = None
+
+            self._rust_health_checked_at = now
+            return self._rust_healthy
+
+    def reset_rust_health(self):
+        """Force re-probe Rust health on next supply() call.
+
+        Use when: Rust .pyd was deployed, environment changed,
+        or health was falsely marked as failed.
+        """
+        with self._rust_lock:
+            self._rust_healthy = None
+            self._rust_health_checked_at = 0.0
+            self._rust_engine_instance = None
+        logger.info("Rust health reset — will re-probe on next supply()")
 
     # ========== 内部方法 ==========
 
