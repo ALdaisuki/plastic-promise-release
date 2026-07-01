@@ -200,9 +200,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
 
         # Auto-link extracted entities to graph immediately
         for eid in all_entities:
-            edge = {"from": fuzzy_id, "to": eid, "relation": "references", "weight": 0.5}
-            if edge not in engine._graph_edges:
-                engine._graph_edges.append(edge)
+            engine.add_graph_edge(source=fuzzy_id, target=eid, relation="references", weight=0.5)
 
         # Process through pipeline immediately (同步处理——大类分完就入池)
         result = fb.process_pipeline()
@@ -461,8 +459,9 @@ def _extract_entity_ids(content: str, engine: Any) -> list[str]:
                 if pid not in entity_ids:
                     entity_ids.append(pid)
         # Match existing graph nodes
-        for nid in engine._graph_nodes:
-            name = engine._graph_nodes[nid].get("name", "")
+        for node in engine.list_graph_nodes():
+            nid = node.get("id", "")
+            name = node.get("name", "")
             if name and len(name) >= 3 and name in content:
                 if nid not in entity_ids:
                     entity_ids.append(nid)
@@ -472,27 +471,32 @@ def _extract_entity_ids(content: str, engine: Any) -> list[str]:
 
 
 # ---- _get_fuzzy_buffer (internal helper) ----
+# Module-level caches for engine fuzzy buffers (avoids private-attr violations)
+_fuzzy_buffers: dict[int, Any] = {}
+_rec_mem_cache: dict[int, Any] = {}
+
 def _get_fuzzy_buffer(engine: Any):
     """Get or create a FuzzyBuffer attached to the engine."""
-    if not hasattr(engine, '_fuzzy_buffer') or engine._fuzzy_buffer is None:
+    eid = id(engine)
+    if eid not in _fuzzy_buffers:
         from plastic_promise.memory.pipeline import MemoryPipeline
         from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
         from plastic_promise.core.embedder import get_embedder
 
-        rec_mem = engine._rec_mem if hasattr(engine, '_rec_mem') else RecMem(engine)
+        rec_mem = _rec_mem_cache.get(eid, RecMem(engine))
         try:
             embedder = get_embedder()
         except Exception:
             from plastic_promise.core.embedder import FallbackEmbedder
             embedder = FallbackEmbedder()
         tier_mgr = MemoryTierManager(rec_mem)
-        engine._fuzzy_buffer = MemoryPipeline(
+        _fuzzy_buffers[eid] = MemoryPipeline(
             rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr,
             domain_manager=getattr(engine, '_dm', None),
             lancedb=getattr(engine, '_ldb', None),
         )
-        engine._rec_mem = rec_mem
-    return engine._fuzzy_buffer
+        _rec_mem_cache[eid] = rec_mem
+    return _fuzzy_buffers[eid]
 
 
 # ---- fuzzy_status (internal — not exposed as MCP tool) ----
@@ -616,9 +620,8 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
     by_domain = {}
 
     pending = []
-    for mid, mem in engine._memories.items():
-        if not isinstance(mem, dict):
-            continue
+    for mem in engine.iter_memories():
+        mid = mem["id"]
         tags = list(mem.get("tags", []))
         if "status:replaced" in tags:
             skipped += 1
@@ -687,11 +690,8 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
             )
 
             if changed and not dry_run:
-                # Update in-memory engine dict
-                engine._memories[mid]["category"] = new_category
-                engine._memories[mid]["tier"] = new_tier
-                engine._memories[mid]["domain"] = new_domain
-                engine._memories[mid]["tags"] = new_tags
+                # Update via public API
+                engine.update_memory_fields(mid, category=new_category, tier=new_tier, domain=new_domain, tags=new_tags)
 
                 # Update SQLite
                 if sqlite is not None:
@@ -724,7 +724,7 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
         "errors": errors,
         "batch_size": batch_size,
         "dry_run": dry_run,
-        "total": len(engine._memories),
+        "total": engine.memory_count,
         "last_id": batch[-1][0] if batch else None,
         "category_distribution": by_category,
         "domain_distribution": by_domain,
