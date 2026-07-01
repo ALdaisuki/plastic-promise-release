@@ -856,15 +856,27 @@ class ContextEngine:
         return False
 
     def list_memories(self, memory_type=None, source=None,
-                      min_worth=None, limit=50, scope=None) -> list:
-        """List memories with optional filters.
+                      min_worth=None, limit=50, scope=None, offset=0) -> list:
+        """List memories with optional filters and offset pagination.
 
-        Returns a list of MemoryRecord objects matching the filter criteria.
+        Args:
+            memory_type: Optional filter by memory type.
+            source: Optional filter by source.
+            min_worth: Optional minimum worth score filter.
+            limit: Maximum number of records to return (default 50).
+            scope: Optional domain filter.
+            offset: Number of matching records to skip before returning
+                    results (default 0). Used by list_memories_paginated()
+                    for offset pagination.
+
+        Returns:
+            A list of MemoryRecord objects matching the filter criteria.
         """
         # Refresh in-memory cache from SQLite first (catches external writes)
         self._reload_from_sqlite()
 
         results = []
+        skip = offset
         for mid, mem in self._memories.items():
             if memory_type and mem.get("memory_type") != memory_type:
                 continue
@@ -879,10 +891,52 @@ class ContextEngine:
                 ws = (s + 1.0) / (total + 2.0) if total > 0 else 0.5
                 if ws < min_worth:
                     continue
+            if skip > 0:
+                skip -= 1
+                continue
             results.append(self.get_memory(mid))
             if len(results) >= limit:
                 break
         return results
+
+    def list_memories_paginated(
+        self,
+        memory_type: str = None,
+        source: str = None,
+        min_worth: float = None,
+        scope: str = None,
+        page_size: int = 200,
+    ):
+        """Yield MemoryRecords one page at a time via offset pagination.
+
+        Avoids allocating a full list for large result sets.
+        For 10K records at page_size=200: ~50 PyO3 boundary crossings.
+
+        Consistency: Uses offset-based pagination — NOT guaranteed consistent
+        under concurrent writes. Records inserted or deleted between pages may
+        cause duplicates or omissions. Suitable for snapshot operations
+        (pack_export, memory_gc, memory_stats). Real-time retrieval uses
+        supply() via LanceDB ANN + text matching, not pagination.
+
+        Yields:
+            MemoryRecord objects, one at a time.
+        """
+        offset = 0
+        while True:
+            page = self.list_memories(
+                memory_type=memory_type,
+                source=source,
+                min_worth=min_worth,
+                limit=page_size,
+                scope=scope,
+                offset=offset,
+            )
+            if not page:
+                break
+            yield from page
+            if len(page) < page_size:
+                break
+            offset += len(page)
 
     def iter_memories(self, scope=None, page_size=200) -> "Iterator[dict]":
         """Iterate memory records as dicts, one page at a time.
