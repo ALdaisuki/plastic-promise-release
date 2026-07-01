@@ -318,6 +318,16 @@ class MemoryPipeline:
                         tags.append("embed:deferred")
                 continue  # stay in classified stage, retry next cycle
             for (mid, record), vec in zip(batch, vectors):
+                # ---- Zero-vector guard (classified stage): defer when no rec_mem ----
+                if self.rec_mem is None and not (mid in skip_set) and vec and not any(v != 0.0 for v in vec):
+                    tags = record.setdefault("tags", [])
+                    if "embed:deferred" not in tags:
+                        tags.append("embed:deferred")
+                    logging.warning(
+                        "Zero vector for %s (no rec_mem), deferring (tagged embed:deferred)",
+                        mid,
+                    )
+                    continue  # stay in classified stage, retry next cycle
                 record["vector"] = vec
                 record["stage"] = "embedded"
                 record["processed_at"] = datetime.datetime.now().isoformat()
