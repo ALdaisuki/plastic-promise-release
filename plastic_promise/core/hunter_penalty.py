@@ -2,7 +2,10 @@
 
 import sqlite3
 import os
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 PENALTY_RULES = {
     "timeout": {
@@ -14,6 +17,7 @@ PENALTY_RULES = {
     },
     "rejected": {
         "base_penalty": -0.03,
+        "repeat_threshold": 999,
         "same_type_threshold": 3,
         "same_type_penalty": -0.05,
         "same_type_action": "ban_type_7d",
@@ -122,13 +126,13 @@ class HunterPenaltyEngine:
         try:
             from plastic_promise.defense.soul_enforcer import TrustManager
             tm = TrustManager()
-            tm.decay(penalty["base_penalty"],
+            tm.decay(abs(penalty["base_penalty"]),
                      f"{failure_type}: {task_id}")
             if penalty["upgrade_triggered"]:
-                tm.decay(penalty["upgrade_penalty"],
+                tm.decay(abs(penalty["upgrade_penalty"]),
                          f"{failure_type}_upgrade (x{repeat_count}): {task_id}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Trust adjust failed: %s", e)
 
         return {
             "penalty_applied": penalty["base_penalty"] + penalty["upgrade_penalty"],

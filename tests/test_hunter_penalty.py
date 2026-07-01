@@ -35,6 +35,20 @@ def test_penalty_abandoned():
     assert result["action"] == "demote_to_D"
 
 
+def test_penalty_rejected_no_keyerror():
+    engine = HunterPenaltyEngine()
+    result = engine.compute_penalty("pi_builder", "rejected", 1, 0)
+    assert result["failure_type"] == "rejected"
+    assert result["base_penalty"] == -0.03
+    assert result["upgrade_triggered"] is False
+
+
+def test_penalty_rejected_same_type_upgrade():
+    engine = HunterPenaltyEngine()
+    result = engine.compute_penalty("pi_builder", "rejected", 1, 3)
+    assert result["action"] == "ban_type_7d"
+
+
 def test_penalty_overreach():
     engine = HunterPenaltyEngine()
     result = engine.compute_penalty("pi_builder", "overreach", 1)
