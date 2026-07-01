@@ -734,6 +734,35 @@ class ContextEngine:
                 break
         return results
 
+    def iter_memories(self, scope=None, page_size=200) -> "Iterator[dict]":
+        """Iterate memory records as dicts, one page at a time.
+
+        Uses offset-based pagination over the in-memory dict keys.
+        NOT consistent under concurrent writes — suitable for snapshots
+        (pack_export, memory_stats) not real-time retrieval under load.
+
+        Args:
+            scope: Optional domain filter (applied in Python after yield).
+                   Pass None for all memories.
+            page_size: Number of records per page (default 200).
+
+        Yields:
+            Deep copies of memory dicts, one at a time.
+        """
+        import copy
+        all_ids = list(self._memories.keys())
+        offset = 0
+        while offset < len(all_ids):
+            page_ids = all_ids[offset:offset + page_size]
+            for mid in page_ids:
+                mem = self._memories.get(mid)
+                if mem is None:
+                    continue
+                if scope and mem.get("scope", "global") != scope:
+                    continue
+                yield copy.deepcopy(mem)
+            offset += page_size
+
     def _reload_from_sqlite(self):
         """Sync in-memory cache with SQLite: load new or updated memories."""
         if not self._sqlite:
