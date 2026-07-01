@@ -99,9 +99,36 @@ class CachedEmbedder(Embedder):
                 del self._cache[key]
         self._misses += 1
         vec = self._delegate.embed(text)
+
+        # Runtime fallback: if delegate returns zero vectors and is not
+        # already FallbackEmbedder, try Ollama as live recovery path.
+        # This detects lazy-init failures (e.g., LocalSentenceEmbedder
+        # constructor succeeded but _lazy_load() failed at embed time).
+        if vec and not any(v != 0.0 for v in vec):
+            if not isinstance(self._delegate, FallbackEmbedder):
+                import logging
+                _log = logging.getLogger("plastic-promise.embedder")
+                _log.warning(
+                    "CachedEmbedder: delegate %s returned zero vector, "
+                    "attempting runtime fallback to Ollama",
+                    type(self._delegate).__name__,
+                )
+                try:
+                    ollama_vec = OllamaEmbedder().embed(text)
+                    if ollama_vec and any(v != 0.0 for v in ollama_vec):
+                        _log.info(
+                            "CachedEmbedder: Ollama runtime fallback succeeded, "
+                            "switching delegate permanently"
+                        )
+                        self._delegate = OllamaEmbedder()
+                        vec = ollama_vec
+                except Exception as e:
+                    _log.warning(
+                        "CachedEmbedder: Ollama runtime fallback also failed: %s", e
+                    )
+
         with self._lock:
             if len(self._cache) >= self._max_size:
-                # Evict oldest entry
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
                 del self._cache[oldest_key]
             self._cache[key] = (vec, now)
@@ -346,12 +373,26 @@ _embedder_singleton: Embedder | None = None
 _embedder_lock = threading.Lock()
 
 
+def reset_embedder():
+    """Clear the embedder singleton so the next call to get_embedder() re-probes.
+
+    Use when: Ollama becomes available after a FallbackEmbedder lock-in,
+    or after deploying a new embedding model.
+    """
+    global _embedder_singleton
+    with _embedder_lock:
+        _embedder_singleton = None
+    logging.getLogger("plastic-promise.embedder").info(
+        "Embedder singleton reset — will re-probe on next get_embedder()"
+    )
+
+
 def get_embedder(fallback_on_error: bool = True) -> Embedder:
     """Factory: returns embedder based on EMBEDDER_PROVIDER env var.
 
     Provider chain (auto-detected):
-      1. local  — sentence-transformers, in-process (default, no HTTP)
-      2. ollama — local HTTP server (fallback if local fails)
+      1. ollama — local HTTP server (default, lightweight, 0.7GB mxbai-embed-large)
+      2. local  — sentence-transformers, in-process (fallback if ollama fails)
       3. openai — cloud API
       4. fallback — zero vectors, text-only retrieval
 
@@ -371,7 +412,7 @@ def get_embedder(fallback_on_error: bool = True) -> Embedder:
         if _embedder_singleton is not None:
             return _embedder_singleton
 
-        provider = os.getenv("EMBEDDER_PROVIDER", "local").lower()
+        provider = os.getenv("EMBEDDER_PROVIDER", "ollama").lower()
         delegate: Embedder | None = None
 
         if provider == "openai":
