@@ -384,6 +384,46 @@ defense(action="get") → 根据 tier 决定行为:
 | 审查打回 | -0.03 |
 | 分支超时未合并 | -0.02 |
 
+## 系统架构整合 (2026-07-02)
+
+### 服务启动 (One-Click Launcher)
+
+```bash
+python scripts/init_and_start.py
+```
+
+自动启动 MCP Server (:9020) + Maintenance Daemon，watchdog 守护崩溃自动恢复。
+
+### 元审计扫描器 (scan_scheduler_health)
+
+每 1200s 运行，6 维自审计 Hunter Guild 调度系统本身：
+
+| 维度 | 检测内容 | red 触发自动 fix 委托 |
+|------|---------|---------------------|
+| Scanner SNR | 扫描器 reject 率 | `fix_scanner` → `fix/<scanner>-noise` 分支 |
+| Agent timeout | Agent 超时聚合 | `fix_timeout` → `fix/<agent>-timeout` |
+| Dispatch latency | 委托认领等待 | `fix_latency` |
+| Priority balance | 优先级分布 | `fix_priority` |
+| Verification | 验收吞吐量 | `fix_verification` |
+| Trend comparison | vs 历史上次审计 | — |
+
+### 整合流水线
+
+```
+scan_scheduler_health 发现问题
+  → task_enqueue(type="fix_scanner", to="pi_fixer", priority=2)
+  → Agent claim → git checkout -b fix/<scanner>-noise
+  → 修复 → commit → push → PR
+  → CI (P0: lint/test/security) → Code Review → Squash Merge
+  → task_verify(accepted) → 信任分 +0.02
+```
+
+### 记忆衰减 (Weibull)
+
+- L1: beta=1.5, hl=3d | L2: beta=1.2, hl=7d | L3: beta=0.7, hl=90d
+- Daemon 审计周期自动调用 `RecMem.update_all_decay()`
+- Embedder: Ollama mxbai-embed-large (0.7GB)，默认优先
+
 ## 关键约定
 
 - **先查再问** — 决策前先 principle_activate + memory_recall
