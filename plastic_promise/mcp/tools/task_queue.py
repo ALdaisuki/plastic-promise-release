@@ -135,10 +135,28 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
         matched = 0  # Phase 3 not yet implemented
     conn.close()
 
+    # SSE broadcast — fire-and-forget, never blocks task creation
+    sse_notified = 0
+    try:
+        from plastic_promise.core.task_event_bus import get_event_bus
+        bus = get_event_bus()
+        sse_notified = await bus.broadcast_task_event("task:new", {
+            "task_id": task_id,
+            "task_type": args["task_type"],
+            "priority": priority,
+            "to_agent": args["to_agent"],
+            "title": args["title"],
+            "from_agent": from_agent,
+            "description": args.get("description", ""),
+        })
+    except Exception:
+        pass
+
     return [TextContent(type="text", text=json.dumps({
         "task_id": task_id,
         "status": "pending",
-        "sse_broadcast": False,  # Phase 3
+        "sse_broadcast": sse_notified > 0,
+        "sse_notified": sse_notified,
         "matched_subscribers": matched,
         "review_required": False,
     }, ensure_ascii=False))]
@@ -202,12 +220,30 @@ async def handle_task_claim(engine: Any, args: dict) -> list[TextContent]:
         }, ensure_ascii=False))]
 
     conn.close()
+
+    # SSE broadcast — notify submitter that task was claimed
+    sse_notified = 0
+    try:
+        from plastic_promise.core.task_event_bus import get_event_bus
+        sse_notified = await get_event_bus().broadcast_task_event("task:claimed", {
+            "task_id": task_id,
+            "task_type": task["task_type"],
+            "title": task["title"],
+            "from_agent": agent_name,
+            "to_agent": task["to_agent"],
+            "priority": task["priority"],
+            "claimed_by": agent_name,
+        })
+    except Exception:
+        pass
+
     return [TextContent(type="text", text=json.dumps({
         "success": True,
         "rank": rank_info,
         "task_priority": task["priority"],
         "match": msg,
         "force_claimed": force and not ok,
+        "sse_notified": sse_notified,
     }, ensure_ascii=False))]
 
 
@@ -269,8 +305,26 @@ async def handle_task_complete(engine: Any, args: dict) -> list[TextContent]:
         conn.commit()
 
     conn.close()
+
+    # SSE broadcast — notify submitter that task is done
+    sse_notified = 0
+    try:
+        from plastic_promise.core.task_event_bus import get_event_bus
+        sse_notified = await get_event_bus().broadcast_task_event("task:done", {
+            "task_id": task_id,
+            "task_type": task["task_type"],
+            "title": task["title"],
+            "from_agent": agent_name,
+            "to_agent": task["to_agent"],
+            "priority": task["priority"],
+            "claimed_by": agent_name,
+        })
+    except Exception:
+        pass
+
     return [TextContent(type="text", text=json.dumps({
         "success": True,
+        "sse_notified": sse_notified,
         "status": "done",
         "verification_task_id": verify_task_id,
         "waiting_for": "verification by claude" if verify_task_id else "self-verified",
@@ -316,8 +370,26 @@ async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
             pass
 
         conn.close()
+
+        # SSE broadcast — notify hunter of verification result
+        sse_notified = 0
+        try:
+            from plastic_promise.core.task_event_bus import get_event_bus
+            sse_notified = await get_event_bus().broadcast_task_event("task:verified", {
+                "task_id": task_id,
+                "task_type": task["task_type"],
+                "title": task["title"],
+                "from_agent": verified_by,
+                "to_agent": task["to_agent"],
+                "priority": task["priority"],
+                "claimed_by": task["claimed_by"],
+            })
+        except Exception:
+            pass
+
         return [TextContent(type="text", text=json.dumps({
             "success": True, "new_status": "verified",
+            "sse_notified": sse_notified,
             "trust_adjustment": {"agent": task["claimed_by"], "delta": delta,
                                  "reason": "委托验收通过"},
         }, ensure_ascii=False))]
@@ -382,8 +454,25 @@ async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
         conn.commit()
         conn.close()
 
+        # SSE broadcast — notify hunter of reassignment
+        sse_notified = 0
+        try:
+            from plastic_promise.core.task_event_bus import get_event_bus
+            sse_notified = await get_event_bus().broadcast_task_event("task:reassigned", {
+                "task_id": task_id,
+                "task_type": task["task_type"],
+                "title": task["title"],
+                "from_agent": verified_by,
+                "to_agent": reassign_to if new_esc < task["max_escalations"] else "claude",
+                "priority": task["priority"],
+                "claimed_by": task["claimed_by"],
+            })
+        except Exception:
+            pass
+
         return [TextContent(type="text", text=json.dumps({
             "success": True, "new_status": "reassigned",
+            "sse_notified": sse_notified,
             "new_task_id": new_task_id,
             "escalation_count": new_esc,
             "escalated_to_claude": new_esc >= task["max_escalations"],
