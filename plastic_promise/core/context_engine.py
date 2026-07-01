@@ -1494,6 +1494,15 @@ class ContextEngine:
                 return self._rust_healthy
 
             try:
+                # Ensure Rust .pyd is on sys.path — MCP server doesn't inherit
+                # the working directory's PYTHONPATH
+                import sys as _sys
+                _rust_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                    "rust", "context-engine-core", "target", "release"
+                )
+                if _rust_path not in _sys.path:
+                    _sys.path.insert(0, _rust_path)
                 from context_engine_core import ContextEngine as RustEngine
                 # Smoke test: supply with empty memories — validates import + PyO3 bridge
                 engine = RustEngine()
