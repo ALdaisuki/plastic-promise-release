@@ -73,7 +73,7 @@ def match_subscribers(task: dict) -> list[str]:
                 title = task.get("title", "")
                 desc = task.get("description", "")
                 text = f"{title} {desc}".lower()
-                if not all(kw.lower() in text for kw in keywords):
+                if not any(kw.lower() in text for kw in keywords):
                     continue
 
         matched.append(sub["agent_name"])
