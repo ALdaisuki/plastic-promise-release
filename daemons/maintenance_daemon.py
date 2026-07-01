@@ -1316,6 +1316,14 @@ async def main():
         else:
             recover_stuck_tasks()
 
+        # Write heartbeat file for launcher watchdog
+        try:
+            _heartbeat_path = os.path.join(_project_root, "maintenance_daemon.heartbeat")
+            with open(_heartbeat_path, "w") as f:
+                f.write(datetime.now().isoformat())
+        except Exception:
+            pass
+
         await asyncio.sleep(10)  # 10s 粒度
 
 if __name__ == "__main__":
