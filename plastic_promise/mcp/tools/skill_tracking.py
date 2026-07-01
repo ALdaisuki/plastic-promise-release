@@ -757,13 +757,13 @@ async def handle_skill_session_complete(
     if created_at:
         try:
             start_dt = datetime.datetime.fromisoformat(created_at)
-            now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
-            # start_dt may be offset-aware or naive; strip tzinfo for safety
+            # created_at from soul_memory uses local time (no tzinfo).
+            # Use local now() to match, then strip tzinfo for safety.
+            now_local = datetime.datetime.now().replace(tzinfo=None)
             if start_dt.tzinfo is not None:
                 start_dt = start_dt.replace(tzinfo=None)
-            duration_ms = int(
-                (now - start_dt).total_seconds() * 1000
-            )
+            delta = now_local - start_dt
+            duration_ms = int(delta.total_seconds() * 1000)
         except Exception:
             duration_ms = None
 
@@ -775,12 +775,14 @@ async def handle_skill_session_complete(
         tags.append("task:done")
     engine._memories[memory_id]["tags"] = tags
 
-    # -- content update --
-    new_content = (
-        mem_data.get("content", "")
-        + f"\n[SKILL COMPLETE] duration_ms={duration_ms}"
-    )
-    engine._memories[memory_id]["content"] = new_content
+    # -- content update (guard against duplicate [SKILL COMPLETE] markers) --
+    current_content = mem_data.get("content", "")
+    if "[SKILL COMPLETE]" not in current_content:
+        new_content = current_content + f"\n[SKILL COMPLETE] duration_ms={duration_ms}"
+        engine._memories[memory_id]["content"] = new_content
+    else:
+        # Already completed from a prior call — don't append again
+        pass
 
     # -- worth update via feedback_apply --
     worth_update = None
@@ -1040,10 +1042,11 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
             entity_id = _make_entity_id(lookup_name)
 
             # Register entity in context graph (fast, in-memory)
+            # Use _parent_entity_id to link to the previous skill in the chain
             try:
                 _inject_skill_entity(
                     engine, entity_id, lookup_name,
-                    f"auto-tracked: {lookup_name}", None,
+                    f"auto-tracked: {lookup_name}", _parent_entity_id,
                 )
             except Exception:
                 pass
