@@ -19,6 +19,9 @@
 - Trust score is the single source of truth; hunter rank is always derived via `trust_to_rank()`, never stored
 - Priority 1=S, 2=A, 3=B, 4=C; lower number = higher urgency
 - Daemon communicates with MCP via `httpx` async client to `MCP_URL/notify`
+- **PRE-IMPLEMENTATION CHECK**: Verify TrustManager persistence is working (TrustStore writes to SQLite and survives restart). Without this, `defense(action="adjust")` calls in task_verify/task_abandon will silently fail.
+- All log writes (hunter_failure_log) MUST happen BEFORE TrustManager calls — logs are durable even if TM fails
+- Use `match_subscribers()` from `task_subscriptions.py` for all subscription counting; never inline SQL for matching
 
 ---
 
@@ -533,12 +536,30 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
                 ))
             conn.commit()
             conn.close()
+            # Issue 1 fix: Auto-notify Claude by creating a review sub-task
+            review_task_id = _generate_task_id()
+            conn2 = _get_conn()
+            conn2.execute(
+                "INSERT INTO task_queue (id, task_type, title, to_agent, priority, "
+                "from_agent, status, description, parent_task_id, payload) "
+                "VALUES (?, 'notify_review', ?, 'claude', 2, 'system', 'pending', ?, ?, ?)",
+                (review_task_id,
+                 f"[审批] {args['title']}",
+                 f"C级猎人 {from_agent}（{rank['title']}）挂委托需审批。"
+                 f"原始委托: {task_id}",
+                 task_id,
+                 json.dumps({"original_task_id": task_id, "submitter": from_agent,
+                             "submitter_rank": rank["rank"]}),
+                ))
+            conn2.commit()
+            conn2.close()
             return [TextContent(type="text", text=json.dumps({
                 "task_id": task_id,
                 "status": "pending_review",
                 "sse_broadcast": False,
-                "matched_subscribers": 0,
+                "matched_subscribers": 1,
                 "review_required": True,
+                "review_task_id": review_task_id,
                 "reason": f"C级猎人（{rank['title']}）挂A/B级委托需Claude审批",
             }, ensure_ascii=False))]
 
@@ -561,14 +582,18 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
         ))
     conn.commit()
 
-    # Count matched subscribers
-    matched = conn.execute(
-        "SELECT COUNT(*) FROM task_subscriptions "
-        "WHERE enabled=1 AND agent_name=? "
-        "AND (task_type_filter IS NULL OR ? GLOB task_type_filter) "
-        "AND priority <= priority_min",
-        (args["to_agent"], args["task_type"])
-    ).fetchone()[0]
+    # Issue 2 fix: use match_subscribers() for accurate counting (keywords respected)
+    try:
+        from plastic_promise.core.task_subscriptions import match_subscribers
+        matched = len(match_subscribers({
+            "task_type": args["task_type"],
+            "to_agent": args["to_agent"],
+            "priority": priority,
+            "title": args["title"],
+            "description": args.get("description", ""),
+        }))
+    except ImportError:
+        matched = 0  # Phase 3 not yet implemented
     conn.close()
 
     return [TextContent(type="text", text=json.dumps({
@@ -1008,9 +1033,13 @@ async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
                 "VALUES (?, ?, ?, 'claude', 1, ?, 'pending', ?, ?, ?)",
                 (new_task_id, task["task_type"],
                  f"[S级升级] {task['title']}", verified_by,
-                 f"升级原因: {new_esc}次失败/超时, 长老{verified_by}判定: {comment[:200]}",
-                 task_id, task["payload"]))
-        else:
+                 f"升级原因: {new_esc}次失败/超时, 长老{vtask_id,
+                 json.dumps({
+                     **(json.loads(task["payload"]) if task["payload"] else {}),
+                     "original_claimed_by": task["claimed_by"],
+                     "verdict": verdict,
+                     "comment": comment,
+                 })))     else:
             new_task_id = _generate_task_id()
             conn.execute(
                 "INSERT INTO task_queue (id, task_type, title, to_agent, priority, "
@@ -1259,16 +1288,20 @@ async def handle_task_abandon(engine: Any, args: dict) -> list[TextContent]:
         from plastic_promise.defense.soul_enforcer import TrustManager
         tm = TrustManager()
         current = tm.get(agent_name)
-        tm.decay(delta, f"主动弃单: {task_id} — {reason[:80]}")
+    except Exception:
+        current = 0.50  # fallback if TrustManager unavailable
 
-        # Log failure
-        conn.execute(
-            "INSERT INTO hunter_failure_log "
-            "(agent_name, task_id, task_type, failure_type, trust_before, trust_after, penalty_applied) "
-            "VALUES (?, ?, ?, 'abandoned', ?, ?, ?)",
-            (agent_name, task_id, task["task_type"], current, current + delta, delta)
-        )
-        conn.commit()
+    # Issue 4 fix: Log failure FIRST (durable even if TrustManager fails)
+    conn.execute(
+        "INSERT INTO hunter_failure_log "
+        "(agent_name, task_id, task_type, failure_type, trust_before, trust_after, penalty_applied) "
+        "VALUES (?, ?, ?, 'abandoned', ?, ?, ?)",
+        (agent_name, task_id, task["task_type"], current, current + delta, delta)
+    )
+    conn.commit()
+
+    try:
+        tm.decay(delta, f"主动弃单: {task_id} — {reason[:80]}")
     except Exception:
         pass
 
@@ -1640,10 +1673,12 @@ async def scan_memory_decay(engine) -> dict:
                 "title": f"记忆涌入异常: 24h新增{influx}条 (阈值={threshold:.0f})",
             })
 
-    # 3. Domain imbalance
+    # 3. Domain imbalance (Issue 5 fix: query memories table directly,
+    #    not domain_stats which may not exist)
     domain_counts = conn.execute(
-        "SELECT domain, COUNT(*) as cnt FROM domain_stats "
-        "WHERE status='active' GROUP BY domain"
+        "SELECT domain, COUNT(*) as cnt FROM memories "
+        "WHERE domain IS NOT NULL AND domain != '' "
+        "GROUP BY domain"
     ).fetchall()
     if domain_counts:
         total = sum(r[1] for r in domain_counts)
