@@ -123,14 +123,31 @@ start_all():
   for svc in dependency_order:
     1. 执行 svc.pre_start（如有，阻塞等待完成）
     2. subprocess.Popen(svc.command, cwd=svc.cwd, env={**os.environ, **svc.env})
-    3. 等待 svc.startup_timeout 秒，每 0.5s 发 GET svc.health_url
-    4. 健康检查通过 → HEALTHY，继续下一个
-    5. 超时未通过:
-       - process.terminate() (等 5s)
-       - process.kill() (强制)
+    3. 循环发送健康检查（间隔 0.5s），持续整个 startup_timeout 窗口
+    4. 窗口内任意一次检查通过 → HEALTHY，立即继续下一个服务
+    5. 整个 startup_timeout 窗口耗尽仍未通过:
+       - process.terminate() (等 5s grace period)
+       - 仍未退出 → process.kill() (强制)
        - 标记 FAILED → 触发 RestartPolicy
-    6. 依赖项失败的后续服务标记 PENDING → FAILED（级联失败）
+    6. 依赖项启动失败的后续服务: PENDING → FAILED（级联失败）
+
+#### 依赖恢复通知
+
+当某个服务通过 reset_service(name) 手动重置后（如从 UNRECOVERABLE 恢复），
+ServiceManager 遍历所有服务，对 depends_on 包含该服务的条目自动触发启动:
+
 ```
+reset_service(name):
+  svc = find(name)
+  svc.status = STOPPED
+  svc.restart_history.clear()
+  # 级联恢复依赖方
+  for dependent in find_dependents(name):
+    if dependent.status == FAILED:
+      start_service(dependent)  # 重新尝试启动
+```
+
+依赖方启动失败不影响已恢复的服务。
 
 #### 停止流程
 
@@ -220,12 +237,22 @@ SERVICES = [
 ]
 ```
 
-**daemon 健康检测方式**: 因为没有 HTTP endpoint，通过以下方式判断存活：
-1. PID 文件 `maintenance_daemon.pid` 存在
-2. 进程存活 (`os.kill(pid, 0)` / Windows `psutil.pid_exists(pid)`)
-3. PID 文件最近 2 分钟内更新过（daemon 每 10s 循环一次，2 分钟超时足够宽松）
+**daemon 健康检测方式**: 因为没有 HTTP endpoint，通过心跳文件判断存活。
 
-如果 `psutil` 不可用，用 `subprocess.run(["tasklist", "/FI", f"PID eq {pid}"])` (Windows) 或 `os.kill(pid, 0)` (Unix) 降级。
+**前置条件**: 在 `maintenance_daemon.py` 主循环中添加心跳写操作（实施任务之一）：
+```python
+# 在主循环中，每 10s tick 时更新心跳文件
+_heartbeat_path = os.path.join(_project_root, "maintenance_daemon.heartbeat")
+with open(_heartbeat_path, "w") as f:
+    f.write(datetime.now().isoformat())
+```
+
+**launcher 端检测**（按优先级降级）：
+1. PID 文件 `maintenance_daemon.pid` 存在且进程存活
+2. 心跳文件 `maintenance_daemon.heartbeat` 最近 2 分钟内更新过（检测僵死）
+3. 两者都失败 → 判定为不健康
+
+进程存活检测: `psutil.pid_exists(pid)` 优先，不可用时降级到 `subprocess.run(["tasklist", "/FI", ...])` (Windows) 或 `os.kill(pid, 0)` (Unix)。
 
 ## 五、控制台输出规范
 
@@ -286,12 +313,20 @@ SERVICES = [
 [2026-07-02T10:37:05] [START] maintenance-daemon healthy (pid=12890)
 ```
 
-## 八、不做什么（YAGNI）
+## 八、不做什么（YAGNI / Phase 2 候选人）
 
 - **不注册系统服务**（Windows Service / systemd）— Phase 2 考虑
 - **不提供 CLI 控制面板** — 通过已有 `/dashboard` + `/health` HTTP API 查看状态
 - **不管理 Ollama 进程** — 视为环境依赖
 - **不启动 Bridge 服务**（event-bus / neko-adapter）— 它们属于 interop 子系统，不在记忆系统核心范围内。`scripts/start-all.bat` 已覆盖
+
+### Phase 2 候选（已记录，本次不实施）
+
+| 候选 | 说明 |
+|------|------|
+| 服务定义 YAML 化 | 将 `SERVICES` 列表移到 `scripts/services.yaml`，便于用户自定义新增服务 |
+| 看门狗心跳文件 | 看门狗自身每 5s 写心跳，启动时检测孤儿子进程并提示 `--stop` 清理 |
+| 自定义健康检查脚本 | `health_check_cmd: list[str]` 字段，支持脚本返回码判断健康（替代 HTTP） |
 
 ## 九、实施顺序
 
