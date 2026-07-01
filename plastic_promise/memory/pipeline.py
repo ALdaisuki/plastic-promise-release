@@ -307,8 +307,16 @@ class MemoryPipeline:
                             vectors.append(self.embedder.embed(r["content"]))
                 else:
                     vectors = self.embedder.embed_batch(contents)
-            except Exception:
-                vectors = [[0.0] * self.embedder.dim for _ in batch]
+            except Exception as e:
+                logging.warning(
+                    "Embed batch failed, deferring %d items (skip_set=%d): %s",
+                    len(batch), len(skip_set), e
+                )
+                for _mid, record in batch:
+                    tags = record.setdefault("tags", [])
+                    if "embed:deferred" not in tags:
+                        tags.append("embed:deferred")
+                continue  # stay in classified stage, retry next cycle
             for (mid, record), vec in zip(batch, vectors):
                 record["vector"] = vec
                 record["stage"] = "embedded"
@@ -338,6 +346,17 @@ class MemoryPipeline:
 
                 engine = getattr(self.rec_mem, '_engine', None)
                 vec = record.get("vector")
+
+                # ---- Zero-vector guard: skip persistence, not processing ----
+                if vec and not any(v != 0.0 for v in vec):
+                    logging.warning(
+                        "Zero vector detected for %s, skipping LanceDB write but continuing processing",
+                        mid,
+                    )
+                    record["tags"] = record.get("tags", [])
+                    if "embed:fallback" not in record["tags"]:
+                        record["tags"].append("embed:fallback")
+                    vec = None  # prevent vector persistence, still process item
 
                 # ---- Step 4a: Vector dedup ----
                 if vec and self._lancedb is not None:

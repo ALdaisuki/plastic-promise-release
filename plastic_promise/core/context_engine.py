@@ -1074,22 +1074,23 @@ class ContextEngine:
         if task_vector is None or len(task_vector) == 0:
             task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
 
-        # Try Rust accelerator
-        if self._check_rust_health():
-            try:
-                return self._supply_rust(
-                    task_description, task_vector, task_type, scope
-                )
-            except Exception as e:
-                logger.warning(
-                    "Rust supply failed, falling back to Python: %s", e
-                )
-                with self._rust_lock:
-                    # Set to None — forces immediate re-probe on next call
-                    self._rust_healthy = None
-                    self._rust_engine_instance = None
+        # Rust accelerator bypassed — placeholder engine returns uniform 0.50 scores.
+        # Python path has real LanceDB vector + BM25 + RRF retrieval.
+        # To re-enable Rust, uncomment the block below when retriever backends are implemented.
+        #
+        # if self._check_rust_health():
+        #     try:
+        #         return self._supply_rust(
+        #             task_description, task_vector, task_type, scope
+        #         )
+        #     except Exception as e:
+        #         logger.warning(
+        #             "Rust supply failed, falling back to Python: %s", e
+        #         )
+        #         with self._rust_lock:
+        #             self._rust_healthy = None
+        #             self._rust_engine_instance = None
 
-        # Python fallback (original implementation)
         return self._supply_python(task_description, task_vector, task_type, scope)
 
     def _supply_python(
