@@ -1034,7 +1034,65 @@ class ContextEngine:
 
     # ========== 核心方法: supply() ==========
 
+    def _embed(self, task_description: str) -> list[float]:
+        """Generate embedding vector for task description.
+
+        Uses the existing embedder from heavy_init. Returns zero vector
+        if embedder is unavailable (graceful degradation).
+        """
+        try:
+            self._ensure_heavy_init()
+            if hasattr(self, '_embedder') and self._embedder:
+                return self._embedder.embed(task_description)
+        except Exception:
+            pass
+        return [0.0] * 1024  # fallback: zero vector
+
     def supply(
+        self,
+        task_description: str,
+        task_vector: list[float] = None,
+        task_type: str = "general",
+        scope: str = "global",
+    ) -> ContextPack:
+        """Supply context for a task. Rust-accelerated when available.
+
+        Consistency: Returns a snapshot of the memory pool at call time.
+        Concurrent writes (batch_update, register_memory) may not be
+        reflected — this is eventual consistency by design. Retrieval
+        results are advisory, not transactional.
+
+        IMPORTANT: _supply_python is the ORIGINAL independent Python
+        implementation. It does NOT call back into supply() — no recursion.
+        """
+        # Generate embedding if not provided (backward compatibility)
+        if task_vector is None:
+            task_vector = self._embed(task_description)
+
+        # Ensure vector is non-empty — if embedder fails (Ollama down, etc.),
+        # use zero vector as fallback so downstream code never sees None
+        if task_vector is None or len(task_vector) == 0:
+            task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
+
+        # Try Rust accelerator
+        if self._check_rust_health():
+            try:
+                return self._supply_rust(
+                    task_description, task_vector, task_type, scope
+                )
+            except Exception as e:
+                logger.warning(
+                    "Rust supply failed, falling back to Python: %s", e
+                )
+                with self._rust_lock:
+                    # Set to None — forces immediate re-probe on next call
+                    self._rust_healthy = None
+                    self._rust_engine_instance = None
+
+        # Python fallback (original implementation)
+        return self._supply_python(task_description, task_vector, task_type, scope)
+
+    def _supply_python(
         self,
         task_description: str,
         task_vector: list[float],
@@ -1468,6 +1526,94 @@ class ContextEngine:
             self._rust_health_checked_at = 0.0
             self._rust_engine_instance = None
         logger.info("Rust health reset — will re-probe on next supply()")
+
+    def _convert_rust_pack(self, rust_pack) -> ContextPack:
+        """Convert Rust PyO3 ContextPack to Python ContextPack.
+
+        Rust returns PyO3 objects with .core/.related/.divergent/
+        .activated_principles/.audit_metadata. We convert to the
+        Python dataclass-based format that callers expect.
+
+        Preserves audit_metadata from Rust (engine_version, timings,
+        graph stats, etc.) for observability.
+        """
+        pack = ContextPack()
+        pack.core = [
+            ContextItem(
+                id=item.id,
+                content=item.content,
+                relevance=item.relevance,
+                source=item.source,
+                freshness=item.freshness,
+                layer=item.layer,
+                is_principle=item.is_principle,
+                worth_score=item.worth_score,
+            )
+            for item in rust_pack.core
+        ]
+        pack.related = [
+            ContextItem(
+                id=item.id,
+                content=item.content,
+                relevance=item.relevance,
+                source=item.source,
+                freshness=item.freshness,
+                layer=item.layer,
+                is_principle=item.is_principle,
+                worth_score=item.worth_score,
+            )
+            for item in rust_pack.related
+        ]
+        pack.divergent = [
+            ContextItem(
+                id=item.id,
+                content=item.content,
+                relevance=item.relevance,
+                source=item.source,
+                freshness=item.freshness,
+                layer=item.layer,
+                is_principle=item.is_principle,
+                worth_score=item.worth_score,
+            )
+            for item in rust_pack.divergent
+        ]
+        pack.activated_principles = list(rust_pack.activated_principles)
+        # Preserve audit metadata from Rust for observability
+        # Use isinstance guard: PyO3 may return PyDict wrapper, not plain dict
+        if hasattr(rust_pack, 'audit_metadata') and rust_pack.audit_metadata:
+            if isinstance(rust_pack.audit_metadata, dict):
+                pack.audit_metadata = dict(rust_pack.audit_metadata)
+            else:
+                # PyDict or other mapping — convert safely
+                pack.audit_metadata = dict(rust_pack.audit_metadata)
+        else:
+            pack.audit_metadata = {}
+
+    def _supply_rust(self, task_description: str, task_vector: list,
+                     task_type: str, scope: str) -> ContextPack:
+        """Rust-accelerated supply path.
+
+        Passes memory snapshot via PyO3 native Vec<PyObject> — zero JSON
+        serialization overhead. The snapshot is a shallow copy of the
+        current _memories dict (~0.5-2ms for 1000 records).
+        """
+        from context_engine_core import ContextEngine as RustEngine
+
+        # Build memory list for PyO3 — pass raw dicts, no JSON serialize
+        # Performance: ~0.5-2ms for 1000 records (list comprehension + dict refs)
+        # Acceptable; if pool grows >5000, add pre-filter by scope/tier here
+        # Acquire _write_lock during iteration — prevents RuntimeError from
+        # concurrent GC or Daemon modifying self._memories during snapshotting
+        with self._write_lock:
+            memories = [
+                self._memories[mid]
+                for mid in self._memories
+            ]
+
+        rust = RustEngine()
+        rust.set_current_time(datetime.datetime.now().isoformat())
+        rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
+        return self._convert_rust_pack(rust_pack)
 
     # ========== 内部方法 ==========
 
