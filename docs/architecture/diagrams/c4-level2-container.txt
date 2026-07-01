@@ -1,0 +1,85 @@
+# ==============================================================================
+# Plastic Promise — C4 Model: Container Diagram (Level 2)
+# Generated: 2026-07-02 | Skill: tools-visual-ascii-arch
+# ==============================================================================
+
++----------------------------------------------------------------------------+
+|                          Plastic Promise System Boundary                    |
+|                                                                            |
+|  +-----------------------------+     +-----------------------------------+  |
+|  |      MCP Server (:9020)     |     |        ContextEngine              |  |
+|  |  +-----------------------+  |     |  +-----------------------------+  |  |
+|  |  | Tool Router (server.py)|  |     |  | entity_graph.rs (Rust)      |  |  |
+|  |  | 11 domain handlers     |<>+---->+--+ rank_fuser.rs (RRF)         |  |  |
+|  |  | 5 MCP Resources        |  |     |  | memory_worth.rs (counters)  |  |  |
+|  |  | 3 MCP Prompts          |  |     |  +-----------------------------+  |  |
+|  |  +-----------------------+  |     |  |  context_engine.py (Python)   |  |  |
+|  |             |                |     |  | reranker.py (cross-encoder)  |  |  |
+|  +-----------------------------+     |  +-----------------------------+  |  |
+|              |                         |               |                  |  |
+|              v                         +-----------------------------------+  |
+|  +-----------------------------+                       |                     |
+|  |     Memory Pipeline         |                       v                     |
+|  |  +-----------------------+  |     +-----------------------------------+  |
+|  |  | smart_extractor (6 cat)|  |     |       Storage Layer               |  |
+|  |  | vector_dedup (cos.85)  |  |     |  +-----------------------------+  |  |
+|  |  | QualityGate (4-dim)    |  |     |  | SQLite (WAL mode)            |  |  |
+|  |  | Weibull decay engine   |  |     |  | - plastic_memory.db          |  |  |
+|  |  | MemoryGC.collect()     |<>+---->+--+ - trust_scores table         |  |  |
+|  |  +-----------------------+  |     |  | - task_queue table            |  |  |
+|  |             |                |     |  +-----------------------------+  |  |
+|  +-----------------------------+     |  |  LanceDB                       |  |  |
+|              |                         |  | - ANN index (384d vectors)   |  |  |
+|              v                         |  | - FTS index (full-text)       |  |  |
+|  +-----------------------------+     |  +-----------------------------+  |  |
+|  |     Principle System        |     +-----------------------------------+  |
+|  |  +-----------------------+  |                                            |
+|  |  | soul_principles.py     |  |     +-----------------------------------+  |
+|  |  | - activate/inherit     |  |     |      Agent Layer                   |  |
+|  |  | - diffuse/evaluate     |  |     |  +-----------------------------+  |  |
+|  |  | - PrincipleTracker     |  |     |  | pi_daemon.py (orchestrator)  |  |  |
+|  |  +-----------------------+  |     |  | audit_daemon.py (11-dim scan) |  |  |
+|  +-----------------------------+     |  | Safety-Net Daemon (11 scans)  |  |  |
+|                                       |  | Hunter Guild (7 tools)        |  |  |
+|  +-----------------------------+     |  +-----------------------------+  |  |
+|  |     Reflection System       |     +-----------------------------------+  |
+|  |  +-----------------------+  |                                            |
+|  |  | soul_scarf.py (SCARF)  |  |     +-----------------------------------+  |
+|  |  | soul_hormone.py        |  |     |      Bridge Layer                  |  |
+|  |  | soul_proprioception.py |  |     |  +-----------------------------+  |  |
+|  |  +-----------------------+  |     |  | SSE /events endpoint          |  |  |
+|  +-----------------------------+     |  | /notify HTTP POST             |  |  |
+|                                       |  | /dashboard HTML               |  |  |
+|  +-----------------------------+     |  +-----------------------------+  |  |
+|  |     Defense System          |     +-----------------------------------+  |
+|  |  +-----------------------+  |                                            |
+|  |  | soul_enforcer.py (L0-2)|  |     +-----------------------------------+  |
+|  |  | soul_audit.py (7-dim)  |  |     |      Experience Pack System        |  |
+|  |  +-----------------------+  |     |  +-----------------------------+  |  |
+|  +-----------------------------+     |  | pack_export (streaming)       |  |  |
+|                                       |  | pack_import (strategy)        |  |  |
+|  +-----------------------------+     |  | pack_recall (strict)          |  |  |
+|  |     Skill Tracking System   |     |  +-----------------------------+  |  |
+|  |  +-----------------------+  |     +-----------------------------------+  |
+|  |  | skill_auto_track       |  |                                            |
+|  |  | skill_session_start    |  |                                            |
+|  |  | skill_session_complete |  |                                            |
+|  |  | skill_session_trace    |  |                                            |
+|  |  | skill_session_audit    |  |                                            |
+|  |  +-----------------------+  |                                            |
+|  +-----------------------------+                                            |
++----------------------------------------------------------------------------+
+
+Key:
+  <+> = bidirectional    <> = async/event    --> = sync call
+  (Rust) = PyO3 native module with Python fallback
+  Data flows: Memory Pipeline -> Storage | ContextEngine -> Storage
+  Control flows: Daemon -> Tool Router | Agent -> Tag State Machine -> Daemon
+
+Owners:
+  MCP Server + ContextEngine: Claude (architecture) + Pi Builder (implementation)
+  Memory Pipeline: Pi Builder + Pi Fixer (GC tuning)
+  Agent Layer: Daemon (zero-token) + Safety-Net (scanners)
+  Storage: SQLite (built-in) + LanceDB (disk-based ANN)
+
+Repos: github.com/plastic-promise/plastic-promise

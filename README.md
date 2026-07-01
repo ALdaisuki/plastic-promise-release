@@ -1,111 +1,198 @@
-<p align="center">
-  <h1 align="center">Plastic Promise</h1>
-  <p align="center">
-    <em>记忆是可塑的，灵魂因记忆存在、因约定成长。</em>
-  </p>
-  <p align="center">
-    <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+">
-    <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT">
-    <img src="https://img.shields.io/badge/mcp-40_tools-orange.svg" alt="MCP: 40 tools">
-    <img src="https://img.shields.io/badge/status-alpha-red.svg" alt="Status: Alpha">
-  </p>
-</p>
+<!-- SEO Meta Tags
+Description: Plastic Promise — AI behavioral governance system with 48 MCP tools across 12 domains. Commitment Engineering replaces constraint enforcement with internalized conventions, featuring multi-agent autonomous pipelines, trust-driven permission escalation, and Weibull-based memory decay.
+Keywords: ai-governance, mcp-server, agent-memory, commitment-engineering, context-engine, llm-agent, multi-agent, trust-score, memory-decay, lance-db
+author: ALdaisuki
+canonical: https://github.com/ALdaisuki/plastic-promise
+-->
+
+<!-- Open Graph / Facebook
+og:type: website
+og:url: https://github.com/ALdaisuki/plastic-promise
+og:title: Plastic Promise — AI Behavioral Governance System with Multi-Agent Pipeline
+og:description: An AI behavioral governance system built on Commitment Engineering. 48 MCP tools, multi-agent autonomous pipeline (Claude PM + Pi Builder/Fixer/Reviewer), trust-driven permissions, and Weibull-based memory decay.
+og:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise/main/docs/architecture/social-preview.png
+og:image:alt: Plastic Promise architecture diagram showing MCP server, memory pipeline, and multi-agent team
+og:site_name: Plastic Promise
+og:locale: en_US
+-->
+
+<!-- Twitter Card
+twitter:card: summary_large_image
+twitter:url: https://github.com/ALdaisuki/plastic-promise
+twitter:title: Plastic Promise — AI Behavioral Governance System
+twitter:description: Commitment Engineering replaces constraint enforcement. 48 MCP tools, multi-agent pipeline, trust-driven permissions, memory decay engine.
+twitter:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise/main/docs/architecture/social-preview.png
+-->
+
+<!-- GitHub Metadata
+topics: ai-governance, mcp-server, agent-memory, commitment-engineering, multi-agent, trust-score, memory-decay, lancedb, python, rust
+languages: python, rust
+homepage: https://github.com/ALdaisuki/plastic-promise
+funding: https://github.com/sponsors/ALdaisuki
+roadmap: https://github.com/ALdaisuki/plastic-promise/blob/main/docs/GOAL.md
+security: https://github.com/ALdaisuki/plastic-promise/blob/main/SECURITY.md
+-->
+
+<div align="center">
+
+# Plastic Promise
+
+### Memory is plastic; the soul exists through memory and grows through commitment.
+
+[![Python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white&style=flat-square)](https://www.python.org/)
+[![Rust](https://img.shields.io/badge/rust-core-000000?logo=rust&style=flat-square)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/github/license/ALdaisuki/plastic-promise?style=flat-square)](LICENSE)
+[![MCP Tools](https://img.shields.io/badge/mcp-48_tools-orange.svg?style=flat-square)](https://spec.modelcontextprotocol.io/)
+[![Status](https://img.shields.io/badge/status-alpha-red.svg?style=flat-square)](#)
+
+![LanceDB](https://img.shields.io/badge/vector_db-LanceDB-3B82F6?style=flat-square)
+![SQLite](https://img.shields.io/badge/db-SQLite_WAL-003B57?logo=sqlite&logoColor=white&style=flat-square)
+![MCP](https://img.shields.io/badge/protocol-MCP_1.0-FF6B35?style=flat-square)
+![sentence-transformers](https://img.shields.io/badge/embeddings-all--MiniLM--L6--v2-FFB000?style=flat-square)
+
+![GitHub Stars](https://img.shields.io/github/stars/ALdaisuki/plastic-promise?style=social)
+![GitHub Forks](https://img.shields.io/github/forks/ALdaisuki/plastic-promise?style=social)
+![GitHub Issues](https://img.shields.io/github/issues/ALdaisuki/plastic-promise)
+![GitHub Last Commit](https://img.shields.io/github/last-commit/ALdaisuki/plastic-promise)
+
+[Architecture Docs](docs/architecture/architecture.md) - [Goal & Roadmap](docs/GOAL.md) - [Report Bug](https://github.com/ALdaisuki/plastic-promise/issues) - [Request Feature](https://github.com/ALdaisuki/plastic-promise/issues)
+
+</div>
 
 ---
 
-**Plastic Promise** 是以「约定工程」(Commitment Engineering) 替代「约束工程」的 AI 行为治理系统。40 个 MCP 工具覆盖记忆、原则、域联邦、上下文、审计、反思、系统、经验包、技能追踪、程序化技能十大域。内置多 Agent 自治流水线——Claude PM 管理 Pi Builder/Fixer/Reviewer 团队，标签状态机驱动全自动任务流转。
+**Plastic Promise** is an AI behavioral governance system built on **Commitment Engineering** -- a paradigm that replaces external constraint enforcement with internalized conventions. It provides a complete operating system for AI agents: persistent memory with Weibull-based decay, evolving principles with cross-agent inheritance, proactive context supply, trust-driven permission escalation, and a multi-agent autonomous pipeline. 48 MCP tools across 12 domains serve as the interface between AI agents and the governance substrate.
 
-> 完整架构、路线图和当前状态见 **[GOAL.md](docs/GOAL.md)**。
+> Full architecture, roadmap, and current status: **[GOAL.md](docs/GOAL.md)**.
 
 ---
 
-## 目录
+## Table of Contents
 
-- [架构](#架构)
-- [快速开始](#快速开始)
-- [核心特性](#核心特性)
-- [MCP 工具一览](#mcp-工具一览)
-- [技术栈](#技术栈)
-- [项目结构](#项目结构)
-- [开发指南](#开发指南)
+- [Architecture](#architecture)
+- [System Requirements](#system-requirements)
+- [Quick Start](#quick-start)
+- [Core Features](#core-features)
+- [MCP Tool Reference](#mcp-tool-reference)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Architecture Documentation](#architecture-documentation)
+- [Development Guide](#development-guide)
+- [Privacy & Data Security](#privacy--data-security)
 - [License](#license)
 
 ---
 
-## 架构
+## Architecture
+
+### C4 Model -- System Context (Level 1)
 
 ```
-┌──────────────────────────────────────────────────┐
-│              Plastic Promise MCP Server           │
-│  ┌──────────┬──────────┬──────────┬──────────┐  │
-│  │ 记忆 (10)│ 原则 (4) │ 上下文(5)│ 审计 (3) │  │
-│  ├──────────┼──────────┼──────────┼──────────┤  │
-│  │ 自省 (2) │ 管理 (4) │ 经验包(3)│ 联邦 (1) │  │
-│  ├──────────┴──────────┼──────────┴──────────┤  │
-│  │   技能追踪 (5)       │  程序化技能 (3)     │  │
-│  └─────────────────────┴─────────────────────┘  │
-│              ↓ 共享 ContextEngine                │
-│  ┌──────────────────────────────────────────┐   │
-│  │  EntityGraph │ 混合检索 (ANN+BM25+RRF)    │   │
-│  │  MemoryWorth │ 符号规则 │ 衰减引擎       │   │
-│  └──────────────────────────────────────────┘   │
-└──────────────────────┬───────────────────────────┘
-                       │
-         ┌─────────────┴─────────────┐
-         │     SQLite WAL             │
-         │     + LanceDB (向量/FTS)   │
-         └───────────────────────────┘
-
-┌──────────────────────────────────────────────────┐
-│              Multi-Agent Team                     │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐    │
-│  │  Claude  │──▶│Pi-Builder│──▶│Pi-Reviewer│    │
-│  │   (PM)   │   │(building)│   │(reflecting)│    │
-│  └──────────┘   └──────────┘   └─────┬────┘    │
-│        ▲                              │          │
-│        └────────── Pi-Fixer ◀─────────┘          │
-│                  (fixing)                         │
-│                                                    │
-│  Autonomous Pipeline:                              │
-│  daemons/pi_daemon.py (零Token轮询) + daemons/audit_daemon.py │
-│  daemons/pi_worker.ps1 (四模式) + /notify → SSE /events         │
-└──────────────────────────────────────────────────┘
++---------------------------+          +--------------------------------------+
+|    AI Coding Agent        |  MCP     |   Plastic Promise Governance System  |
+|  +---------------------+  |  stdio   |  +--------------------------------+  |
+|  | Claude Code / Trae  |<>+-------->+--+ MCP Server (:9020)             |  |
+|  +---------------------+  |  SSE    |  | 48 tools / 12 domains           |  |
++---------------------------+<--------+--+                                 |  |
+                                       |  +--------------------------------+  |
++---------------------------+  /notify |  | Memory Pool (SQLite + LanceDB)  |  |
+|    Pi Agent Team          |  POST    |  +--------------------------------+  |
+|  Pi Builder / Fixer /     |<--------+--+ Tag State Machine               |  |
+|  Reviewer                 |  tags    |  | pending -> active -> done        |  |
++---------------------------+<-------->+--+      -> review -> reviewed      |  |
+                                       |  | Daemon (tag-based polling)       |  |
+                                       +--------------------------------------+
 ```
+
+Full C4 diagrams: [Level 1 — Context](docs/architecture/diagrams/c4-level1-context.txt) - [Level 2 — Container](docs/architecture/diagrams/c4-level2-container.txt) - [Level 3 — Component](docs/architecture/diagrams/c4-level3-component.txt)
+
+### Multi-Agent Pipeline
+
+```
+task:pending -> Daemon tag-based detection -> spawn Pi -> task:active
+             -> Builder complete -> auto-wake Reviewer -> task:review
+             -> Claude verify -> task:reviewed / task:rejected -> Fixer auto-repair
+```
+
+### Subsystem Status
+
+| Subsystem | Status | Core Module |
+|-----------|--------|-------------|
+| Memory | Stable | `soul_memory` (dual-layer, L1/L3 tiered storage) |
+| Reflex Arc | Stable | `soul_enforcer` (3-layer defense: L0 hard boundary, L1 trust constraint, L2 immune patrol) |
+| Motor | Beta | `exec/write/edit` + ACP |
+| Sensory | Beta | `memory_recall` + `code_search` |
+| Immune | Beta | `soul_audit` (11-dimension scan via `audit_run`, hourly cron) |
+| Endocrine | Beta | `soul_hormone` (evaluation engine + trust score linkage) |
+| Genetic | Beta | `soul_principles` (unidirectional diffusion + synchronized decay) |
+| Autonomic | Beta | `scan_and_fix` + HEARTBEAT |
+| Cognitive | Experimental | `soul_scarf` + `soul_curiosity` |
+
+> **Audit dimensions** (11): The 3 audit tools (`audit_run`, `audit_pre_check`, `defense`) expose 11 inspection dimensions -- 7 foundational (memory health, principle adherence, domain integrity, context freshness, trust trajectory, GC efficiency, schema version) + 4 multi-agent (task throughput, hunter trust distribution, redo-queue depth, skill-chain completeness). Each dimension is scored independently; `audit_run(action="full")` returns the aggregate report.
 
 ---
 
-## 快速开始
+## System Requirements
 
-### 安装
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| Python | 3.10+ | 3.12+ |
+| RAM | 2 GB | 4 GB |
+| Disk | 500 MB (SQLite + LanceDB) | 2 GB (with experience packs) |
+| OS | Windows 10+, Linux, macOS 12+ | — |
+| Rust toolchain | Not required (Python fallback) | `rust/context-engine-core` via `maturin develop` for 3-5x context engine speedup |
+| Ollama | Not required (embedding fallback available) | For local cross-encoder reranking |
+
+---
+
+## Quick Start
+
+### Installation
 
 ```bash
-# 核心依赖
+# Core dependencies
 pip install -r requirements.txt
 
-# 或完整安装（含开发工具）
+# Full install (includes dev tools)
 pip install -e ".[dev]"
 
-# 可选：构建 Rust 核心引擎
+# Optional: build Rust core engine (3-5x context engine performance)
 cd rust/context-engine-core && pip install maturin && maturin develop
 ```
 
-### 启动
+### Launch
 
 ```bash
-# 1. 启动共享记忆服务器 (SSE 多 Agent 模式)
-python -m plastic_promise --sse 9020
+# 1. Start shared memory server (SSE multi-agent mode)
+python -m plastic_promise.mcp.server --sse 9020
 
-# 2. 启动自治流水线
+# 2. Start autonomous pipeline daemon
 python daemons/pi_daemon.py
-
-# 3. 发任务 (标签驱动, 零 Token)
-# 通过 MCP 工具调用:
-memory_store(tags=["task:pending", "assignee:pi_builder", "domain:building"])
 ```
 
-### 接入 Claude Code / Trae
+### Verify Installation
 
-将 `mcp.json` 合并到你的 MCP 配置：
+```bash
+# Health check -- server must respond
+python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:9020/health').read())"
+# Expected: {"status": "ok", "version": "0.1.0", ...}
+
+# Store a test memory and verify retrieval
+# Via MCP tool (from Claude Code / Trae connected to the server):
+#   memory_store(content="test memory", tags=["test"])
+#   memory_recall(query="test memory")
+# Expected: returns the stored memory with similarity score
+
+# Send a task through the pipeline
+#   memory_store(content="Implement hello world", tags=["task:pending", "assignee:pi_builder", "domain:building"])
+# Watch daemon output:
+#   [Pi] task detected -> spawning builder -> task:active
+#   [Pi] builder complete -> waking reviewer -> task:review
+```
+
+### Connect to Claude Code / Trae
+
+Merge into your MCP configuration:
 
 ```json
 {
@@ -126,213 +213,303 @@ memory_store(tags=["task:pending", "assignee:pi_builder", "domain:building"])
 
 ---
 
-## 核心特性
+## Core Features
 
-### 约定工程
+### Commitment Engineering
 
-| 理念 | 说明 |
-|------|------|
-| **约定优于约束** | Agent 遵守规则不是因为「被禁止」，而是因为「不想让在乎的人失望」 |
-| **信任换自主** | 信任分驱动动态约束：高分放宽，低分收紧 |
-| **原则自然浮现** | 原则不是靠防火墙强制执行，而是在检索历史决策时自然涌现 |
-| **上下文主动供应** | 记忆不是「被查询的档案库」，而是「主动供应上下文的引擎」 |
+| Concept | Description |
+|---------|-------------|
+| **Convention over Constraint** | Agents comply because they don't want to disappoint those they care about, not because they are forbidden |
+| **Trust for Autonomy** | Trust score drives dynamic constraints: high trust relaxes restrictions, low trust tightens them |
+| **Principle Emergence** | Principles emerge naturally during retrieval of past decisions, not via firewall enforcement |
+| **Proactive Context Supply** | Memory is not a "queried archive" but an "engine that proactively supplies context" |
 
-### 多 Agent 自治流水线
-
-```
-task:pending → Daemon 零Token检测 → spawn Pi → task:active
-             → Builder 完成 → 自动唤醒 Reviewer → task:review
-             → Claude 验收 → task:reviewed / task:rejected → Fixer 自动修复
-```
-
-### 标签状态机
+### Multi-Agent Autonomous Pipeline
 
 ```
-task:pending → task:accepted → task:active → task:done → task:review → task:reviewed
-                   ↑ 超时 5min 恢复              ↑ 超时 10min 恢复
+task:pending -> Daemon tag-based detection -> spawn Pi -> task:active
+             -> Builder complete -> auto-wake Reviewer -> task:review
+             -> Claude verify -> task:reviewed / task:rejected -> Fixer auto-repair
 ```
 
-### 信任-自由度矩阵
+The daemon uses **tag-based polling** on SQLite -- no LLM calls are required for task detection or routing. Only the actual implementation and review stages consume LLM tokens.
 
-| 信任分 | 等级 | 权限 |
-|--------|------|------|
-| 0.80+ | `autonomous` | 全权限, 可分配任务 |
-| 0.60+ | `standard` | 读写文件, 创建 Issue |
-| 0.30+ | `restricted` | 需审批 |
-| 0.00+ | `readonly` | 只读 |
+### Tag State Machine
 
-### 数字身体系统
+```
+task:pending -> task:accepted -> task:active -> task:done -> task:review -> task:reviewed
+                   ^ timeout 5min reset              ^ timeout 10min reset
+```
 
-| 系统 | 成熟度 | 核心模块 |
-|------|--------|----------|
-| 记忆系统 | 90% | soul_memory (双层三域 + L1/L3) |
-| 反射弧 | 80% | soul_enforcer (三层防线) |
-| 运动系统 | 75% | exec/write/edit + ACP |
-| 感官系统 | 70% | memory_recall + code_search |
-| 免疫系统 | 70% | soul_audit (七维度 + cron) |
-| 内分泌系统 | 65% | soul_hormone (评价引擎 + 信任分) |
-| 遗传系统 | 60% | soul_principles (单向扩散 + 同步衰减) |
-| 自主神经 | 60% | scan_and_fix + HEARTBEAT |
-| 认知系统 | 55% | soul_scarf + soul_curiosity |
+### Trust-Freedom Matrix
 
-### 韧性
+| Trust Score | Tier | Permissions |
+|-------------|------|-------------|
+| 0.80+ | `autonomous` | Full access, can assign tasks |
+| 0.60+ | `standard` | Read/write files, create issues |
+| 0.30+ | `restricted` | Approval required for writes |
+| 0.00+ | `readonly` | Read-only access |
 
-- **灾难恢复**: `domain(action="rebuild")` 从 tags 重建域图谱
-- **跨版本兼容**: `schema_version` 迁移链 + pack 逃生舱
-- **静默失效防护**: `_dm_ok` 降级开关 + 标签系统独立于 Issue 表
-- **11 维审计**: 每小时自动运行，Tier1 问题自动修复
+### Resilience
+
+- **Disaster Recovery**: `domain(action="rebuild")` rebuilds domain graph from tags
+- **Cross-version Compatibility**: `schema_version` migration chain + pack escape hatch
+- **Silent Failure Protection**: `_dm_ok` degradation switch + tag system independent of issue table
+- **11-dimension Audit**: Hourly automated scan, Tier 1 issues auto-fixed
 
 ---
 
-## MCP 工具一览
+## MCP Tool Reference
 
-| 域 | 数量 | 工具 |
-|----|------|------|
-| 记忆 | 10 | `memory_recall` `memory_store` `memory_update` `memory_forget` `memory_stats` `memory_list` `memory_gc` `memory_correct` `memory_reclassify` `memory_sync_files` |
-| 原则 | 4 | `principle_activate` `principle_inherit` `principle_diffuse` `principle_evaluate` |
-| 上下文 | 5 | `context_supply` `context_inject` `context_graph` `context_ready` `auto_context_inject` |
-| 审计防线 | 3 | `audit_run` `audit_pre_check` `defense` |
-| 自省演化 | 2 | `scarf_reflect` `feedback_apply` |
-| 系统管理 | 4 | `system` `issue_create` `issue_transition` `issue_list` |
-| 经验包 | 3 | `pack_export` `pack_import` `pack_recall` |
-| 域联邦 | 1 | `domain` |
-| 技能追踪 | 5 | `skill_session_start` `skill_session_complete` `skill_session_trace` `skill_session_audit` `skill_auto_track` |
-| 程序化技能 | 3 | `session-init` `smart-remember` `step-closure` |
+48 tools across 12 domains:
 
-> 另有 3 个 Prompt 模板和 5 个 Resource 端点。
+| Domain | Count | Tools |
+|--------|-------|-------|
+| Memory | 10 | `memory_recall` `memory_store` `memory_update` `memory_forget` `memory_stats` `memory_list` `memory_gc` `memory_correct` `memory_reclassify` `memory_sync_files` |
+| Principles | 4 | `principle_activate` `principle_inherit` `principle_diffuse` `principle_evaluate` |
+| Context | 5 | `context_supply` `context_inject` `context_graph` `context_ready` `auto_context_inject` |
+| Audit & Defense | 3 | `audit_run` `audit_pre_check` `defense` |
+| Reflection | 2 | `scarf_reflect` `feedback_apply` |
+| System | 4 | `system` `issue_create` `issue_transition` `issue_list` |
+| Experience Pack | 3 | `pack_export` `pack_import` `pack_recall` |
+| Domain Federation | 1 | `domain` |
+| Skill Tracking | 5 | `skill_session_start` `skill_session_complete` `skill_session_trace` `skill_session_audit` `skill_auto_track` |
+| Programmatic Skills | 3 | `session-init` `smart-remember` `step-closure` |
+| Dispatch | 7 | `task_enqueue` `task_claim` `task_complete` `task_verify` `task_inbox` `task_heartbeat` `task_abandon` |
+| SuperPowers | 1 | `sp-stage` |
 
----
-
-## 技术栈
-
-| 层 | 技术 |
-|----|------|
-| 语言 | Python 3.10+ / Rust (性能核心) |
-| 嵌入 | sentence-transformers (all-MiniLM-L6-v2, 384d) 或 OpenAI |
-| 向量存储 | LanceDB (ANN + FTS + RRF 混合融合) |
-| 关系存储 | SQLite WAL + schema_version 迁移链 |
-| 协议 | MCP (stdio + SSE) |
-| 并发 | asyncio + threading.RLock |
-| LLM | Pi Agent (deepseek-v4-pro) / Claude |
+> Also includes 3 Prompt templates and 5 Resource endpoints.
 
 ---
 
-## 项目结构
+## Tech Stack
+
+<div align="center">
+
+**Language** - **Vector Store** - **Protocol** - **LLM**
+
+</div>
+
+| Category | Technologies |
+|----------|-------------|
+| **Language** | ![Python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white) ![Rust](https://img.shields.io/badge/rust-core-000000?logo=rust&logoColor=white) |
+| **Vector Store** | ![LanceDB](https://img.shields.io/badge/LanceDB-%E2%89%A50.6.0-3B82F6) |
+| **Relational DB** | ![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white) |
+| **Embeddings** | ![sentence-transformers](https://img.shields.io/badge/all--MiniLM--L6--v2-384d-FFB000) |
+| **Protocol** | ![MCP](https://img.shields.io/badge/MCP-1.0-FF6B35) |
+| **LLM** | Claude (PM) / DeepSeek-v4-pro (Pi Agents) |
+| **Async** | asyncio + threading.RLock |
+| **Web Server** | uvicorn + starlette |
+
+<details>
+<summary>View all dependencies</summary>
+
+### Core Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `mcp` | >=1.0.0 | Model Context Protocol server |
+| `lancedb` | >=0.6.0 | Disk-based ANN vector storage |
+| `sentence-transformers` | >=2.2.0 | Local embedding generation (384d) |
+| `uvicorn[standard]` | >=0.27.0 | ASGI server for SSE |
+| `starlette` | >=0.36.0 | Web framework for HTTP endpoints |
+| `httpx` | >=0.27.0 | HTTP client for bridge |
+
+### Dev Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `pytest` | >=8.0 | Test framework |
+| `pytest-asyncio` | >=0.23 | Async test support |
+| `pytest-cov` | >=4.0 | Coverage reporting |
+| `ruff` | >=0.3.0 | Linting + formatting |
+| `mypy` | >=1.8 | Static type checking |
+| `pre-commit` | >=3.6 | Git hook framework |
+
+</details>
+
+---
+
+## Project Structure
 
 ```
-plastic_promise/              # Python 核心包
-├── core/                     # 核心引擎
-│   ├── constants.py          # 常量、阈值、12 条核心原则
-│   ├── context_engine.py     # 上下文供应引擎 (Python 回退)
-│   ├── embedder.py           # 嵌入器 (sentence-transformers / OpenAI)
-│   ├── decay_engine.py       # 时间衰减引擎 (Weibull)
-│   ├── domain_manager.py     # 域联邦管理器
-│   ├── noise_filter.py       # 噪声过滤器
-│   ├── quality_gate.py       # 质量门控
-│   ├── reranker.py           # Cross-encoder 重排序
-│   ├── lancedb_store.py      # LanceDB 向量存储
-│   └── pack_index.py         # 经验包索引
+plastic_promise/              # Python core package
+├── core/                     # Core engine
+│   ├── constants.py          # Constants, thresholds, 12 core principles
+│   ├── context_engine.py     # Context supply engine (Python fallback)
+│   ├── embedder.py           # Embedder (sentence-transformers / OpenAI)
+│   ├── decay_engine.py       # Time decay engine (Weibull)
+│   ├── domain_manager.py     # Domain federation manager
+│   ├── noise_filter.py       # Noise filter
+│   ├── quality_gate.py       # Quality gate (4-dim scoring)
+│   ├── reranker.py           # Cross-encoder reranker
+│   ├── lancedb_store.py      # LanceDB vector store
+│   └── pack_index.py         # Experience pack index
 ├── mcp/                      # MCP Server
-│   ├── server.py             # 主入口 (38+ 工具路由)
-│   ├── tools/                # 11 个工具处理器模块
-│   │   ├── memory.py         # 记忆域 (10 工具)
-│   │   ├── principles.py     # 原则域 (4 工具)
-│   │   ├── context.py        # 上下文域 (5 工具)
-│   │   ├── audit_defense.py  # 审计防线域 (3 工具)
-│   │   ├── reflection.py     # 自省演化域 (2 工具)
-│   │   ├── management.py     # 系统管理域 (7 工具)
-│   │   ├── domain.py         # 域联邦 (1 工具)
-│   │   ├── skill_tracking.py # 技能追踪 (5 工具)
-│   │   ├── reclassify.py     # 记忆重分类
-│   │   └── sync.py           # 文件同步
-│   ├── resources.py          # 5 个 MCP Resource
-│   └── prompts.py            # 3 个 MCP Prompt
-├── memory/                   # 记忆系统
+│   ├── server.py             # Main entry (48 tool routes)
+│   ├── tools/                # 12 domain handler modules
+│   │   ├── memory.py         # Memory domain (10 tools)
+│   │   ├── principles.py     # Principles domain (4 tools)
+│   │   ├── context.py        # Context domain (5 tools)
+│   │   ├── audit_defense.py  # Audit & defense domain (3 tools)
+│   │   ├── reflection.py     # Reflection domain (2 tools)
+│   │   ├── management.py     # System management domain (7 tools, incl. dispatch)
+│   │   ├── domain.py         # Domain federation (1 tool)
+│   │   ├── skill_tracking.py # Skill tracking (5 tools)
+│   │   ├── reclassify.py     # Memory reclassification
+│   │   └── sync.py           # File sync
+│   ├── resources.py          # 5 MCP Resources
+│   └── prompts.py            # 3 MCP Prompts
+├── memory/                   # Memory system
 │   └── soul_memory.py        # RecMem + EvolveR + MemoryGC
-├── loop/                     # 主控编排
+├── loop/                     # Orchestration
 │   └── soul_loop.py          # pre_task_v2 + post_task + step-closure
-├── principles/               # 原则系统
-│   └── soul_principles.py    # 激活/继承/扩散/评估
-├── reflection/               # 自省系统
-│   ├── soul_scarf.py         # SCARF 五维自省
-│   └── soul_proprioception.py # 本体觉 + 惯性抑制
-├── growth/                   # 成长系统
-│   ├── soul_hormone.py       # 实时反馈激素
-│   ├── soul_classifier.py    # 任务分类
-│   └── skill_extractor.py    # 技能沉淀
-├── defense/                  # 防御系统
-│   ├── soul_enforcer.py      # 三层防线
-│   └── soul_audit.py         # 七维审计
-└── skills/                   # 程序化技能 (Phase 1)
+├── principles/               # Principle system
+│   └── soul_principles.py    # Activate/Inherit/Diffuse/Evaluate
+├── reflection/               # Reflection system
+│   ├── soul_scarf.py         # SCARF 5-dimension introspection
+│   └── soul_proprioception.py # Proprioception + inertia suppression
+├── growth/                   # Growth system
+│   ├── soul_hormone.py       # Real-time feedback hormone
+│   ├── soul_classifier.py    # Task classifier
+│   └── skill_extractor.py    # Skill extraction
+├── defense/                  # Defense system
+│   ├── soul_enforcer.py      # 3-layer defense
+│   └── soul_audit.py         # 11-dimension audit
+└── skills/                   # Programmatic skills (Phase 1)
 
-rust/context-engine-core/     # Rust 核心引擎 (PyO3)
+rust/context-engine-core/     # Rust core engine (PyO3)
 ├── src/
-│   ├── entity_graph.rs       # 实体关联图谱
-│   ├── rank_fuser.rs         # RRF 融合 + 符号规则
-│   ├── source_tracker.rs     # 来源追溯
-│   ├── association_feedback.rs # 自演化反馈
-│   ├── memory_worth.rs       # 双计数器
-│   ├── context_engine.rs     # 主编排器
-│   └── principles.rs         # 原则实体
+│   ├── entity_graph.rs       # Entity relationship graph
+│   ├── rank_fuser.rs         # RRF fusion + symbolic rules
+│   ├── source_tracker.rs     # Source tracking
+│   ├── association_feedback.rs # Self-evolution feedback
+│   ├── memory_worth.rs       # Dual counters
+│   ├── context_engine.rs     # Main orchestrator
+│   └── principles.rs         # Principle entities
 └── Cargo.toml
 
-daemons/                      # 守护进程 & Worker
-├── pi_daemon.py              # 多 Agent 自治流水线 (零 Token 轮询)
-├── audit_daemon.py           # 每小时审计 + 记忆清理
-├── pi_worker.ps1             # Worker 启动器 (Windows)
-├── pi_worker.sh              # Worker 启动器 (Linux/macOS)
-├── pi_listener.ps1           # SSE 事件监听器
-└── watchdog.ps1              # 进程守护 (自动重启)
+daemons/                      # Daemon processes & workers
+├── pi_daemon.py              # Multi-agent autonomous pipeline (tag-based polling)
+├── audit_daemon.py           # Hourly audit + memory cleanup
+├── pi_worker.ps1             # Worker launcher (Windows)
+├── pi_worker.sh              # Worker launcher (Linux/macOS)
+├── pi_listener.ps1           # SSE event listener
+└── watchdog.ps1              # Process watchdog (auto-restart)
 
-tests/                        # 测试
-docs/                         # 设计文档
-├── GOAL.md                   # 架构总览 & 路线图
-├── BUILD_PLAN.md             # 重建计划 (已完成, 历史参考)
-└── superpowers/              # 设计文档 (80+ 文件)
-scripts/                      # 辅助脚本
-├── start-all.bat             # 一键启动 (Windows)
-├── start-all.sh              # 一键启动 (Linux/macOS)
-└── eco.py                    # 碳足迹计算器
-utils/                        # 工具函数
-bridge/                       # N.E.K.O 桥接
-.data/                        # 运行时数据 (SQLite + LanceDB)
-experience_packs/             # 经验包导出
+tests/                        # Tests
+docs/                         # Design documentation
+├── GOAL.md                   # Architecture overview & roadmap
+├── BUILD_PLAN.md             # Build plan (historical reference)
+├── architecture/             # Generated architecture documentation
+└── superpowers/              # Design specs (80+ files)
+scripts/                      # Helper scripts
+├── start-all.bat             # One-click start (Windows)
+├── start-all.sh              # One-click start (Linux/macOS)
+└── eco.py                    # Carbon footprint calculator
+utils/                        # Utility functions
+bridge/                       # N.E.K.O bridge
+.data/                        # Runtime data (SQLite + LanceDB)
+experience_packs/             # Experience pack exports
 ```
 
 ---
 
-## 开发指南
+## Architecture Documentation
+
+Complete architecture documentation under `docs/architecture/`:
+
+| Document | Description |
+|----------|-------------|
+| [architecture.md](docs/architecture/architecture.md) | 13-section architecture document: agents, data flow, security model, cost estimation, implementation phases |
+| [diagrams/architecture.mermaid](docs/architecture/diagrams/architecture.mermaid) | Agent flow diagram: 12 MCP domains, daemon layer, storage |
+| [diagrams/sequence.mermaid](docs/architecture/diagrams/sequence.mermaid) | Multi-agent workflow sequence: session init -> build -> review -> fix |
+| [diagrams/components.mermaid](docs/architecture/diagrams/components.mermaid) | Component-level breakdown: memory, context, principles, defense subsystems |
+| [config/mcp-config.json](docs/architecture/config/mcp-config.json) | Reference MCP configuration with tool schemas |
+| [implementation-notes.md](docs/architecture/implementation-notes.md) | Setup guide, development patterns, challenges, testing strategy |
+
+### C4 Model ASCII Diagrams
+
+| Level | Scope | File |
+|-------|-------|------|
+| Level 1 — Context | Users, external systems, system boundary | [c4-level1-context.txt](docs/architecture/diagrams/c4-level1-context.txt) |
+| Level 2 — Container | Services, databases, queues, subsystems | [c4-level2-container.txt](docs/architecture/diagrams/c4-level2-container.txt) |
+| Level 3 — Component | Memory pipeline + ContextEngine detail | [c4-level3-component.txt](docs/architecture/diagrams/c4-level3-component.txt) |
+
+> Mermaid diagrams can be viewed live at [mermaid.live](https://mermaid.live).
+
+---
+
+## Development Guide
+
+### Setup
 
 ```bash
-# 安装开发依赖
-make dev-install
-
-# 代码检查
-make lint
-
-# 代码格式化
-make format
-
-# 运行测试
-make test
-
-# 完整检查链路
-make check
-
-# 安装 pre-commit hooks
-make pre-commit-install
+make dev-install          # Install all dependencies (including dev)
+make pre-commit-install   # Install git hooks (ruff + mypy)
 ```
 
-### 约定
+### Common Commands
 
-本项目遵循 [Plastic Promise 10 条核心约定](.trae/rules)。所有贡献者应在提交前：
+```bash
+make lint                 # Code quality check (ruff)
+make format               # Auto-format (ruff)
+make test                 # Run all tests
+make check                # Full check chain: lint + format-check + test
+```
 
-1. 调用 `memory_recall` + `context_supply` 获取上下文
-2. 每次实质性产出有 git commit
-3. 完成后执行 `step-closure` 闭环
+### Running Specific Tests
+
+```bash
+pytest tests/ -k "memory"       # Memory domain tests only
+pytest tests/ -k "decay"        # Decay engine tests
+pytest tests/ -k "context"      # Context engine tests
+pytest tests/ --cov=plastic_promise --cov-report=html  # Coverage report
+```
+
+### Conventions
+
+This project follows the [Plastic Promise core conventions](.trae/rules). All contributors should, before committing:
+
+1. Call `memory_recall` + `context_supply` to load relevant context
+2. Ensure each substantive change has a corresponding git commit
+3. Execute `step-closure` after completing work
+
+---
+
+## Privacy & Data Security
+
+- **Local-first architecture**: All data is stored locally (SQLite + LanceDB). No data is sent to any external service.
+- **Sensitive data isolation**: Trust scores, principle adherence records, and SCARF introspection results are stored in the local SQLite database and never leave the machine.
+- **Audit trail**: Every agent action and system decision is recorded in the audit log (`audit_run`) and hunter failure log (`hunter_failure_log` table).
+- **Telemetry opt-out**: Set `DO_NOT_TRACK=1` to fully disable all telemetry.
+- **Rate limiting**: Built-in rate limiting on the MCP server prevents abuse in multi-agent scenarios.
+- **Reporting**: Security issues can be reported via [SECURITY.md](SECURITY.md).
 
 ---
 
 ## License
 
-[MIT](LICENSE)
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for the full text.
+
+| Permission | Status |
+|------------|--------|
+| Commercial use | Allowed |
+| Modification | Allowed |
+| Distribution | Allowed |
+| Private use | Allowed |
+| Liability | Not provided |
+| Warranty | Not provided |
+
+---
+
+<div align="center">
+
+**Plastic Promise** — Built by [ALdaisuki](https://github.com/ALdaisuki)
+
+Star this repo if you find it helpful.
+
+[![GitHub Stars](https://img.shields.io/github/stars/ALdaisuki/plastic-promise?style=social)](https://github.com/ALdaisuki/plastic-promise/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/ALdaisuki/plastic-promise?style=social)](https://github.com/ALdaisuki/plastic-promise/network/members)
+
+</div>

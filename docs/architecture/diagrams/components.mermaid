@@ -1,0 +1,86 @@
+graph LR
+    subgraph "🧠 Memory Subsystem"
+        SM["soul_memory.py<br/>RecMem + EvolveR + MemoryGC"]
+        LB["lancedb_store.py<br/>ANN + FTS + RRF"]
+        DE["decay_engine.py<br/>Weibull decay"]
+        QG["quality_gate.py<br/>4-dim scoring"]
+        NF["noise_filter.py<br/>Signal extraction"]
+        SE["smart_extractor<br/>6-category extraction"]
+    end
+
+    subgraph "⚡ Context Subsystem"
+        CTX["context_engine.py<br/>3-way retrieval + rerank"]
+        EG["entity_graph.rs<br/>Entity relationships (Rust)"]
+        RF["rank_fuser.rs<br/>RRF + symbolic rules (Rust)"]
+        MW["memory_worth.rs<br/>Dual counters (Rust)"]
+        RERANK["reranker.py<br/>Cross-encoder rerank"]
+    end
+
+    subgraph "📜 Principles Subsystem"
+        SP["soul_principles.py<br/>Activate/Inherit/Diffuse/Evaluate"]
+        PT["PrincipleTracker<br/>Adherence quantification"]
+    end
+
+    subgraph "🛡️ Defense Subsystem"
+        SENF["soul_enforcer.py<br/>L0/L1/L2 defense"]
+        SAUD["soul_audit.py<br/>11-dimension scan"]
+    end
+
+    subgraph "🪞 Reflection Subsystem"
+        SCARF["soul_scarf.py<br/>5-dim introspection"]
+        PROP["soul_proprioception.py<br/>Inertia suppression"]
+    end
+
+    subgraph "💪 Growth Subsystem"
+        SH["soul_hormone.py<br/>Dopamine/Cortisol/Oxytocin"]
+        SCLS["soul_classifier.py<br/>Task classification"]
+    end
+
+    subgraph "🔌 MCP Interface"
+        SRV["server.py<br/>41 tool router"]
+        TOOLS["tools/<br/>11 domain handlers"]
+        RES["resources.py<br/>5 MCP Resources"]
+        PROMPTS["prompts.py<br/>3 MCP Prompts"]
+    end
+
+    subgraph "🤖 Agent Layer"
+        DAEMON["pi_daemon.py<br/>Zero-token orchestrator"]
+        SAFETY["Safety-Net Daemon<br/>11 scanners"]
+        GUILD["Hunter Guild<br/>7 dispatch tools"]
+    end
+
+    subgraph "💾 Storage"
+        SQL["SQLite WAL<br/>memories + trust + tasks"]
+        LDB["LanceDB<br/>vectors + FTS index"]
+    end
+
+    SRV --> TOOLS
+    TOOLS --> SM
+    TOOLS --> SP
+    TOOLS --> CTX
+    TOOLS --> SENF
+    TOOLS --> SCARF
+    TOOLS --> SH
+
+    SM --> LB
+    SM --> DE
+    SM --> QG
+    SM --> NF
+    SM --> SE
+    CTX --> EG
+    CTX --> RF
+    CTX --> MW
+    CTX --> RERANK
+    SENF --> SAUD
+    DAEMON --> SRV
+    SAFETY --> SM
+    GUILD --> SQL
+    LB --> LDB
+    SM --> SQL
+
+    style SM fill:#FFD700,stroke:#8B4513,stroke-width:2px,color:#000
+    style CTX fill:#87CEEB,stroke:#1E3A5F,stroke-width:2px,color:#000
+    style SRV fill:#90EE90,stroke:#006400,stroke-width:2px,color:#000
+    style DAEMON fill:#FFA07A,stroke:#8B0000,stroke-width:2px,color:#000
+    style SQL fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000
+    style LDB fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000

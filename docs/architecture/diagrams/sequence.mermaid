@@ -1,0 +1,64 @@
+sequenceDiagram
+    participant U as 👤 User
+    participant C as 🎯 Claude (PM)
+    participant SI as session-init
+    participant CE as ⚡ ContextEngine
+    participant M as 🧠 Memory
+    participant D as 🤖 Daemon
+    participant PB as 🔨 Pi Builder
+    participant PR as 👀 Pi Reviewer
+    participant PF as 🔧 Pi Fixer
+    participant SC as 🔄 step-closure
+
+    Note over U,SC: === Session Initialization ===
+    U->>C: Task description
+    C->>SI: session-init(task_description)
+    SI->>CE: principle_activate(domain_hint)
+    CE-->>SI: 12 principles (domain-filtered)
+    SI->>CE: context_supply(task_description)
+    CE->>M: memory_recall (3-way retrieval)
+    M-->>CE: Core + related memories
+    CE-->>SI: 🔵Core + 🟡Related context
+    SI->>M: memory_store (session start)
+    SI-->>C: principles + scarf_baseline + domain_health
+
+    Note over U,SC: === Task Execution ===
+    C->>C: Decompose task
+    C->>D: task_enqueue (via memory_store tags)
+    D->>D: Zero-token poll (SQLite)
+    D->>PB: Spawn Pi Builder
+    PB->>CE: memory_recall + context_supply
+    CE-->>PB: Context injection
+    PB->>PB: Implement (TDD)
+    PB->>M: memory_store (completion)
+    PB->>D: /notify (task done)
+
+    D->>D: Detect task:done tag
+    D->>PR: Spawn Pi Reviewer
+    PR->>CE: context_supply(task_type="code_review")
+    CE-->>PR: Review context
+    PR->>PR: Code review
+    PR->>C: Review report
+
+    alt Review Passed
+        C->>C: task_verify → approved
+        C->>SC: step-closure(mode="full")
+        SC->>SC: Principle alignment check
+        SC->>SC: SCARF 5-dim introspection
+        SC->>SC: Hormone update
+        SC->>SC: Trust score linkage
+        SC->>M: Reflection memory store
+        SC-->>C: CEI composite index
+    else Review Rejected
+        C->>D: task rejected → auto-dispatch
+        D->>PF: Spawn Pi Fixer
+        PF->>PF: Fix issues
+        PF->>M: memory_store (fix)
+        PF->>D: /notify → re-review
+    end
+
+    Note over U,SC: === Background (Continuous) ===
+    D->>D: Heartbeat monitoring (60s)
+    D->>D: Task timeout recovery (5min)
+    D->>D: 11-dimension audit (hourly)
+    D->>M: memory_gc (weekly)

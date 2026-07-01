@@ -1,0 +1,47 @@
+# ==============================================================================
+# Plastic Promise — C4 Model: System Context Diagram (Level 1)
+# Generated: 2026-07-02 | Skill: tools-visual-ascii-arch
+# ==============================================================================
+
++---------------------------+          +--------------------------------------+
+|                           |          |                                      |
+|    AI Coding Agent        |  MCP     |   Plastic Promise Governance System  |
+|  +---------------------+  |  stdio   |  +--------------------------------+  |
+|  | Claude Code / Trae  |<>+-------->+--+ MCP Server (:9020)             |  |
+|  | (PM + Orchestrator) |  |  SSE    |  | 41 tools / 11 domains           |  |
+|  +---------------------+  |<--------+--+                                 |  |
+|                           |  events  |  +--------------------------------+  |
++---------------------------+          |                                      |
+                                       |  +--------------------------------+  |
++---------------------------+          |  | Memory Pool (SQLite + LanceDB)  |  |
+|                           |  /notify |  | L1/L2/L3 tiered storage         |  |
+|    Pi Agent Team          |  POST    |  +--------------------------------+  |
+|  +---------------------+  |<--------+--+                                    |
+|  | Pi Builder (coding)  |  |  tags   |  +--------------------------------+  |
+|  | Pi Fixer (debugging) |<>+-------->+--+ Tag State Machine               |  |
+|  | Pi Reviewer (audit)  |  |  poll   |  | pending→active→done→reviewed     |  |
+|  +---------------------+  |          |  +--------------------------------+  |
+|                           |          |                                      |
++---------------------------+          |  +--------------------------------+  |
+                                       |  | Daemon Layer                    |  |
++---------------------------+          |  | Zero-token poll + 11-dim scan    |  |
+|                           |  HTTP    |  +--------------------------------+  |
+|    Human Developer        |  :9020   |                                      |
+|  +---------------------+  |<-------->+  +--------------------------------+  |
+|  | Browser / Dashboard  |  |  HTML   |  | Trust Engine                    |  |
+|  +---------------------+  |          |  | 4-tier permission matrix         |  |
+|                           |          |  +--------------------------------+  |
++---------------------------+          +--------------------------------------+
+
+Protocols:
+  MCP/stdio  — Tool calls from Claude Code / Trae to MCP Server
+  MCP/SSE    — Server-Sent Events for real-time agent notifications
+  /notify    — Pi agents signal completion via HTTP POST
+  HTTP:9020  — Health check + dashboard + SSE event stream
+  tags/poll  — Daemon reads SQLite task queue (zero LLM tokens)
+
+SLA Targets:
+  Tool call latency:  <100ms (p95)
+  Daemon poll cycle:  <10ms
+  context_supply:     <1s (p95, with rerank)
+  Uptime:             99.9% (local loopback)

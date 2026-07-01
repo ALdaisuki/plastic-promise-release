@@ -1,0 +1,108 @@
+{
+  "mcpServers": {
+    "plastic-promise": {
+      "command": "python",
+      "args": ["-m", "plastic_promise.mcp.server"],
+      "cwd": ".",
+      "env": {
+        "PP_EMBEDDING_DIM": "384",
+        "PP_LANCEDB_PATH": ".data/lancedb",
+        "PP_SQLITE_PATH": ".data/memories.db",
+        "PP_RUST_ENGINE": "auto"
+      },
+      "disabled": false,
+      "alwaysAllow": [
+        "memory_recall",
+        "memory_store",
+        "context_supply",
+        "principle_activate"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "session-init",
+      "description": "Unified session bootstrap: principle activation + SCARF baseline + context supply + memory injection + domain stats",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_description": {
+            "type": "string",
+            "description": "What this session aims to accomplish"
+          }
+        },
+        "required": ["task_description"]
+      }
+    },
+    {
+      "name": "memory_store",
+      "description": "Store a memory with auto-extraction, dedup, quality gate, and decay initialization",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Memory content"
+          },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Tags for categorization and task routing"
+          },
+          "tier": {
+            "type": "string",
+            "enum": ["L1", "L2", "L3"],
+            "default": "L1"
+          }
+        },
+        "required": ["content"]
+      }
+    },
+    {
+      "name": "step-closure",
+      "description": "6-link closed loop: principle alignment → SCARF → hormone → trust → reflection → CEI",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_description": { "type": "string" },
+          "mode": {
+            "type": "string",
+            "enum": ["full", "light"],
+            "default": "full"
+          },
+          "lesson": { "type": "string" },
+          "improvement": { "type": "string" },
+          "root_cause": { "type": "string" },
+          "optimization": { "type": "string" }
+        },
+        "required": ["task_description"]
+      }
+    }
+  ],
+  "resources": {
+    "maxConcurrentRequests": 10,
+    "timeoutMs": 30000,
+    "retryAttempts": 3,
+    "rateLimiting": {
+      "requestsPerMinute": 60,
+      "burstSize": 10
+    }
+  },
+  "monitoring": {
+    "loggingLevel": "info",
+    "metricsEnabled": true,
+    "tracingEnabled": true,
+    "dashboardPort": 9020
+  },
+  "security": {
+    "requireAuth": false,
+    "allowedOrigins": ["http://127.0.0.1:9020", "http://localhost:9020"],
+    "rateLimit": true,
+    "trustThresholds": {
+      "autonomous": 0.80,
+      "standard": 0.60,
+      "restricted": 0.30,
+      "readonly": 0.00
+    }
+  }
+}

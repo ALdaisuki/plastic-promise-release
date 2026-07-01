@@ -1,0 +1,125 @@
+# ==============================================================================
+# Plastic Promise — C4 Model: Component Diagram (Level 3)
+# Focus: Memory Pipeline + ContextEngine (most critical path)
+# Generated: 2026-07-02 | Skill: tools-visual-ascii-arch
+# ==============================================================================
+
+    memory_store(content, tags)       memory_recall(query, top_k)
+         |                                    |
+         v                                    v
+  +-----------+                        +-----------+
+  | MCP Tool  |                        | MCP Tool  |
+  | Handler   |                        | Handler   |
+  +-----+-----+                        +-----+-----+
+         |                                    |
+         v                                    v
+  +---------------------------------------------------+
+  |              ContextEngine (orchestrator)           |
+  |                                                     |
+  |  +------------------+    +-----------------------+  |
+  |  | entity_graph.rs  |    | context_engine.py      |  |
+  |  | - nodes/edges    |    | - 3-way retrieval     |  |
+  |  | - association    |    | - rerank (cross-enc)  |  |
+  |  | - traverse(path) |    | - context assembly    |  |
+  |  +--------+---------+    +-----------+-----------+  |
+  |           |                           |              |
+  +---------------------------------------------------+
+              |                           |
+    +---------+---------+       +---------+---------+
+    |                   |       |                   |
+    v                   v       v                   v
++--------+     +--------+   +--------+      +----------+
+| rank_  |     | memory_|   | Lancedb|      | symbolic |
+| fuser  |     | worth  |   | ANN    |      | rules    |
+| (RRF)  |     | (dual  |   | + FTS  |      | (tags)   |
+|        |     | count) |   |        |      |          |
++---+----+     +---+----+   +---+----+      +----+-----+
+    |              |              |                |
+    +--------------+--------------+----------------+
+                   |                               |
+     RRF fusion:  score = 0.4×ANN + 0.3×FTS + 0.2×symbolic + 0.1×worth
+                   |
+                   v
+    +-----------------------------+
+    |      Ranked Results         |
+    |  🔵 Core context (top-N)    |
+    |  🟡 Related context         |
+    |  🟢 Background context      |
+    +-----------------------------+
+                   |
+       +-----------+-----------+
+       |                       |
+       v                       v
++-----------+          +-----------+
+| memory_   |          | context_  |
+| recall    |          | supply    |
+| response  |          | response  |
++-----------+          +-----------+
+
+
+===================== MEMORY STORE PIPELINE (detail) =====================
+
+  memory_store(content, tags, tier)
+         |
+         v
+  +------------------+
+  | store_urgent()   |  (bypasses queue for critical memories)
+  +--------+---------+
+           |
+           v
+  +------------------+
+  | smart_extractor  |  → 6-category classification:
+  | (regex + LLM     |    preference | fact | decision | entity | event | pattern
+  |  fallback)       |
+  +--------+---------+
+           |
+           v
+  +------------------+
+  | check_duplicate  |  → LanceDB ANN search (cos ≥ 0.85 = duplicate)
+  | (vector dedup)   |    If duplicate: access_count++, worth_success++,
+  +--------+---------+    last_accessed=now, effective_half_life++
+           |              RETURN updated (no new insert)
+           v (unique)
+  +------------------+
+  | QualityGate      |  → 4-dimension scoring (equal weight 0.25):
+  | .score(tier)     |    confidence + relevance + freshness + info_density
+  +--------+---------+    ≥0.5 = admit | 0.3-0.5 = low_quality | <0.3 = discard
+           |
+           v (admitted)
+  +------------------+
+  | RecMem.store()   |  → Weibull decay init:
+  | + decay_init     |    L1: β=1.5, half_life=3d
+  | + LanceDB write  |    L3: β=0.7, half_life=90d
+  +------------------+    Dual-write: SQLite + LanceDB (vector)
+
+
+===================== MEMORY GC PIPELINE (weekly) =====================
+
+  MemoryGC.collect()  [~7 day cycle]
+         |
+         v
+  +------------------+
+  | mark_decaying()  |  → Weibull batch decay update (Direction A)
+  +--------+---------+    composite_score = wilson×0.6 + freshness×0.25
+           |              + reinforcement×0.15
+           v
+  +------------------+
+  | merge_similar()  |  → LanceDB ANN cos ≥ 0.70 = merge candidates
+  +--------+---------+    composite_score decides survivor (Direction A+B)
+           |
+           v
+  +------------------+
+  | forget()         |  → Remove decayed + merged (LanceDB + SQLite)
+  +------------------+
+
+
+Protocols between components (all in-process):
+  =>  sync call (Python fn)
+  ~>  async call (asyncio coroutine)
+  **> data pipeline (streaming)
+
+Metadata:
+  All vector ops: 384-dimensional (all-MiniLM-L6-v2)
+  RRF k-constant: 60 (standard)
+  Quality thresholds: 0.85 (dedup), 0.70 (merge), 0.50 (admit), 0.30 (low quality)
+  Decay: L1 β=1.5/3d, L2 β=1.0/30d, L3 β=0.7/90d
