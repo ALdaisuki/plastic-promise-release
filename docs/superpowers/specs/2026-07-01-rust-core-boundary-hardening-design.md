@@ -55,7 +55,7 @@ These methods replace direct `_memories` / `_graph_*` / `_sqlite` access:
 |--------|----------|
 | `update_memory_fields(mid, **fields)` | `engine._memories[mid]["tags"] = x` — handles `tags`, `domain`, `tier`, `worth_success`, `worth_failure`, `access_count`, `last_accessed`, `decay_multiplier`, `effective_half_life`, `entity_ids` (existing `update_memory` only does `content`/`importance`/`category`) |
 | `memory_exists(mid) -> bool` | `mid in engine._memories` |
-| `get_memory_dict(mid) -> dict \| None` | `engine._memories.get(mid)` — returns raw dict for read-only field access (existing `get_memory` returns `MemoryRecord` object) |
+| `get_memory_dict(mid) -> dict \| None` | `engine._memories.get(mid)` — returns a **deep copy** of the internal dict. Callers can read any field but mutations don't affect the engine. All writes MUST go through `update_memory_fields`. (Existing `get_memory` returns `MemoryRecord` object; prefer that for simple attribute access.) |
 | `iter_memories(scope=None, page_size=200) -> Iterator[dict]` | `for mid, mem in engine._memories.items()` — paginated to avoid full list allocation |
 | `memory_ids() -> list[str]` | `engine._memories.keys()` |
 | `get_memories_batch(mids: list[str]) -> list[dict]` | Repeated `engine._memories[mid]` in a loop |
@@ -78,9 +78,9 @@ These methods replace direct `_memories` / `_graph_*` / `_sqlite` access:
 | `batch_update(updates: list[dict]) -> int` | Multiple `engine.update_memory()` calls in a loop |
 | `begin_batch() / commit_batch() / rollback_batch()` | Direct `engine._sqlite._conn.commit()` |
 
-### 1b. batch_update Atomicity
+### 1b. batch_update Atomicity & Concurrency
 
-`batch_update` uses SQLite `SAVEPOINT` for atomicity:
+`batch_update` uses SQLite `SAVEPOINT` for atomicity within a single connection:
 
 ```python
 def batch_update(self, updates: list[dict]) -> int:
@@ -93,11 +93,16 @@ def batch_update(self, updates: list[dict]) -> int:
         Number of records updated.
     
     If any update fails, ALL changes are rolled back via SAVEPOINT.
-    """
-    if not self._sqlite:
-        return self._batch_update_in_memory(updates)
     
-    with self._sqlite._conn:
+    Concurrency: This method acquires a threading.Lock to serialize
+    in-process writes. Inter-process contention (daemon vs MCP server)
+    is handled by SQLite WAL-mode locking — callers should handle
+    sqlite3.OperationalError("database is locked") on contention.
+    """
+    with self._write_lock:
+        if not self._sqlite:
+            return self._batch_update_in_memory(updates)
+        
         self._sqlite._conn.execute("SAVEPOINT batch_update")
         try:
             count = 0
@@ -114,6 +119,8 @@ def batch_update(self, updates: list[dict]) -> int:
             self._sqlite._conn.execute("ROLLBACK TO batch_update")
             raise
 ```
+
+The `_write_lock` (a `threading.Lock`) is initialized in `__init__` and acquired by `update_memory_fields`, `batch_update`, `delete_memory`, and `register_memory` — all write paths are serialized within a single process.
 
 ### 1c. Files to Modify
 
@@ -154,6 +161,12 @@ def list_memories_paginated(self, memory_type=None, source=None,
     
     Avoids allocating a full list for large result sets.
     For 10K records at page_size=200: ~50 PyO3 boundary crossings.
+    
+    Consistency: Uses offset-based pagination — NOT guaranteed consistent
+    under concurrent writes. Records inserted or deleted between pages may
+    cause duplicates or omissions. Suitable for snapshot operations
+    (pack_export, memory_gc, memory_stats). Real-time retrieval uses
+    supply() via LanceDB ANN + text matching, not pagination.
     """
     offset = 0
     while True:
@@ -274,12 +287,20 @@ Validate with real scenarios, not micro-benchmarks.
 
 ## Verification Plan
 
+### Implementation Order
+
+1. **Phase 1a** — Add new public methods to `ContextEngine` (no callers changed yet)
+2. **Phase 1b** — Fix `engine._memories` violations first (most common, ~60% of total)
+3. **Phase 1c** — Fix `engine._graph_*` and `engine._sqlite` violations
+4. **Phase 2** — Can run in parallel with Phase 1 (batch_update + list_memories_paginated are independent)
+
 ### Phase 1 Verification
 
-1. Run `grep -r "engine\._" plastic_promise/` — must return **zero** results
+1. Run `grep -r "engine\._" plastic_promise/ --include="*.py" | grep -v context_engine.py` — must return **zero** results
 2. Run existing test suite: `python -m pytest tests/`
 3. Manual smoke test: `python -m plastic_promise.mcp.server --sse 9020` and call `session-init` + `memory_store` + `context_supply` via MCP
 4. Verify all MCP tools still work: `memory_list`, `context_graph`, `skill_session_trace`, `domain`
+5. **CI guard**: Add `tests/test_boundary.py` (AST-based check below) to CI pipeline — fails the build on any new `engine._*` violation
 
 ### Phase 2 Verification
 
