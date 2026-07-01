@@ -167,7 +167,7 @@ class MemoryRecord:
         domain: str = "uncategorized",
         entity_ids: Optional[List[str]] = None,
         decay_multiplier: float = 1.0,
-        effective_half_life: float = 3.0,
+        effective_half_life: Optional[float] = None,
     ) -> None:
         """初始化一条记忆记录。
 
@@ -203,7 +203,11 @@ class MemoryRecord:
         self.last_accessed = self.created_at
         self.access_count = 0
         self.decay_multiplier = decay_multiplier
-        self.effective_half_life = effective_half_life
+        if effective_half_life is not None:
+            self.effective_half_life = effective_half_life
+        else:
+            _hl_map = {"L1": 3.0, "L2": 7.0, "L3": 90.0}
+            self.effective_half_life = _hl_map.get(self.tier, 14.0)
 
     @property
     def worth_score(self) -> float:
@@ -271,7 +275,7 @@ class MemoryRecord:
             tags=data.get("tags", []),
             domain=data.get("domain", "uncategorized"),
             decay_multiplier=data.get("decay_multiplier", 1.0),
-            effective_half_life=data.get("effective_half_life", 3.0),
+            effective_half_life=data.get("effective_half_life"),
         )
         record.created_at = data.get("created_at", record.created_at)
         record.last_accessed = data.get("last_accessed", record.last_accessed)
