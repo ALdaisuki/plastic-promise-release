@@ -12,11 +12,14 @@
 
 - Rust `supply()` MUST be `&self` (not `&mut self`) — stateless, reentrant
 - Memories pass via `Vec<PyObject>` — zero JSON serialization, PyO3 native field extraction
-- Empty-retriever fallback: if `scored_items` is empty and `memories` non-empty, return ALL memories at relevance 0.50 in `related` tier
+- Empty-retriever fallback: if `scored_items` is empty and `memories` non-empty, return up to 200 memories at relevance 0.50 in `related` tier (capped to prevent O(n) blowup)
 - `_rust_lock = threading.Lock()` MUST protect all `_rust_*` field access
+- `_supply_rust()` MUST acquire `_write_lock` during `self._memories` iteration — prevents RuntimeError from concurrent modification
 - On any Rust failure, set `_rust_healthy = None` (NOT `False`) — immediate re-probe next call
 - `_supply_python()` MUST be independent implementation — no recursive call to `supply()`
-- `_convert_rust_pack()` MUST copy `audit_metadata` from Rust to Python ContextPack
+- `_convert_rust_pack()` MUST copy `audit_metadata` from Rust to Python ContextPack with `isinstance` guard
+- `supply()` MUST ensure `task_vector` is non-empty — fallback to `[0.0] * 1024` if embedder fails
+- Vector dimension: 1024 (mxbai-embed-large); Rust `worth_success`/`worth_failure` are `u32` (matching Python `MemoryRecord`)
 - All existing tests must pass after every task
 - CI guard (`tests/test_boundary.py`) must remain green
 
@@ -112,12 +115,12 @@ for py_mem in &memories {
     let memory_type: String = py_mem.get_item("memory_type")
         .and_then(|v| v.extract().ok())
         .unwrap_or_else(|| "experience".to_string());
-    let worth_success: f64 = py_mem.get_item("worth_success")
+    let worth_success: u32 = py_mem.get_item("worth_success")
         .and_then(|v| v.extract().ok())
-        .unwrap_or(0.0);
-    let worth_failure: f64 = py_mem.get_item("worth_failure")
+        .unwrap_or(0);
+    let worth_failure: u32 = py_mem.get_item("worth_failure")
         .and_then(|v| v.extract().ok())
-        .unwrap_or(0.0);
+        .unwrap_or(0);
     let created_at: String = py_mem.get_item("created_at")
         .and_then(|v| v.extract().ok())
         .unwrap_or_default();
@@ -242,13 +245,18 @@ let scored_items = self
     .unwrap_or_default();
 
 // FALLBACK: if retriever is a placeholder and returns nothing,
-// return all memories at relevance 0.50 in "related" tier.
+// return memories at relevance 0.50 in "related" tier.
+// Capped at 200 items to prevent O(n) blowup with large pools.
 // This guarantees Rust never returns emptier than Python would.
 if scored_items.is_empty() && !memory_index.is_empty() {
     let mut pack = ContextPack::new();
     pack.activated_principles = activated_principle_names;
 
-    for (id, mem) in &memory_index {
+    let max_return: usize = 200;
+    for (idx, (id, mem)) in memory_index.iter().enumerate() {
+        if idx >= max_return {
+            break;
+        }
         let worth = mem.worth_score();
         let is_principle = id.starts_with("principle:");
         let freshness = crate::source_tracker::Freshness::from_timestamps(
@@ -373,7 +381,7 @@ def _check_rust_health(self) -> bool:
             # Smoke test: supply with empty memories — validates import + PyO3 bridge
             engine = RustEngine()
             engine.set_current_time(datetime.datetime.now().isoformat())
-            pack = engine.supply("test", [0.0] * 768, "general", "global", [])
+            pack = engine.supply("test", [0.0] * 1024, "general", "global", [])
             # Validate response shape — must have core + related attributes
             assert hasattr(pack, 'core'), "Rust ContextPack missing 'core'"
             assert hasattr(pack, 'related'), "Rust ContextPack missing 'related'"
@@ -495,9 +503,15 @@ def _convert_rust_pack(self, rust_pack) -> ContextPack:
     ]
     pack.activated_principles = list(rust_pack.activated_principles)
     # Preserve audit metadata from Rust for observability
+    # Use isinstance guard: PyO3 may return PyDict wrapper, not plain dict
     if hasattr(rust_pack, 'audit_metadata') and rust_pack.audit_metadata:
-        pack.audit_metadata = dict(rust_pack.audit_metadata)
-    return pack
+        if isinstance(rust_pack.audit_metadata, dict):
+            pack.audit_metadata = dict(rust_pack.audit_metadata)
+        else:
+            # PyDict or other mapping — convert safely
+            pack.audit_metadata = dict(rust_pack.audit_metadata)
+    else:
+        pack.audit_metadata = {}
 ```
 
 - [ ] **Step 2: Add `_supply_rust()` method**
@@ -518,10 +532,13 @@ def _supply_rust(self, task_description: str, task_vector: list,
     # Build memory list for PyO3 — pass raw dicts, no JSON serialize
     # Performance: ~0.5-2ms for 1000 records (list comprehension + dict refs)
     # Acceptable; if pool grows >5000, add pre-filter by scope/tier here
-    memories = [
-        self._memories[mid]
-        for mid in self._memories
-    ]
+    # Acquire _write_lock during iteration — prevents RuntimeError from
+    # concurrent GC or Daemon modifying self._memories during snapshotting
+    with self._write_lock:
+        memories = [
+            self._memories[mid]
+            for mid in self._memories
+        ]
 
     rust = RustEngine()
     rust.set_current_time(datetime.datetime.now().isoformat())
@@ -581,6 +598,11 @@ def supply(
     if task_vector is None:
         task_vector = self._embed(task_description)
 
+    # Ensure vector is non-empty — if embedder fails (Ollama down, etc.),
+    # use zero vector as fallback so downstream code never sees None
+    if task_vector is None or len(task_vector) == 0:
+        task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
+
     # Try Rust accelerator
     if self._check_rust_health():
         try:
@@ -617,7 +639,7 @@ def _embed(self, task_description: str) -> list[float]:
             return self._embedder.embed(task_description)
     except Exception:
         pass
-    return [0.0] * 768  # fallback: zero vector
+    return [0.0] * 1024  # fallback: zero vector
 ```
 
 (Check if `_embed` already exists — if not, add it before `supply()`.)
