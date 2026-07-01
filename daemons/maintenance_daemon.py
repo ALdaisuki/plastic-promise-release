@@ -1223,6 +1223,15 @@ async def main():
             else:
                 cleanup_old_tags()
                 await run_audit()
+                # Decay batch update — recompute all Weibull decay values
+                try:
+                    from plastic_promise.memory.soul_memory import RecMem
+                    rm = RecMem()
+                    updated = rm.update_all_decay()
+                    if updated > 0:
+                        print(f"  [decay] Weibull batch update: {updated} records changed")
+                except Exception as e:
+                    print(f"  [decay] batch update failed: {e}")
                 tick = 0
         elif tick % safety_net_threshold == 0:
             # ═══════════════════════════════════════════════════════════
