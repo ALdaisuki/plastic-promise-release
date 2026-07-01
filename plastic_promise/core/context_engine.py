@@ -760,6 +760,92 @@ class ContextEngine:
                 self._sqlite.upsert(mid, mem)
             return True
 
+    # ========== Batch Updates with SAVEPOINT atomicity (Task 5) ==========
+
+    def batch_update(self, updates: list[dict]) -> int:
+        """Apply multiple memory field updates atomically.
+
+        Args:
+            updates: [{"id": "mem_001", "tags": [...], "domain": "code"}, ...]
+                Each dict MUST contain "id". Other keys are field updates.
+
+        Returns:
+            Number of records updated.
+
+        If any update fails, ALL changes are rolled back via SAVEPOINT.
+        Thread-safe: acquires _write_lock.
+
+        Note: Uses _sqlite.batch() context manager to suppress auto-commit
+        from _SQLiteStorage.upsert() — without it the SAVEPOINT would be
+        consumed by the first implicit commit and subsequent RELEASE would
+        fail with "no such savepoint".
+        """
+        with self._write_lock:
+            if not self._sqlite:
+                return self._batch_update_in_memory(updates)
+
+            with self._sqlite.batch():
+                self._sqlite._conn.execute("SAVEPOINT batch_update")
+                try:
+                    count = 0
+                    for upd in updates:
+                        upd_copy = dict(upd)  # don't mutate caller's dict
+                        mid = upd_copy.pop("id")
+                        if mid in self._memories:
+                            self._memories[mid].update(upd_copy)
+                            self._sqlite.upsert(mid, self._memories[mid])
+                            count += 1
+                    self._sqlite._conn.execute("RELEASE batch_update")
+                    return count
+                except Exception:
+                    self._sqlite._conn.execute("ROLLBACK TO batch_update")
+                    raise
+
+    def _batch_update_in_memory(self, updates: list[dict]) -> int:
+        """Fallback batch_update when SQLite is unavailable."""
+        count = 0
+        for upd in updates:
+            upd_copy = dict(upd)
+            mid = upd_copy.pop("id")
+            if mid in self._memories:
+                self._memories[mid].update(upd_copy)
+                count += 1
+        return count
+
+    def begin_batch(self):
+        """Begin a manual batch transaction. Acquires _write_lock.
+
+        Suppresses auto-commit from _SQLiteStorage.upsert() by incrementing
+        _batch_depth, so the SAVEPOINT survives across multiple writes.
+        """
+        self._write_lock.acquire()
+        if self._sqlite:
+            self._sqlite._batch_depth += 1
+            self._sqlite._conn.execute("SAVEPOINT manual_batch")
+
+    def commit_batch(self):
+        """Commit a manual batch transaction. Releases _write_lock."""
+        try:
+            if self._sqlite:
+                self._sqlite._conn.execute("RELEASE manual_batch")
+                self._sqlite._batch_depth -= 1
+                if self._sqlite._batch_depth <= 0:
+                    self._sqlite._batch_depth = 0
+                    self._sqlite._conn.commit()
+        finally:
+            self._write_lock.release()
+
+    def rollback_batch(self):
+        """Rollback a manual batch transaction. Releases _write_lock."""
+        try:
+            if self._sqlite:
+                self._sqlite._conn.execute("ROLLBACK TO manual_batch")
+                self._sqlite._batch_depth -= 1
+                if self._sqlite._batch_depth <= 0:
+                    self._sqlite._batch_depth = 0
+        finally:
+            self._write_lock.release()
+
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory by id. Returns True if it existed."""
         if memory_id in self._memories:
