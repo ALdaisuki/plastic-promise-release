@@ -61,60 +61,25 @@ async def handle_audit_run(engine: Any, args: dict) -> list[TextContent]:
 async def handle_audit_pre_check(engine: Any, args: dict) -> list[TextContent]:
     """Pre-execution compliance check against L0/L1/L2 defense layers.
 
-    Real-time compliance check: performs L0 hard boundary pattern matching
-    on the pending action description and reports L1/L2 status. Dangerous
-    patterns (rm -rf, DROP TABLE, format, del /f, shutdown) trigger an
-    immediate block at L0.
+    Delegates to SoulAuditor.pre_check() for real-time compliance evaluation.
+    Returns layer-by-layer check results with risk assessment.
 
     Args:
-        engine: ContextEngine instance (unused in stateless implementation).
+        engine: ContextEngine instance.
         args: {"action_description": str, "action_type"?: str}.
 
     Returns:
         list[TextContent]: MCP response with layer checks and risk score.
     """
     try:
-        action: str = args["action_description"]
+        action: str = args.get("action_description", "")
         action_type: str = args.get("action_type", "exec")
 
-        # L0 hard boundaries check — dangerous shell / SQL patterns
-        hard_violations: list[dict] = []
-        dangerous_patterns = [
-            "rm -rf", "DROP TABLE", "format", "del /f", "shutdown",
-        ]
-        for pattern in dangerous_patterns:
-            if pattern.lower() in action.lower():
-                hard_violations.append({
-                    "pattern": pattern,
-                    "layer": "L0",
-                    "action": "block",
-                })
+        from plastic_promise.defense.soul_audit import SoulAuditor
+        auditor = SoulAuditor()
+        check_result = auditor.pre_check(action_description=action, action_type=action_type)
 
-        passed = len(hard_violations) == 0
-
-        return [TextContent(type="text", text=json.dumps({
-            "passed": passed,
-            "action": action[:200],
-            "action_type": action_type,
-            "layer_checks": [
-                {
-                    "layer": "L0",
-                    "passed": passed,
-                    "violations": hard_violations,
-                },
-                {
-                    "layer": "L1",
-                    "passed": True,
-                    "note": "trust-score-driven constraint decay",
-                },
-                {
-                    "layer": "L2",
-                    "passed": True,
-                    "note": "periodic immune scan",
-                },
-            ],
-            "risk_score": 0.0 if passed else 1.0,
-        }, ensure_ascii=False, indent=2))]
+        return [TextContent(type="text", text=json.dumps(check_result, ensure_ascii=False, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(
             {"error": str(e), "tool": "audit_pre_check"}, ensure_ascii=False))]

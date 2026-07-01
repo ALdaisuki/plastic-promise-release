@@ -3,10 +3,15 @@
 Categories: preference, fact, decision, entity, event, pattern.
 Three-layer storage: L0 (one-liner), L1 (summary), L2 (full text).
 Two-stage dedup: vector similarity pre-filter + category-aware MERGE/SKIP.
+
+LLM classify cache: SHA-256 content hash → category, LRU 128 / 300s TTL.
 """
 
+import hashlib
 import re
 import json
+import threading
+import time
 import requests
 from dataclasses import dataclass, field
 from typing import Optional
@@ -74,13 +79,14 @@ def extract_memories(
     ollama_host: str = "http://127.0.0.1:11434",
     ollama_model: str = "qwen2.5:3b",
     llm_fallback_threshold: float = 0.7,
+    max_llm_calls: int = 3,
 ) -> list[ExtractedMemory]:
     """Extract structured memories from conversation text.
 
     Pipeline:
     1. Split into sentences
     2. Rule-based classification per sentence
-    3. If confidence < threshold, attempt LLM fallback (graceful on failure)
+    3. If confidence < threshold, attempt LLM fallback (capped by max_llm_calls)
     4. Build ExtractedMemory with L0/L1/L2 layers
 
     Args:
@@ -88,6 +94,7 @@ def extract_memories(
         ollama_host: Ollama API host.
         ollama_model: Ollama model for LLM fallback classification.
         llm_fallback_threshold: Min confidence to skip LLM fallback.
+        max_llm_calls: Max LLM classify calls total (0 = rule-only, fast).
 
     Returns:
         List of ExtractedMemory objects.
@@ -96,13 +103,15 @@ def extract_memories(
     sentences = [s.strip() for s in sentences if len(s.strip()) >= 10]
 
     results: list[ExtractedMemory] = []
+    llm_call_count = 0
 
     for sent in sentences:
         cat, conf = _classify_by_rules(sent)
 
-        # LLM fallback for low-confidence
-        if conf < llm_fallback_threshold:
+        # LLM fallback for low-confidence (capped to prevent timeout avalanche)
+        if conf < llm_fallback_threshold and llm_call_count < max_llm_calls:
             llm_cat = _llm_classify(sent, ollama_host, ollama_model)
+            llm_call_count += 1
             if llm_cat and llm_cat in CATEGORY_KEYWORDS:
                 cat = llm_cat
                 conf = max(conf, 0.5)  # LLM overrides with base confidence
@@ -133,8 +142,20 @@ def _llm_classify(
 ) -> Optional[str]:
     """Use Ollama LLM to classify text into one of 6 categories.
 
+    Results cached by content hash (LRU 128, TTL 300s) — repeated or
+    near-identical texts skip the LLM call entirely.
+
     Returns None on any failure (network, timeout, bad response).
     """
+    cache_key = hashlib.sha256(text.encode()).hexdigest()
+    now = time.time()
+    with _llm_cache_lock:
+        if cache_key in _llm_classify_cache:
+            cached_cat, cached_ts = _llm_classify_cache[cache_key]
+            if now - cached_ts < _LLM_CLASSIFY_CACHE_TTL:
+                return cached_cat
+            del _llm_classify_cache[cache_key]
+
     prompt = f"""Classify this text into exactly ONE category. Reply with ONLY the category word.
 
 Categories: preference, fact, decision, entity, event, pattern
@@ -143,6 +164,7 @@ Text: {text[:500]}
 
 Category:"""
 
+    result = None
     try:
         resp = requests.post(
             f"{ollama_host}/api/generate",
@@ -151,10 +173,25 @@ Category:"""
         )
         resp.raise_for_status()
         raw = resp.json().get("response", "").strip().lower()
-        # Extract first matching category
         for cat in CATEGORY_KEYWORDS:
             if cat in raw:
-                return cat
-        return None
+                result = cat
+                break
     except Exception:
-        return None
+        pass
+
+    # Cache even None results (negative caching avoids repeated futile calls)
+    with _llm_cache_lock:
+        if len(_llm_classify_cache) >= _LLM_CLASSIFY_CACHE_SIZE:
+            oldest = min(_llm_classify_cache, key=lambda k: _llm_classify_cache[k][1])
+            del _llm_classify_cache[oldest]
+        _llm_classify_cache[cache_key] = (result, now)
+
+    return result
+
+
+# ── LLM classify cache ──
+_llm_classify_cache: dict[str, tuple[Optional[str], float]] = {}
+_llm_cache_lock = threading.Lock()
+_LLM_CLASSIFY_CACHE_SIZE = 128
+_LLM_CLASSIFY_CACHE_TTL = 300  # seconds

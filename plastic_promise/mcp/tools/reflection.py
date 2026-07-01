@@ -39,7 +39,9 @@ async def handle_scarf_reflect(engine: Any, args: dict) -> list[TextContent]:
         context = args.get("context", "")
         dimensions = args.get("dimensions")
         reflector = SCARFReflector()
-        result = reflector.reflect(context)
+        # Offload to thread: reflect() does 15 sync embedder.embed() HTTP calls
+        import asyncio as _asyncio
+        result = await _asyncio.to_thread(reflector.reflect, context)
         if dimensions:
             result = {d: result.get(d) for d in dimensions if d in result}
         return [TextContent(type="text", text=json.dumps({

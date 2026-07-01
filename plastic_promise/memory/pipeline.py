@@ -43,6 +43,7 @@ class MemoryPipeline:
         self, content: str, memory_type: str = "experience", source: str = "user",
         entity_ids: list[str] = None, custom_tags: list[str] = None,
         domain_hint: str = None,
+        max_llm_calls: int = 3,
     ) -> Optional[str]:
         """Store a memory with smart extraction, then through pipeline.
 
@@ -59,7 +60,7 @@ class MemoryPipeline:
         extracted_list = []
         try:
             from plastic_promise.smart_extractor import extract_memories
-            extracted_list = extract_memories(content)
+            extracted_list = extract_memories(content, max_llm_calls=max_llm_calls)
         except Exception:
             pass  # Fallback: raw content without extraction metadata
 
@@ -411,6 +412,14 @@ class MemoryPipeline:
 
                 # ---- Step 4b: QualityGate scoring ----
                 extracted = record.get("extracted", {})
+                # Defensive: handle both dict and string-serialized extracted field
+                if isinstance(extracted, str):
+                    try:
+                        extracted = json.loads(extracted) if extracted.strip() else {}
+                    except (json.JSONDecodeError, TypeError):
+                        extracted = {}
+                elif not isinstance(extracted, dict):
+                    extracted = {}
                 tags = record.get("tags", [])
                 domain_hint = record.get("domain", "uncategorized")
                 created_at = record.get("created_at")
@@ -434,6 +443,14 @@ class MemoryPipeline:
                 # ---- Step 4c: Store ----
                 # Extract category from smart_extractor result (preference/fact/decision/entity/event/pattern)
                 extracted = record.get("extracted", {})
+                # Defensive: same string/dict guard as Step 4b
+                if isinstance(extracted, str):
+                    try:
+                        extracted = json.loads(extracted) if extracted.strip() else {}
+                    except (json.JSONDecodeError, TypeError):
+                        extracted = {}
+                elif not isinstance(extracted, dict):
+                    extracted = {}
                 extracted_category = extracted.get("category", "other")
                 extracted_confidence = extracted.get("confidence", 0.5)
 

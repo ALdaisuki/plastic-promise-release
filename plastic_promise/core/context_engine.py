@@ -10,6 +10,7 @@ import datetime
 import json
 import logging
 import os
+import threading
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
@@ -223,6 +224,7 @@ class ContextEngine:
 
         # Heavy init deferred to first supply() call
         self._heavy_init_done = False
+        self._heavy_init_lock = threading.Lock()
 
 
     def _rebuild_graph_from_memories(self):
@@ -293,50 +295,60 @@ class ContextEngine:
 
         Called once on first supply() call. Avoids expensive embedding/DB init at ContextEngine
         construction time — critical for fast session-init and high-concurrency scenarios.
+
+        Thread-safe: uses a lock to prevent race conditions when concurrent
+        requests both hit the first supply() call simultaneously.
         """
+        # Fast path — already initialized by another thread
         if self._heavy_init_done:
             return
-        self._heavy_init_done = True
+        with self._heavy_init_lock:
+            # Double-check after acquiring lock — another thread may have finished init
+            if self._heavy_init_done:
+                return
 
-        # DB path — used by both DomainManager and LanceDBStore
-        db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+            # DB path — used by both DomainManager and LanceDBStore
+            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
 
-        # DomainManager for domain-weighted retrieval
-        try:
-            from plastic_promise.core.domain_manager import DomainManager
-            self._dm = DomainManager(db_path=db_path)
-            self._dm_ok = True
-        except Exception as e:
-            logging.error(f"DomainManager init failed: {e} — domain features disabled")
-            self._dm = None
-            self._dm_ok = False
-
-        # P1: Store embedder for principle anchor computation and intent matching
-        if self._embedder is None:
+            # DomainManager for domain-weighted retrieval
             try:
-                from plastic_promise.core.embedder import get_embedder
-                self._embedder = get_embedder(fallback_on_error=True)
-            except Exception:
-                logging.warning("ContextEngine: embedder unavailable — intent matching disabled")
-
-        # Initialize LanceDB vector store
-        if self._ldb is None:
-            try:
-                from plastic_promise.core.lancedb_store import LanceDBStore
-                ldb_path = os.environ.get("PLASTIC_LANCEDB_PATH",
-                                           os.path.join(os.path.dirname(db_path or "plastic_memory.db"),
-                                                        "plastic_memory.lancedb"))
-                self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
-                self._ldb.backfill(self)
-                logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
+                from plastic_promise.core.domain_manager import DomainManager
+                self._dm = DomainManager(db_path=db_path)
+                self._dm_ok = True
             except Exception as e:
-                logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
-                self._ldb = None
+                logging.error(f"DomainManager init failed: {e} — domain features disabled")
+                self._dm = None
+                self._dm_ok = False
 
-        # P1: Build principle anchor embeddings for intent matching (cached by embedder)
-        self._build_principle_anchors()
+            # P1: Store embedder for principle anchor computation and intent matching
+            if self._embedder is None:
+                try:
+                    from plastic_promise.core.embedder import get_embedder
+                    self._embedder = get_embedder(fallback_on_error=True)
+                except Exception:
+                    logging.warning("ContextEngine: embedder unavailable — intent matching disabled")
 
-        self._current_time: str = ""
+            # Initialize LanceDB vector store
+            if self._ldb is None:
+                try:
+                    from plastic_promise.core.lancedb_store import LanceDBStore
+                    ldb_path = os.environ.get("PLASTIC_LANCEDB_PATH",
+                                               os.path.join(os.path.dirname(db_path or "plastic_memory.db"),
+                                                            "plastic_memory.lancedb"))
+                    self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
+                    self._ldb.backfill(self)
+                    logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
+                except Exception as e:
+                    logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
+                    self._ldb = None
+
+            # P1: Build principle anchor embeddings for intent matching (cached by embedder)
+            self._build_principle_anchors()
+
+            self._current_time: str = ""
+            # Mark as done AFTER all init completes — prevents other threads from
+            # using half-initialized components
+            self._heavy_init_done = True
 
     # ========== 记忆管理 ==========
 
@@ -476,11 +488,22 @@ class ContextEngine:
         from plastic_promise.core.constants import CORE_PRINCIPLES
 
         anchors: Dict[int, List[float]] = {}
+        consecutive_failures = 0
         try:
             for p in CORE_PRINCIPLES:
-                vec = self._embedder.embed(p["content"])
-                if vec and any(v != 0.0 for v in vec):
-                    anchors[p["id"]] = vec
+                if consecutive_failures >= 2:
+                    logging.info("_build_principle_anchors: circuit open after 2 failures — "
+                                "skipping remaining %d principles", len(CORE_PRINCIPLES) - len(anchors))
+                    break
+                try:
+                    vec = self._embedder.embed(p["content"])
+                    if vec and any(v != 0.0 for v in vec):
+                        anchors[p["id"]] = vec
+                        consecutive_failures = 0
+                except Exception:
+                    consecutive_failures += 1
+                    logging.debug("_build_principle_anchors: embed failed for principle %d (%d/%d failures)",
+                                 p["id"], consecutive_failures, 2)
             if anchors:
                 logging.info("_build_principle_anchors: computed %d/%d principle anchors",
                             len(anchors), len(CORE_PRINCIPLES))

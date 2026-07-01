@@ -91,10 +91,16 @@ class SoulLoop:
             task_description = f"{task_description}\n{pre_context}"
 
         # Step 2: Embed the task description into a vector
-        from plastic_promise.core.embedder import get_embedder
+        # Graceful degradation: if Ollama is unreachable / times out,
+        # fall back to zero-vector — text retrieval still works via CJK bigrams.
+        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
 
-        embedder = get_embedder()
-        vector = embedder.embed(task_description)
+        try:
+            embedder = get_embedder(fallback_on_error=False)
+            vector = embedder.embed(task_description)
+        except Exception:
+            embedder = FallbackEmbedder()
+            vector = embedder.embed(task_description)
 
         # Step 3: Lazy-init engine if needed
         if self._engine is None:

@@ -10,6 +10,7 @@ SoulAuditor — 审计执行引擎（run_audit/pre_check/get_report/compliance_r
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import os
@@ -405,7 +406,7 @@ class SoulAuditor:
 
         return 0.50, {"source": "default"}
 
-    def _score_skill_trace(self) -> tuple[float, Dict[str, Any]]:
+    async def _score_skill_trace(self) -> tuple[float, Dict[str, Any]]:
         """动态计算 Skill 可追溯评分。
 
         数据源：skill_session 表完整性。
@@ -415,12 +416,11 @@ class SoulAuditor:
                 handle_skill_session_trace,
             )
             from plastic_promise.mcp.server import get_engine
-            import asyncio
 
             engine = get_engine()
-            trace_result = asyncio.run(handle_skill_session_trace(
+            trace_result = await handle_skill_session_trace(
                 engine, {"session_scope": "all"},
-            ))
+            )
             trace_data = json.loads(trace_result[0].text)
             gaps = trace_data.get("gaps", [])
             chain_valid = trace_data.get("chain_valid", True)
@@ -476,7 +476,10 @@ class SoulAuditor:
             scorer = dynamic_scorers.get(dim_key)
             if scorer:
                 try:
-                    score, details = scorer()
+                    if asyncio.iscoroutinefunction(scorer):
+                        score, details = await scorer()
+                    else:
+                        score, details = scorer()
                 except Exception:
                     score, details = 0.50, {"source": "error"}
             else:

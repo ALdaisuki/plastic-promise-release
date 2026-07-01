@@ -3,9 +3,14 @@
 Uses local Ollama LLM to pairwise compare query against candidates.
 Blends: final_score = 0.6 * ce_score + 0.4 * original_score.
 Graceful fallback: returns original order on any failure.
+
+Query result cache: SHA-256(query + candidate_ids) → reranked list, LRU 64 / 60s.
 """
 
+import hashlib
 import json
+import threading
+import time
 import requests
 from typing import Optional
 
@@ -33,6 +38,18 @@ def cross_encode_rerank(
     """
     if not candidates:
         return []
+
+    # ── Cache check ──
+    cache_key = hashlib.sha256(
+        f"{query}|{'|'.join(cid for cid, _, _ in candidates[:top_k * 2])}".encode()
+    ).hexdigest()
+    now = time.time()
+    with _rerank_cache_lock:
+        if cache_key in _rerank_cache:
+            cached_result, cached_ts = _rerank_cache[cache_key]
+            if now - cached_ts < _RERANK_CACHE_TTL:
+                return cached_result
+            del _rerank_cache[cache_key]
 
     passages = "\n\n".join(
         f"[{i}] {c[:300]}"
@@ -74,4 +91,20 @@ Reply as JSON: {{"scores": [{{"passage": 0, "score": 50}}, ...]}}"""
         reranked.append((cid, final))
 
     reranked.sort(key=lambda x: x[1], reverse=True)
-    return reranked[:top_k]
+    result = reranked[:top_k]
+
+    # ── Cache store ──
+    with _rerank_cache_lock:
+        if len(_rerank_cache) >= _RERANK_CACHE_SIZE:
+            oldest = min(_rerank_cache, key=lambda k: _rerank_cache[k][1])
+            del _rerank_cache[oldest]
+        _rerank_cache[cache_key] = (result, now)
+
+    return result
+
+
+# ── Reranker cache ──
+_rerank_cache: dict[str, tuple[list[tuple[str, float]], float]] = {}
+_rerank_cache_lock = threading.Lock()
+_RERANK_CACHE_SIZE = 64
+_RERANK_CACHE_TTL = 60  # seconds (shorter TTL — relevance decays faster than classification)

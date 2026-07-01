@@ -272,12 +272,22 @@ class LanceDBStore:
         Called once during ContextEngine initialization. Only runs if
         the LanceDB table has fewer entries than SQLite.
 
+        Safety: limits per-call backfill to MAX_BACKFILL_PER_CALL (50) to
+        avoid blocking auto_context_inject / session-init on cold start.
+        Remaining items are left for incremental backfill by later calls.
+
+        Safety: stops on first embedding failure (circuit-breaker) to avoid
+        N x 10s timeout cascading when Ollama is down.
+
         Args:
             engine: ContextEngine instance with list_memories().
 
         Returns:
             Number of memories backfilled.
         """
+        import os as _os
+        _max_backfill = int(_os.environ.get("LDB_BACKFILL_MAX_PER_CALL", "50"))
+
         ldb_count = self.count_rows()
         sqlite_count = getattr(engine, 'memory_count', 0)
         if ldb_count >= sqlite_count:
@@ -285,12 +295,17 @@ class LanceDBStore:
                         ldb_count, sqlite_count)
             return 0
 
-        logger.info("LanceDB backfill: %d in LDB < %d in SQLite — starting",
-                    ldb_count, sqlite_count)
+        logger.info("LanceDB backfill: %d in LDB < %d in SQLite — starting (max %d per call)",
+                    ldb_count, sqlite_count, _max_backfill)
         # Use engine._memories dict directly (already loaded from SQLite) — avoids redundant re-query
         memories = getattr(engine, '_memories', {})
         backfilled = 0
+        circuit_open = False
         for mid, mem_data in memories.items():
+            if backfilled >= _max_backfill:
+                logger.info("LanceDB backfill: hit per-call limit (%d), %d remaining — deferring",
+                            _max_backfill, len(memories) - backfilled - sum(1 for _ in []))
+                break
             content = mem_data.get("content", "")
             # Check if already in LanceDB
             try:
@@ -301,6 +316,9 @@ class LanceDBStore:
                     continue
             except Exception:
                 pass
+            # Circuit-breaker: stop on first embedding failure
+            if circuit_open:
+                continue
             # Generate embedding and insert
             try:
                 vec = self._embedder.embed(content)
@@ -316,6 +334,7 @@ class LanceDBStore:
                 if backfilled % 10 == 0:
                     logger.info("LanceDB backfill: %d/%d done", backfilled, len(memories))
             except Exception as e:
-                logger.warning("LanceDB backfill: skip %s — %s", mid, e)
-        logger.info("LanceDB backfill complete: %d memories indexed", backfilled)
+                logger.warning("LanceDB backfill: skip %s — %s (circuit open)", mid, e)
+                circuit_open = True
+        logger.info("LanceDB backfill complete: %d memories indexed (remaining deferred)", backfilled)
         return backfilled

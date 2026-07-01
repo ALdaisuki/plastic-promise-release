@@ -1,18 +1,28 @@
 """Plastic Promise Embedder — text-to-vector with provider abstraction.
 
-Default: Ollama with mxbai-embed-large (1024 dim).
+Default: local sentence-transformers (BAAI/bge-large-zh-v1.5, 1024 dim).
+Falls back to Ollama if local model unavailable.
 Set EMBEDDER_PROVIDER=openai to use OpenAI text-embedding-3-small (1536 dim).
 
+Provider chain (auto-detected):
+  1. local   — sentence-transformers, in-process, zero HTTP (default)
+  2. ollama  — local HTTP server, mxbai-embed-large (fallback)
+  3. openai  — cloud API, text-embedding-3-small
+  4. fallback — zero vectors, text-only retrieval (last resort)
+
 Environment variables:
-  EMBEDDER_PROVIDER=ollama|openai  (default: ollama)
+  EMBEDDER_PROVIDER=local|ollama|openai  (default: local)
+  EMBEDDER_MODEL=mxbai-embed-large  (ollama model name)
+  EMBEDDER_LOCAL_MODEL=BAAI/bge-large-zh-v1.5  (sentence-transformers model)
   OLLAMA_HOST=http://localhost:11434
-  EMBEDDER_MODEL=mxbai-embed-large
   EMBEDDER_CACHE_SIZE=256          (default: 256, set to 0 to disable)
   EMBEDDER_CACHE_TTL=300           (TTL in seconds, default: 300)
+  EMBEDDER_TIMEOUT=5               (HTTP timeout for Ollama/OpenAI, default: 5)
 """
 
 import asyncio
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -201,7 +211,7 @@ class OllamaEmbedder(Embedder):
         resp = requests.post(
             f"{self._host}/api/embeddings",
             json={"model": self._model, "prompt": text},
-            timeout=10,
+            timeout=float(os.getenv("EMBEDDER_TIMEOUT", "5")),
         )
         resp.raise_for_status()
         return resp.json()["embedding"]
@@ -250,6 +260,59 @@ class OpenAIEmbedder(Embedder):
         return self._model
 
 
+class LocalSentenceEmbedder(Embedder):
+    """Local sentence-transformers embedder — in-process, zero HTTP.
+
+    Runs the embedding model directly in the Python process via
+    sentence-transformers (ONNX-optimized).  No external service needed,
+    no network round-trips, no API keys.
+
+    Default model: BAAI/bge-large-zh-v1.5 (1024 dim, Chinese+English).
+    Set EMBEDDER_LOCAL_MODEL to override.
+
+    First invocation downloads the model from HuggingFace (~1.3 GB),
+    subsequent calls hit the disk cache and return in <5 ms.
+    """
+
+    _DEFAULT_MODEL = "BAAI/bge-large-zh-v1.5"
+    _DIM = 1024
+
+    def __init__(self, model_name: str | None = None) -> None:
+        self._model_name = model_name or os.getenv(
+            "EMBEDDER_LOCAL_MODEL", self._DEFAULT_MODEL)
+        self._model = None  # lazy-init
+
+    def _lazy_load(self):
+        if self._model is not None:
+            return
+        from sentence_transformers import SentenceTransformer
+        # Use HF mirror in China if set, with 120s timeout
+        download_timeout = int(os.getenv("EMBEDDER_DOWNLOAD_TIMEOUT", "120"))
+        self._model = SentenceTransformer(
+            self._model_name,
+            trust_remote_code=True,
+            local_files_only=False,
+        )
+
+    def embed(self, text: str) -> list[float]:
+        self._lazy_load()
+        return self._model.encode(text, normalize_embeddings=True).tolist()
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        self._lazy_load()
+        vecs = self._model.encode(
+            texts, normalize_embeddings=True, show_progress_bar=False)
+        return vecs.tolist()
+
+    @property
+    def dim(self) -> int:
+        return self._DIM
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+
 class FallbackEmbedder(Embedder):
     """Local zero-vector fallback when no embedding service is available.
 
@@ -286,18 +349,19 @@ _embedder_lock = threading.Lock()
 def get_embedder(fallback_on_error: bool = True) -> Embedder:
     """Factory: returns embedder based on EMBEDDER_PROVIDER env var.
 
-    When fallback_on_error=True and the primary embedder is unreachable,
+    Provider chain (auto-detected):
+      1. local  — sentence-transformers, in-process (default, no HTTP)
+      2. ollama — local HTTP server (fallback if local fails)
+      3. openai — cloud API
+      4. fallback — zero vectors, text-only retrieval
+
+    When fallback_on_error=True and all providers are unreachable,
     returns a FallbackEmbedder (zero vectors) so retrieval degrades to
     pure text matching instead of crashing.
 
     All embedders are wrapped in CachedEmbedder for performance (unless
     EMBEDDER_CACHE_SIZE=0). The embedder is a singleton shared across all
     callers, enabling cross-request embedding cache reuse.
-
-    Returns:
-        OllamaEmbedder by default (mxbai-embed-large), wrapped in cache.
-        OpenAIEmbedder if EMBEDDER_PROVIDER=openai, wrapped in cache.
-        FallbackEmbedder if primary is unreachable and fallback_on_error=True.
     """
     global _embedder_singleton
     if _embedder_singleton is not None:
@@ -307,24 +371,39 @@ def get_embedder(fallback_on_error: bool = True) -> Embedder:
         if _embedder_singleton is not None:
             return _embedder_singleton
 
-        provider = os.getenv("EMBEDDER_PROVIDER", "ollama").lower()
+        provider = os.getenv("EMBEDDER_PROVIDER", "local").lower()
+        delegate: Embedder | None = None
 
         if provider == "openai":
             try:
                 delegate = OpenAIEmbedder()
             except Exception:
-                if fallback_on_error:
-                    _embedder_singleton = FallbackEmbedder(dim=1536)
-                    return _embedder_singleton
-                raise
-        else:
+                if not fallback_on_error:
+                    raise
+        elif provider == "ollama":
             try:
                 delegate = OllamaEmbedder()
             except Exception:
-                if fallback_on_error:
-                    _embedder_singleton = FallbackEmbedder(dim=1024)
-                    return _embedder_singleton
-                raise
+                if not fallback_on_error:
+                    raise
+        elif provider == "fallback":
+            delegate = FallbackEmbedder(dim=1024)
+        else:
+            # "local" (default): try sentence-transformers first,
+            # fall back to Ollama if unavailable
+            try:
+                delegate = LocalSentenceEmbedder()
+            except Exception as e:
+                logging.info("LocalSentenceEmbedder unavailable (%s), trying Ollama...", e)
+                try:
+                    delegate = OllamaEmbedder()
+                except Exception:
+                    if not fallback_on_error:
+                        raise
+
+        if delegate is None:
+            _embedder_singleton = FallbackEmbedder(dim=1024)
+            return _embedder_singleton
 
         # Wrap in cache unless explicitly disabled
         cache_size = int(os.environ.get("EMBEDDER_CACHE_SIZE", "256"))
