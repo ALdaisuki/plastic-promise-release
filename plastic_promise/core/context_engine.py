@@ -574,6 +574,70 @@ class ContextEngine:
     def get_graph(self) -> GraphInfo:
         return GraphInfo(self._graph_nodes, self._graph_edges)
 
+    # ========== Graph CRUD (6 methods, added by Task 4) ==========
+
+    def add_graph_edge(self, source: str, target: str,
+                       relation: str = "references",
+                       weight: float = 0.5) -> bool:
+        """Add an edge to the entity graph. No-op if duplicate exists.
+
+        Returns True if the edge was added, False if it already existed.
+        """
+        edge = {
+            "from": source,
+            "to": target,
+            "relation": relation,
+            "weight": weight,
+        }
+        if edge not in self._graph_edges:
+            self._graph_edges.append(edge)
+            return True
+        return False
+
+    def remove_graph_edge(self, source: str, target: str,
+                          relation: str = None) -> int:
+        """Remove matching edges. Returns number of edges removed."""
+        before = len(self._graph_edges)
+        self._graph_edges[:] = [
+            e for e in self._graph_edges
+            if not (
+                e.get("from") == source
+                and e.get("to") == target
+                and (relation is None or e.get("relation") == relation)
+            )
+        ]
+        return before - len(self._graph_edges)
+
+    def has_graph_edge(self, edge_dict: dict) -> bool:
+        """Check if an exact edge dict exists in the graph."""
+        return edge_dict in self._graph_edges
+
+    def get_graph_node(self, node_id: str) -> dict | None:
+        """Get a graph node by id. Returns a deep copy."""
+        import copy
+        node = self._graph_nodes.get(node_id)
+        if node is None:
+            return None
+        return copy.deepcopy(node)
+
+    def list_graph_nodes(self, node_type: str = None) -> list[dict]:
+        """List graph nodes, optionally filtered by type field."""
+        import copy
+        results = []
+        for nid, node in self._graph_nodes.items():
+            if node_type and node.get("type") != node_type:
+                continue
+            node_copy = copy.deepcopy(node)
+            node_copy["id"] = nid
+            results.append(node_copy)
+        return results
+
+    def list_graph_edges(self, relation: str = None) -> list[dict]:
+        """List graph edges, optionally filtered by relation."""
+        if relation is None:
+            return list(self._graph_edges)
+        return [e for e in self._graph_edges if e.get("relation") == relation]
+
     # ========== Memory CRUD (Python fallback) ==========
 
     def store_memory(self, record: MemoryRecord) -> str:
