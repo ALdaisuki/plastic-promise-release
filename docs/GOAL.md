@@ -92,19 +92,6 @@
 ### 进行中
 - 无。所有已交付。
 
-### 已完成 (2026-07-02)
-
-- **Enterprise Git Governance**: Plastic Promise Flow 企业级 Git 治理框架 — CI/CD workflow (P0: lint/test/security, P1: style/coverage) + PR/Issue 模板 + CODEOWNERS + SECURITY.md + CONTRIBUTING.md + CLAUDE.md Git 治理章节。分支策略 (feat/fix/refactor/docs/perf/chore + worktree/<agent>/)，Squash Merge 线性历史，Conventional Commits 强制规范
-- **Embedder 修复**: 默认 provider 从 BAAI/bge-large-zh-v1.5 (3.7GB) 切换到 Ollama mxbai-embed-large (0.7GB)。LanceDB 185 条零向量全部重建为真实 mxbai 向量
-- **Rust Engine 诊断**: 发现 Rust ContextEngine 使用 placeholder retriever (全 Noop 组件)，始终返回 0.50 均分。绕过 Rust 路径走 Python LanceDB 真实检索
-- **Weibull 衰减激活**: L2 tier 加入 DECAY_CONFIG (beta=1.2, hl=7d) + effective_half_life tier-aware (L1=3d, L2=7d, L3=90d) + RecMem.update_all_decay() 批量衰减更新 + daemon 审计周期自动触发。存量 188 条记录完成 half-life 数据迁移
-- **CEI 访问修复**: 新增 get_cei() 模块函数 + 全局 CEI 缓存，post_task 时自动更新
-- **Scheduler Health Meta-Audit (scan_scheduler_health)**: 6 维 Hunter Guild 自审计扫描器 — Scanner SNR / Agent timeout / Dispatch latency / Priority balance / Verification throughput / Trend comparison。发现 red 级问题自动生成 fix_* 委托到 Hunter Guild → 走 Git PR 修复流程
-- **One-Click Launcher**: ServiceManager 服务编排 + Watchdog 崩溃恢复 + init_and_start.py CLI 一键启动。依赖排序、健康检查、指数退避
-- **全系统活性审计**: SCARF (0.72) / Trust (0.966, 50 次调整) / Principles (70 节点, 920 边) / Hormones / CEI — 六联闭环中前两步活，后四步修复激活
-
-**MCP 工具总数: 48（11 域 + SuperPowers）**
-
 ## 四、12 条核心约定
 
 | # | 原则 | 域 | 一句话 |

@@ -351,49 +351,21 @@ async def scan_scheduler_health(engine) -> dict:
         },
     }
 
-    # Dispatch each finding as a fix delegation via Hunter Guild
+    # Dispatch audit report to Claude via task_enqueue
     from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
 
     dispatched = 0
-
-    # 1. Create per-finding fix delegations for red-level issues
-    for f in findings:
-        if f["level"] != "red":
-            continue
-        dim = f["dimension"]
-        task_type_map = {
-            "scanner_snr": "fix_scanner",
-            "agent_timeout": "fix_timeout",
-            "dispatch_latency": "fix_latency",
-            "priority_balance": "fix_priority",
-            "verification_throughput": "fix_verification",
-        }
-        try:
-            await handle_task_enqueue(engine, {
-                "task_type": task_type_map.get(dim, "investigate_issue"),
-                "title": f"Fix {dim}: {str(f.get('data', ''))[:80]}",
-                "to_agent": "pi_fixer",
-                "priority": 2,  # A-level — red findings need immediate fix
-                "source_scan": "scan_scheduler_health",
-                "description": json.dumps(f, ensure_ascii=False, indent=2),
-                "payload": {"finding": f, "audit_id": audit_id},
-            })
-            dispatched += 1
-        except Exception:
-            pass
-
-    # 2. Dispatch summary audit report to Claude
     try:
         await handle_task_enqueue(engine, {
             "task_type": "audit_scheduler",
             "title": f"Scheduler Health Audit {audit_id}"
-                     f"{' (first)' if is_first_audit else ''} — {total_issues} findings, {dispatched} fix tasks",
+                     f"{' (first)' if is_first_audit else ''} — {total_issues} findings",
             "to_agent": "claude",
             "priority": 3,
             "source_scan": "scan_scheduler_health",
             "description": (
                 f"6-dimension scheduler self-audit complete.\n"
-                f"Findings: {total_issues} | Fix tasks: {dispatched} | Auto-actions: {len(auto_actions)}\n"
+                f"Findings: {total_issues} | Auto-actions: {len(auto_actions)}\n"
                 f"SNR: {len(snr_top3)} scanners | "
                 f"Timeout: {len(timeout_top3)} agents | "
                 f"Latency: {len(latency_top3)} task types\n"
@@ -404,7 +376,7 @@ async def scan_scheduler_health(engine) -> dict:
     except Exception:
         pass
 
-    # 3. Dispatch auto-throttle notification separately if needed
+    # Dispatch auto-throttle notification separately if needed
     if auto_actions:
         try:
             await handle_task_enqueue(engine, {
