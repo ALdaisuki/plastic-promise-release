@@ -191,7 +191,7 @@ use crate::domain::{ConsolidatedInsight, FeedbackType};
 use crate::storage::IndexMetadata;
 use chrono::{DateTime, Utc};
 
-struct NoopVectorIndex;
+pub struct NoopVectorIndex;
 impl VectorIndex for NoopVectorIndex {
     fn search(&self, _vector: &[f32], _k: usize, _filter: &SearchFilter) -> Result<Vec<(String, f64)>, String> {
         Ok(Vec::new())
@@ -207,7 +207,7 @@ impl VectorIndex for NoopVectorIndex {
     }
 }
 
-struct NoopFtsIndex;
+pub struct NoopFtsIndex;
 impl FtsIndex for NoopFtsIndex {
     fn search(&self, _query: &str, _k: usize, _filter: &SearchFilter) -> Result<Vec<(String, f64)>, String> {
         Ok(Vec::new())
@@ -248,7 +248,7 @@ impl TierManager for NoopTierManager {
     }
 }
 
-struct NoopConsolidator;
+pub struct NoopConsolidator;
 impl MemoryConsolidator for NoopConsolidator {
     fn consolidate(&self, _memories: &[crate::memory_worth::MemoryRecord]) -> Option<ConsolidatedInsight> {
         None

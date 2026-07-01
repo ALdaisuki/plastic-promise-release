@@ -1613,6 +1613,7 @@ class ContextEngine:
         current _memories dict (~0.5-2ms for 1000 records).
         """
         from context_engine_core import ContextEngine as RustEngine
+        import tempfile, os as _os
 
         # Build memory list for PyO3 — pass raw dicts, no JSON serialize
         # Performance: ~0.5-2ms for 1000 records (list comprehension + dict refs)
@@ -1625,7 +1626,9 @@ class ContextEngine:
                 for mid in self._memories
             ]
 
-        rust = RustEngine()
+        # Use real domain models (not placeholders)
+        lancedb_tmp = _os.path.join(tempfile.gettempdir(), "pp_rust_lancedb")
+        rust = RustEngine.new_with_backends(":memory:", lancedb_tmp)
         rust.set_current_time(datetime.datetime.now().isoformat())
         rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
         return self._convert_rust_pack(rust_pack)
