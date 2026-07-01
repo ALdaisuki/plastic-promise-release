@@ -1281,26 +1281,27 @@ async def main():
                     else:
                         sched_throttle.on_empty()
                     # Apply auto-throttle actions from audit
-                    for action in result.get("auto_actions", []):
-                        scanner_name = action["scanner"]
-                        target_throttle = _scanner_throttles.get(scanner_name)
-                        if target_throttle:
-                            old_interval = target_throttle.current
-                            new_interval = min(target_throttle.current * 2, target_throttle.base * 8)
-                            target_throttle.current = new_interval
-                            # Record to metric_history
-                            try:
-                                with sqlite3.connect(DB_PATH) as db_conn:
-                                    db_conn.execute(
-                                        "INSERT INTO metric_history (metric_name, metric_value, window_start, window_end) "
-                                        "VALUES (?, ?, datetime('now', '-7 days'), datetime('now'))",
-                                        (f"auto_throttle:{scanner_name}", new_interval)
-                                    )
-                                    db_conn.commit()
-                            except Exception:
-                                pass
-                            print(f"  [AUTO-THROTTLE] {scanner_name}: {old_interval}s -> {new_interval}s "
-                                  f"(reject_rate={action.get('rate', '?')})")
+                    if result:
+                        for action in result.get("auto_actions", []):
+                            scanner_name = action["scanner"]
+                            target_throttle = _scanner_throttles.get(scanner_name)
+                            if target_throttle:
+                                old_interval = target_throttle.current
+                                new_interval = min(target_throttle.current * 2, target_throttle.base * 8)
+                                target_throttle.current = new_interval
+                                # Record to metric_history
+                                try:
+                                    with sqlite3.connect(DB_PATH) as db_conn:
+                                        db_conn.execute(
+                                            "INSERT INTO metric_history (metric_name, metric_value, window_start, window_end) "
+                                            "VALUES (?, ?, datetime('now', '-7 days'), datetime('now'))",
+                                            (f"auto_throttle:{scanner_name}", new_interval)
+                                        )
+                                        db_conn.commit()
+                                except Exception:
+                                    pass
+                                print(f"  [AUTO-THROTTLE] {scanner_name}: {old_interval}s -> {new_interval}s "
+                                      f"(reject_rate={action.get('rate', '?')})")
                 except Exception:
                     pass
 
