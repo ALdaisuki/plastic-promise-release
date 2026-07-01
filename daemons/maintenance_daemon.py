@@ -1276,7 +1276,7 @@ async def main():
             if sched_throttle and tick % max(1, sched_throttle.current // 10) == 0:
                 try:
                     result = await scan_scheduler_health(engine)
-                    if result.get("findings", 0) > 0:
+                    if result and result.get("findings", 0) > 0:
                         sched_throttle.on_hit()
                     else:
                         sched_throttle.on_empty()
@@ -1290,18 +1290,17 @@ async def main():
                             target_throttle.current = new_interval
                             # Record to metric_history
                             try:
-                                db_conn = sqlite3.connect(DB_PATH)
-                                db_conn.execute(
-                                    "INSERT INTO metric_history (metric_name, metric_value, window_start, window_end) "
-                                    "VALUES (?, ?, datetime('now', '-7 days'), datetime('now'))",
-                                    (f"auto_throttle:{scanner_name}", new_interval)
-                                )
-                                db_conn.commit()
-                                db_conn.close()
+                                with sqlite3.connect(DB_PATH) as db_conn:
+                                    db_conn.execute(
+                                        "INSERT INTO metric_history (metric_name, metric_value, window_start, window_end) "
+                                        "VALUES (?, ?, datetime('now', '-7 days'), datetime('now'))",
+                                        (f"auto_throttle:{scanner_name}", new_interval)
+                                    )
+                                    db_conn.commit()
                             except Exception:
                                 pass
                             print(f"  [AUTO-THROTTLE] {scanner_name}: {old_interval}s -> {new_interval}s "
-                                  f"(reject_rate={action['rate']})")
+                                  f"(reject_rate={action.get('rate', '?')})")
                 except Exception:
                     pass
 
