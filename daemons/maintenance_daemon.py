@@ -41,6 +41,7 @@ from plastic_promise.cron.scan_quality_trends import scan_quality_trends
 from plastic_promise.cron.scan_coupling import scan_coupling
 from plastic_promise.cron.scan_trust import scan_trust
 from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
 
 # Path setup
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -84,6 +85,7 @@ _scanner_throttles = {
     "scan_coupling": AdaptiveThrottle(600),
     "scan_trust": AdaptiveThrottle(300),
     "scan_memory_decay": AdaptiveThrottle(600),
+    "scan_scheduler_health": AdaptiveThrottle(1200),  # meta-audit: runs less frequently
 }
 
 # ── 超时恢复 ──────────────────────────────────────────────
@@ -1193,8 +1195,8 @@ async def main():
           f"llm_classify={LLM_CLASSIFY_INTERVAL}s, PID={os.getpid()})")
     print(f"  DB: {DB_PATH}")
     print(f"  MCP: {MCP_URL}")
-    print(f"  5 scanners: scan_trust scan_architecture scan_quality_trends "
-          f"scan_coupling scan_memory_decay")
+    print(f"  6 scanners: scan_trust scan_architecture scan_quality_trends "
+          f"scan_coupling scan_memory_decay scan_scheduler_health")
     print(f"  Throttle bases: "
           f"{' '.join(f'{k}={v.base}s' for k, v in _scanner_throttles.items())}")
 
@@ -1277,6 +1279,46 @@ async def main():
                             throttle.on_empty()
                     except Exception:
                         pass
+
+            # Priority B.5: scheduler health meta-audit (runs infrequently)
+            sched_throttle = _scanner_throttles.get("scan_scheduler_health")
+            if sched_throttle and tick % max(1, sched_throttle.current // 10) == 0:
+                try:
+                    result = await scan_scheduler_health(engine)
+                    if result and result.get("findings", 0) > 0:
+                        sched_throttle.on_hit()
+                    else:
+                        sched_throttle.on_empty()
+                    # Apply auto-throttle actions from audit
+                    if result:
+                        for action in result.get("auto_actions", []):
+                            scanner_name = action["scanner"]
+                            target_throttle = _scanner_throttles.get(scanner_name)
+                            # Only apply if not already throttled (prevents compounding on re-runs)
+                            if target_throttle and target_throttle.current == target_throttle.base:
+                                old_interval = target_throttle.current
+                                new_interval = min(target_throttle.current * 2, target_throttle.base * 8)
+                                # NOTE: AdaptiveThrottle.on_hit() resets current=base on any hit,
+                                # which will undo this auto-throttle. The auto-throttle only persists
+                                # for scanners that are BOTH noisy (high reject rate) AND cold
+                                # (no positive findings). This is narrow by design for v1; Phase 2
+                                # should unify auto-throttle and adaptive throttle into one system.
+                                target_throttle.current = new_interval
+                                # Record to metric_history
+                                try:
+                                    with sqlite3.connect(DB_PATH) as db_conn:
+                                        db_conn.execute(
+                                            "INSERT INTO metric_history (metric_name, metric_value, window_start, window_end) "
+                                            "VALUES (?, ?, datetime('now', '-7 days'), datetime('now'))",
+                                            (f"auto_throttle:{scanner_name}", new_interval)
+                                        )
+                                        db_conn.commit()
+                                except Exception:
+                                    pass
+                                print(f"  [AUTO-THROTTLE] {scanner_name}: {old_interval}s -> {new_interval}s "
+                                      f"(reject_rate={action.get('rate', '?')})")
+                except Exception:
+                    pass
 
             # Priority C: task heartbeat monitor
             try:
