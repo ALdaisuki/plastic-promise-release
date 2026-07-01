@@ -1399,12 +1399,13 @@ async def run_sse(port: int = 9020):
                     engine = get_engine()
                     report_text = event.get("content", "")
                     # Mark existing audit memories as replaced
-                    for mid, mem in engine._memories.items():
-                        if isinstance(mem, dict) and "audit" in mem.get("tags", []):
+                    for mem in engine.iter_memories():
+                        mid = mem.get("id", "")
+                        if mid and "audit" in mem.get("tags", []):
                             mtags = list(mem.get("tags", []))
                             if "status:replaced" not in mtags:
                                 mtags.append("status:replaced")
-                                engine._memories[mid]["tags"] = mtags
+                                engine.update_memory_fields(mid, tags=mtags)
                     engine.register_memory({
                         "content": report_text,
                         "memory_type": "reflection",
@@ -1420,17 +1421,18 @@ async def run_sse(port: int = 9020):
                     engine = get_engine()
                     mid = event.get("memory_id", "")
                     new_category = event.get("new_category", "")
-                    if mid and mid in engine._memories:
-                        engine._memories[mid]["category"] = new_category
+                    if mid and engine.memory_exists(mid):
+                        engine.update_memory_fields(mid, category=new_category)
                         # Update tags to reflect classification state
-                        tags = list(engine._memories[mid].get("tags", []))
+                        mem = engine.get_memory_dict(mid)
+                        tags = list(mem.get("tags", [])) if mem else []
                         if "llm_pending:true" in tags:
                             tags.remove("llm_pending:true")
                         if "llm_classified:true" not in tags:
                             tags.append("llm_classified:true")
                         if new_category and f"cat:{new_category}" not in tags:
                             tags.append(f"cat:{new_category}")
-                        engine._memories[mid]["tags"] = tags
+                        engine.update_memory_fields(mid, tags=tags)
                 except Exception:
                     pass
 
