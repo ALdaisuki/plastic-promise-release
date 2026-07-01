@@ -12,7 +12,7 @@ Dimensions:
 import sqlite3
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 async def scan_scheduler_health(engine) -> dict:
@@ -37,7 +37,6 @@ async def scan_scheduler_health(engine) -> dict:
             SELECT source_scan,
                    COUNT(*) as total,
                    SUM(CASE WHEN verify_verdict='rejected' THEN 1 ELSE 0 END) as rejected,
-                   SUM(CASE WHEN status='verified' THEN 1 ELSE 0 END) as verified,
                    ROUND(CAST(SUM(CASE WHEN verify_verdict='rejected' THEN 1 ELSE 0 END) AS REAL)
                          / MAX(COUNT(*), 1), 2) as reject_rate
             FROM task_queue

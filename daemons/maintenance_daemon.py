@@ -1285,9 +1285,15 @@ async def main():
                         for action in result.get("auto_actions", []):
                             scanner_name = action["scanner"]
                             target_throttle = _scanner_throttles.get(scanner_name)
-                            if target_throttle:
+                            # Only apply if not already throttled (prevents compounding on re-runs)
+                            if target_throttle and target_throttle.current == target_throttle.base:
                                 old_interval = target_throttle.current
                                 new_interval = min(target_throttle.current * 2, target_throttle.base * 8)
+                                # NOTE: AdaptiveThrottle.on_hit() resets current=base on any hit,
+                                # which will undo this auto-throttle. The auto-throttle only persists
+                                # for scanners that are BOTH noisy (high reject rate) AND cold
+                                # (no positive findings). This is narrow by design for v1; Phase 2
+                                # should unify auto-throttle and adaptive throttle into one system.
                                 target_throttle.current = new_interval
                                 # Record to metric_history
                                 try:
