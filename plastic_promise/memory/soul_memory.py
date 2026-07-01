@@ -858,6 +858,45 @@ class RecMem:
             healthy = sum(1 for r in records if r.worth_score >= MEMORY_DECAY_THRESHOLD)
             return healthy / len(records)
 
+    def update_all_decay(self) -> int:
+        """Recompute and persist decay_multiplier for all records.
+
+        Walks every record in the pool, recomputes the Weibull decay
+        multiplier, and persists changes to SQLite.  Returns the number
+        of records whose decay value changed by more than 0.001.
+        """
+        from plastic_promise.core.decay_engine import WeibullDecayCalculator
+        wdc = WeibullDecayCalculator()
+        now = datetime.datetime.now().isoformat()
+        updated = 0
+
+        for r in self._records.values():
+            dm = wdc.compute_decay(
+                tier=r.tier,
+                created_at=r.created_at,
+                effective_half_life=getattr(r, 'effective_half_life', None),
+                current_time_str=now,
+            )
+            if abs(r.decay_multiplier - dm) > 0.001:
+                r.decay_multiplier = dm
+                updated += 1
+
+        if updated > 0 and self._engine:
+            for r in self._records.values():
+                try:
+                    self._engine.execute_sql(
+                        "UPDATE memories SET decay_multiplier = ? WHERE id = ?",
+                        (r.decay_multiplier, r.memory_id),
+                    )
+                except Exception:
+                    pass
+            try:
+                self._engine.commit_sql()
+            except Exception:
+                pass
+
+        return updated
+
 
 # ============================================================
 # EvolveR — 自演化引擎
@@ -1095,48 +1134,6 @@ class MemoryGC:
             pass
 
         return result
-
-    def update_all_decay(self) -> int:
-        """Recompute and persist decay_multiplier for all records.
-
-        Walks every record in the pool, recomputes the Weibull decay
-        multiplier, and persists changes to SQLite.  Returns the number
-        of records whose decay value changed by more than 0.001.
-
-        Safe to call frequently — only writes back records that actually
-        changed.
-        """
-        from plastic_promise.core.decay_engine import WeibullDecayCalculator
-        wdc = WeibullDecayCalculator()
-        now = datetime.datetime.now().isoformat()
-        updated = 0
-
-        for r in self._records.values():
-            dm = wdc.compute_decay(
-                tier=r.tier,
-                created_at=r.created_at,
-                effective_half_life=getattr(r, 'effective_half_life', None),
-                current_time_str=now,
-            )
-            if abs(r.decay_multiplier - dm) > 0.001:
-                r.decay_multiplier = dm
-                updated += 1
-
-        if updated > 0 and self._engine:
-            for r in self._records.values():
-                try:
-                    self._engine.execute_sql(
-                        "UPDATE memories SET decay_multiplier = ? WHERE id = ?",
-                        (r.decay_multiplier, r.memory_id),
-                    )
-                except Exception:
-                    pass
-            try:
-                self._engine.commit_sql()
-            except Exception:
-                pass
-
-        return updated
 
     def mark_decaying(self) -> List[str]:
         """扫描记忆池，标记 worth_score 低于衰减阈值的记忆。
