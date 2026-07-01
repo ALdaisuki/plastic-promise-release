@@ -13,7 +13,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 - **审计同步**: 11 维审计结果所有 Agent 可见
 - **自治流水线**: 标签驱动、零 Token Daemon、自动衔接
 
-## MCP 工具目录 (41 工具, 10 域 + SuperPowers)
+## MCP 工具目录 (48 工具, 11 域 + SuperPowers)
 
 ### 🧠 记忆域 (10)
 | 工具 | 用途 |
@@ -103,6 +103,17 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | 工具 | 用途 |
 |------|------|
 | `domain` | 域联邦管理：stats/merge/unmerge/rename/rebuild |
+
+### 🏹 委托调度域 (7)
+| 工具 | 用途 |
+|------|------|
+| `task_enqueue` | 挂委托 — Daemon/Claude 发现需求，挂上委托板；支持委托人信任分验证 + C级审批队列 |
+| `task_claim` | 揭榜 — 猎人认领委托（原子 UPDATE WHERE status='pending'），自动等级匹配检查 |
+| `task_complete` | 交委托 — 完成回报，自动创建验收子委托给 Claude |
+| `task_verify` | 长老验收 — Claude 确认委托完成，通过→信任分+0.02，打回→信任分-0.03+自动重派 |
+| `task_inbox` | 查看委托板 — 显示可接委托 + 等级匹配度 + 我的活跃任务 |
+| `task_heartbeat` | 心跳保活 — 每60s汇报存活，超时自动释放委托 + 惩罚 |
+| `task_abandon` | 主动弃单 — 放弃委托，信任分-0.02，累计5次降级到D |
 
 ---
 
@@ -277,7 +288,9 @@ project:trae:feature-x    ← 项目归属（可选）
 
 ---
 
-## 标签状态机 (多 Agent 任务)
+## 标签状态机 (向后兼容，建议迁移到委托系统)
+
+> **新项目请使用猎人公会委托系统**（下方 §猎人公会委托协议）。旧标签状态机保留 6 个月过渡期。
 
 ```
 task:pending → task:accepted → task:active → task:done → task:review → task:reviewed
@@ -287,6 +300,63 @@ task:rejected → Fixer认领 → task:accepted → 修复循环
 
 超时: task:active>5min → pending | task:reviewed>10min → active
 清理: task:accepted/reviewed>7天 → 移除标签
+```
+
+---
+
+## 猎人公会委托协议（新·推荐）
+
+> 全域调度中心：Daemon 发现 → 挂委托板 → SSE 推送 → 猎人揭榜 → 心跳保活 → 长老验收。
+
+### Agent 猎人身份
+
+| Agent | 角色 | 典型委托人 | 订阅类型 |
+|-------|------|-----------|---------|
+| `pi_fixer` | 修复猎人 | daemon | fix_*, gc_* |
+| `pi_builder` | 建造猎人 | claude, daemon | build_*, refactor_* |
+| `pi_reviewer` | 审查猎人 | daemon | review_*, investigate_* |
+| `claude` | S级传奇猎人/长老 | system, daemon | audit_*, investigate_*, 全部S/A级 |
+
+### 委托板协议
+
+```
+作为委托人 (Claude/Daemon):
+  task_enqueue(task_type="fix_memory", title="...", to_agent="pi_fixer", priority=3)
+  → SSE 推送通知 pi_fixer + 匹配订阅者
+
+作为猎人 (Agent):
+  1. task_inbox(agent_name, trust_score)           → 查看委托板
+  2. task_claim(agent_name, task_id, trust_score)  → 揭榜（原子防重复）
+  3. task_heartbeat(task_id, agent_name)           → 每60s保活
+  4. task_complete(task_id, agent_name, result)    → 交委托
+
+作为长老 (Claude):
+  task_verify(task_id, verdict="accepted|rejected", comment="...")
+  → accepted: 信任分+0.02 + SSE通知猎人
+  → rejected: 信任分-0.03 + 自动重派子委托
+```
+
+### 委托生命周期（SQLite 真相源）
+
+```
+pending → claimed → executing → done → verified
+              ↑ 揭榜(原子)  ↑ 心跳   ↑ 完成   ↑ 验收
+              ✗ 超时→释放回pending (escalation_count++) → 超3次→Claude兜底
+              ✗ task_abandon→释放+惩罚
+              ✗ task_verify(rejected)→reassigned→自动子委托
+```
+
+### 发现→调度→验收闭环
+
+```
+Daemon 扫描器(5个) → 发现问题
+  → task_enqueue(to_agent, priority, source_scan)
+    → SSE task:new 推送
+      → 猎人 task_inbox → task_claim → 执行 → task_complete
+        → 自动创建验收子委托给 Claude
+          → task_verify(accepted|rejected)
+            → defense adjust ±信任分
+            → SSE 通知猎人结果
 ```
 
 ---
@@ -330,14 +400,14 @@ Claude Code / Pi Agent / 外部 Agent
         │
         ▼ MCP (stdio | SSE)
 ┌──────────────────────────────────────┐
-│ Plastic Promise MCP Server (41工具)   │
+│ Plastic Promise MCP Server (48工具)   │
 │  ┌────┐┌────┐┌────┐┌────┐┌────┐┌────┐│
-│  │记忆││原则││上下文││审计││技能││SP  ││  10 域 + SuperPowers
+│  │记忆││原则││上下文││审计││技能││SP  ││  11 域 + SuperPowers
 │  │ 10 ││ 4  ││ 5  ││ 3  ││ 5  ││ 1  ││
 │  └────┘└────┘└────┘└────┘└────┘└────┘│
 │  ┌────┐┌────┐┌────┐┌────┐┌────┐    │
-│  │自省││管理││经验包││联邦││技能│    │
-│  │ 2  ││ 4  ││ 3  ││ 1  ││ 3  │    │
+│  │自省││管理││经验包││联邦││委托│    │
+│  │ 2  ││ 4  ││ 3  ││ 1  ││ 7  │    │
 │  └────┘└────┘└────┘└────┘└────┘    │
 │        共享 ContextEngine            │
 │   ├ 实体图谱 EntityGraph             │
