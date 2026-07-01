@@ -392,6 +392,39 @@ class ContextEngine:
     def memory_count(self) -> int:
         return len(self._memories)
 
+    # ========== 记忆只读访问 (Rust Core Boundary: 4 read-access methods) ==========
+
+    def memory_exists(self, mid: str) -> bool:
+        """Check if a memory id exists in the pool."""
+        return mid in self._memories
+
+    def get_memory_dict(self, mid: str) -> dict | None:
+        """Get a memory record as a dict (deep copy).
+
+        Returns a copy so callers can read fields freely,
+        but mutations have NO effect on engine state.
+        Use update_memory_fields() to modify data.
+        """
+        import copy
+        mem = self._memories.get(mid)
+        if mem is None:
+            return None
+        return copy.deepcopy(mem)
+
+    def memory_ids(self) -> list[str]:
+        """Return all memory IDs in the pool."""
+        return list(self._memories.keys())
+
+    def get_memories_batch(self, mids: list[str]) -> list[dict]:
+        """Get multiple memory records by id. Missing ids are skipped."""
+        import copy
+        results = []
+        for mid in mids:
+            mem = self._memories.get(mid)
+            if mem is not None:
+                results.append(copy.deepcopy(mem))
+        return results
+
     def set_current_time(self, iso_timestamp: str):
         self._current_time = iso_timestamp
 
