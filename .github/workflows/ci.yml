@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  # ── Stage 1: P0 — MUST PASS ──────────────────────
+
+  lint-python:
+    name: "P0: Python lint & type check"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff mypy
+      - run: ruff check plastic_promise/
+      - run: mypy plastic_promise/ --ignore-missing-imports
+
+  test-python:
+    name: "P0: Python unit tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/ -v --tb=short
+
+  security-python:
+    name: "P0: Python security scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install bandit
+      - run: bandit -r plastic_promise/ -ll
+
+  check-rust:
+    name: "P0: Rust compile & test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --manifest-path rust/context-engine-core/Cargo.toml
+      - run: cargo test --manifest-path rust/context-engine-core/Cargo.toml
+
+  security-rust:
+    name: "P0: Rust security audit"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit
+      - run: cargo audit --manifest-path rust/context-engine-core/Cargo.toml
+
+  # ── Stage 2: P1 — SHOULD PASS ──────────────────────
+
+  format-check:
+    name: "P1: Code style"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff format --check plastic_promise/ tests/
+
+  coverage:
+    name: "P1: Test coverage"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]" pytest-cov
+      - run: pytest tests/ --cov=plastic_promise --cov-report=term --cov-fail-under=70
