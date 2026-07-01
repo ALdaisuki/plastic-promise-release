@@ -1,8 +1,11 @@
 # Rust Core Boundary Hardening — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ✅ **Phase 1+2 Complete** (2026-07-02) — 12/12 tasks, 12 commits (`00c09a8` → `970b6f7`).
+> **Remaining**: Phase 3 (Degradation & Resilience), Phase 4 (Performance Verification) — see [design doc](../specs/2026-07-01-rust-core-boundary-hardening-design.md).
+>
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Goal:** Eliminate all direct `engine._*` field accesses from Python code (~100 violations across 13 files) and harden the Rust↔Python boundary with atomic batch operations and paginated iteration.
+**Goal:** ~~Eliminate all direct `engine._*` field accesses from Python code (~100 violations across 13 files) and harden the Rust↔Python boundary with atomic batch operations and paginated iteration.~~ **DONE.**
 
 **Architecture:** Add ~15 public methods to the Python `ContextEngine` class (`update_memory_fields`, `add_graph_edge`, `batch_update`, `iter_memories`, etc.) that encapsulate all internal state access. Then systematically replace every `engine._memories[...]`, `engine._graph_edges.append(...)`, and `engine._sqlite._conn.execute(...)` call site with these public methods. Phase 2 adds `list_memories_paginated` for memory-efficient iteration and a CI guard test.
 
@@ -53,7 +56,7 @@
 **Interfaces:**
 - Produces: `engine._write_lock` (threading.Lock), `engine.update_memory_fields(mid, **fields) -> bool`, `engine.increment_field(mid, field, delta) -> bool`
 
-- [ ] **Step 1: Add `_write_lock` to `__init__`**
+- [x] **Step 1: Add `_write_lock` to `__init__`**
 
 In `ContextEngine.__init__`, after the existing `_heavy_init_lock` initialization (around line 227), add:
 
@@ -64,7 +67,7 @@ In `ContextEngine.__init__`, after the existing `_heavy_init_lock` initializatio
 self._write_lock = threading.RLock()
 ```
 
-- [ ] **Step 2: Add `update_memory_fields` method**
+- [x] **Step 2: Add `update_memory_fields` method**
 
 Add this method to the `ContextEngine` class (in the "Memory CRUD" section, near existing `update_memory` around line 604):
 
@@ -93,7 +96,7 @@ def update_memory_fields(self, mid: str, **fields) -> bool:
         return True
 ```
 
-- [ ] **Step 3: Add `increment_field` convenience method**
+- [x] **Step 3: Add `increment_field` convenience method**
 
 Add this method to the `ContextEngine` class:
 
@@ -118,7 +121,7 @@ Note: `increment_field` acquires `_write_lock` then calls `update_memory_fields`
 self._write_lock = threading.RLock()  # reentrant — increment_field calls update_memory_fields
 ```
 
-- [ ] **Step 4: Run existing tests to verify no regression**
+- [x] **Step 4: Run existing tests to verify no regression**
 
 ```bash
 python -m pytest tests/ -x -q
@@ -126,7 +129,7 @@ python -m pytest tests/ -x -q
 
 Expected: All existing tests pass (no callers use the new methods yet).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add plastic_promise/core/context_engine.py
@@ -143,7 +146,7 @@ git commit -m "feat: add update_memory_fields + increment_field + _write_lock to
 **Interfaces:**
 - Produces: `engine.memory_exists(mid) -> bool`, `engine.get_memory_dict(mid) -> dict | None`, `engine.memory_ids() -> list[str]`, `engine.get_memories_batch(mids) -> list[dict]`
 
-- [ ] **Step 1: Add `memory_exists` method**
+- [x] **Step 1: Add `memory_exists` method**
 
 ```python
 def memory_exists(self, mid: str) -> bool:
@@ -151,7 +154,7 @@ def memory_exists(self, mid: str) -> bool:
     return mid in self._memories
 ```
 
-- [ ] **Step 2: Add `get_memory_dict` method (deep copy)**
+- [x] **Step 2: Add `get_memory_dict` method (deep copy)**
 
 ```python
 def get_memory_dict(self, mid: str) -> dict | None:
@@ -168,7 +171,7 @@ def get_memory_dict(self, mid: str) -> dict | None:
     return copy.deepcopy(mem)
 ```
 
-- [ ] **Step 3: Add `memory_ids` method**
+- [x] **Step 3: Add `memory_ids` method**
 
 ```python
 def memory_ids(self) -> list[str]:
@@ -176,7 +179,7 @@ def memory_ids(self) -> list[str]:
     return list(self._memories.keys())
 ```
 
-- [ ] **Step 4: Add `get_memories_batch` method**
+- [x] **Step 4: Add `get_memories_batch` method**
 
 ```python
 def get_memories_batch(self, mids: list[str]) -> list[dict]:
@@ -190,13 +193,13 @@ def get_memories_batch(self, mids: list[str]) -> list[dict]:
     return results
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add plastic_promise/core/context_engine.py
@@ -213,7 +216,7 @@ git commit -m "feat: add memory_exists, get_memory_dict, memory_ids, get_memorie
 **Interfaces:**
 - Produces: `engine.iter_memories(scope=None, page_size=200) -> Iterator[dict]`
 
-- [ ] **Step 1: Add `iter_memories` method**
+- [x] **Step 1: Add `iter_memories` method**
 
 ```python
 def iter_memories(self, scope=None, page_size=200) -> "Iterator[dict]":
@@ -243,13 +246,13 @@ def iter_memories(self, scope=None, page_size=200) -> "Iterator[dict]":
         offset += page_size
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add plastic_promise/core/context_engine.py
@@ -266,7 +269,7 @@ git commit -m "feat: add iter_memories with pagination to ContextEngine"
 **Interfaces:**
 - Produces: `engine.add_graph_edge(from, to, relation, weight) -> bool`, `engine.remove_graph_edge(from, to, relation) -> bool`, `engine.has_graph_edge(edge_dict) -> bool`, `engine.get_graph_node(node_id) -> dict | None`, `engine.list_graph_nodes(type=None) -> list[dict]`, `engine.list_graph_edges(relation=None) -> list[dict]`
 
-- [ ] **Step 1: Add `add_graph_edge` method**
+- [x] **Step 1: Add `add_graph_edge` method**
 
 ```python
 def add_graph_edge(self, source: str, target: str,
@@ -288,7 +291,7 @@ def add_graph_edge(self, source: str, target: str,
     return False
 ```
 
-- [ ] **Step 2: Add `remove_graph_edge` method**
+- [x] **Step 2: Add `remove_graph_edge` method**
 
 ```python
 def remove_graph_edge(self, source: str, target: str,
@@ -335,7 +338,7 @@ def remove_graph_edge(self, source: str, target: str,
     return before - len(self._graph_edges)
 ```
 
-- [ ] **Step 3: Add `has_graph_edge` method**
+- [x] **Step 3: Add `has_graph_edge` method**
 
 ```python
 def has_graph_edge(self, edge_dict: dict) -> bool:
@@ -343,7 +346,7 @@ def has_graph_edge(self, edge_dict: dict) -> bool:
     return edge_dict in self._graph_edges
 ```
 
-- [ ] **Step 4: Add `get_graph_node` method**
+- [x] **Step 4: Add `get_graph_node` method**
 
 ```python
 def get_graph_node(self, node_id: str) -> dict | None:
@@ -355,7 +358,7 @@ def get_graph_node(self, node_id: str) -> dict | None:
     return copy.deepcopy(node)
 ```
 
-- [ ] **Step 5: Add `list_graph_nodes` method**
+- [x] **Step 5: Add `list_graph_nodes` method**
 
 ```python
 def list_graph_nodes(self, node_type: str = None) -> list[dict]:
@@ -371,7 +374,7 @@ def list_graph_nodes(self, node_type: str = None) -> list[dict]:
     return results
 ```
 
-- [ ] **Step 6: Add `list_graph_edges` method**
+- [x] **Step 6: Add `list_graph_edges` method**
 
 ```python
 def list_graph_edges(self, relation: str = None) -> list[dict]:
@@ -381,13 +384,13 @@ def list_graph_edges(self, relation: str = None) -> list[dict]:
     return [e for e in self._graph_edges if e.get("relation") == relation]
 ```
 
-- [ ] **Step 7: Run tests**
+- [x] **Step 7: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add plastic_promise/core/context_engine.py
@@ -404,7 +407,7 @@ git commit -m "feat: add graph CRUD methods to ContextEngine"
 **Interfaces:**
 - Produces: `engine.batch_update(updates) -> int`, `engine.begin_batch()`, `engine.commit_batch()`, `engine.rollback_batch()`
 
-- [ ] **Step 1: Add `batch_update` method**
+- [x] **Step 1: Add `batch_update` method**
 
 Add to the ContextEngine class (near the Transaction Support area):
 
@@ -454,7 +457,7 @@ def _batch_update_in_memory(self, updates: list[dict]) -> int:
     return count
 ```
 
-- [ ] **Step 2: Add `begin_batch` / `commit_batch` / `rollback_batch`**
+- [x] **Step 2: Add `begin_batch` / `commit_batch` / `rollback_batch`**
 
 For callers that need manual transaction control (e.g., multi-step GC operations):
 
@@ -483,13 +486,13 @@ def rollback_batch(self):
         self._write_lock.release()
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add plastic_promise/core/context_engine.py
@@ -509,7 +512,7 @@ git commit -m "feat: add batch_update with SAVEPOINT + begin/commit/rollback_bat
 - Consumes: `engine.update_memory_fields()`, `engine.increment_field()`, `engine.memory_exists()`, `engine.get_memory_dict()`
 - Produces: Same behavior, zero `engine._*` accesses
 
-- [ ] **Step 1: Fix lines 351-365 — dup_id field mutations (duplicate check block)**
+- [x] **Step 1: Fix lines 351-365 — dup_id field mutations (duplicate check block)**
 
 Replace:
 ```python
@@ -539,7 +542,7 @@ if engine.memory_exists(dup_id):
     engine.update_memory_fields(dup_id, entity_ids=list(existing_eids | new_eids))
 ```
 
-- [ ] **Step 2: Fix lines 391-392 — effective_half_life update**
+- [x] **Step 2: Fix lines 391-392 — effective_half_life update**
 
 Replace:
 ```python
@@ -554,7 +557,7 @@ engine.update_memory_fields(dup_id, effective_half_life=new_hl)
 
 Note: `update_memory_fields` returns False if the id doesn't exist, which is equivalent to the `if dup_id in engine._memories` guard.
 
-- [ ] **Step 3: Fix lines 505-507 — decay_multiplier + effective_half_life**
+- [x] **Step 3: Fix lines 505-507 — decay_multiplier + effective_half_life**
 
 Replace:
 ```python
@@ -569,7 +572,7 @@ if engine is not None:
     engine.update_memory_fields(stored.memory_id, decay_multiplier=dm, effective_half_life=base_hl)
 ```
 
-- [ ] **Step 4: Fix line 521 — _vector storage**
+- [x] **Step 4: Fix line 521 — _vector storage**
 
 Replace:
 ```python
@@ -581,7 +584,7 @@ With:
 engine.update_memory_fields(stored.memory_id, _vector=vec)
 ```
 
-- [ ] **Step 5: Fix lines 535-536 — tags + domain**
+- [x] **Step 5: Fix lines 535-536 — tags + domain**
 
 Replace:
 ```python
@@ -594,13 +597,13 @@ With:
 engine.update_memory_fields(stored.memory_id, tags=tags, domain=domain_hint)
 ```
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add plastic_promise/memory/pipeline.py
@@ -618,7 +621,7 @@ git commit -m "fix: replace engine._memories violations in pipeline.py with publ
 - Consumes: `engine.update_memory_fields()`, `engine.add_graph_edge()`, `engine.has_graph_edge()`, `engine.list_graph_nodes()`, `engine.list_graph_edges()`, `engine.iter_memories()`, `engine.memory_exists()`
 - Produces: Same behavior, zero `engine._*` accesses
 
-- [ ] **Step 1: Fix lines 232-233 — graph edge append**
+- [x] **Step 1: Fix lines 232-233 — graph edge append**
 
 Replace:
 ```python
@@ -633,7 +636,7 @@ engine.add_graph_edge(source=parent_edge["from"], target=parent_edge["to"],
                       weight=parent_edge.get("weight", 0.8))
 ```
 
-- [ ] **Step 2: Fix lines 286, 884, 945 — graph node iteration**
+- [x] **Step 2: Fix lines 286, 884, 945 — graph node iteration**
 
 Replace:
 ```python
@@ -646,7 +649,7 @@ for node in engine.list_graph_nodes():
     node_id = node["id"]
 ```
 
-- [ ] **Step 3: Fix lines 366, 395 — graph edge iteration**
+- [x] **Step 3: Fix lines 366, 395 — graph edge iteration**
 
 Replace:
 ```python
@@ -658,7 +661,7 @@ With:
 for edge in engine.list_graph_edges():
 ```
 
-- [ ] **Step 4: Fix lines 303, 460, 653, 854, 904 — memory iteration**
+- [x] **Step 4: Fix lines 303, 460, 653, 854, 904 — memory iteration**
 
 Replace:
 ```python
@@ -671,7 +674,7 @@ for mem in engine.iter_memories():
     mid = mem["id"]
 ```
 
-- [ ] **Step 5: Fix lines 703-705 — memory field writes**
+- [x] **Step 5: Fix lines 703-705 — memory field writes**
 
 Replace:
 ```python
@@ -684,7 +687,7 @@ With:
 engine.update_memory_fields(memory_id, tags=tags, content=new_content)
 ```
 
-- [ ] **Step 6: Fix lines 733-736 — memory field writes with last_accessed**
+- [x] **Step 6: Fix lines 733-736 — memory field writes with last_accessed**
 
 Replace:
 ```python
@@ -702,17 +705,17 @@ engine.update_memory_fields(memory_id, content=new_content, tags=tags, last_acce
 ))
 ```
 
-- [ ] **Step 7: Fix lines 776, 782 — remaining memory field writes**
+- [x] **Step 7: Fix lines 776, 782 — remaining memory field writes**
 
 Same pattern — replace `engine._memories[mid]["field"] = val` with `engine.update_memory_fields(mid, field=val)`.
 
-- [ ] **Step 8: Run tests**
+- [x] **Step 8: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add plastic_promise/mcp/tools/skill_tracking.py
@@ -730,7 +733,7 @@ git commit -m "fix: replace all engine._* violations in skill_tracking.py with p
 - Consumes: `engine.update_memory_fields()`, `engine.add_graph_edge()`, `engine.list_graph_nodes()`, `engine.iter_memories()`, `engine.memory_ids()`
 - Produces: Same behavior, zero `engine._*` accesses
 
-- [ ] **Step 1: Fix line 204-205 — graph edge append**
+- [x] **Step 1: Fix line 204-205 — graph edge append**
 
 Replace:
 ```python
@@ -745,7 +748,7 @@ engine.add_graph_edge(source=edge["from"], target=edge["to"],
                       weight=edge.get("weight", 1.0))
 ```
 
-- [ ] **Step 2: Fix lines 464-465 — graph node iteration**
+- [x] **Step 2: Fix lines 464-465 — graph node iteration**
 
 Replace:
 ```python
@@ -760,7 +763,7 @@ for node in engine.list_graph_nodes():
     name = node.get("name", "")
 ```
 
-- [ ] **Step 3: Fix line 619 — memory iteration**
+- [x] **Step 3: Fix line 619 — memory iteration**
 
 Replace:
 ```python
@@ -773,7 +776,7 @@ for mem in engine.iter_memories():
     mid = mem["id"]
 ```
 
-- [ ] **Step 4: Fix lines 691-694 — 4-field write**
+- [x] **Step 4: Fix lines 691-694 — 4-field write**
 
 Replace:
 ```python
@@ -789,7 +792,7 @@ engine.update_memory_fields(mid, category=new_category, tier=new_tier,
                             domain=new_domain, tags=new_tags)
 ```
 
-- [ ] **Step 5: Fix line 727 — memory count**
+- [x] **Step 5: Fix line 727 — memory count**
 
 Replace:
 ```python
@@ -803,13 +806,13 @@ With:
 
 (Note: `engine.memory_count` property already exists at line 388)
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add plastic_promise/mcp/tools/memory.py
@@ -827,7 +830,7 @@ git commit -m "fix: replace all engine._* violations in memory.py MCP tools with
 - Consumes: `engine.update_memory_fields()`, `engine.get_memory_dict()`, `engine.memory_exists()`
 - Produces: Same behavior, zero `engine._*` accesses
 
-- [ ] **Step 1: Fix lines 1402-1407 — tag mutation with read-then-write**
+- [x] **Step 1: Fix lines 1402-1407 — tag mutation with read-then-write**
 
 Replace:
 ```python
@@ -844,7 +847,7 @@ for mem in engine.iter_memories():
     engine.update_memory_fields(mid, tags=mtags)
 ```
 
-- [ ] **Step 2: Fix lines 1423-1433 — category + tags read-then-write**
+- [x] **Step 2: Fix lines 1423-1433 — category + tags read-then-write**
 
 Replace:
 ```python
@@ -866,13 +869,13 @@ if mid and engine.memory_exists(mid):
         engine.update_memory_fields(mid, tags=tags)
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add plastic_promise/mcp/server.py
@@ -890,7 +893,7 @@ git commit -m "fix: replace all engine._* violations in server.py with public AP
 - Consumes: All public methods from Tasks 1-5
 - Produces: Same behavior, zero `engine._*` accesses
 
-- [ ] **Step 1: Fix `plastic_promise/core/pack_index.py` — lines 62-163**
+- [x] **Step 1: Fix `plastic_promise/core/pack_index.py` — lines 62-163**
 
 Patterns to fix:
 - `engine._sqlite._conn.execute(...)` → Use `engine.update_memory_fields()` or `engine.get_memory_dict()` + `engine.batch_update()`
@@ -898,7 +901,7 @@ Patterns to fix:
 - `engine._memories[mid] = {...}` → `engine.register_memory({...})` (already a public method)
 - `engine._sqlite.upsert(mid, data)` → `engine.update_memory_fields(mid, **data)`
 
-- [ ] **Step 2: Fix `plastic_promise/mcp/tools/context.py` — lines 105-121**
+- [x] **Step 2: Fix `plastic_promise/mcp/tools/context.py` — lines 105-121**
 
 Replace:
 ```python
@@ -910,21 +913,21 @@ if edge not in engine._graph_edges:
 
 With `engine.register_entity(...)` (already exists at line 862 as a public method) and `engine.add_graph_edge(...)`.
 
-- [ ] **Step 3: Fix `plastic_promise/core/principles.py` — lines 136-151**
+- [x] **Step 3: Fix `plastic_promise/core/principles.py` — lines 136-151**
 
 Replace `engine._graph_nodes[nid] = {...}` and `engine._graph_edges.append(edge)` with `engine.add_graph_edge(...)`.
 
-- [ ] **Step 4: Fix `plastic_promise/mcp/tools/domain_recall.py` — lines 128, 203**
+- [x] **Step 4: Fix `plastic_promise/mcp/tools/domain_recall.py` — lines 128, 203**
 
 Replace `engine._memories.items()` / `engine._memories.values()` with `engine.iter_memories()`.
 
-- [ ] **Step 5: Fix `plastic_promise/pack.py` — lines 84, 107**
+- [x] **Step 5: Fix `plastic_promise/pack.py` — lines 84, 107**
 
 Replace:
 - `engine._memories` → `engine.iter_memories()` or `engine.memory_ids()` + `engine.get_memories_batch()`
 - `engine._graph_edges` → `engine.list_graph_edges()`
 
-- [ ] **Step 6: Fix `plastic_promise/loop/soul_loop.py` — line 308-310**
+- [x] **Step 6: Fix `plastic_promise/loop/soul_loop.py` — line 308-310**
 
 Replace:
 ```python
@@ -937,22 +940,22 @@ With:
 for mem in engine.iter_memories():
 ```
 
-- [ ] **Step 7: Fix `plastic_promise/memory/soul_memory.py` — lines 920-926, 1131, 1272**
+- [x] **Step 7: Fix `plastic_promise/memory/soul_memory.py` — lines 920-926, 1131, 1272**
 
 Replace:
 - `engine._sqlite._conn.execute(...)` → `engine.update_memory_fields(...)`
 - `engine._sqlite._conn.commit()` → `engine.commit_batch()` or remove (individual ops auto-commit)
 - `engine._memories` → `engine.update_memory_fields(...)` for writes, `engine.iter_memories()` for reads
 
-- [ ] **Step 8: Fix `plastic_promise/core/lancedb_store.py` — line 300**
+- [x] **Step 8: Fix `plastic_promise/core/lancedb_store.py` — line 300**
 
 Replace `engine._memories` reference with `engine.iter_memories()`.
 
-- [ ] **Step 9: Fix `plastic_promise/core/review_engine.py` — lines 372-373**
+- [x] **Step 9: Fix `plastic_promise/core/review_engine.py` — lines 372-373**
 
 Replace `engine._memories.items()` with `engine.iter_memories()`.
 
-- [ ] **Step 10: Verify zero violations**
+- [x] **Step 10: Verify zero violations**
 
 ```bash
 grep -rn "engine\._" plastic_promise/ --include="*.py" | grep -v "plastic_promise/core/context_engine.py" | grep -v "\.pyc"
@@ -960,13 +963,13 @@ grep -rn "engine\._" plastic_promise/ --include="*.py" | grep -v "plastic_promis
 
 Expected: No output (zero violations outside context_engine.py).
 
-- [ ] **Step 11: Run full test suite**
+- [x] **Step 11: Run full test suite**
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add plastic_promise/core/pack_index.py plastic_promise/mcp/tools/context.py plastic_promise/core/principles.py plastic_promise/mcp/tools/domain_recall.py plastic_promise/pack.py plastic_promise/loop/soul_loop.py plastic_promise/memory/soul_memory.py plastic_promise/core/lancedb_store.py plastic_promise/core/review_engine.py
@@ -985,7 +988,7 @@ git commit -m "fix: replace all remaining engine._* violations with public API �
 **Interfaces:**
 - Produces: `engine.list_memories_paginated(memory_type, source, min_worth, scope, page_size) -> Iterator[MemoryRecord]`
 
-- [ ] **Step 1: Add `list_memories_paginated` method**
+- [x] **Step 1: Add `list_memories_paginated` method**
 
 Add this method after the existing `list_memories` method (around line 656):
 
@@ -1031,13 +1034,13 @@ def list_memories_paginated(
 
 Note: This delegates to the existing `list_memories()` which already handles the Python-side filtering. The pagination is provided by the `limit` parameter.
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 ```bash
 python -m pytest tests/ -x -q
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add plastic_promise/core/context_engine.py
@@ -1054,7 +1057,7 @@ git commit -m "feat: add list_memories_paginated with offset pagination"
 **Interfaces:**
 - Produces: `test_no_underscore_access()` — AST-based boundary violation check
 
-- [ ] **Step 1: Write the test file**
+- [x] **Step 1: Write the test file**
 
 ```python
 """CI guard: ensure no external code accesses engine._* private fields.
@@ -1129,7 +1132,7 @@ def test_no_underscore_access():
         raise AssertionError(msg)
 ```
 
-- [ ] **Step 2: Run the test — expect PASS (zero violations after Phase 1)**
+- [x] **Step 2: Run the test — expect PASS (zero violations after Phase 1)**
 
 ```bash
 python -m pytest tests/test_boundary.py -v
@@ -1137,7 +1140,7 @@ python -m pytest tests/test_boundary.py -v
 
 Expected: PASS (all `engine._*` violations already fixed in Tasks 6-10).
 
-- [ ] **Step 3: Verify the test catches violations (self-test)**
+- [x] **Step 3: Verify the test catches violations (self-test)**
 
 Temporarily add a violation to a non-engine file and confirm the test catches it:
 
@@ -1151,7 +1154,7 @@ python -m pytest tests/test_boundary.py -v
 git checkout plastic_promise/__init__.py
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/test_boundary.py
@@ -1164,14 +1167,14 @@ git commit -m "test: add CI guard — AST scan for engine._* boundary violations
 
 After all tasks complete, run the full verification:
 
-- [ ] **V1: Zero violations scan**
+- [x] **V1: Zero violations scan**
 
 ```bash
 grep -rn "engine\._" plastic_promise/ --include="*.py" | grep -v "plastic_promise/core/context_engine.py"
 ```
 Expected: No output.
 
-- [ ] **V2: Full test suite**
+- [x] **V2: Full test suite**
 
 ```bash
 python -m pytest tests/ -v
@@ -1205,4 +1208,35 @@ Run `session-init`, `memory_store`, `context_supply`, `memory_list`, `context_gr
 git add -A
 git commit -m "chore: final verification — zero engine._* violations, all tests pass"
 ```
+
+---
+
+## Completion Summary (2026-07-02)
+
+### 12 Commits
+
+| # | Commit | Task |
+|---|--------|------|
+| 1 | `00c09a8` | `_write_lock` + `update_memory_fields` + `increment_field` |
+| 2 | `158231d` | `memory_exists` + `get_memory_dict` + `memory_ids` + `get_memories_batch` |
+| 3 | `ac0041c` | `iter_memories` paginated read |
+| 4 | `49d8c65` | Graph CRUD ×6 (`add_graph_edge`, `remove_graph_edge`, `has_graph_edge`, `get_graph_node`, `list_graph_nodes`, `list_graph_edges`) |
+| 5 | `36dbcc3` | `batch_update` + `begin/commit/rollback_batch` (SAVEPOINT) |
+| 6 | `6421915` | Fix `pipeline.py` (~15 violations) |
+| 7 | `2be04c3` | Fix `skill_tracking.py` (~25 violations) |
+| 8 | `bd9b80b` | Fix `memory.py` (~12 violations) |
+| 9 | `02793e1` | Fix `server.py` (~10 violations) |
+| 10 | `900f14a` | Fix remaining 8 files (~30 violations) |
+| 11 | `4b8a0c0` | `list_memories_paginated` + `list_memories(offset=)` |
+| 12 | `970b6f7` | `tests/test_boundary.py` CI guard (AST scan) |
+
+### Verified
+- ✅ V1: Zero `engine._*` violations (grep confirms, all remaining matches in comments)
+- ✅ V2: 100 existing tests pass (2 pre-existing failures unrelated)
+- ⏳ V3-V5: MCP smoke test pending (server not running in session)
+
+### Remaining Future Work (Phase 3+4 — not in this plan)
+See [design doc](../specs/2026-07-01-rust-core-boundary-hardening-design.md):
+- **Phase 3**: Degradation & Resilience — `_rust_core_healthy` state machine, `_with_rust_fallback` wrapper
+- **Phase 4**: Performance Verification — 1000-memory retrieval, 10-concurrent-agent writes, 2-hour daemon stability
 

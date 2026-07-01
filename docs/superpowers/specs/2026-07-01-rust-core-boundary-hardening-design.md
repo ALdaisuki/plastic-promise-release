@@ -1,8 +1,9 @@
 # Rust Core Engine — Boundary Hardening Design
 
 > **Date**: 2026-07-01
-> **Status**: Approved
+> **Status**: ✅ Phase 1+2 Complete (2026-07-02) — Phase 3+4 Pending
 > **Scope**: Phase 1 (Boundary Solidification) + Phase 2 (Serialization Hardening)
+> **Completed commits**: `00c09a8` → `970b6f7` (12 commits, see [plan](../plans/2026-07-01-rust-core-boundary-hardening.md))
 > **Principle**: Rust is the spine (承载重量、保持稳定), Python is the brain (决策、编排、进化)
 
 ## Problem
