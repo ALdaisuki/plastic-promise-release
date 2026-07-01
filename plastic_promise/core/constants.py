@@ -623,3 +623,37 @@ DOMAIN_TO_TASK_TYPE: dict[str, str] = {
 ORPHAN_THRESHOLD_MINUTES: int = 30
 MAX_STILL_IN_PROGRESS_RENEWALS: int = 3
 SKILL_COMPLETE_WORTH_DELTA: float = 0.02
+
+# ── Hunter Guild Rank Thresholds ──────────────────────────────
+RANK_THRESHOLDS = {
+    "S": 0.80,
+    "A": 0.65,
+    "B": 0.50,
+    "C": 0.35,
+    "D": 0.00,
+}
+
+RANK_TITLES = {
+    "S": "传奇猎人",
+    "A": "资深猎人",
+    "B": "正式猎人",
+    "C": "见习猎人",
+    "D": "降级猎人",
+}
+
+RANK_ICONS = {
+    "S": "⭐",
+    "A": "🛡️",
+    "B": "⚔️",
+    "C": "🔰",
+    "D": "⛓️",
+}
+
+TASK_PRIORITY = {
+    1: {"label": "S级·紧急", "rank": "S", "urgency": "🔴"},
+    2: {"label": "A级·优先", "rank": "A", "urgency": "🟠"},
+    3: {"label": "B级·日常", "rank": "B", "urgency": "🟡"},
+    4: {"label": "C级·低级", "rank": "C", "urgency": "🟢"},
+}
+
+RANK_ORDER = {"S": 0, "A": 1, "B": 2, "C": 3, "D": 4}
