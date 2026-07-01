@@ -142,3 +142,70 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
         "matched_subscribers": matched,
         "review_required": False,
     }, ensure_ascii=False))]
+
+
+# ═══════════════════════════════════════════════════════════════
+# task_claim
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_task_claim(engine: Any, args: dict) -> list[TextContent]:
+    """Claim a task from the guild board. Atomic — first-come-first-served."""
+    agent_name = args["agent_name"]
+    task_id = args["task_id"]
+    trust_score = args["trust_score"]
+    force = args.get("force", False)
+
+    rank_info = trust_to_rank(trust_score)
+    conn = _get_conn()
+
+    # Read task
+    task = conn.execute(
+        "SELECT * FROM task_queue WHERE id = ?", (task_id,)
+    ).fetchone()
+    if not task:
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": "委托不存在"
+        }, ensure_ascii=False))]
+
+    if task["status"] != "pending":
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": f"委托已被揭榜 (status={task['status']})"
+        }, ensure_ascii=False))]
+
+    # Rank check
+    ok, msg = can_claim(trust_score, task["priority"])
+    if not ok and not force:
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": "等级不足",
+            "rank": rank_info, "task_priority": task["priority"], "match": msg,
+        }, ensure_ascii=False))]
+
+    if not ok and force:
+        msg = f"⚠️ 越级揭榜(已记录): {msg}"
+
+    # Atomic claim
+    now = datetime.now().isoformat()
+    result = conn.execute(
+        "UPDATE task_queue SET status='claimed', claimed_by=?, claimed_at=?, "
+        "heartbeat_at=?, updated_at=? WHERE id=? AND status='pending'",
+        (agent_name, now, now, now, task_id)
+    )
+    conn.commit()
+
+    if result.rowcount == 0:
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": "揭榜失败: 委托已被其他猎人抢先揭榜"
+        }, ensure_ascii=False))]
+
+    conn.close()
+    return [TextContent(type="text", text=json.dumps({
+        "success": True,
+        "rank": rank_info,
+        "task_priority": task["priority"],
+        "match": msg,
+        "force_claimed": force and not ok,
+    }, ensure_ascii=False))]

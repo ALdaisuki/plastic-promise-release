@@ -574,6 +574,20 @@ async def list_tools() -> list[Tool]:
                 "required": ["task_type", "title", "to_agent"],
             },
         ),
+        Tool(
+            name="task_claim",
+            description="Hunter Guild 委托揭榜 — 猎人认领公会板上的委托。原子操作，先到先得。自动检查等级匹配，force=True 可越级揭榜(会记录)。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "揭榜猎人名称"},
+                    "task_id": {"type": "string", "description": "要认领的委托 ID"},
+                    "trust_score": {"type": "number", "description": "猎人当前信任分"},
+                    "force": {"type": "boolean", "description": "强制越级揭榜 (默认 false)"},
+                },
+                "required": ["agent_name", "task_id", "trust_score"],
+            },
+        ),
     ])
 
     # === 技能追踪域 ===
@@ -903,6 +917,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "task_enqueue":
             from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
             return await handle_task_enqueue(engine, arguments)
+        elif name == "task_claim":
+            from plastic_promise.mcp.tools.task_queue import handle_task_claim
+            return await handle_task_claim(engine, arguments)
 
         # Skill tracking
         elif name == "skill_session_start":
