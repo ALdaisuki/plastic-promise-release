@@ -477,6 +477,54 @@ impl ContextEngine {
             )
             .unwrap_or_default();
 
+        // FALLBACK: if retriever is a placeholder and returns nothing,
+        // return memories at relevance 0.50 in "related" tier.
+        // Capped at 200 items to prevent O(n) blowup with large pools.
+        // This guarantees Rust never returns emptier than Python would.
+        if scored_items.is_empty() && !memory_index.is_empty() {
+            let mut pack = ContextPack::new();
+            pack.activated_principles = activated_principle_names;
+
+            let max_return: usize = 200;
+            for (idx, (id, mem)) in memory_index.iter().enumerate() {
+                if idx >= max_return {
+                    break;
+                }
+                let worth = mem.worth_score();
+                let is_principle = id.starts_with("principle:");
+                let freshness = crate::source_tracker::Freshness::from_timestamps(
+                    &mem.created_at,
+                    &self.current_time,
+                )
+                .as_str()
+                .to_string();
+
+                let mut item = ContextItem::new(id.clone(), mem.content.clone(), 0.50);
+                item.source = mem.source.clone();
+                item.freshness = freshness;
+                item.layer = "related".into();
+                item.is_principle = is_principle;
+                item.worth_score = worth;
+                pack.related.push(item);
+            }
+
+            // Audit metadata (lightweight — no graph stats in fallback path)
+            let mut audit = HashMap::new();
+            audit.insert("engine_version".into(), "0.2.0-rs-fallback".into());
+            audit.insert("task_type".into(), task_type);
+            audit.insert("scope".into(), scope);
+            audit.insert(
+                "principle_injection_count".into(),
+                pack.activated_principles.len().to_string(),
+            );
+            audit.insert("memory_pool_size".into(), memory_index.len().to_string());
+            audit.insert("timestamp".into(), self.current_time.clone());
+            audit.insert("fallback".into(), "true".into());
+            pack.audit_metadata = audit;
+
+            return Ok(pack);
+        }
+
         // Convert to (id, score) for feedback pipeline
         let mut all_rankings: Vec<(String, f64)> = scored_items
             .iter()
