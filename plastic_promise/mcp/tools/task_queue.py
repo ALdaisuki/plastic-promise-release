@@ -1,4 +1,4 @@
-"""MCP Task Queue tools — Hunter Guild dispatch board.
+"""MCP Task Queue tools — Hunter Guild dispatch board (Phase 1 complete: 7 tools).
 
 Tools: task_enqueue, task_claim, task_complete, task_verify,
        task_inbox, task_heartbeat, task_abandon
@@ -394,4 +394,199 @@ async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
     conn.close()
     return [TextContent(type="text", text=json.dumps({
         "success": False, "reason": f"无效的verdict: {verdict}"
+    }, ensure_ascii=False))]
+
+
+# ═══════════════════════════════════════════════════════════════
+# task_inbox
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_task_inbox(engine: Any, args: dict) -> list[TextContent]:
+    """View the guild board — default shows only claimable tasks."""
+    agent_name = args["agent_name"]
+    trust_score = args["trust_score"]
+    filter_status = args.get("filter_status", "pending")
+    limit = args.get("limit", 20)
+
+    rank_info = trust_to_rank(trust_score)
+    conn = _get_conn()
+
+    # Stats
+    my_active = conn.execute(
+        "SELECT COUNT(*) FROM task_queue "
+        "WHERE claimed_by=? AND status IN ('claimed','executing')",
+        (agent_name,)
+    ).fetchone()[0]
+
+    available = conn.execute(
+        "SELECT COUNT(*) FROM task_queue WHERE status='pending'"
+    ).fetchone()[0]
+
+    # Task list
+    if filter_status == "my_active":
+        rows = conn.execute(
+            "SELECT * FROM task_queue WHERE claimed_by=? "
+            "AND status IN ('claimed','executing','done') "
+            "ORDER BY priority ASC, created_at ASC LIMIT ?",
+            (agent_name, limit)
+        ).fetchall()
+    elif filter_status == "pending_review":
+        rows = conn.execute(
+            "SELECT * FROM task_queue WHERE status='pending_review' "
+            "ORDER BY created_at ASC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    elif filter_status == "all":
+        rows = conn.execute(
+            "SELECT * FROM task_queue ORDER BY priority ASC, created_at ASC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM task_queue WHERE status='pending' "
+            "ORDER BY priority ASC, created_at ASC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    conn.close()
+
+    tasks = []
+    for row in rows:
+        ok, msg = can_claim(trust_score, row["priority"])
+        tasks.append({
+            "id": row["id"],
+            "task_type": row["task_type"],
+            "title": row["title"],
+            "priority": row["priority"],
+            "recommended_rank": {1: "S", 2: "A", 3: "B", 4: "C"}.get(row["priority"], "C"),
+            "status": row["status"],
+            "from_agent": row["from_agent"],
+            "created_at": row["created_at"],
+            "match": msg,
+            "can_claim": ok and row["status"] == "pending",
+            "parent_task_id": row["parent_task_id"] or None,
+        })
+
+    return [TextContent(type="text", text=json.dumps({
+        "agent_name": agent_name,
+        "rank": rank_info,
+        "stats": {
+            "my_active": my_active,
+            "available": available,
+        },
+        "tasks": tasks,
+    }, ensure_ascii=False))]
+
+
+# ═══════════════════════════════════════════════════════════════
+# task_heartbeat
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_task_heartbeat(engine: Any, args: dict) -> list[TextContent]:
+    """Send heartbeat for a claimed task."""
+    task_id = args["task_id"]
+    agent_name = args["agent_name"]
+
+    conn = _get_conn()
+    task = conn.execute("SELECT * FROM task_queue WHERE id=? AND claimed_by=?",
+                        (task_id, agent_name)).fetchone()
+    if not task:
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": "委托不存在或非你揭榜"
+        }, ensure_ascii=False))]
+
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE task_queue SET heartbeat_at=?, updated_at=? WHERE id=?",
+        (now, now, task_id)
+    )
+    conn.commit()
+
+    # Check if overdue
+    overdue = False
+    if task["heartbeat_at"] and task["timeout_seconds"]:
+        try:
+            last_hb = datetime.fromisoformat(task["heartbeat_at"])
+            elapsed = (datetime.now() - last_hb).total_seconds()
+            if elapsed > task["timeout_seconds"]:
+                overdue = True
+        except (ValueError, TypeError):
+            pass
+
+    conn.close()
+    return [TextContent(type="text", text=json.dumps({
+        "success": True, "overdue": overdue, "next_heartbeat_in": 60,
+    }, ensure_ascii=False))]
+
+
+# ═══════════════════════════════════════════════════════════════
+# task_abandon
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_task_abandon(engine: Any, args: dict) -> list[TextContent]:
+    """Abandon a claimed task — trust penalty applies."""
+    task_id = args["task_id"]
+    agent_name = args["agent_name"]
+    reason = args.get("reason", "")
+
+    conn = _get_conn()
+    task = conn.execute(
+        "SELECT * FROM task_queue WHERE id=? AND claimed_by=? "
+        "AND status IN ('claimed','executing')",
+        (task_id, agent_name)
+    ).fetchone()
+    if not task:
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": "委托不存在或非你揭榜或已提交"
+        }, ensure_ascii=False))]
+
+    # Penalty: -0.02 base
+    delta = -0.02
+    try:
+        from plastic_promise.defense.soul_enforcer import TrustManager
+        tm = TrustManager()
+        current = tm.get(agent_name)
+    except Exception:
+        current = 0.50  # fallback if TrustManager unavailable
+
+    # Issue 4 fix: Log failure FIRST (durable even if TrustManager fails)
+    conn.execute(
+        "INSERT INTO hunter_failure_log "
+        "(agent_name, task_id, task_type, failure_type, trust_before, trust_after, penalty_applied) "
+        "VALUES (?, ?, ?, 'abandoned', ?, ?, ?)",
+        (agent_name, task_id, task["task_type"], current, current + delta, delta)
+    )
+    conn.commit()
+
+    try:
+        tm.decay(delta, f"主动弃单: {task_id} — {reason[:80]}")
+    except Exception:
+        pass
+
+    # Release task back to pending
+    conn.execute(
+        "UPDATE task_queue SET status='pending', claimed_by=NULL, claimed_at=NULL, "
+        "heartbeat_at=NULL, updated_at=? WHERE id=?",
+        (datetime.now().isoformat(), task_id)
+    )
+    conn.commit()
+
+    # Count repeat abandons
+    abandon_count = conn.execute(
+        "SELECT COUNT(*) FROM hunter_failure_log "
+        "WHERE agent_name=? AND failure_type='abandoned'",
+        (agent_name,)
+    ).fetchone()[0]
+    conn.close()
+
+    return [TextContent(type="text", text=json.dumps({
+        "success": True,
+        "penalty": {
+            "type": "abandoned",
+            "trust_delta": delta,
+            "repeat_count": abandon_count,
+            "warning": f"累计弃单{abandon_count}次，再弃{5-abandon_count}次将降级到D" if abandon_count < 5
+                       else "已触发降级审查",
+        },
     }, ensure_ascii=False))]
