@@ -539,13 +539,15 @@ Phase 4c: Document eventual consistency + audit metadata preservation      (~0.5
 
 ### Summary
 
-All 7 scenarios passed. Rust accelerates `supply()` by ~35% at 1000 memories, with PyO3 pass overhead at 1.6ms for 1000 items. Concurrent access is safe (0 errors in 10-thread stress). Degradation recovery works correctly — reset forces immediate re-probe, recovery succeeds. Empty-retriever fallback correctly returns all memories in `related` tier.
+All 7 scenarios passed. Rust achieves performance parity with Python at 1000 memories (both p50=2.4ms — bottleneck is TF-IDF scoring, not FFI). PyO3 pass overhead is 1.6ms for 1000 items. Concurrent access is safe (0 errors across 5 race-condition tests including 200-thread mixed R/W stress). Degradation recovery works correctly. Empty-retriever fallback returns all 100 memories in `related` tier.
+
+**Fix applied (2026-07-02):** `_convert_rust_pack()` was missing `return pack` — Rust path silently returned None, falling through to Python fallback. Discovered during concurrency stress testing. Fixed by adding `return pack` at end of method.
 
 ### Results Table
 
 | # | Scenario | Metric | Threshold | Actual | Status |
 |---|----------|--------|-----------|--------|--------|
-| 1 | 1000-memory supply() | Rust vs Python p50 | Rust <= Python | Rust: 2.4ms, Python: 3.7ms | PASS — Rust 35% faster |
+| 1 | 1000-memory supply() | Rust vs Python p50 | Rust <= Python | Rust: 2.4ms, Python: 2.4ms | PASS — performance parity (bottleneck is TF-IDF, not FFI) |
 | 2 | 10 concurrent supply() | Error rate | < 1% | 0 errors in 8.1ms total | PASS |
 | 3 | Cold start health check | Latency | < 200ms | 78.6ms | PASS |
 | 4 | Degradation recovery | Auto-recover | No errors | healthy=None after reset, recovers to True on re-probe | PASS |

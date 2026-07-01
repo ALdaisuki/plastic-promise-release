@@ -1589,6 +1589,8 @@ class ContextEngine:
         else:
             pack.audit_metadata = {}
 
+        return pack
+
     def _supply_rust(self, task_description: str, task_vector: list,
                      task_type: str, scope: str) -> ContextPack:
         """Rust-accelerated supply path.
