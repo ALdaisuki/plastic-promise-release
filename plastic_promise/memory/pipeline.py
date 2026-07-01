@@ -349,20 +349,15 @@ class MemoryPipeline:
                             now_iso = datetime.datetime.now().isoformat()
                             # Increment access_count + worth_success on existing record
                             # Fix #2: Guard against dup_id missing from engine._memories (SQLite-only memory)
-                            if dup_id in getattr(engine, '_memories', {}):
-                                engine._memories[dup_id]["access_count"] = (
-                                    engine._memories[dup_id].get("access_count", 0) + 1
-                                )
-                                engine._memories[dup_id]["worth_success"] = (
-                                    engine._memories[dup_id].get("worth_success", 0) + 1
-                                )
-                                # Fix #6: Update last_accessed so Direction A reinforcement isn't broken
-                                engine._memories[dup_id]["last_accessed"] = now_iso
-                                # Fix #7: Merge entity_ids from new record into existing one
-                                existing_eids = set(engine._memories[dup_id].get("entity_ids", []))
+                            if engine.memory_exists(dup_id):
+                                engine.increment_field(dup_id, "access_count", 1)
+                                engine.increment_field(dup_id, "worth_success", 1)
+                                engine.update_memory_fields(dup_id, last_accessed=now_iso)
+                                mem = engine.get_memory_dict(dup_id)
+                                existing_eids = set(mem.get("entity_ids", []) if mem else [])
                                 new_eids = set(record.get("entity_ids", []))
                                 if new_eids - existing_eids:
-                                    engine._memories[dup_id]["entity_ids"] = list(existing_eids | new_eids)
+                                    engine.update_memory_fields(dup_id, entity_ids=list(existing_eids | new_eids))
                             if dup_id in getattr(self.rec_mem, '_records', {}):
                                 py_rec = self.rec_mem._records[dup_id]
                                 py_rec.access_count += 1
@@ -388,8 +383,8 @@ class MemoryPipeline:
                                         current_time_str=now_iso,
                                     )
                                     py_rec.effective_half_life = new_hl
-                                    if dup_id in engine._memories:
-                                        engine._memories[dup_id]["effective_half_life"] = new_hl
+                                    if engine.memory_exists(dup_id):
+                                        engine.update_memory_fields(dup_id, effective_half_life=new_hl)
                                 except Exception:
                                     pass  # Graceful: boost is a quality improvement, not a hard gate
                             # SQLite incremental update — includes last_accessed (Fix #6) and entity_ids merge (Fix #7)
@@ -502,9 +497,8 @@ class MemoryPipeline:
                         py_rec = self.rec_mem._records[stored.memory_id]
                         py_rec.decay_multiplier = dm
                         py_rec.effective_half_life = base_hl
-                    if engine is not None and stored.memory_id in engine._memories:
-                        engine._memories[stored.memory_id]["decay_multiplier"] = dm
-                        engine._memories[stored.memory_id]["effective_half_life"] = base_hl
+                    if engine is not None:
+                        engine.update_memory_fields(stored.memory_id, decay_multiplier=dm, effective_half_life=base_hl)
                     sqlite = getattr(engine, '_sqlite', None)
                     if sqlite is not None:
                         sqlite._conn.execute(
@@ -518,7 +512,7 @@ class MemoryPipeline:
                 # ---- Existing: vector + tags + domain persistence ----
                 if engine is not None:
                     if vec:
-                        engine._memories[stored.memory_id]["_vector"] = vec
+                        engine.update_memory_fields(stored.memory_id, _vector=vec)
                         ldb = getattr(engine, '_ldb', None)
                         if ldb is not None:
                             try:
@@ -532,8 +526,7 @@ class MemoryPipeline:
                                 )
                             except Exception as e:
                                 logging.warning("LanceDB dual-write failed for %s: %s", stored.memory_id, e)
-                    engine._memories[stored.memory_id]["tags"] = tags
-                    engine._memories[stored.memory_id]["domain"] = domain_hint
+                    engine.update_memory_fields(stored.memory_id, tags=tags, domain=domain_hint)
                     sqlite = getattr(engine, '_sqlite', None)
                     if sqlite is not None:
                         import json
