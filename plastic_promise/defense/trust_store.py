@@ -76,6 +76,10 @@ class TrustStore:
         )
         self._conn.commit()
 
+        # Hunter Guild task queue tables
+        from plastic_promise.core.task_queue_schema import ensure_task_tables
+        ensure_task_tables(self._conn)
+
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------

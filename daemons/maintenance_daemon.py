@@ -7,7 +7,11 @@
 原则 #1 奥卡姆剃刀: 从 pi_daemon(410行)+audit_daemon(226行) 砍掉
 Pi CLI 死代码 (~200行)，合并为维护守护进程。
 
-Phase: 免疫系统化 + 标签调度 + 全域创新 — 记忆池质量工程师 + 多Agent调度 + 模式识别:
+Phase: 免疫系统化 + 标签调度 + 全域创新 + Hunter Guild Dispatch — 记忆池质量工程师 + 多Agent调度 + 模式识别:
+  - 5 discovery scanners (Task 8+9): scan_trust scan_architecture scan_quality_trends scan_coupling scan_memory_decay
+  - AdaptiveThrottle: continuous empty scans double interval (max 8x), hit resets
+  - scan_task_heartbeats(): claimed/executing task timeout → release + penalty + escalate
+  - MCP /health connectivity check on startup (5 retries, 5s apart)
   - 标签调度引擎: dispatch_fix_task(fixer|reviewer|builder|claude) + tag_for_redo + tag_audit_finding
   - scan_redo_queue()          : 打回区超时升级 (12h→claude提醒, 24h→强制task:pending)
   - scan_duplicate_clusters()  : 检测并清理完全重复的记忆集群
@@ -31,6 +35,13 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+# Hunter Guild — 5 discovery scanners (Task 8)
+from plastic_promise.cron.scan_architecture import scan_architecture
+from plastic_promise.cron.scan_quality_trends import scan_quality_trends
+from plastic_promise.cron.scan_coupling import scan_coupling
+from plastic_promise.cron.scan_trust import scan_trust
+from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+
 # Path setup
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _project_root)
@@ -38,6 +49,42 @@ sys.path.insert(0, _project_root)
 DB_PATH = os.environ.get("PLASTIC_DB_PATH", os.path.join(_project_root, "plastic_memory.db"))
 INTERVAL = int(os.environ.get("AUDIT_INTERVAL_SECONDS", "300"))
 MCP_URL = "http://127.0.0.1:9020"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Adaptive Throttle — continuous empty scans double interval (max 8x)
+# ═══════════════════════════════════════════════════════════════
+
+class AdaptiveThrottle:
+    """Continuous empty scans → double interval (max 8x). Hit → reset."""
+
+    def __init__(self, base_seconds: int):
+        self.base = base_seconds
+        self.current = base_seconds
+        self.empty_streak = 0
+
+    def on_empty(self):
+        self.empty_streak += 1
+        if self.empty_streak >= 3:
+            self.current = min(self.current * 2, self.base * 8)
+
+    def on_hit(self):
+        self.empty_streak = 0
+        self.current = self.base
+
+    @property
+    def should_run(self) -> bool:
+        return True  # Always run, caller manages timing
+
+
+# Scanner throttles — trust anomalies checked more frequently (300s base)
+_scanner_throttles = {
+    "scan_architecture": AdaptiveThrottle(600),
+    "scan_quality_trends": AdaptiveThrottle(600),
+    "scan_coupling": AdaptiveThrottle(600),
+    "scan_trust": AdaptiveThrottle(300),
+    "scan_memory_decay": AdaptiveThrottle(600),
+}
 
 # ── 超时恢复 ──────────────────────────────────────────────
 def recover_stuck_tasks():
@@ -1040,6 +1087,73 @@ async def scan_unclosed_issues():
 
 
 # ═══════════════════════════════════════════════════════════════
+# Hunter Guild — 任务心跳监控 (Task 9)
+# ═══════════════════════════════════════════════════════════════
+
+async def scan_task_heartbeats():
+    """Check all claimed/executing tasks for heartbeat timeout.
+
+    Overdue tasks (heartbeat_at + timeout_seconds < now) are released
+    back to pending. After 3 escalations, task is re-assigned to claude
+    with priority=1. Timeout penalty is applied via HunterPenaltyEngine.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # Ensure task_queue table exists
+        from plastic_promise.core.task_queue_schema import ensure_task_tables
+        ensure_task_tables(conn)
+
+        overdue = conn.execute("""
+            SELECT id, claimed_by, to_agent, escalation_count, timeout_seconds
+            FROM task_queue
+            WHERE status IN ('claimed','executing')
+            AND datetime(heartbeat_at, '+' || timeout_seconds || ' seconds') < datetime('now')
+        """).fetchall()
+
+        if not overdue:
+            conn.close()
+            return
+
+        for task_id, claimed_by, to_agent, esc_count, timeout_sec in overdue:
+            if esc_count + 1 >= 3:
+                conn.execute(
+                    "UPDATE task_queue SET status='pending', claimed_by=NULL, "
+                    "to_agent='claude', priority=1, "
+                    "escalation_count=escalation_count+1, "
+                    "last_escalation_at=datetime('now') WHERE id=?",
+                    (task_id,)
+                )
+            else:
+                conn.execute(
+                    "UPDATE task_queue SET status='pending', claimed_by=NULL, "
+                    "escalation_count=escalation_count+1, "
+                    "last_escalation_at=datetime('now') WHERE id=?",
+                    (task_id,)
+                )
+            conn.commit()
+            print(f"  [HEARTBEAT] task {task_id[:20]}... overdue → released "
+                  f"(escalation={esc_count+1})")
+
+            # Apply timeout penalty
+            try:
+                from plastic_promise.core.hunter_penalty import HunterPenaltyEngine
+                from plastic_promise.defense.soul_enforcer import TrustManager
+                tm = TrustManager()
+                current = tm.get(claimed_by)
+                engine = HunterPenaltyEngine()
+                asyncio.ensure_future(engine.apply_penalty(
+                    claimed_by, task_id, "unknown",
+                    "timeout", current
+                ))
+            except Exception:
+                pass
+        conn.close()
+
+    except Exception as e:
+        print(f"  [SAFETY_NET] scan_task_heartbeats error: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
 # 主循环
 # ═══════════════════════════════════════════════════════════════
 _audit_seq = [0]
@@ -1056,13 +1170,45 @@ async def main():
     LLM_CLASSIFY_INTERVAL = int(os.environ.get("LLM_CLASSIFY_INTERVAL", "120"))
     llm_classify_threshold = max(1, LLM_CLASSIFY_INTERVAL // 10)
 
+    # MCP connectivity check — 5 retries, 5s apart
+    mcp_ok = False
+    for attempt in range(5):
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"{MCP_URL}/health", timeout=3)
+                if r.status_code == 200:
+                    mcp_ok = True
+                    break
+        except Exception:
+            pass
+        if attempt < 4:
+            print(f"  MCP /health retry {attempt+1}/5...")
+            await asyncio.sleep(5)
+
+    if not mcp_ok:
+        print(f"  WARNING: MCP /health unreachable after 5 retries — daemon will continue"
+              f" but scanner dispatch may fail")
+
     print(f"Maintenance Daemon (audit={INTERVAL}s, safety_net={SAFETY_NET_INTERVAL}s, "
           f"llm_classify={LLM_CLASSIFY_INTERVAL}s, PID={os.getpid()})")
     print(f"  DB: {DB_PATH}")
     print(f"  MCP: {MCP_URL}")
+    print(f"  5 scanners: scan_trust scan_architecture scan_quality_trends "
+          f"scan_coupling scan_memory_decay")
+    print(f"  Throttle bases: "
+          f"{' '.join(f'{k}={v.base}s' for k, v in _scanner_throttles.items())}")
 
     tick = 0
     audit_threshold = max(1, INTERVAL // 10)  # 每 INTERVAL 秒审计一次
+
+    # Ensure task queue tables exist before any scanner runs
+    try:
+        from plastic_promise.core.task_queue_schema import ensure_task_tables
+        conn = sqlite3.connect(DB_PATH)
+        ensure_task_tables(conn)
+        conn.close()
+    except Exception:
+        pass
 
     # 冷启动: 30s 后首次审计，60s 后首次安全网扫描
     await asyncio.sleep(30)
@@ -1079,8 +1225,58 @@ async def main():
                 await run_audit()
                 tick = 0
         elif tick % safety_net_threshold == 0:
+            # ═══════════════════════════════════════════════════════════
             # 安全网扫描 — 顺序执行，互不阻塞
-            # 优先级：innovation > duplicate > worth > tier > category > redo > orphan > issue
+            # 优先级: trust > architecture > quality > coupling > decay
+            #         > innovation > duplicate > worth > tier >
+            #         > category > redo > orphan > issue > heartbeat
+            # ═══════════════════════════════════════════════════════════
+
+            # Create a shared engine instance for scanners that need it
+            try:
+                from plastic_promise.core.context_engine import ContextEngine
+                engine = ContextEngine()
+            except Exception:
+                engine = None
+
+            # Priority A: trust anomalies (check more frequently)
+            trust_throttle = _scanner_throttles["scan_trust"]
+            if tick % max(1, trust_throttle.current // 10) == 0:
+                try:
+                    result = await scan_trust(engine)
+                    if result.get("findings", 0) > 0:
+                        trust_throttle.on_hit()
+                    else:
+                        trust_throttle.on_empty()
+                except Exception:
+                    pass
+
+            # Priority B: remaining 4 discovery scanners
+            for name, scanner in [
+                ("scan_architecture", scan_architecture),
+                ("scan_quality_trends", scan_quality_trends),
+                ("scan_coupling", scan_coupling),
+                ("scan_memory_decay", scan_memory_decay),
+            ]:
+                throttle = _scanner_throttles[name]
+                if tick % max(1, throttle.current // 10) == 0:
+                    try:
+                        result = await scanner(engine)
+                        if result.get("findings", 0) > 0:
+                            throttle.on_hit()
+                        else:
+                            throttle.on_empty()
+                    except Exception:
+                        pass
+
+            # Priority C: task heartbeat monitor
+            try:
+                await scan_task_heartbeats()
+            except Exception:
+                pass
+
+            # Priority D: existing safety-net scanners
+            # innovation > duplicate > worth > tier > category > redo > orphan > issue
             try:
                 await scan_innovation_opportunities()
             except Exception:

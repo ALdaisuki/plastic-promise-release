@@ -485,6 +485,78 @@ async def list_tools() -> list[Tool]:
         ),
     ])
 
+    # === 任务队列域 ===
+    tools.extend([
+        Tool(
+            name="task_enqueue",
+            description="Hunter Guild 委托上架 — 将任务挂到公会板上。自动验证提交者等级权限，C级猎人挂A/B级委托需Claude审批。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_type": {"type": "string", "description": "任务类型: fix_memory/gc_*/build_*/refactor_*/review_*/investigate_*"},
+                    "title": {"type": "string", "description": "任务标题"},
+                    "to_agent": {"type": "string", "description": "目标 Agent"},
+                    "priority": {"type": "integer", "description": "优先级: 1=S级 2=A级 3=B级 4=C级 (默认 3)"},
+                    "from_agent": {"type": "string", "description": "提交者 (默认 daemon)"},
+                    "from_trust_score": {"type": "number", "description": "提交者信任分 (非 daemon/claude 时需提供)"},
+                    "description": {"type": "string", "description": "任务描述"},
+                    "domain": {"type": "string", "description": "域"},
+                    "memory_id": {"type": "string", "description": "关联记忆 ID"},
+                    "principle_id": {"type": "string", "description": "关联原则 ID"},
+                    "source_scan": {"type": "string", "description": "来源扫描器"},
+                    "parent_task_id": {"type": "string", "description": "父任务 ID"},
+                    "timeout_seconds": {"type": "integer", "description": "超时秒数 (默认 300)"},
+                    "max_escalations": {"type": "integer", "description": "最大升级次数 (默认 3)"},
+                    "payload": {"type": "object", "description": "附加数据"},
+                },
+                "required": ["task_type", "title", "to_agent"],
+            },
+        ),
+        Tool(
+            name="task_claim",
+            description="Hunter Guild 委托揭榜 — 猎人认领公会板上的委托。原子操作，先到先得。自动检查等级匹配，force=True 可越级揭榜(会记录)。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "揭榜猎人名称"},
+                    "task_id": {"type": "string", "description": "要认领的委托 ID"},
+                    "trust_score": {"type": "number", "description": "猎人当前信任分"},
+                    "force": {"type": "boolean", "description": "强制越级揭榜 (默认 false)"},
+                },
+                "required": ["agent_name", "task_id", "trust_score"],
+            },
+        ),
+        Tool(
+            name="task_complete",
+            description="Hunter Guild 委托完成 — 猎人提交已完成委托，自动创建验收子任务给 Claude。只有揭榜猎人才能提交完成。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "委托 ID"},
+                    "agent_name": {"type": "string", "description": "提交完成的猎人名称"},
+                    "result": {"type": "string", "description": "完成结果描述"},
+                    "artifacts": {"type": "array", "items": {"type": "string"}, "description": "产物路径列表"},
+                },
+                "required": ["task_id", "agent_name", "result"],
+            },
+        ),
+        Tool(
+            name="task_verify",
+            description="Hunter Guild 委托验收 — 长老验收已完成委托。accepted 信任分+0.02，rejected/reassigned 信任分-0.03 并自动重派。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "待验收的委托 ID"},
+                    "verdict": {"type": "string", "description": "验收结论: accepted | rejected | reassigned"},
+                    "verified_by": {"type": "string", "description": "验收者 (默认 claude)"},
+                    "comment": {"type": "string", "description": "验收评语"},
+                    "reassign_to_agent": {"type": "string", "description": "重派目标 Agent (默认原 to_agent)"},
+                },
+                "required": ["task_id", "verdict"],
+            },
+        ),
+    ])
+
     # === 技能追踪域 ===
     tools.extend([
         Tool(
@@ -854,6 +926,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "domain":
             from plastic_promise.mcp.tools.domain import handle_domain
             return await handle_domain(engine, arguments)
+
+        # Task queue
+        elif name == "task_enqueue":
+            from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
+            return await handle_task_enqueue(engine, arguments)
+        elif name == "task_claim":
+            from plastic_promise.mcp.tools.task_queue import handle_task_claim
+            return await handle_task_claim(engine, arguments)
+        elif name == "task_complete":
+            from plastic_promise.mcp.tools.task_queue import handle_task_complete
+            return await handle_task_complete(engine, arguments)
+        elif name == "task_verify":
+            from plastic_promise.mcp.tools.task_queue import handle_task_verify
+            return await handle_task_verify(engine, arguments)
 
         # Skill tracking
         elif name == "skill_session_start":
