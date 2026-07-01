@@ -12,6 +12,7 @@
 
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use crate::association_feedback::AssociationFeedback;
@@ -202,8 +203,8 @@ impl ContextItem {
 /// 7. 定期内存合并 (MemoryConsolidator)
 #[pyclass]
 pub struct ContextEngine {
-    /// 内部 EntityGraph 实例
-    graph: EntityGraph,
+    /// 内部 EntityGraph 实例 (RefCell for interior mutability — supply() is &self)
+    graph: RefCell<EntityGraph>,
     /// 来源追溯
     source_tracker: SourceTracker,
     /// 反馈权重
@@ -216,8 +217,8 @@ pub struct ContextEngine {
     pub enable_principles: bool,
     /// 当前时间戳 (ISO 8601)
     current_time: String,
-    /// 上次内存合并时间
-    last_consolidation: DateTime<Utc>,
+    /// 上次内存合并时间 (Cell allows mutation through &self)
+    last_consolidation: Cell<DateTime<Utc>>,
 }
 
 /// Python-visible methods for ContextEngine: configuration, supply, and graph management.
@@ -233,7 +234,7 @@ impl ContextEngine {
         // In practice, a Rust factory function will construct the full engine
         // with real SQLite and LanceDB backends, then return it to Python.
         Self {
-            graph: EntityGraph::new(),
+            graph: RefCell::new(EntityGraph::new()),
             source_tracker: SourceTracker::new(),
             feedback: AssociationFeedback::new(),
             retriever: HybridRetriever::placeholder(),
@@ -243,7 +244,7 @@ impl ContextEngine {
             ),
             enable_principles: true,
             current_time: String::new(),
-            last_consolidation: Utc::now(),
+            last_consolidation: Cell::new(Utc::now()),
         }
     }
 
@@ -255,15 +256,15 @@ impl ContextEngine {
     /// 加载/更新 EntityGraph（从 Python 侧传入 JSON 字符串）
     ///
     /// The JSON string must deserialize to a valid EntityGraph.
-    pub fn load_graph(&mut self, graph_json: String) -> PyResult<()> {
-        self.graph = serde_json::from_str(&graph_json)
+    pub fn load_graph(&self, graph_json: String) -> PyResult<()> {
+        *self.graph.borrow_mut() = serde_json::from_str(&graph_json)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid graph JSON: {}", e)))?;
         Ok(())
     }
 
     /// 获取 EntityGraph 引用（用于 Python 侧持久化等）
     pub fn get_graph(&self) -> EntityGraph {
-        self.graph.clone()
+        self.graph.borrow().clone()
     }
 
     // ============================================================
@@ -356,13 +357,15 @@ impl ContextEngine {
     ///
     /// # Returns
     /// 包含三层上下文的 ContextPack
+    #[pyo3(signature = (task_description, task_vector, task_type, scope, memories))]
     pub fn supply(
-        &mut self,
+        &self,
         task_description: String,
         task_vector: Vec<f32>,
         task_type: String,
         scope: String,
-    ) -> ContextPack {
+        memories: Vec<PyObject>,
+    ) -> PyResult<ContextPack> {
         // ============================================================
         // Phase 0: 原则注入 (P0 任务)
         // ============================================================
@@ -377,14 +380,14 @@ impl ContextEngine {
                 .map(|w| w.to_string())
                 .collect();
 
-            let injected = self.graph.inject_principles(
+            let injected = self.graph.borrow_mut().inject_principles(
                 core_principles.clone(),
                 &task_type,
                 task_keywords,
             );
 
             if injected > 0 {
-                activated_principle_names = self.graph.get_activated_principles(&task_type)
+                activated_principle_names = self.graph.borrow().get_activated_principles(&task_type)
                     .into_iter()
                     .map(|(name, _)| name)
                     .collect();
@@ -394,22 +397,69 @@ impl ContextEngine {
         // ============================================================
         // Phase 1: 构建 item_lookup (从 StorageBackend)
         // ============================================================
-        let filter = ListFilter {
-            scope: Some(scope.clone()),
-            ..Default::default()
-        };
-        let memories = self.storage.list(&filter).unwrap_or_default();
+        let (mut item_lookup, memory_index) = Python::with_gil(|py| -> PyResult<_> {
+            let mut item_lookup: HashMap<String, (String, String)> = HashMap::new();
+            let mut memory_index: HashMap<String, crate::memory_worth::MemoryRecord> = HashMap::new();
 
-        let mut item_lookup: HashMap<String, (String, String)> = memories
-            .iter()
-            .map(|m| (m.id.clone(), (m.content.clone(), m.source.clone())))
-            .collect();
+            for py_mem in &memories {
+                let obj = py_mem.as_ref(py);
+                let id: String = obj.get_item("id")
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("missing id: {}", e)))?
+                    .extract()
+                    .map_err(|e| pyo3::exceptions::PyTypeError::new_err(format!("id not a string: {}", e)))?;
+                let content: String = obj.get_item("content")
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("missing content: {}", e)))?
+                    .extract()
+                    .map_err(|e| pyo3::exceptions::PyTypeError::new_err(format!("content not a string: {}", e)))?;
+                let source: String = obj.get_item("source")
+                    .ok()
+                    .and_then(|v| v.extract().ok())
+                    .unwrap_or_default();
+                let memory_type: String = obj.get_item("memory_type")
+                    .ok()
+                    .and_then(|v| v.extract().ok())
+                    .unwrap_or_else(|| "experience".to_string());
+                let worth_success: u32 = obj.get_item("worth_success")
+                    .ok()
+                    .and_then(|v| v.extract().ok())
+                    .unwrap_or(0);
+                let worth_failure: u32 = obj.get_item("worth_failure")
+                    .ok()
+                    .and_then(|v| v.extract().ok())
+                    .unwrap_or(0);
+                let created_at: String = obj.get_item("created_at")
+                    .ok()
+                    .and_then(|v| v.extract().ok())
+                    .unwrap_or_default();
+                let last_accessed_at: String = obj.get_item("last_accessed")
+                    .ok()
+                    .and_then(|v| v.extract().ok())
+                    .unwrap_or_default();
 
-        // 构建用于内容回溯的完整记忆索引
-        let memory_index: HashMap<String, crate::memory_worth::MemoryRecord> = memories
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
-            .collect();
+                item_lookup.insert(id.clone(), (content.clone(), source.clone()));
+                memory_index.insert(id.clone(), crate::memory_worth::MemoryRecord {
+                    id,
+                    content,
+                    source,
+                    memory_type,
+                    worth_success,
+                    worth_failure,
+                    created_at,
+                    last_accessed_at,
+                    last_accessed: String::new(),
+                    activation_weight: 0.5,
+                    tier: "working".to_string(),
+                    scope: "global".to_string(),
+                    category: "other".to_string(),
+                    importance: 0.7,
+                    access_count: 0,
+                    metadata_json: String::new(),
+                    entity_ids: Vec::new(),
+                    attributes: HashMap::new(),
+                });
+            }
+            Ok((item_lookup, memory_index))
+        })?;
 
         // ============================================================
         // Phase 2: 混合检索 (向量 + BM25 + RRF + 符号规则)
@@ -518,7 +568,7 @@ impl ContextEngine {
         let now = Utc::now();
         let interval_hours = self.retriever.consolidator.interval_hours();
         if interval_hours > 0 {
-            let elapsed = now.signed_duration_since(self.last_consolidation);
+            let elapsed = now.signed_duration_since(self.last_consolidation.get());
             if elapsed.num_hours() >= interval_hours as i64 {
                 // Collect all memories for consolidation
                 let all_memories = self.storage.list(&ListFilter::default()).unwrap_or_default();
@@ -527,7 +577,7 @@ impl ContextEngine {
                     // the caller can decide whether to persist it via StorageBackend::store)
                     let _ = insight; // insight available for callers that chain consolidation
                 }
-                self.last_consolidation = now;
+                self.last_consolidation.set(now);
             }
         }
 
@@ -540,15 +590,15 @@ impl ContextEngine {
         audit.insert("scope".into(), scope);
         audit.insert("principle_injection_count".into(),
             pack.activated_principles.len().to_string());
-        audit.insert("graph_nodes".into(), self.graph.node_count().to_string());
-        audit.insert("graph_edges".into(), self.graph.edge_count().to_string());
+        audit.insert("graph_nodes".into(), self.graph.borrow().node_count().to_string());
+        audit.insert("graph_edges".into(), self.graph.borrow().edge_count().to_string());
         if let Ok(count) = self.storage.total_count() {
             audit.insert("memory_pool_size".into(), count.to_string());
         }
         audit.insert("timestamp".into(), self.current_time.clone());
         pack.audit_metadata = audit;
 
-        pack
+        Ok(pack)
     }
 }
 
@@ -566,14 +616,14 @@ impl ContextEngine {
         retriever: HybridRetriever,
     ) -> Self {
         Self {
-            graph: EntityGraph::new(),
+            graph: RefCell::new(EntityGraph::new()),
             source_tracker: SourceTracker::new(),
             feedback: AssociationFeedback::new(),
             retriever,
             storage,
             enable_principles: true,
             current_time: String::new(),
-            last_consolidation: Utc::now(),
+            last_consolidation: Cell::new(Utc::now()),
         }
     }
 
@@ -587,7 +637,7 @@ impl ContextEngine {
     /// reachable from the task_type node.
     fn graph_traversal(&self, task_type: &str) -> Vec<(String, f64, String)> {
         let start_id = format!("task_type:{}", task_type);
-        let traversed = self.graph.traverse(&start_id, 3);
+        let traversed = self.graph.borrow().traverse(&start_id, 3);
 
         traversed
             .into_iter()
