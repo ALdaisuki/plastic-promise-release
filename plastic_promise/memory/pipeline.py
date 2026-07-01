@@ -339,6 +339,18 @@ class MemoryPipeline:
                 engine = getattr(self.rec_mem, '_engine', None)
                 vec = record.get("vector")
 
+                # ---- Zero-vector guard: reject fallback embeddings ----
+                if vec and not any(v != 0.0 for v in vec):
+                    logging.warning(
+                        "Zero vector detected for %s, deferring back to classified",
+                        mid,
+                    )
+                    record.setdefault("tags", [])
+                    if "embed:fallback" not in record["tags"]:
+                        record["tags"].append("embed:fallback")
+                    record["stage"] = "classified"  # rollback for retry
+                    continue
+
                 # ---- Step 4a: Vector dedup ----
                 if vec and self._lancedb is not None:
                     try:
