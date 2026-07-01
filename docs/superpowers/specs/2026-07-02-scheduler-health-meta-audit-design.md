@@ -23,7 +23,7 @@
 **设计原则**:
 - **零新表** — 复用 `task_queue` + `hunter_failure_log` + `metric_history`
 - **零新 Agent** — 仅生成委托给已有的 Claude/Reviewer
-- **零新 MCP 工具** — 仅复用 `task_enqueue` + `defense`
+- **零新 MCP 工具** — 仅复用 `task_enqueue` + `domain`
 - **最小侵入** — 一个新增文件 + 两处修改
 
 ### 跨模块接口约定
@@ -59,7 +59,7 @@
 - 读：`task_queue` + `hunter_failure_log` + `metric_history`
 - 写：`task_enqueue`（和其他扫描器平级）
 - 调：`AdaptiveThrottle.current`（已有节流机制）
-- 防御：`defense(action="reset_throttle")`（手动回滚入口）
+- 防御：`domain(action="reset_throttle")`（手动回滚入口）
 
 ---
 
@@ -197,9 +197,13 @@ GROUP BY verified_by
 
 | 对比项 | 改善 → | 恶化 → |
 |--------|--------|--------|
-| 打回率变化 (Δ < -0.1) | 报告中记录改善 | 生成 `investigate_recurrence` follow-up 委托 |
-| 超时率变化 (timeout_tasks 增加) | 报告中记录改善 | 生成 `review_agent_timeout` follow-up 委托 |
-| 延迟变化 (avg_wait 增加 > 2x) | 报告中记录改善 | 生成 `review_dispatch_latency` follow-up 委托 |
+| 打回率变化 (Δ < -0.1) | 报告中记录改善 | 推荐 `investigate_recurrence` follow-up |
+| 超时率变化 (timeout_tasks 增加) | 报告中记录改善 | 推荐 `review_agent_timeout` follow-up |
+| 延迟变化 (avg_wait 增加 > 2x) | 报告中记录改善 | 推荐 `review_dispatch_latency` follow-up |
+
+> **重要**: 恶化项在审计报告 `trends.follow_up_tasks` 字段中**推荐**但**不自动入队**。
+> Claude 审阅报告后决定是否将推荐转为实际的 `task_enqueue` 调用。
+> 这保持了人类在"重大决策"上的控制权——系统分析，人类决策。
 
 ---
 
@@ -255,15 +259,17 @@ async def _apply_auto_throttle(scanner_name: str, rate: float, engine):
 
 ### 4.3 手动回滚
 
-Claude 收到通知后，通过 `defense` MCP 工具手动重置：
+Claude 收到通知后，通过 `domain` MCP 工具手动重置：
 
 ```
-defense(action="reset_throttle", scanner="scan_architecture")
+domain(action="reset_throttle", scanner="scan_architecture")
 ```
 
 内部直接恢复 `throttle.current = throttle.base` 并清空 `empty_streak`。
 
-**实现**: `defense` MCP 工具的 `action` 分发中新增 `reset_throttle` 分支，接收 `scanner` 参数，从 daemon 的 `_scanner_throttles` 字典中查找对应 throttle 并重置。
+**实现**: `domain` MCP 工具的 `action` 分发中新增 `reset_throttle` 分支，接收 `scanner` 参数，从 daemon 的 `_scanner_throttles` 字典中查找对应 throttle 并重置。
+
+**为什么是 domain 而非 defense**: `domain` 已承担系统配置管理职责（域联邦合并/拆分/重命名），扫描器节流管理属于同一语义层。`defense` 专注于信任分和 Agent 权限边界，不应混入系统配置操作。
 
 ### 4.4 自动回滚
 
@@ -357,7 +363,7 @@ window_end:   now
 | 文件 | 改动 |
 |------|------|
 | `daemons/maintenance_daemon.py` | 注册 scan_scheduler_health 到主循环 + `_scanner_throttles` 新增条目 + 导入 |
-| `plastic_promise/defense/trust_store.py` | 注册 `reset_throttle` 防御动作 |
+| `plastic_promise/mcp/tools/domain.py` | 注册 `reset_throttle` 子命令 |
 
 ### 测试文件
 
@@ -380,4 +386,4 @@ window_end:   now
 - [ ] 手动回滚 `defense(action="reset_throttle")` 正常
 - [ ] 自动回滚条件正确（rate <30%, total ≥5）
 - [ ] 首次运行跳过趋势对比，输出 `first_audit` 标记
-- [ ] 恶化项正确生成 follow-up 委托
+- [ ] 恶化项正确出现在 `trends.follow_up_tasks` 推荐列表中（不自动入队，Claude 决定）
