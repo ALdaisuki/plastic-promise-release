@@ -249,6 +249,8 @@ class SoulLoop:
             cei = self.calculate_cei()
             self._cached_cei = cei
             self._cei_history.append(cei)
+            global _global_cei
+            _global_cei = cei
             result["cei"] = {"score": cei, "tier": self.cei_tier}
         except Exception as e:
             result["cei"] = {"error": str(e)}
@@ -432,3 +434,17 @@ def post_task(
     return _get_default_loop().post_task(task_description, git_commit, mode, issue_id,
                                           lesson, improvement, root_cause,
                                           optimization, trick)
+
+
+# Module-level CEI cache — updated by SoulLoop.post_task() on every
+# step-closure, read by get_cei() without creating a heavy ContextEngine.
+_global_cei: float = 0.5
+
+
+def get_cei() -> float:
+    """Return the current CEI value. Safe — no ContextEngine init needed.
+
+    Returns the last CEI value set by any SoulLoop instance's post_task().
+    Defaults to 0.5 if no step-closure has been performed yet.
+    """
+    return _global_cei
