@@ -229,8 +229,13 @@ def _inject_skill_entity(
                 "relation": "parent_of",
                 "weight": 1.0,
             }
-            if parent_edge not in engine._graph_edges:
-                engine._graph_edges.append(parent_edge)
+            if not engine.has_graph_edge(parent_edge):
+                engine.add_graph_edge(
+                    source=parent_edge["from"],
+                    target=parent_edge["to"],
+                    relation=parent_edge.get("relation", "parent_of"),
+                    weight=parent_edge.get("weight", 0.8),
+                )
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -283,7 +288,8 @@ async def handle_skill_session_trace(
     # -- Collect skill_session entities from graph nodes --------------------
     sessions: list[dict] = []
 
-    for node_id, node in engine._graph_nodes.items():
+    for node in engine.list_graph_nodes():
+        node_id = node.get("id", "")
         if not isinstance(node, dict):
             continue
         if node.get("type") != "skill_session":
@@ -300,7 +306,7 @@ async def handle_skill_session_trace(
 
         # -- Find associated memory record ----------------------------------
         memory: dict[str, Any] | None = None
-        for mid, mem in engine._memories.items():
+        for mem in engine.iter_memories():
             # Normalize to dict (handle both dict and object memories)
             if isinstance(mem, dict):
                 mem_dict = mem
@@ -363,7 +369,7 @@ async def handle_skill_session_trace(
 
         # -- Child sessions via graph edges ---------------------------------
         child_skills: list[str] = []
-        for edge in engine._graph_edges:
+        for edge in engine.list_graph_edges():
             if not isinstance(edge, dict):
                 continue
             # Edge goes FROM parent TO child with relation "parent_of"
@@ -392,7 +398,7 @@ async def handle_skill_session_trace(
         })
 
     # -- Build parent relationships from edges ------------------------------
-    for edge in engine._graph_edges:
+    for edge in engine.list_graph_edges():
         if not isinstance(edge, dict):
             continue
         if edge.get("relation") == "parent_of":
@@ -457,7 +463,7 @@ async def handle_skill_session_trace(
         if s["status"] == "done":
             # Re-check original memory for tag integrity
             mem_for_session = None
-            for mid, mem in engine._memories.items():
+            for mem in engine.iter_memories():
                 if isinstance(mem, dict):
                     m = mem
                 else:
@@ -650,7 +656,8 @@ async def handle_skill_session_complete(
     # ------------------------------------------------------------------
     memory_id = None
     mem_data = None
-    for mid, mem in engine._memories.items():
+    for mem in engine.iter_memories():
+        mid = mem.get("id", "")
         # mem is always a plain dict (register_memory / store_memory both
         # produce dicts).  Normalize defensively in case a MemoryRecord
         # object slips through from older paths.
@@ -700,9 +707,8 @@ async def handle_skill_session_complete(
             + f"\n[SKILL ABANDONED] {reason}"
         )
 
-        # Persist to engine._memories dict
-        engine._memories[memory_id]["tags"] = tags
-        engine._memories[memory_id]["content"] = new_content
+        # Persist via public API
+        engine.update_memory_fields(memory_id, tags=tags, content=new_content)
 
         return [TextContent(type="text", text=json.dumps({
             "entity_id": entity_id,
@@ -730,11 +736,12 @@ async def handle_skill_session_complete(
                 tags.append("task:overdue")
             overdue = True
 
-        # Persist directly to engine._memories dict
-        engine._memories[memory_id]["content"] = new_content
-        engine._memories[memory_id]["tags"] = tags
-        engine._memories[memory_id]["last_accessed"] = (
-            datetime.datetime.now(datetime.UTC).isoformat()
+        # Persist via public API
+        engine.update_memory_fields(
+            memory_id,
+            content=new_content,
+            tags=tags,
+            last_accessed=datetime.datetime.now(datetime.UTC).isoformat(),
         )
 
         return [TextContent(type="text", text=json.dumps({
@@ -773,13 +780,13 @@ async def handle_skill_session_complete(
         tags.remove("task:active")
     if "task:done" not in tags:
         tags.append("task:done")
-    engine._memories[memory_id]["tags"] = tags
+    engine.update_memory_fields(memory_id, tags=tags)
 
     # -- content update (guard against duplicate [SKILL COMPLETE] markers) --
     current_content = mem_data.get("content", "")
     if "[SKILL COMPLETE]" not in current_content:
         new_content = current_content + f"\n[SKILL COMPLETE] duration_ms={duration_ms}"
-        engine._memories[memory_id]["content"] = new_content
+        engine.update_memory_fields(memory_id, content=new_content)
     else:
         # Already completed from a prior call — don't append again
         pass
@@ -881,7 +888,8 @@ async def handle_skill_session_audit(
     # 1. Scan existing skill_session entities from graph nodes
     # ------------------------------------------------------------------
     existing_sessions: dict[str, list[str]] = {}  # skill_name -> [entity_ids]
-    for node_id, node in engine._graph_nodes.items():
+    for node in engine.list_graph_nodes():
+        node_id = node.get("id", "")
         if not isinstance(node, dict):
             continue
         if node.get("type") != "skill_session":
@@ -901,7 +909,7 @@ async def handle_skill_session_audit(
     # 2. Scan engine._memories for mentions of known skill names
     # ------------------------------------------------------------------
     mentioned_skills: set[str] = set()
-    for mid, mem in engine._memories.items():
+    for mem in engine.iter_memories():
         # Normalize to dict (handle both dict and object memories)
         if isinstance(mem, dict):
             content: str = mem.get("content", "")
@@ -942,7 +950,7 @@ async def handle_skill_session_audit(
             # creating duplicates when a skill is mentioned multiple times
             # and another auto_fix iteration already created one.
             skill_has_any_session: bool = False
-            for node_id, node in engine._graph_nodes.items():
+            for node in engine.list_graph_nodes():
                 if not isinstance(node, dict):
                     continue
                 if node.get("type") != "skill_session":

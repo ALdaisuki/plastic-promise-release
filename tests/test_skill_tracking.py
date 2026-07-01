@@ -183,6 +183,14 @@ class TestSkillSessionComplete:
         }
         engine = MagicMock()
         engine._memories = {memory_id: mem}
+        # Wire up public API methods
+        engine.iter_memories = lambda: iter(engine._memories.values())
+        def _update_memory_fields(mid, **fields):
+            if mid in engine._memories:
+                engine._memories[mid].update(fields)
+                return True
+            return False
+        engine.update_memory_fields = _update_memory_fields
         # Wire up get_memory / store_memory so feedback_apply works
         engine.get_memory.return_value = MagicMock(
             id=memory_id,
@@ -242,8 +250,8 @@ class TestSkillSessionComplete:
         assert data["entity_id"] == entity_id
         assert data["memory_id"] == memory_id
 
-        # next_skills from SKILL_CHAIN_MAP
-        assert "writing-plans" in data["next_skills"]
+        # next_skills from SKILL_CHAIN_MAP (brainstorming → using-git-worktrees)
+        assert "using-git-worktrees" in data["next_skills"]
 
         # worth_update should reflect the feedback_apply delta
         assert data["worth_update"] is not None
@@ -438,6 +446,13 @@ class TestSkillSessionTrace:
             },
         }
 
+        # Wire up public API methods
+        engine.list_graph_nodes = lambda: [
+            {"id": k, **v} for k, v in engine._graph_nodes.items()
+        ]
+        engine.list_graph_edges = lambda: engine._graph_edges
+        engine.iter_memories = lambda: iter(engine._memories.values())
+
         result = asyncio.run(handle_skill_session_trace(engine, {
             "session_scope": "all",
         }))
@@ -503,6 +518,12 @@ class TestSkillSessionTrace:
             },
         }
 
+        engine.list_graph_nodes = lambda: [
+            {"id": k, **v} for k, v in engine._graph_nodes.items()
+        ]
+        engine.list_graph_edges = lambda: engine._graph_edges
+        engine.iter_memories = lambda: iter(engine._memories.values())
+
         result = asyncio.run(handle_skill_session_trace(engine, {
             "session_scope": "all",
         }))
@@ -539,6 +560,8 @@ class TestSkillSessionAudit:
         engine = MagicMock()
         engine._graph_nodes = {}
         engine._memories = {}
+        engine.list_graph_nodes = lambda: []
+        engine.iter_memories = lambda: iter([])
 
         result = asyncio.run(handle_skill_session_audit(engine, {}))
 
@@ -565,6 +588,8 @@ class TestSkillSessionAudit:
                 "tags": [],
             },
         }
+        engine.list_graph_nodes = lambda: []
+        engine.iter_memories = lambda: iter(engine._memories.values())
 
         result = asyncio.run(handle_skill_session_audit(engine, {}))
 
