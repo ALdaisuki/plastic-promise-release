@@ -307,9 +307,28 @@ class MemoryPipeline:
                             vectors.append(self.embedder.embed(r["content"]))
                 else:
                     vectors = self.embedder.embed_batch(contents)
-            except Exception:
-                vectors = [[0.0] * self.embedder.dim for _ in batch]
+            except Exception as e:
+                logging.warning(
+                    "Embed batch failed, deferring %d items (skip_set=%d): %s",
+                    len(batch), len(skip_set), e
+                )
+                for _mid, record in batch:
+                    tags = record.setdefault("tags", [])
+                    if "embed:deferred" not in tags:
+                        tags.append("embed:deferred")
+                continue  # stay in classified stage, retry next cycle
             for (mid, record), vec in zip(batch, vectors):
+                # Classified-stage guard: if rec_mem is None and vector is zero,
+                # defer to avoid permanent zero-vector storage
+                if self.rec_mem is None and vec and not any(v != 0.0 for v in vec):
+                    logging.warning(
+                        "Zero vector + no rec_mem for %s, deferring in classified",
+                        mid,
+                    )
+                    record.setdefault("tags", [])
+                    if "embed:deferred" not in record["tags"]:
+                        record["tags"].append("embed:deferred")
+                    continue  # stay in classified
                 record["vector"] = vec
                 record["stage"] = "embedded"
                 record["processed_at"] = datetime.datetime.now().isoformat()
