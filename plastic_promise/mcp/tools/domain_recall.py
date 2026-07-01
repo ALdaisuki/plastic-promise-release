@@ -98,7 +98,7 @@ async def handle_domain_recall(engine: Any, args: dict) -> list[TextContent]:
         source_filter = args.get("source", "")
 
         # Ensure DomainManager is loaded
-        engine._ensure_heavy_init()
+        engine.ensure_heavy_init()
 
         dm = getattr(engine, '_dm', None)
         domain_config = dm.domains.get(domain) if dm else None
@@ -125,7 +125,7 @@ async def handle_domain_recall(engine: Any, args: dict) -> list[TextContent]:
 
         scored: list[dict] = []
 
-        for mid, mem in engine._memories.items():
+        for mid, mem in engine.iter_memories():
             # Owner filter
             mem_owner = mem.get("owner", "")
             if current_owner and mem_owner not in (current_owner, "shared", ""):
@@ -200,7 +200,7 @@ async def handle_domain_recall(engine: Any, args: dict) -> list[TextContent]:
 
         # Domain stats
         total_in_domain = sum(
-            1 for mem in engine._memories.values()
+            1 for mem in engine.iter_memories()
             if mem.get("domain") == domain
             or (domain == "all")
             or (domain_tags and set(mem.get("tags",

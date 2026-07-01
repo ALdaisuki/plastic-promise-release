@@ -145,7 +145,7 @@ class SoulLoop:
 
         # 1. 约定对齐检查 — 记录原则遵守
         try:
-            activated = self._engine._activate_principles("general", task_description)
+            activated = self._engine.activate_principles("general", task_description)
             result["alignment"] = {"checked": len(activated), "principles": activated}
             # Lazy-init PrincipleTracker
             if self._principle_tracker is None:
@@ -255,13 +255,12 @@ class SoulLoop:
 
         # 7. 上下文预备 — 轻量标记，不触发重型 supply
         try:
-            self._engine._context_ready = getattr(self._engine, '_context_ready', {})
+            ctx_ready = self._engine.get_context_ready()
             now = datetime.datetime.now()
             # Clean expired entries (TTL 5 min)
-            expired = [k for k, v in self._engine._context_ready.items()
+            expired = [k for k, v in ctx_ready.items()
                        if (now - getattr(v, '_ts', now)).total_seconds() > 300]
-            for k in expired:
-                del self._engine._context_ready[k]
+            self._engine.clear_expired_context_ready(expired)
         except Exception:
             pass
 
@@ -305,9 +304,10 @@ class SoulLoop:
         # memory_supply: estimate from engine worth stats
         engine = self._engine or ContextEngine()
         mem_supply = 0.5  # default when no data available
-        if engine._memories:
+        mems = list(engine.iter_memories())
+        if mems:
             scores = []
-            for mem in engine._memories.values():
+            for mem in mems:
                 s = mem.get("worth_success", 0)
                 f = mem.get("worth_failure", 0)
                 total = s + f

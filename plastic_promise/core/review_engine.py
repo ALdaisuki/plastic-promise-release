@@ -369,8 +369,9 @@ class ReviewEngine:
 
         try:
             # 检索最近的审查记忆
-            if hasattr(self._engine, '_memories') and self._engine._memories:
-                for mem_id, mem in self._engine._memories.items():
+            if self._engine.memory_count > 0:
+                for mem in self._engine.iter_memories():
+                    mem_id = mem.get("id", "")
                     tags = mem.get("tags", [])
                     if isinstance(tags, str):
                         try:

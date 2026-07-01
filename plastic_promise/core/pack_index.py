@@ -59,26 +59,8 @@ def pack_export_streaming(name: str, output_path: str,
         f.write('{"version":"2.0","name":"' + name + '","memories":[\n')
         first = True
 
-        if engine and hasattr(engine, '_sqlite') and engine._sqlite:
-            rows = engine._sqlite._conn.execute(
-                "SELECT id, content, memory_type, source, tags, domain, tier FROM memories"
-            ).fetchall()
-            for row in rows:
-                tags_list = json.loads(row[4]) if isinstance(row[4], str) else (row[4] or [])
-                if tags and not (set(tags) & set(tags_list)):
-                    continue  # 标签过滤
-                if not first:
-                    f.write(',\n')
-                else:
-                    first = False
-                json.dump({
-                    "id": row[0], "content": row[1], "memory_type": row[2],
-                    "source": row[3], "tags": tags_list, "domain": row[5] or "",
-                    "tier": row[6],
-                }, f, ensure_ascii=False)
-                count += 1
-        elif engine:
-            for mid, mem in engine._memories.items():
+        if engine:
+            for mem in engine.iter_memories():
                 mem_tags = mem.get("tags", [])
                 if tags and not (set(tags) & set(mem_tags)):
                     continue
@@ -87,10 +69,9 @@ def pack_export_streaming(name: str, output_path: str,
                 else:
                     first = False
                 json.dump({
-                    "id": mid, "content": mem.get("content", ""),
+                    "id": mem.get("id", ""), "content": mem.get("content", ""),
                     "memory_type": mem.get("memory_type", ""),
-                    "source": mem.get("source", ""),
-                    "tags": mem_tags,
+                    "source": mem.get("source", ""), "tags": mem_tags,
                     "domain": mem.get("domain", ""),
                     "tier": mem.get("tier", ""),
                 }, f, ensure_ascii=False)
@@ -128,28 +109,27 @@ def pack_import_with_strategy(path: str, engine: Any,
         old_domain = mem.get("domain", "")
         new_domain = domain_map.get(old_domain, old_domain) if old_domain else ""
 
-        existing = engine._memories.get(mid)
+        existing = engine.get_memory_dict(mid)
         if existing:
             if strategy == "skip":
                 skipped += 1
                 continue
             elif strategy == "replace":
-                engine._memories[mid] = {
+                engine.register_memory({
                     "id": mid, "content": mem["content"],
                     "memory_type": mem.get("memory_type", "experience"),
                     "source": mem.get("source", "user"),
                     "tags": mem.get("tags", []),
                     "domain": new_domain,
-                }
+                })
                 imported += 1
             elif strategy == "merge":
                 old_tags = set(existing.get("tags", []))
                 new_tags = set(mem.get("tags", []))
-                existing["tags"] = list(old_tags | new_tags)
-                existing["domain"] = new_domain  # 包内 domain 为准
+                engine.update_memory_fields(mid, tags=list(old_tags | new_tags), domain=new_domain)
                 merged += 1
         else:
-            data = {
+            engine.register_memory({
                 "id": mid, "content": mem["content"],
                 "memory_type": mem.get("memory_type", "experience"),
                 "source": mem.get("source", "user"),
@@ -157,10 +137,7 @@ def pack_import_with_strategy(path: str, engine: Any,
                 "domain": new_domain,
                 "tier": mem.get("tier", "L1"),
                 "owner": owner or mem.get("owner", ""),
-            }
-            engine._memories[mid] = data
-            if engine._sqlite:
-                engine._sqlite.upsert(mid, data)
+            })
             imported += 1
 
     return {"imported": imported, "skipped": skipped, "merged": merged,

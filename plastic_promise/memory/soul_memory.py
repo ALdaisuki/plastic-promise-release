@@ -917,13 +917,13 @@ class EvolveR:
                             self.rec_mem._records[mid].decay_multiplier = dm
                         # Persist to SQLite
                         engine = self.rec_mem._engine if self.rec_mem else None
-                        if engine and engine._sqlite:
-                            engine._sqlite._conn.execute(
+                        if engine:
+                            engine.execute_sql(
                                 "UPDATE memories SET decay_multiplier = ? WHERE id = ?",
                                 (dm, mid)
                             )
-                    if engine and engine._sqlite:
-                        engine._sqlite._conn.commit()
+                    if engine:
+                        engine.commit_sql()
             except Exception as e:
                 logging.warning("EvolveR: decay batch update failed: %s", e)
 

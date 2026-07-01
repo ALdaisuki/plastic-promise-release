@@ -123,8 +123,7 @@ async def handle_feedback_apply(engine: Any, args: dict) -> list[TextContent]:
         engine.store_memory(record)
 
         # P2: Sync feedback to graph edge weights
-        if hasattr(engine, '_apply_edge_feedback_for_memory'):
-            engine._apply_edge_feedback_for_memory(item_id)
+        engine.apply_edge_feedback_for_memory(item_id)
 
         return [TextContent(type="text", text=json.dumps({
             "updated": True,

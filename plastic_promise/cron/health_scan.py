@@ -57,10 +57,11 @@ def run(engine: Any = None, ollama_host: str = "http://127.0.0.1:11434") -> dict
     # Pipeline backlog check — auto-process if items pending
     pipeline_processed = 0
     try:
-        if engine is not None and hasattr(engine, '_fuzzy_buffer') and engine._fuzzy_buffer is not None:
-            pl_stats = engine._fuzzy_buffer.stats()
+        fb = engine.get_fuzzy_buffer() if engine is not None else None
+        if fb is not None:
+            pl_stats = fb.stats()
             if pl_stats["total"] > 0:
-                result = engine._fuzzy_buffer.process_pipeline()
+                result = fb.process_pipeline()
                 pipeline_processed = result.get("total_processed", 0)
             checks["memory_pipeline"] = {
                 "status": "ok",

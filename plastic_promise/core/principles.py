@@ -133,22 +133,20 @@ class PrincipleManager:
             node_id = f"principle:{p['id']}"
 
             # Ensure the principle node exists in the graph
-            if node_id not in self._engine._graph_nodes:
-                self._engine._graph_nodes[node_id] = {
-                    "type": "principle",
-                    "name": p["name"],
-                    "description": p["content"],
-                    "domain": p["domain"],
-                }
+            self._engine.register_entity(
+                entity_type="principle",
+                entity_id=str(p["id"]),
+                entity_name=p["name"],
+                entity_description=p["content"],
+            )
 
             # Create directed edge: task_type -> principle
-            edge = {
-                "from": f"task_type:{task_type}",
-                "to": node_id,
-                "relation": "activates",
-                "weight": relevance,
-            }
-            self._engine._graph_edges.append(edge)
+            self._engine.add_graph_edge(
+                source=f"task_type:{task_type}",
+                target=node_id,
+                relation="activates",
+                weight=relevance,
+            )
             edge_ids.append(f"task_type:{task_type} -> {node_id}")
 
         return edge_ids

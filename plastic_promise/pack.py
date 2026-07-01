@@ -80,8 +80,8 @@ def import_pack(engine: Any, path: str, owner: str = "") -> dict:
 
 def recall_pack(engine: Any, query: str, pack_name: str = None, strict: bool = True) -> dict:
     """Recall ONLY from stored memories. Strict mode: 0 matches → empty."""
-    results = engine._text_retrieval(query) if engine else []
-    memories = engine._memories if engine else {}
+    results = engine.text_retrieval(query) if engine else []
+    memories = {m["id"]: m for m in engine.iter_memories()} if engine else {}
 
     items = []
     for mid, score, content, source in results:
@@ -104,7 +104,8 @@ def recall_pack(engine: Any, query: str, pack_name: str = None, strict: bool = T
     for item in items[:]:
         mem = memories.get(item["source_memory_id"], {})
         for eid in mem.get("entity_ids", []):
-            for edge in engine._graph_edges:
+            for edge in engine.list_graph_edges():
+                if edge.get("to") == eid and edge.get("from") not in seen:
                 if edge.get("to") == eid and edge.get("from") not in seen:
                     linked = memories.get(edge["from"], {})
                     if linked:

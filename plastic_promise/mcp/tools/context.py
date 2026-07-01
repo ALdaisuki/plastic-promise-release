@@ -100,34 +100,21 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
 
         # Route through existing PrincipleManager for principle type
         if entity_type == "principle":
-            # Build a single-principle inject: reuse inject_to_graph logic
-            node_id = f"principle:{entity_id}"
-            is_new = node_id not in engine._graph_nodes
-            engine._graph_nodes[node_id] = {
-                "type": "principle",
-                "name": entity_name,
-                "description": entity_description,
-            }
-            edges_created = 0
-            if related_entities:
-                for rel_id in related_entities:
-                    edge = {
-                        "from": node_id,
-                        "to": rel_id,
-                        "relation": "supports",
-                        "weight": 0.7,
-                    }
-                    if edge not in engine._graph_edges:
-                        engine._graph_edges.append(edge)
-                        edges_created += 1
+            result = engine.register_entity(
+                entity_type="principle",
+                entity_id=entity_id,
+                entity_name=entity_name,
+                entity_description=entity_description,
+                related_entities=related_entities,
+            )
 
             return [TextContent(type="text", text=json.dumps({
                 "injected": {
-                    "node_id": node_id,
+                    "node_id": result["node_id"],
                     "type": entity_type,
                     "name": entity_name,
-                    "is_new": is_new,
-                    "edges_created": edges_created,
+                    "is_new": result["is_new"],
+                    "edges_created": result["edges_created"],
                 }
             }, ensure_ascii=False, indent=2))]
 

@@ -1287,6 +1287,70 @@ class ContextEngine:
                      f"Valid: node_info, traverse, full_graph, neighbors"
         }
 
+    # ========== Public wrappers for internal methods (Task 10) ==========
+
+    def ensure_heavy_init(self):
+        """Public wrapper for _ensure_heavy_init."""
+        self._ensure_heavy_init()
+
+    def activate_principles(self, task_type: str, task_description: str) -> list[str]:
+        """Public wrapper for _activate_principles."""
+        return self._activate_principles(task_type, task_description)
+
+    def text_retrieval(self, task: str, trust_boost: float = 1.0) -> list[tuple]:
+        """Public wrapper for _text_retrieval."""
+        return self._text_retrieval(task, trust_boost)
+
+    def apply_edge_feedback_for_memory(self, memory_id: str):
+        """Public wrapper for _apply_edge_feedback_for_memory."""
+        self._apply_edge_feedback_for_memory(memory_id)
+
+    def get_context_ready(self) -> dict:
+        """Get the context_ready cache dict."""
+        if not hasattr(self, '_context_ready'):
+            self._context_ready = {}
+        return self._context_ready
+
+    def clear_expired_context_ready(self, expired_keys: list):
+        """Remove expired entries from context_ready cache."""
+        if hasattr(self, '_context_ready'):
+            for k in expired_keys:
+                self._context_ready.pop(k, None)
+
+    def get_fuzzy_buffer(self):
+        """Get or None the fuzzy buffer pipeline."""
+        return getattr(self, '_fuzzy_buffer', None)
+
+    def set_fuzzy_buffer(self, fb):
+        """Set the fuzzy buffer pipeline."""
+        self._fuzzy_buffer = fb
+
+    def get_rec_mem(self):
+        """Get or None the RecMem instance."""
+        return getattr(self, '_rec_mem', None)
+
+    def set_rec_mem(self, rm):
+        """Set the RecMem instance."""
+        self._rec_mem = rm
+
+    def get_issue_manager(self):
+        """Get or create the IssueManager."""
+        if not hasattr(self, '_issue_manager') or self._issue_manager is None:
+            from plastic_promise.issue import IssueManager
+            self._issue_manager = IssueManager()
+        return self._issue_manager
+
+    def execute_sql(self, sql: str, params: tuple = ()):
+        """Execute raw SQL through the internal SQLite connection. Use sparingly."""
+        if self._sqlite:
+            return self._sqlite._conn.execute(sql, params)
+        return None
+
+    def commit_sql(self):
+        """Commit any pending SQLite transaction."""
+        if self._sqlite:
+            self._sqlite.commit()
+
     # ========== 内部方法 ==========
 
     def _inject_activated_to_graph(

@@ -71,21 +71,23 @@ async def handle_system_stats(engine: Any, args: dict) -> list[TextContent]:
 
 def _get_fuzzy_buffer(engine: Any):
     """Get or create FuzzyBuffer / MemoryPipeline attached to the engine."""
-    if not hasattr(engine, '_fuzzy_buffer') or engine._fuzzy_buffer is None:
+    fb = engine.get_fuzzy_buffer()
+    if fb is None:
         from plastic_promise.memory.pipeline import MemoryPipeline
         from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
         from plastic_promise.core.embedder import get_embedder
 
-        rec_mem = engine._rec_mem if hasattr(engine, '_rec_mem') else RecMem(engine)
+        rec_mem = engine.get_rec_mem() or RecMem(engine)
         try:
             embedder = get_embedder()
         except Exception:
             from plastic_promise.core.embedder import FallbackEmbedder
             embedder = FallbackEmbedder()
         tier_mgr = MemoryTierManager(rec_mem)
-        engine._fuzzy_buffer = MemoryPipeline(rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr)
-        engine._rec_mem = rec_mem
-    return engine._fuzzy_buffer
+        fb = MemoryPipeline(rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr)
+        engine.set_fuzzy_buffer(fb)
+        engine.set_rec_mem(rec_mem)
+    return fb
 
 
 async def handle_system(engine: Any, args: dict) -> list[TextContent]:
@@ -235,9 +237,7 @@ async def handle_issue_create(engine: Any, args: dict) -> list[TextContent]:
     """Create a new Issue with optional principle and dependency links."""
     try:
         from plastic_promise.issue import IssueManager
-        if not hasattr(engine, '_issue_manager'):
-            engine._issue_manager = IssueManager()
-        im = engine._issue_manager
+        im = engine.get_issue_manager()
         iid = im.create(
             title=args.get("title", "Untitled"),
             description=args.get("description", ""),
@@ -259,9 +259,7 @@ async def handle_issue_transition(engine: Any, args: dict) -> list[TextContent]:
     """Transition an Issue to a new state."""
     try:
         from plastic_promise.issue import IssueManager
-        if not hasattr(engine, '_issue_manager'):
-            engine._issue_manager = IssueManager()
-        im = engine._issue_manager
+        im = engine.get_issue_manager()
         result = im.transition(
             iid=args["issue_id"],
             new_state=args["state"],
@@ -278,9 +276,7 @@ async def handle_issue_list(engine: Any, args: dict) -> list[TextContent]:
     """List Issues, optionally filtered by state or owner."""
     try:
         from plastic_promise.issue import IssueManager
-        if not hasattr(engine, '_issue_manager'):
-            engine._issue_manager = IssueManager()
-        im = engine._issue_manager
+        im = engine.get_issue_manager()
         issues = im.list(
             state=args.get("state"),
             owner=args.get("owner"),
