@@ -547,6 +547,35 @@ async def list_tools() -> list[Tool]:
         ),
     ])
 
+    # === 任务队列域 ===
+    tools.extend([
+        Tool(
+            name="task_enqueue",
+            description="Hunter Guild 委托上架 — 将任务挂到公会板上。自动验证提交者等级权限，C级猎人挂A/B级委托需Claude审批。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_type": {"type": "string", "description": "任务类型: fix_memory/gc_*/build_*/refactor_*/review_*/investigate_*"},
+                    "title": {"type": "string", "description": "任务标题"},
+                    "to_agent": {"type": "string", "description": "目标 Agent"},
+                    "priority": {"type": "integer", "description": "优先级: 1=S级 2=A级 3=B级 4=C级 (默认 3)"},
+                    "from_agent": {"type": "string", "description": "提交者 (默认 daemon)"},
+                    "from_trust_score": {"type": "number", "description": "提交者信任分 (非 daemon/claude 时需提供)"},
+                    "description": {"type": "string", "description": "任务描述"},
+                    "domain": {"type": "string", "description": "域"},
+                    "memory_id": {"type": "string", "description": "关联记忆 ID"},
+                    "principle_id": {"type": "string", "description": "关联原则 ID"},
+                    "source_scan": {"type": "string", "description": "来源扫描器"},
+                    "parent_task_id": {"type": "string", "description": "父任务 ID"},
+                    "timeout_seconds": {"type": "integer", "description": "超时秒数 (默认 300)"},
+                    "max_escalations": {"type": "integer", "description": "最大升级次数 (默认 3)"},
+                    "payload": {"type": "object", "description": "附加数据"},
+                },
+                "required": ["task_type", "title", "to_agent"],
+            },
+        ),
+    ])
+
     # === 技能追踪域 ===
     tools.extend([
         Tool(
@@ -869,6 +898,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "domain":
             from plastic_promise.mcp.tools.domain import handle_domain
             return await handle_domain(engine, arguments)
+
+        # Task queue
+        elif name == "task_enqueue":
+            from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
+            return await handle_task_enqueue(engine, arguments)
 
         # Skill tracking
         elif name == "skill_session_start":
