@@ -315,6 +315,75 @@ defense(action="get") → 根据 tier 决定行为:
 
 **为什么**: 信任分 0.6 从未波动意味着系统没有在"学习"——不区分好步骤和坏步骤。信任分是自演化的唯一量化指标，必须在每一步后更新。
 
+## Git 治理规范 (Enterprise Git Governance)
+
+本项目遵循 Plastic Promise Flow 企业级 Git 治理框架。完整规范见 [Enterprise Git Governance Spec](docs/superpowers/specs/2026-07-02-enterprise-git-governance-design.md)。
+
+### 分支策略
+
+| 前缀 | 用途 | 映射委托类型 |
+|------|------|-------------|
+| `feat/` | 新功能 | `build_*` |
+| `fix/` | Bug 修复 | `fix_memory` / `fix_*` |
+| `refactor/` | 重构（不改行为） | `refactor_*` |
+| `docs/` | 文档 | `docs_*` |
+| `perf/` | 性能优化 | `perf_*` |
+| `chore/` | 构建/CI/工具 | `chore_*` |
+| `worktree/<agent>/` | Agent 工作隔离 | — |
+
+- `main` 为唯一长期分支，始终可部署
+- 分支名全小写，`-` 分隔
+- Agent 分支由 Daemon 自动生成: `<type>/<task_id>-<slug>`
+- 合并使用 **Squash Merge**，保持线性历史
+- 分支超过 7 天未合并 → Daemon 通知 → 24h 后自动删除 → 委托设为 abandoned → 信任分 -0.02
+
+### 提交规范
+
+所有 commit 必须遵循 Conventional Commits:
+
+```
+<type>(<scope>): <subject>
+```
+
+| Type | 用途 |
+|------|------|
+| `feat:` | 新功能 |
+| `fix:` | Bug 修复 |
+| `refactor:` | 重构 |
+| `docs:` | 文档 |
+| `perf:` | 性能 |
+| `test:` | 测试 |
+| `chore:` | 构建/CI/工具 |
+| `revert:` | 回滚 |
+
+- `scope` 可选，`subject` 英文小写开头，不加句号
+- 每次提交应为逻辑完整的最小单元
+
+### PR 流程
+
+```
+创建分支 → 开发 → 提交 → git push → 创建 PR
+  → CI 自动运行 (P0: lint/test/security, P1: style/coverage)
+  → Code Review (至少 1 人 approve)
+  → Squash Merge → task_verify → 闭环
+```
+
+- PR 必须关联 Hunter Guild 委托 (task_id)
+- CI P0 失败 → 阻止合并 → 自动生成 fix_ci 委托 (30分钟窗口)
+- 审查评论分类: nit/design/blocking/praise，影响信任分
+
+### 信任分全生命周期联动
+
+| 事件 | 信任分变动 |
+|------|-----------|
+| 扫描器发现问题 | -0.01 ~ -0.03 (追溯责任人) |
+| CI P0 失败 | -0.02 |
+| CI P1 警告 | -0.005 |
+| CI 全部通过 | +0.01 |
+| PR 合并 | +0.02 |
+| 审查打回 | -0.03 |
+| 分支超时未合并 | -0.02 |
+
 ## 关键约定
 
 - **先查再问** — 决策前先 principle_activate + memory_recall

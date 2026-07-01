@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Plastic Promise Documentation
+    url: https://github.com/ALdaisuki/plastic-promise/blob/main/docs/GOAL.md
+    about: Read the project goals, architecture, and current status
+  - name: Security Vulnerability
+    url: https://github.com/ALdaisuki/plastic-promise/security/advisories/new
+    about: Report a security vulnerability (see SECURITY.md)

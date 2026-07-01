@@ -2,42 +2,69 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-|---------|--------------------|
-| 0.1.x   | :white_check_mark: |
+| Version | Supported |
+|---------|-----------|
+| 0.1.x (latest main) | Yes |
+| tagged releases | Yes |
+| feature branches | No |
 
 ## Reporting a Vulnerability
 
-Plastic Promise 处理敏感数据（记忆、审计日志、Agent 信任分）。如果你发现安全漏洞，请：
+Plastic Promise handles sensitive data (memories, audit logs, Agent trust scores). If you discover a security vulnerability:
 
-1. **不要公开披露**。通过 GitHub Security Advisory 或邮件私密报告。
-2. 提供复现步骤、受影响版本、潜在影响。
-3. 我们会在 48 小时内确认，7 天内发布修复。
+**Do not open a public Issue.**
+
+Report via:
+
+1. **GitHub Security Advisory** (preferred): [Report a vulnerability](https://github.com/ALdaisuki/plastic-promise/security/advisories/new)
+2. **Direct contact**: Email the maintainer at the address listed on the GitHub profile
+
+### What to include
+
+- Description of the vulnerability
+- Steps to reproduce
+- Affected versions / commits
+- Potential impact
+- Any suggested fixes (optional)
+
+### Response timeline
+
+- **Acknowledgment**: within 48 hours
+- **Status update**: within 5 business days
+- **Resolution**: depends on severity (critical: 72h target, high: 7d, medium: 14d, low: next release)
 
 ## Security Design
 
-### 数据隔离
-- 记忆池按 scope 隔离，多 Agent 场景不会交叉污染
-- 信任分和审计日志存储于独立数据库表
+### Data Isolation
+- Memory pool isolated by scope; no cross-contamination in multi-Agent scenarios
+- Trust scores and audit logs stored in independent database tables
 
-### 输入验证
-- 所有 MCP 工具参数通过 JSON Schema 验证
-- 记忆内容经噪声过滤器（`noise_filter.is_noise()`）检测
-- SQL 注入防护：所有查询通过参数化语句
+### Input Validation
+- All MCP tool parameters validated via JSON Schema
+- Memory content filtered through noise detector (`noise_filter.is_noise()`)
+- SQL injection prevention: all queries use parameterized statements
 
-### 防线层级
-- **L0 硬边界**：绝对不可逾越的规则，pre_check 拦截
-- **L1 约束衰减**：信任分驱动，高分放宽/低分收紧
-- **L2 免疫巡检**：24 小时周期扫描，自动修复
+### Defense Layers
+- **L0 Hard Boundary**: Absolute rules, intercepted by pre_check
+- **L1 Trust Constraints**: Trust-score-driven — high score relaxes, low score tightens
+- **L2 Immune Patrol**: 24-hour cycle scanning with auto-repair
 
-### 审计追溯
-- 每步操作生成 audit trail（工具名、时间戳、参数摘要）
-- 关键决策有完整 git 痕迹
-- 审计日志写入 `step_audit_log.jsonl`（gitignore 排除）
+### Audit Trail
+- Every operation generates audit trail (tool name, timestamp, parameter summary)
+- Key decisions have full git trace
+- Audit logs written to `step_audit_log.jsonl` (gitignored)
 
-## Best Practices for Users
+## Dependency Security
 
-- 不要将 `.env` 文件提交到版本控制（已在 `.gitignore` 中排除）
-- 定期运行 `audit_run(action="full")` 检查系统健康
-- 信任分低于 0.30 时，Agent 操作需人工审批
-- 使用 `pack_export` 定期备份记忆
+- Python: `bandit -r plastic_promise/ -ll` runs on every PR
+- Rust: `cargo audit` runs on every PR
+- Dependencies pinned with version ranges in `pyproject.toml` and `Cargo.toml`
+- Review diffs to lockfiles (`Cargo.lock`) for unexpected changes
+
+## Best Practices
+
+- Never commit `.env` files (excluded in `.gitignore`)
+- Run `audit_run(action="full")` regularly to check system health
+- Trust score below 0.30 requires manual approval for Agent operations
+- Use `pack_export` for periodic memory backups
+- `main` branch protected; force push forbidden; all changes via reviewed PR

@@ -1,0 +1,18 @@
+# Global owner — Claude (human maintainer)
+*                           @ALdaisuki
+
+# Core engine — requires Claude + 1 Reviewer
+plastic_promise/memory/     @ALdaisuki
+plastic_promise/loop/       @ALdaisuki
+plastic_promise/principles/ @ALdaisuki
+
+# Rust engine — requires Claude approve
+rust/                       @ALdaisuki
+
+# Security-sensitive — requires Claude sole approve
+plastic_promise/defense/soul_enforcer.py @ALdaisuki
+plastic_promise/defense/soul_audit.py    @ALdaisuki
+
+# Docs and config — lower barrier
+docs/          @ALdaisuki
+*.md           @ALdaisuki
