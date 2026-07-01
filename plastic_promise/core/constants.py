@@ -603,6 +603,7 @@ CURIOSITY_EXPLORE_RATE = 0.15      # 探索率（epsilon-greedy）
 
 DECAY_CONFIG = {
     "L1": {"beta": 1.5, "half_life_days": 3},
+    "L2": {"beta": 1.2, "half_life_days": 7},
     "L3": {"beta": 0.7, "half_life_days": 90},
     "default": {"beta": 1.0, "half_life_days": 14},
 }
