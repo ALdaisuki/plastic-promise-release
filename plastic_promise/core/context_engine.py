@@ -225,6 +225,10 @@ class ContextEngine:
         # Heavy init deferred to first supply() call
         self._heavy_init_done = False
         self._heavy_init_lock = threading.Lock()
+        # Write serialization lock — all write paths acquire this.
+        # RLock (reentrant) because increment_field calls update_memory_fields,
+        # and both acquire the lock.
+        self._write_lock = threading.RLock()
 
 
     def _rebuild_graph_from_memories(self):
@@ -616,6 +620,48 @@ class ContextEngine:
         if self._sqlite:
             self._sqlite.upsert(memory_id, mem)
         return True
+
+    def update_memory_fields(self, mid: str, **fields) -> bool:
+        """Update arbitrary fields of a memory record.
+
+        Unlike update_memory() which only handles content/importance/category,
+        this method handles ALL fields: tags, domain, tier, worth_success,
+        worth_failure, access_count, last_accessed, decay_multiplier,
+        effective_half_life, entity_ids.
+
+        All writes go through the _write_lock for thread safety.
+        """
+        with self._write_lock:
+            if mid not in self._memories:
+                return False
+            mem = self._memories[mid]
+            for key, value in fields.items():
+                if key in ("tags", "entity_ids"):
+                    mem[key] = list(value)  # defensive copy
+                else:
+                    mem[key] = value
+            if self._sqlite:
+                self._sqlite.upsert(mid, mem)
+            return True
+
+    def increment_field(self, mid: str, field: str, delta: float = 1) -> bool:
+        """Atomically increment a numeric field.
+
+        Convenience wrapper around update_memory_fields for the common
+        pattern: engine._memories[mid]["access_count"] += 1
+
+        Note: Uses RLock so increment_field calling update_memory_fields
+        within the same lock is safe.
+        """
+        with self._write_lock:
+            if mid not in self._memories:
+                return False
+            current = self._memories[mid].get(field, 0)
+            mem = self._memories[mid]
+            mem[field] = current + delta
+            if self._sqlite:
+                self._sqlite.upsert(mid, mem)
+            return True
 
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory by id. Returns True if it existed."""
