@@ -101,7 +101,7 @@ def _get_agent_id(engine: Any) -> str:
 
 
 async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
-    """域联邦统一入口。action: stats|merge|unmerge|rename|rebuild"""
+    """域联邦统一入口。action: stats|merge|unmerge|rename|rebuild|reset_throttle"""
     action = args.get("action", "stats")
     dm = getattr(engine, '_dm', None)
     if dm is None:
@@ -125,6 +125,33 @@ async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
         elif action == "rebuild":
             result = dm.rebuild_from_memories(agent_id=agent_id)
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+        elif action == "reset_throttle":
+            scanner = args.get("scanner", "")
+            if not scanner:
+                return [TextContent(type="text", text=json.dumps(
+                    {"error": "scanner parameter required for reset_throttle"},
+                    ensure_ascii=False))]
+            try:
+                from daemons.maintenance_daemon import _scanner_throttles
+                throttle = _scanner_throttles.get(scanner)
+                if throttle is None:
+                    return [TextContent(type="text", text=json.dumps(
+                        {"error": f"unknown scanner: {scanner}. "
+                                  f"Known: {list(_scanner_throttles.keys())}"},
+                        ensure_ascii=False))]
+                old_interval = throttle.current
+                throttle.current = throttle.base
+                throttle.empty_streak = 0
+                return [TextContent(type="text", text=json.dumps({
+                    "reset_throttle": scanner,
+                    "old_interval": old_interval,
+                    "new_interval": throttle.base,
+                    "status": "ok",
+                }, ensure_ascii=False))]
+            except ImportError:
+                return [TextContent(type="text", text=json.dumps(
+                    {"error": "daemon module not importable — is the daemon running?"},
+                    ensure_ascii=False))]
         else:
             return [TextContent(type="text", text=json.dumps({"error": f"unknown action: {action}"}, ensure_ascii=False))]
     except Exception as e:
