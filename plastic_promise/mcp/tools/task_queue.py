@@ -209,3 +209,189 @@ async def handle_task_claim(engine: Any, args: dict) -> list[TextContent]:
         "match": msg,
         "force_claimed": force and not ok,
     }, ensure_ascii=False))]
+
+
+# ═══════════════════════════════════════════════════════════════
+# task_complete
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_task_complete(engine: Any, args: dict) -> list[TextContent]:
+    """Submit a completed task for verification."""
+    task_id = args["task_id"]
+    agent_name = args["agent_name"]
+    result_text = args["result"]
+    artifacts = args.get("artifacts", [])
+
+    conn = _get_conn()
+    task = conn.execute("SELECT * FROM task_queue WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": "委托不存在"
+        }, ensure_ascii=False))]
+
+    if task["claimed_by"] != agent_name:
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": f"委托由 {task['claimed_by']} 揭榜，不是你"
+        }, ensure_ascii=False))]
+
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE task_queue SET status='done', done_at=?, result=?, updated_at=? "
+        "WHERE id=?",
+        (now, result_text, now, task_id)
+    )
+    conn.commit()
+
+    # Auto-create verification subtask for Claude (unless task is already for Claude)
+    verify_task_id = None
+    if task["to_agent"] != "claude":
+        verify_task_id = _generate_task_id()
+        conn.execute(
+            "INSERT INTO task_queue (id, task_type, title, to_agent, priority, "
+            "from_agent, status, description, parent_task_id, payload) "
+            "VALUES (?, 'verify_task', ?, 'claude', ?, 'system', 'pending', ?, ?, ?)",
+            (
+                verify_task_id,
+                f"验收委托: {task['title']}",
+                task["priority"],
+                f"猎人 {agent_name} 已完成委托 {task_id}，请验收。\n"
+                f"结果: {result_text[:500]}",
+                task_id,
+                json.dumps({
+                    "original_task_id": task_id,
+                    "original_agent": agent_name,
+                    "original_result": result_text[:1000],
+                    "artifacts": artifacts,
+                }),
+            ))
+        conn.commit()
+
+    conn.close()
+    return [TextContent(type="text", text=json.dumps({
+        "success": True,
+        "status": "done",
+        "verification_task_id": verify_task_id,
+        "waiting_for": "verification by claude" if verify_task_id else "self-verified",
+    }, ensure_ascii=False))]
+
+
+# ═══════════════════════════════════════════════════════════════
+# task_verify
+# ═══════════════════════════════════════════════════════════════
+
+async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
+    """Verify a completed task (长老验收)."""
+    task_id = args["task_id"]
+    verdict = args["verdict"]  # "accepted" | "rejected" | "reassigned"
+    verified_by = args.get("verified_by", "claude")
+    comment = args.get("comment", "")
+
+    conn = _get_conn()
+    task = conn.execute("SELECT * FROM task_queue WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": False, "reason": "委托不存在"
+        }, ensure_ascii=False))]
+
+    now = datetime.now().isoformat()
+
+    if verdict == "accepted":
+        conn.execute(
+            "UPDATE task_queue SET status='verified', verified_at=?, verified_by=?, "
+            "verify_verdict='accepted', updated_at=? WHERE id=?",
+            (now, verified_by, now, task_id)
+        )
+        conn.commit()
+
+        # Trust boost for the hunter
+        delta = 0.02
+        try:
+            from plastic_promise.defense.soul_enforcer import TrustManager
+            tm = TrustManager()
+            tm.boost(delta, f"委托验收通过: {task_id}")
+        except Exception:
+            pass
+
+        conn.close()
+        return [TextContent(type="text", text=json.dumps({
+            "success": True, "new_status": "verified",
+            "trust_adjustment": {"agent": task["claimed_by"], "delta": delta,
+                                 "reason": "委托验收通过"},
+        }, ensure_ascii=False))]
+
+    elif verdict in ("rejected", "reassigned"):
+        new_esc = task["escalation_count"] + 1
+        conn.execute(
+            "UPDATE task_queue SET status='reassigned', verified_at=?, verified_by=?, "
+            "verify_verdict=?, escalation_count=?, last_escalation_at=?, updated_at=? "
+            "WHERE id=?",
+            (now, verified_by, verdict, new_esc, now, now, task_id)
+        )
+        conn.commit()
+
+        # Trust penalty
+        delta = -0.03
+        try:
+            from plastic_promise.defense.soul_enforcer import TrustManager
+            tm = TrustManager()
+            tm.decay(delta, f"委托被打回: {task_id} — {comment[:100]}")
+        except Exception:
+            pass
+
+        # Auto-create reassigned subtask
+        reassign_to = args.get("reassign_to_agent", task["to_agent"])
+        existing_payload = json.loads(task["payload"]) if task["payload"] else {}
+        new_payload = {
+            **existing_payload,
+            "original_claimed_by": task["claimed_by"],
+        }
+
+        new_task_id = None
+        if new_esc >= task["max_escalations"]:
+            # Escalate to Claude
+            new_task_id = _generate_task_id()
+            new_payload.update({
+                "verdict": verdict,
+                "comment": comment,
+            })
+            conn.execute(
+                "INSERT INTO task_queue (id, task_type, title, to_agent, priority, "
+                "from_agent, status, description, parent_task_id, payload) "
+                "VALUES (?, ?, ?, 'claude', 1, ?, 'pending', ?, ?, ?)",
+                (new_task_id, task["task_type"],
+                 f"[S级升级] {task['title']}", verified_by,
+                 f"升级原因: {new_esc}次失败/超时, 长老{verified_by}",
+                 task_id,
+                 json.dumps(new_payload)))
+        else:
+            new_task_id = _generate_task_id()
+            conn.execute(
+                "INSERT INTO task_queue (id, task_type, title, to_agent, priority, "
+                "from_agent, status, description, parent_task_id, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (new_task_id, task["task_type"],
+                 f"[重派] {task['title']}", reassign_to,
+                 max(1, task["priority"] - 1),  # Upgrade priority
+                 verified_by,
+                 f"长老{verified_by}打回重做。原因: {comment[:200]}",
+                 task_id,
+                 json.dumps(new_payload)))
+        conn.commit()
+        conn.close()
+
+        return [TextContent(type="text", text=json.dumps({
+            "success": True, "new_status": "reassigned",
+            "new_task_id": new_task_id,
+            "escalation_count": new_esc,
+            "escalated_to_claude": new_esc >= task["max_escalations"],
+            "trust_adjustment": {"agent": task["claimed_by"], "delta": delta,
+                                 "reason": f"委托被打回: {comment[:80]}"},
+        }, ensure_ascii=False))]
+
+    conn.close()
+    return [TextContent(type="text", text=json.dumps({
+        "success": False, "reason": f"无效的verdict: {verdict}"
+    }, ensure_ascii=False))]

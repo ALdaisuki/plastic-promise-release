@@ -5,7 +5,11 @@ import os
 import asyncio
 import pytest
 from plastic_promise.core.task_queue_schema import ensure_task_tables
-from plastic_promise.mcp.tools.task_queue import handle_task_enqueue, handle_task_claim, _generate_task_id
+from plastic_promise.mcp.tools.task_queue import (
+    handle_task_enqueue, handle_task_claim,
+    handle_task_complete, handle_task_verify,
+    _generate_task_id,
+)
 
 
 @pytest.fixture
@@ -152,3 +156,124 @@ def test_task_claim_double_prevented(test_db_path, monkeypatch):
     data = json.loads(r2[0].text)
     assert data["success"] is False
     assert "已被揭榜" in data["reason"]
+
+
+# ═══════════════════════════════════════════════════════════════
+# task_complete tests
+# ═══════════════════════════════════════════════════════════════
+
+def test_task_complete_creates_verify_subtask(test_db_path, monkeypatch):
+    monkeypatch.setenv("PLASTIC_DB_PATH", test_db_path)
+
+    class MockEngine:
+        pass
+
+    engine = MockEngine()
+    r = asyncio.run(handle_task_enqueue(engine, {
+        "task_type": "fix_memory", "title": "可完成委托",
+        "to_agent": "pi_fixer", "priority": 3,
+    }))
+    task_id = json.loads(r[0].text)["task_id"]
+    asyncio.run(handle_task_claim(engine, {
+        "agent_name": "pi_fixer", "task_id": task_id, "trust_score": 0.60,
+    }))
+
+    r2 = asyncio.run(handle_task_complete(engine, {
+        "task_id": task_id,
+        "agent_name": "pi_fixer",
+        "result": "修复完成：移除3条重复记忆",
+    }))
+    data = json.loads(r2[0].text)
+    assert data["success"] is True
+    assert data["status"] == "done"
+    assert data["verification_task_id"] is not None  # Auto-created verify task for Claude
+
+
+def test_task_complete_wrong_agent(test_db_path, monkeypatch):
+    monkeypatch.setenv("PLASTIC_DB_PATH", test_db_path)
+
+    class MockEngine:
+        pass
+
+    engine = MockEngine()
+    r = asyncio.run(handle_task_enqueue(engine, {
+        "task_type": "fix_memory", "title": "我的委托",
+        "to_agent": "pi_fixer", "priority": 3,
+    }))
+    task_id = json.loads(r[0].text)["task_id"]
+    asyncio.run(handle_task_claim(engine, {
+        "agent_name": "pi_fixer", "task_id": task_id, "trust_score": 0.60,
+    }))
+
+    r2 = asyncio.run(handle_task_complete(engine, {
+        "task_id": task_id,
+        "agent_name": "pi_builder",  # Different agent!
+        "result": "不是我揭的",
+    }))
+    data = json.loads(r2[0].text)
+    assert data["success"] is False
+
+
+# ═══════════════════════════════════════════════════════════════
+# task_verify tests
+# ═══════════════════════════════════════════════════════════════
+
+def test_task_verify_accepted_boosts_trust(test_db_path, monkeypatch):
+    monkeypatch.setenv("PLASTIC_DB_PATH", test_db_path)
+
+    class MockEngine:
+        pass
+
+    engine = MockEngine()
+    r = asyncio.run(handle_task_enqueue(engine, {
+        "task_type": "fix_memory", "title": "验收测试委托",
+        "to_agent": "pi_fixer", "priority": 3,
+    }))
+    task_id = json.loads(r[0].text)["task_id"]
+    asyncio.run(handle_task_claim(engine, {
+        "agent_name": "pi_fixer", "task_id": task_id, "trust_score": 0.60,
+    }))
+    asyncio.run(handle_task_complete(engine, {
+        "task_id": task_id, "agent_name": "pi_fixer", "result": "done",
+    }))
+
+    r2 = asyncio.run(handle_task_verify(engine, {
+        "task_id": task_id,
+        "verdict": "accepted",
+        "verified_by": "claude",
+    }))
+    data = json.loads(r2[0].text)
+    assert data["success"] is True
+    assert data["new_status"] == "verified"
+    assert data["trust_adjustment"]["delta"] == 0.02
+
+
+def test_task_verify_rejected_deducts(test_db_path, monkeypatch):
+    monkeypatch.setenv("PLASTIC_DB_PATH", test_db_path)
+
+    class MockEngine:
+        pass
+
+    engine = MockEngine()
+    r = asyncio.run(handle_task_enqueue(engine, {
+        "task_type": "fix_memory", "title": "打回测试委托",
+        "to_agent": "pi_fixer", "priority": 3,
+    }))
+    task_id = json.loads(r[0].text)["task_id"]
+    asyncio.run(handle_task_claim(engine, {
+        "agent_name": "pi_fixer", "task_id": task_id, "trust_score": 0.60,
+    }))
+    asyncio.run(handle_task_complete(engine, {
+        "task_id": task_id, "agent_name": "pi_fixer", "result": "done",
+    }))
+
+    r2 = asyncio.run(handle_task_verify(engine, {
+        "task_id": task_id,
+        "verdict": "rejected",
+        "verified_by": "claude",
+        "comment": "修复不彻底",
+    }))
+    data = json.loads(r2[0].text)
+    assert data["success"] is True
+    assert data["new_status"] == "reassigned"
+    assert data["trust_adjustment"]["delta"] == -0.03

@@ -588,6 +588,35 @@ async def list_tools() -> list[Tool]:
                 "required": ["agent_name", "task_id", "trust_score"],
             },
         ),
+        Tool(
+            name="task_complete",
+            description="Hunter Guild 委托完成 — 猎人提交已完成委托，自动创建验收子任务给 Claude。只有揭榜猎人才能提交完成。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "委托 ID"},
+                    "agent_name": {"type": "string", "description": "提交完成的猎人名称"},
+                    "result": {"type": "string", "description": "完成结果描述"},
+                    "artifacts": {"type": "array", "items": {"type": "string"}, "description": "产物路径列表"},
+                },
+                "required": ["task_id", "agent_name", "result"],
+            },
+        ),
+        Tool(
+            name="task_verify",
+            description="Hunter Guild 委托验收 — 长老验收已完成委托。accepted 信任分+0.02，rejected/reassigned 信任分-0.03 并自动重派。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "待验收的委托 ID"},
+                    "verdict": {"type": "string", "description": "验收结论: accepted | rejected | reassigned"},
+                    "verified_by": {"type": "string", "description": "验收者 (默认 claude)"},
+                    "comment": {"type": "string", "description": "验收评语"},
+                    "reassign_to_agent": {"type": "string", "description": "重派目标 Agent (默认原 to_agent)"},
+                },
+                "required": ["task_id", "verdict"],
+            },
+        ),
     ])
 
     # === 技能追踪域 ===
@@ -920,6 +949,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "task_claim":
             from plastic_promise.mcp.tools.task_queue import handle_task_claim
             return await handle_task_claim(engine, arguments)
+        elif name == "task_complete":
+            from plastic_promise.mcp.tools.task_queue import handle_task_complete
+            return await handle_task_complete(engine, arguments)
+        elif name == "task_verify":
+            from plastic_promise.mcp.tools.task_queue import handle_task_verify
+            return await handle_task_verify(engine, arguments)
 
         # Skill tracking
         elif name == "skill_session_start":
