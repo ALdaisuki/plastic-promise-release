@@ -431,7 +431,7 @@ impl ContextEngine {
                     .ok()
                     .and_then(|v| v.extract().ok())
                     .unwrap_or_default();
-                let last_accessed_at: String = obj.get_item("last_accessed")
+                let last_accessed_val: String = obj.get_item("last_accessed")
                     .ok()
                     .and_then(|v| v.extract().ok())
                     .unwrap_or_default();
@@ -445,8 +445,8 @@ impl ContextEngine {
                     worth_success,
                     worth_failure,
                     created_at,
-                    last_accessed_at,
-                    last_accessed: String::new(),
+                    last_accessed: last_accessed_val,
+                    last_accessed_at: String::new(),
                     activation_weight: 0.5,
                     tier: "working".to_string(),
                     scope: "global".to_string(),
