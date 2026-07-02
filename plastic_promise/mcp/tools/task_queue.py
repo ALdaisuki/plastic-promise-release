@@ -339,7 +339,7 @@ async def handle_task_claim(engine: Any, args: dict) -> list[TextContent]:
         ]
 
     if not ok and force:
-        msg = f"⚠️ 越级揭榜(已记录): {msg}"
+        msg = f"!!! 越级揭榜(已记录): {msg}"
 
     # Atomic claim
     now = datetime.now().isoformat()

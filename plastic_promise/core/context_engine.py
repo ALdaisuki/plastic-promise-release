@@ -59,12 +59,12 @@ class ContextItem:
 
     def to_prompt_line(self) -> str:
         """Render one context item with life-trajectory annotations (P3b)."""
-        mark = " 🧬" if self.is_principle else ""
+        mark = " [PRINCIPLE]" if self.is_principle else ""
         traj = ""
         if self.adoption_count > 0 or self.rejection_count > 0:
-            traj = f" [✓{self.adoption_count}✗{self.rejection_count}]"
+            traj = f" [OK:{self.adoption_count} FAIL:{self.rejection_count}]"
         if self.decay_status in ("stale", "decaying", "expired"):
-            traj += f" ⚠{self.decay_status}"
+            traj += f" [DECAY:{self.decay_status}]"
         return f"- [{self.relevance:.2f}]{mark}{traj} [{self.source}] {self.content[:200]}"
 
 
@@ -82,7 +82,7 @@ class ContextPack:
     def to_prompt(self) -> str:
         lines = []
         if self.activated_principles:
-            lines.append("## 🧬 核心约定参考（约定优于约束——决策前主动查阅）")
+            lines.append("## [PRINCIPLES] 核心约定参考（约定优于约束——决策前主动查阅）")
             from plastic_promise.core.constants import CORE_PRINCIPLES
 
             for name in self.activated_principles:
@@ -91,22 +91,22 @@ class ContextPack:
                 if match:
                     lines.append(f"### {name}")
                     lines.append(f"> {match['content']}")
-                    lines.append(f"**⚠️ 违反后果**：{match.get('consequence', '未知后果')}")
+                    lines.append(f"**[!!!] 违反后果**：{match.get('consequence', '未知后果')}")
                 else:
                     lines.append(f"- {name}")
             lines.append("")
         if self.core:
-            lines.append("## 🔵 核心上下文（必读）")
+            lines.append("## [CORE] 核心上下文（必读）")
             for item in self.core:
                 lines.append(item.to_prompt_line())
             lines.append("")
         if self.related:
-            lines.append("## 🟡 关联上下文（参考）")
+            lines.append("## [RELATED] 关联上下文（参考）")
             for item in self.related:
                 lines.append(item.to_prompt_line())
             lines.append("")
         if self.divergent:
-            lines.append("## 🟢 发散联想（灵感）")
+            lines.append("## [DIVERGENT] 发散联想（灵感）")
             for item in self.divergent:
                 lines.append(item.to_prompt_line())
             lines.append("")

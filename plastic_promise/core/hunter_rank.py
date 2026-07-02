@@ -26,7 +26,7 @@ def can_claim(agent_trust: float, task_priority: int) -> tuple:
     required_rank = priority_to_rank(task_priority)
     if RANK_ORDER[agent_rank["rank"]] > RANK_ORDER[required_rank]:
         return False, (
-            f"⚠️ 委托推荐{required_rank}级，你的等级为{agent_rank['rank']}级"
+            f"!!! 委托推荐{required_rank}级，你的等级为{agent_rank['rank']}级"
             f"（{agent_rank['title']}），建议申请援助"
         )
-    return True, "✅ 等级匹配，可揭榜"
+    return True, "[OK] 等级匹配，可揭榜"

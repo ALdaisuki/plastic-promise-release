@@ -975,9 +975,9 @@ class ReviewEngine:
         parts.append(f"- 测试收集: {pre_check.get('tests', 'unknown')}")
         parts.append(f"- 语法检查: {pre_check.get('lint', 'unknown')}")
         if pre_check.get("tests") == "collect_failed":
-            parts.append("⚠️ 测试收集失败 — 请检查测试代码是否有语法错误")
+            parts.append("!!! 测试收集失败 — 请检查测试代码是否有语法错误")
         if pre_check.get("lint") == "failed":
-            parts.append("⚠️ 语法检查失败 — 存在无法通过编译的 .py 文件")
+            parts.append("!!! 语法检查失败 — 存在无法通过编译的 .py 文件")
 
         # ── Changed files ──
         parts.append("\n## 变更文件\n")

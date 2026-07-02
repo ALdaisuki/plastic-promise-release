@@ -997,18 +997,18 @@ RANK_TITLES = {
 }
 
 RANK_ICONS = {
-    "S": "⭐",
-    "A": "🛡️",
-    "B": "⚔️",
-    "C": "🔰",
-    "D": "⛓️",
+    "S": "[S]",
+    "A": "[A]",
+    "B": "[B]",
+    "C": "[C]",
+    "D": "[D]",
 }
 
 TASK_PRIORITY = {
-    1: {"label": "S级·紧急", "rank": "S", "urgency": "🔴"},
-    2: {"label": "A级·优先", "rank": "A", "urgency": "🟠"},
-    3: {"label": "B级·日常", "rank": "B", "urgency": "🟡"},
-    4: {"label": "C级·低级", "rank": "C", "urgency": "🟢"},
+    1: {"label": "S级·紧急", "rank": "S", "urgency": "!!! P0"},
+    2: {"label": "A级·优先", "rank": "A", "urgency": "!!  P1"},
+    3: {"label": "B级·日常", "rank": "B", "urgency": "!   P2"},
+    4: {"label": "C级·低级", "rank": "C", "urgency": "    P3"},
 }
 
 RANK_ORDER = {"S": 0, "A": 1, "B": 2, "C": 3, "D": 4}

@@ -312,7 +312,7 @@ async def list_tools() -> list[Tool]:
         [
             Tool(
                 name="context_supply",
-                description="【核心工具】调用 ContextEngine.supply()，返回三层结构化上下文包：🔵核心层/🟡关联层/🟢发散层。",
+                description="【核心工具】调用 ContextEngine.supply()，返回三层结构化上下文包：核心层/关联层/发散层。",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -992,7 +992,7 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
 
     Features:
     - Trend arrows (↗↘→) comparing current vs previous closure
-    - Sigma marker (⚡) for values beyond ±2σ of sliding window
+    - Sigma marker (!) for values beyond ±2σ of sliding window
     - First-closure graceful degradation
     - Reflection fields: lesson, improvement, root_cause, optimization
     """
@@ -1032,20 +1032,26 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
             variance = sum((v - mean) ** 2 for v in vals) / len(vals)
             std = variance**0.5
             if std > 0 and abs(current - mean) > 2 * std:
-                tag += " ⚡"
+                tag += " !!!"
         return tag
+
+    # Extract actual trust/hormone deltas from this closure (not trend vs history)
+    hormone = result.get("hormone", {})
+    trust_delta = hormone.get("trust_delta", 0)
+    scarf_overall_val = scarf.get("summary", {}).get("overall_score", 0)
+    scarf_delta = scarf.get("summary", {}).get("delta", 0)
 
     scarf_trend = trend(scarf_overall, "scarf")
     trust_trend = trend(trust_score, "trust")
     cei_trend = trend(cei_score, "cei")
 
-    source_tag = " [🤖LLM]" if source == "llm" else " [🧑执行者]" if source == "executor" else ""
+    source_tag = " [LLM]" if source == "llm" else " [执行者]" if source == "executor" else ""
 
     lines = []
     lines.append("")
     lines.append(f"╔══ Step #{step_n} {'(baseline)' if is_first else ''} ═══════════════════╗")
     lines.append(f"║  SCARF {scarf_overall:.2f}  {bar(scarf_overall)}  ({scarf_trend})")
-    lines.append(f"║  Trust {trust_score:.3f}  {bar(trust_score)}  ({trust_trend})")
+    lines.append(f"║  Trust {trust_score:.3f}  {bar(trust_score)}  (adjust: {trust_delta:+.3f}; trend: {trust_trend})")
     lines.append(f"║  CEI   {cei_score:.2f}  {bar(cei_score)}  ({cei_tier} · {cei_trend})")
     lines.append(f"║  ──────────────────────────────────────────────")
 
@@ -1061,15 +1067,15 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
 
     # Show reflection fields (LLM or template generated)
     if lesson:
-        label = "💡 经验" if source == "llm" else "💡 教训"
+        label = "[经验]" if source == "llm" else "[教训]"
         lines.append(f"║  {label}: {lesson[:80]}{'…' if len(lesson) > 80 else ''}{source_tag}")
         source_tag = ""  # only show tag once
     if improvement:
-        lines.append(f"║  📐 优化: {improvement[:80]}{'…' if len(improvement) > 80 else ''}")
+        lines.append(f"║  [优化]: {improvement[:80]}{'…' if len(improvement) > 80 else ''}")
     if root_cause:
-        lines.append(f"║  🔍 根因: {root_cause[:80]}{'…' if len(root_cause) > 80 else ''}")
+        lines.append(f"║  [根因]: {root_cause[:80]}{'…' if len(root_cause) > 80 else ''}")
     if optimization:
-        lines.append(f"║  🎯 动作: {optimization[:80]}{'…' if len(optimization) > 80 else ''}")
+        lines.append(f"║  [动作]: {optimization[:80]}{'…' if len(optimization) > 80 else ''}")
 
     # Show repair suggestions if any
     repairs = result.get("repairs", [])
@@ -1078,7 +1084,7 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
         for r in repairs[:3]:
             dim = r.get("dimension", "?")
             sug = r.get("suggestion", "")
-            lines.append(f"║  🔧 {dim}: {sug[:70]}{'…' if len(sug) > 70 else ''}")
+            lines.append(f"║  !!! {dim}: {sug[:70]}{'…' if len(sug) > 70 else ''}")
 
     lines.append(f"╚{'═' * 52}╝")
 
@@ -1426,7 +1432,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             # Build dashboard summary + JSON body
             dashboard = _format_closure_dashboard(safe, _closure_history)
             if smart_memory_id:
-                dashboard += f"\n  💾 反思已入池: {smart_memory_id[:20]}..."
+                dashboard += f"\n  [记忆] 反思已入池: {smart_memory_id[:20]}..."
             return [TextContent(type="text", text=dashboard)]
 
         # === 审查域 ===
@@ -1626,7 +1632,7 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
                     role="user",
                     content=f"对于以下决策，逐一检查是否与 13 条核心原则对齐：\n\n"
                     f"决策: {decision}\n\n"
-                    f"对每条原则给出：✅ 对齐 / ⚠️ 部分对齐 / ❌ 冲突。\n"
+                    f"对每条原则给出：[OK] 对齐 / [WARN] 部分对齐 / [FAIL] 冲突。\n"
                     f"如果冲突，说明「如果违反会怎样」的反事实预演。",
                 )
             ]
