@@ -5,6 +5,36 @@ import json
 from plastic_promise.skills.engine import SkillDef, SkillResult
 
 
+def _compile_component_health(ctx) -> dict:
+    """Compile health status for all four session-init components."""
+    health = {}
+
+    # domain_manager
+    health["domain_manager"] = "healthy" if getattr(ctx, "_dm_ok", False) else "degraded_no_init"
+
+    # lancedb
+    ldb = getattr(ctx, "_ldb", None)
+    if ldb is None:
+        health["lancedb"] = "unavailable"
+    elif getattr(ldb, "_vectors_disabled", False):
+        health["lancedb"] = "degraded_vectors"
+    else:
+        health["lancedb"] = "healthy"
+
+    # embedder
+    try:
+        from plastic_promise.core.embedder import get_embedder
+        emb = get_embedder()
+        health["embedder"] = "fallback_zero" if getattr(emb, "model_name", "") == "fallback-zero" else "healthy"
+    except Exception:
+        health["embedder"] = "fallback_zero"
+
+    # scarf — degraded if embedder is zero-vector
+    health["scarf"] = "degraded_text_only" if health["embedder"] == "fallback_zero" else "healthy"
+
+    return health
+
+
 async def _session_init_handler(ctx, params, atom_results):
     """session-init handler: assemble atom results into a unified context pack.
 
@@ -60,6 +90,8 @@ async def _session_init_handler(ctx, params, atom_results):
     except Exception:
         chain_state = None
 
+    component_health = _compile_component_health(ctx)
+
     return SkillResult(
         skill_name="session-init",
         success=True,
@@ -73,6 +105,7 @@ async def _session_init_handler(ctx, params, atom_results):
             "trust": defense_data,
             "gc_preview": gc_data,
             "chain_state": chain_state,
+            "component_health": component_health,
         },
         atom_results={},
         degrade_log=[],
