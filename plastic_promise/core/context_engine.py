@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import time
+import urllib.request
 from collections import Counter
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
@@ -212,6 +213,7 @@ class ContextEngine:
         # Heavy components — lazy-initialized by _ensure_heavy_init()
         self._dm: Any = None
         self._dm_ok: bool = False
+        self._last_rerank_status: str = "skipped_disabled"
         self._domain_hint: Optional[str] = None
         self._embedder: Any = None
         self._ldb: Any = None
@@ -1107,6 +1109,138 @@ class ContextEngine:
 
         return self._supply_python(task_description, task_vector, task_type, scope)
 
+    @staticmethod
+    def _apply_length_norm(score: float, content: str, anchor: int = 500) -> float:
+        """Normalize score by document length to prevent long documents from dominating.
+
+        Formula: score *= 1 / (1 + 0.5 * log2(len / anchor))
+        Floor: score * 0.3 (never reduce below 30% of original).
+        Short documents (<= anchor chars) are not penalized.
+        """
+        char_len = len(content)
+        if char_len <= anchor:
+            return score
+        ratio = char_len / anchor
+        log_ratio = math.log2(ratio)
+        factor = 1.0 / (1.0 + 0.5 * log_ratio)
+        return max(score * factor, score * 0.3)
+
+    def _apply_mmr(self, items: list, threshold: float = 0.85, penalty: float = 0.70) -> list:
+        """Greedy MMR diversity: demote items with cosine similarity > threshold.
+
+        Soft-demotion (not removal): similar items get score *= penalty and
+        are deferred to the end, preserving them for lower layers.
+        """
+        if len(items) <= 1:
+            return items
+        # Collect vectors from _memories
+        vectors: dict[str, list[float]] = {}
+        for item in items:
+            if getattr(item, 'is_principle', False):
+                continue
+            mid = item.id
+            mem = self._memories.get(mid, {})
+            vec = mem.get("_vector")
+            if vec and len(vec) == 1024 and any(v != 0.0 for v in vec):
+                vectors[mid] = vec
+        if len(vectors) < 2:
+            return items  # not enough vectors for MMR
+
+        def _cosine(a: list[float], b: list[float]) -> float:
+            dot = sum(x * y for x, y in zip(a, b))
+            na = math.sqrt(sum(x * x for x in a))
+            nb = math.sqrt(sum(y * y for y in b))
+            if na < 1e-12 or nb < 1e-12:
+                return 0.0
+            return dot / (na * nb)
+
+        items_sorted = sorted(items, key=lambda x: x.relevance, reverse=True)
+        selected: list = []
+        deferred: list = []
+
+        for item in items_sorted:
+            item_vec = vectors.get(item.id)
+            if item_vec is None:
+                selected.append(item)
+                continue
+            too_similar = any(
+                _cosine(item_vec, vectors.get(sel.id, [])) > threshold
+                for sel in selected
+                if vectors.get(sel.id)
+            )
+            if too_similar:
+                item.relevance *= penalty
+                deferred.append(item)
+            else:
+                selected.append(item)
+
+        deferred.sort(key=lambda x: x.relevance, reverse=True)
+        return selected + deferred
+
+    def _apply_rerank(self, items: list, query: str) -> list:
+        """Optional cross-encoder rerank via Ollama (PP_RECALL_RERANK=1).
+
+        Blends: 60% cross-encoder + 40% original score. 5s timeout. Silent fallback.
+        Sets self._last_rerank_status for audit.
+        """
+        if os.environ.get("PP_RECALL_RERANK", "0") != "1":
+            self._last_rerank_status = "skipped_disabled"
+            return items
+        if len(items) <= 1:
+            self._last_rerank_status = "skipped_disabled"
+            return items
+        candidates = sorted(items, key=lambda x: x.relevance, reverse=True)[:30]
+        try:
+            model = os.environ.get("PP_RERANK_MODEL", "")
+            timeout = float(os.environ.get("PP_RERANK_TIMEOUT", "5.0"))
+            ollama_url = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+            docs = [item.content[:500] for item in candidates]
+            payload = json.dumps({
+                "model": model or "mxbai-embed-large",
+                "prompt": (
+                    f"Query: {query}\n\n"
+                    f"Rate each document's relevance to the query on a scale of 0-100.\n\n"
+                    + "\n\n".join(f"[{i}] {doc}" for i, doc in enumerate(docs))
+                    + "\n\nReturn JSON: {\"scores\": [score0, score1, ...]}"
+                ),
+                "stream": False,
+                "options": {"temperature": 0},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{ollama_url}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = urllib.request.urlopen(req, timeout=timeout)
+            result = json.loads(resp.read().decode("utf-8"))
+            response_text = result.get("response", "{}")
+            try:
+                scores_data = json.loads(response_text)
+                rerank_scores = scores_data.get("scores", [])
+            except json.JSONDecodeError:
+                match = re.search(r'\[[\d,\s]+\]', response_text)
+                if match:
+                    rerank_scores = json.loads(match.group())
+                else:
+                    raise ValueError("Cannot parse rerank response")
+            for i, item in enumerate(candidates):
+                if i < len(rerank_scores):
+                    ce_score = float(rerank_scores[i]) / 100.0
+                    orig = item.relevance
+                    item.relevance = min(ce_score * 0.6 + orig * 0.4, 1.0)
+                    item.relevance = max(item.relevance, orig * 0.5)
+            self._last_rerank_status = "completed"
+        except Exception as e:
+            msg = str(e).lower()
+            if "timed out" in msg or "timeout" in msg:
+                self._last_rerank_status = "skipped_timeout"
+            elif "connection" in msg or "refused" in msg:
+                self._last_rerank_status = "skipped_ollama_down"
+            else:
+                self._last_rerank_status = "skipped_no_model"
+            logger.info("Rerank skipped: %s", self._last_rerank_status)
+        return items
+
     def _supply_python(
         self,
         task_description: str,
@@ -1197,6 +1331,9 @@ class ContextEngine:
             multiplier = FEEDBACK_SCORE_MULTIPLIER_MIN + FEEDBACK_SCORE_MULTIPLIER_RANGE * worth
             score = score * multiplier
 
+            # --- Length normalization (Phase 1.5) ---
+            score = ContextEngine._apply_length_norm(score, content)
+
             # --- ContextItem construction (was separate Phase 5 loop) ---
             is_principle = item_id.startswith("principle:")
             worth_score = mem.get("worth_score", 0.0) if mem else 0.0
@@ -1231,12 +1368,34 @@ class ContextEngine:
                     item.layer = "divergent"
                     pack.divergent.append(item)
 
-        # P3a: Compute divergent quality and filter low-inspiration items
-        if pack.divergent:
-            all_retrieved = pack.core + pack.related + pack.divergent
-            pack.divergent = self._compute_divergent_quality(
-                pack.divergent, all_retrieved
-            )
+        # P3a: MMR diversity + optional rerank, then re-layer
+        if pack.core or pack.related or pack.divergent:
+            all_items = pack.core + pack.related + pack.divergent
+            # Rerank (Phase 1.6, optional — PP_RECALL_RERANK=1)
+            all_items = self._apply_rerank(all_items, task_description)
+            # MMR diversity (Phase 1.4)
+            all_items = self._apply_mmr(all_items, threshold=0.85, penalty=0.70)
+            # Re-distribute to layers based on adjusted relevance
+            pack.core.clear()
+            pack.related.clear()
+            pack.divergent.clear()
+            for item in all_items:
+                if not item.is_principle:
+                    if item.relevance >= CONTEXT_LAYERS["core"]["min_relevance"]:
+                        item.layer = "core"
+                        pack.core.append(item)
+                    elif item.relevance >= CONTEXT_LAYERS["related"]["min_relevance"]:
+                        item.layer = "related"
+                        pack.related.append(item)
+                    elif item.relevance >= CONTEXT_LAYERS["divergent"]["min_relevance"]:
+                        item.layer = "divergent"
+                        pack.divergent.append(item)
+            # Compute divergent quality
+            if pack.divergent:
+                all_retrieved = pack.core + pack.related + pack.divergent
+                pack.divergent = self._compute_divergent_quality(
+                    pack.divergent, all_retrieved
+                )
 
         # Phase 6: 审计元数据
         pack.audit_metadata = {
@@ -1248,6 +1407,7 @@ class ContextEngine:
             "memory_pool_size": str(len(self._memories)),
             "vector_search": "active" if vector_results else "fallback_text_only",
             "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
+            "rerank_status": getattr(self, '_last_rerank_status', 'skipped_disabled'),
         }
 
         return pack
