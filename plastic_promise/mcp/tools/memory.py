@@ -562,6 +562,7 @@ async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
         from plastic_promise.memory.soul_memory import RecMem, MemoryGC
 
         rm = RecMem(engine)
+        rm.update_all_decay()      # NEW: update Weibull decay values first
         gc = MemoryGC(rm)
         result = gc.collect(dry_run=dry_run, force=force)
 

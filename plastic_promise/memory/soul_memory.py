@@ -439,6 +439,29 @@ class RecMem:
         except ImportError:
             self._engine = engine if engine is not None else ContextEngine()
         self._records: dict = {}
+        if engine is not None:
+            self._load_from_engine()
+
+    def _load_from_engine(self) -> None:
+        """Load existing memories from engine._memories into _records.
+
+        If decay_multiplier is missing from loaded records (heavy init not done),
+        auto-trigger _ensure_heavy_init() and retry.
+        """
+        # Defensive: ensure heavy init completed so decay_multiplier is loaded
+        try:
+            first_mem = next(iter(self._engine._memories.values()), {})
+            if 'decay_multiplier' not in first_mem:
+                self._engine._ensure_heavy_init()
+        except Exception:
+            pass
+
+        for mem_id, mem_dict in self._engine._memories.items():
+            if mem_id not in self._records:
+                try:
+                    self._records[mem_id] = MemoryRecord.from_dict(mem_dict)
+                except Exception:
+                    pass  # skip corrupted records
 
     def store(
         self,
@@ -1186,8 +1209,12 @@ class MemoryGC:
             decaying = []
             for r in self.rec_mem._records.values():
                 try:
+                    # Criterion 1: user negative feedback
                     if r.worth_score < MEMORY_DECAY_THRESHOLD:
                         decaying.append((r.memory_id, r.worth_score))
+                    # Criterion 2: Weibull natural decay
+                    elif hasattr(r, 'decay_multiplier') and r.decay_multiplier < MEMORY_DECAY_THRESHOLD:
+                        decaying.append((r.memory_id, r.decay_multiplier))
                 except Exception:
                     pass
             decaying.sort(key=lambda x: x[1])
@@ -1240,7 +1267,7 @@ class MemoryGC:
             if ldb is None:
                 result["error"] = "lancedb_unavailable"
                 return result
-            if getattr(ldb, "_vectors_disabled", False):
+            if getattr(ldb, "_vectors_disabled", False) is True:
                 result["candidates_found"] = 0
                 result["would_merge"] = 0
                 result["would_free"] = 0
