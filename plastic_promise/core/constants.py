@@ -290,7 +290,7 @@ CONTEXT_LAYERS = {
 }
 
 # RRF (Reciprocal Rank Fusion) 参数
-RRF_K = 60                       # RRF 平滑常数
+RRF_K = int(_os_env.environ.get("PP_RRF_K", "20"))  # RRF 常数 (60→20: rank更敏感)
 
 # 符号规则关键词分类（6类）
 SYMBOL_RULE_KEYWORDS = {
