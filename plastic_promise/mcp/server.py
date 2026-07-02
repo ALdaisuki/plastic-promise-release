@@ -52,19 +52,33 @@ _closure_history: deque = deque(maxlen=5)  # 滑动窗口: 最近5次闭环 {sca
 
 
 def get_engine():
-    """获取 ContextEngine 单例（Rust 优先，Python 回退）"""
+    """获取 ContextEngine 单例（Python 主引擎，Rust 加速器就绪后切换）
+
+    Python ContextEngine 拥有完整的数据管道：
+    - SQLite 持久化 (plastic_memory.db)
+    - LanceDB 向量检索
+    - BM25 + RRF 混合检索
+    - 原则注入 + 图谱遍历
+
+    Rust context_engine_core 目前是占位实现（:memory: 存储、Noop 检索器），
+    待 retriever backends 实现后通过 supply() 中的 _supply_rust 路径切换。
+    """
     global _engine
     if _engine is not None:
         return _engine
 
+    # Python 主引擎 — 完整数据管道
+    from plastic_promise.core.context_engine import ContextEngine as PyEngine
+    _engine = PyEngine()
+    logging.info("ContextEngine: Python 核心已加载 (SQLite + LanceDB)")
+
+    # 预导入 Rust 加速器（如果可用），供 _supply_rust 路径使用
     try:
-        from context_engine_core import ContextEngine as RustEngine
-        _engine = RustEngine()
-        logging.info("ContextEngine: Rust 核心已加载")
+        from context_engine_core import ContextEngine as _RustEngine
+        logging.info("ContextEngine: Rust 加速器可用（待 supply 路径启用）")
     except ImportError:
-        logging.warning("ContextEngine: Rust 不可用，使用 Python Mock")
-        from plastic_promise.core.context_engine import ContextEngine as PyEngine
-        _engine = PyEngine()
+        logging.info("ContextEngine: Rust 加速器不可用（需编译 context_engine_core）")
+
     return _engine
 
 
