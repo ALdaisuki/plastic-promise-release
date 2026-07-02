@@ -41,6 +41,7 @@ from plastic_promise.cron.scan_quality_trends import scan_quality_trends
 from plastic_promise.cron.scan_coupling import scan_coupling
 from plastic_promise.cron.scan_trust import scan_trust
 from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+from plastic_promise.cron.scan_data_quality import scan_data_quality
 
 # Path setup
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -84,6 +85,7 @@ _scanner_throttles = {
     "scan_coupling": AdaptiveThrottle(600),
     "scan_trust": AdaptiveThrottle(300),
     "scan_memory_decay": AdaptiveThrottle(600),
+    "scan_data_quality": AdaptiveThrottle(600),
 }
 
 # ── 超时恢复 ──────────────────────────────────────────────
@@ -1193,8 +1195,8 @@ async def main():
           f"llm_classify={LLM_CLASSIFY_INTERVAL}s, PID={os.getpid()})")
     print(f"  DB: {DB_PATH}")
     print(f"  MCP: {MCP_URL}")
-    print(f"  5 scanners: scan_trust scan_architecture scan_quality_trends "
-          f"scan_coupling scan_memory_decay")
+    print(f"  6 scanners: scan_trust scan_architecture scan_quality_trends "
+          f"scan_coupling scan_memory_decay scan_data_quality")
     print(f"  Throttle bases: "
           f"{' '.join(f'{k}={v.base}s' for k, v in _scanner_throttles.items())}")
 
@@ -1307,6 +1309,16 @@ async def main():
                 pass
             try:
                 await scan_unclosed_issues()
+            except Exception:
+                pass
+            # Priority E: data quality scanner (throttle-managed via _run_scan style)
+            try:
+                dq_throttle = _scanner_throttles["scan_data_quality"]
+                dq_result = await scan_data_quality(engine)
+                if len(dq_result) > 0:
+                    dq_throttle.on_hit()
+                else:
+                    dq_throttle.on_empty()
             except Exception:
                 pass
             try:
