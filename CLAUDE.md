@@ -48,23 +48,43 @@
 ```
 session-init → chain_state 初始化
   ↓
-brainstorming → using-git-worktrees → writing-plans
-                                         ├→ executing-plans → TDD → verify → finish
-                                         └→ subagent-driven → TDD → request-review → receive-review → finish
+brainstorming → exemplar-research → using-git-worktrees → writing-plans
+                                                             ├→ executing-plans → TDD → verify → finish
+                                                             └→ subagent-driven → TDD → request-review → receive-review → finish
 ```
 
 辅助: `systematic-debugging`, `dispatching-parallel-agents`
+
+### 阶段总览
+
+| 阶段 | 描述 | 实现文件 |
+|------|------|---------|
+| brainstorming | 需求澄清 + 架构设计 + 方案生成 | brainstorming.py |
+| exemplar-research | 搜索成熟实现 + 三问法分析 + 质量审核 | exemplar_research.py |
+| using-git-worktrees | 创建隔离工作分支 | using_git_worktrees.py |
+| writing-plans | 拆解任务为可执行步骤 | writing_plans.py |
+| executing-plans | 逐步骤实现代码 | executing_plans.py |
+| test-driven-development | 先写测试再写实现 | test_driven_development.py |
+| subagent-driven-development | 派发子 Agent 并行执行 | subagent_driven_development.py |
+| verification-before-completion | 变更验证与端到端测试 | verification_before_completion.py |
+| requesting-code-review | 提交变更请求审查 | requesting_code_review.py |
+| receiving-code-review | 处理审查反馈 | receiving_code_review.py |
+| finishing-a-development-branch | 分支合并前最终验收 | finishing_a_development_branch.py |
+| systematic-debugging | 结构化诊断与修复 | systematic_debugging.py |
+| dispatching-parallel-agents | 并行派发多个子 Agent | dispatching_parallel_agents.py |
 
 ### 使用方式
 
 ```
 # Trae (sp-stage MCP 工具)
 sp-stage(stage="brainstorming", task_description="澄清需求")
+sp-stage(stage="exemplar-research", task_description="搜索成熟工程实现并分析")
 sp-stage(stage="using-git-worktrees", task_description="创建分支")
 sp-stage(stage="writing-plans", task_description="拆解任务")
 
 # Claude Code (SuperPowers 插件)
 /SuperPowers:brainstorming
+/SuperPowers:exemplar-research
 ```
 
 每次调用耗时 **0.2~0.4s**（冷启动 ~3s 加载 embedding 模型）。
@@ -159,6 +179,20 @@ task_enqueue → pending → task_claim → claimed → executing → task_compl
                                                                                     ↓ rejected → reassigned → 自动重派子委托
 心跳超时 → 释放回 pending（escalation_count++） → 超3次升级给 Claude（S级兜底）
 ```
+
+### 委托类型
+
+| 委托类型 | 描述 | 默认路由 | 优先级 |
+|---------|------|---------|--------|
+| `fix_memory` | 修复记忆质量问题 | pi_fixer / claude | B (priority=3) |
+| `fix_*` | 通用修复委托 | pi_fixer / claude | B (priority=3) |
+| `build_*` | 新功能构建 | pi_builder / claude | B (priority=3) |
+| `refactor_*` | 代码重构 | pi_builder / claude | B (priority=3) |
+| `review_*` | 代码审查 | pi_reviewer / claude | B (priority=3) |
+| `investigate_*` | 问题调查 | claude | B (priority=3) |
+| `gc_*` | 垃圾回收/清理 | pi_fixer / claude | B (priority=3) |
+| `research_exemplar` | 研究工程典范实现 | claude | B (priority=3) |
+| `verify_exemplar` | 审核典范分析质量 | claude | B (priority=3) |
 
 ### 7 个 MCP 工具
 
