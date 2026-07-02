@@ -117,6 +117,9 @@ docstring-code-format = true
 minversion = "8.0"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: tests that require a running MCP server or external services",
+]
 addopts = [
     "-ra",
     "--strict-markers",
