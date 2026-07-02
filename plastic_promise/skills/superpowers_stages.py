@@ -29,6 +29,7 @@ from plastic_promise.skills.engine import SkillDef, SkillResult
 
 STAGE_DOMAIN_MAP = {
     "brainstorming": "designing",
+    "exemplar-research": "designing",
     "writing-plans": "designing",
     "executing-plans": "building",
     "subagent-driven-development": "building",
@@ -44,6 +45,7 @@ STAGE_DOMAIN_MAP = {
 
 STAGE_TAGS_MAP = {
     "brainstorming": ["stage:brainstorming", "domain:designing"],
+    "exemplar-research": ["stage:exemplar-research", "domain:designing", "task:research"],
     "writing-plans": ["stage:writing-plans", "domain:designing", "task:plan"],
     "executing-plans": ["stage:executing-plans", "domain:building", "task:active"],
     "subagent-driven-development": ["stage:subagent", "domain:building", "task:active"],
@@ -59,6 +61,7 @@ STAGE_TAGS_MAP = {
 
 STAGE_DESCRIPTIONS = {
     "brainstorming": "SuperPowers 阶段: 头脑风暴 — 需求澄清、方案探索、Socratic 问答",
+    "exemplar-research": "SuperPowers 阶段: 典范研究 — 搜索成熟实现、三问法分析、写分析文档、质量审核后入库",
     "writing-plans": "SuperPowers 阶段: 编写计划 — 将需求拆解为可执行的原子任务",
     "executing-plans": "SuperPowers 阶段: 执行计划 — 按计划逐步实施 (含子 Agent 派发、TDD)",
     "subagent-driven-development": "SuperPowers 阶段: 子 Agent 驱动开发 — 并行派发子 Agent 执行独立任务",
@@ -336,6 +339,7 @@ async def _receive_review_handler(ctx, params, atom_results):
 STAGE_ATOMS = {
     # 所有阶段统一: 原则激活 + 记忆存储 (context 已 trim，不再白算)
     "brainstorming": ["principle_activate", "memory_store"],
+    "exemplar-research": ["principle_activate", "memory_store"],
     "writing-plans": ["principle_activate", "memory_store"],
     "executing-plans": ["principle_activate", "memory_store"],
     "subagent-driven-development": ["principle_activate", "memory_store"],
@@ -394,3 +398,4 @@ receiving_code_review = SKILL_DEFS.get("receiving-code-review")
 systematic_debugging = SKILL_DEFS.get("systematic-debugging")
 using_git_worktrees = SKILL_DEFS.get("using-git-worktrees")
 dispatching_parallel_agents = SKILL_DEFS.get("dispatching-parallel-agents")
+exemplar_research = SKILL_DEFS.get("exemplar-research")
