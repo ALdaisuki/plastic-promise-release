@@ -1322,8 +1322,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 root_cause,
                 optimization,
                 trick,
-                target,
             )
+
+            # Apply trust adjustment for target
+            if target and target != "claude":
+                try:
+                    from plastic_promise.defense.soul_enforcer import TrustManager
+                    tm = TrustManager()
+                    tm.register(target)
+                except Exception:
+                    pass
 
             def safe_serialize(obj):
                 if isinstance(obj, dict):
