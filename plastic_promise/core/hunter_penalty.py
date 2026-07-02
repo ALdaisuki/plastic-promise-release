@@ -134,11 +134,12 @@ class HunterPenaltyEngine:
             from plastic_promise.defense.soul_enforcer import TrustManager
 
             tm = TrustManager()
-            tm.decay(abs(penalty["base_penalty"]), f"{failure_type}: {task_id}")
+            tm.decay(abs(penalty["base_penalty"]), f"{failure_type}: {task_id}", target=agent_name)
             if penalty["upgrade_triggered"]:
                 tm.decay(
                     abs(penalty["upgrade_penalty"]),
                     f"{failure_type}_upgrade (x{repeat_count}): {task_id}",
+                    target=agent_name,
                 )
         except Exception as e:
             logger.warning("Trust adjust failed: %s", e)

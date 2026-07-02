@@ -62,9 +62,10 @@ class StepAuditor:
         # 审计记录自动保存
     """
 
-    def __init__(self, trust_manager=None, audit_log_path: Optional[str] = None, engine=None):
+    def __init__(self, trust_manager=None, audit_log_path: Optional[str] = None, engine=None, target: str = "claude"):
         self._trust = trust_manager
         self._engine = engine  # optional ContextEngine for reflection memory storage
+        self._target = target
         self._history: list[StepAuditResult] = []
         self._audit_log_path = audit_log_path or "step_audit_log.jsonl"
         self._load_history()
@@ -441,13 +442,13 @@ class StepAuditor:
             return
         try:
             if result.overall_score >= 0.80:
-                self._trust.boost(0.02, f"step {result.step_id}: {result.overall_score:.2f}")
+                self._trust.boost(0.02, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target)
             elif result.overall_score >= 0.60:
-                self._trust.boost(0.005, f"step {result.step_id}: {result.overall_score:.2f}")
+                self._trust.boost(0.005, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target)
             elif result.overall_score < 0.20:
-                self._trust.decay(0.05, f"step {result.step_id}: {result.overall_score:.2f}")
+                self._trust.decay(0.05, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target)
             elif result.overall_score < 0.40:
-                self._trust.decay(0.02, f"step {result.step_id}: {result.overall_score:.2f}")
+                self._trust.decay(0.02, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target)
         except Exception:
             pass
 

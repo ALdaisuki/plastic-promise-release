@@ -96,17 +96,19 @@ class HormoneEngine:
     - 基于 TRUST_BOOST_RATE / TRUST_DECAY_RATE 计算信任分增量
     """
 
-    def __init__(self, trust_manager: Optional[Any] = None) -> None:
+    def __init__(self, trust_manager: Optional[Any] = None, target: str = "claude") -> None:
         """初始化激素引擎。
 
         Args:
             trust_manager: 可选的信任管理器实例，若提供则反馈结果会
                 同步推送到该管理器以联动信任分。
+            target: 信任分追踪目标 (claude/pi_builder 等)。
         """
         self.account = EmotionAccount()
         self.dopamine: float = 0.5  # 中性基线
         self.cortisol: float = 0.3  # 低基线
         self.trust_manager = trust_manager
+        self.target = target
 
     def apply_feedback(
         self,
@@ -188,9 +190,9 @@ class HormoneEngine:
         if self.trust_manager is not None and delta != 0.0:
             try:
                 if delta > 0:
-                    self.trust_manager.boost(abs(delta))
+                    self.trust_manager.boost(abs(delta), target=self.target)
                 else:
-                    self.trust_manager.decay(abs(delta))
+                    self.trust_manager.decay(abs(delta), target=self.target)
             except AttributeError:
                 # trust_manager does not support boost/decay; ignore
                 pass

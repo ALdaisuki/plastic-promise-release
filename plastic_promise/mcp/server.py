@@ -900,6 +900,11 @@ async def list_tools() -> list[Tool]:
                             "description": "优化动作 — 立即可执行的一个具体改进",
                         },
                         "trick": {"type": "string", "description": "窍门/技巧 (可选)"},
+                        "target": {
+                            "type": "string",
+                            "default": "claude",
+                            "description": "信任分追踪目标 (claude/pi_builder/pi_reviewer 等)",
+                        },
                     },
                     "required": ["task_description"],
                 },
@@ -1305,6 +1310,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             root_cause = arguments.get("root_cause", "")
             optimization = arguments.get("optimization", "")
             trick = arguments.get("trick", "")
+            target = arguments.get("target", "claude")
             result = await asyncio.to_thread(
                 post_task,
                 task_desc,
@@ -1316,6 +1322,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 root_cause,
                 optimization,
                 trick,
+                target,
             )
 
             def safe_serialize(obj):

@@ -130,6 +130,7 @@ class SoulLoop:
         root_cause: str = "",
         optimization: str = "",
         trick: str = "",
+        target: str = "claude",
     ) -> dict:
         """六联闭环 — 每步完成后的约定工程全层连线。
 
@@ -200,7 +201,7 @@ class SoulLoop:
             if self._hormone_engine is None:
                 from plastic_promise.growth.soul_hormone import HormoneEngine
 
-                self._hormone_engine = HormoneEngine(trust_manager=self._trust_manager)
+                self._hormone_engine = HormoneEngine(trust_manager=self._trust_manager, target=target)
             overall = self._cached_cei
             feedback = "adopted" if overall >= 0.6 else "ignored" if overall >= 0.4 else "rejected"
             hormone_result = self._hormone_engine.apply_feedback(
@@ -215,12 +216,12 @@ class SoulLoop:
             if result.get("scarf") and isinstance(result["scarf"], dict):
                 scarf_overall = result["scarf"].get("summary", {}).get("overall_score", 0.6)
                 if scarf_overall >= 0.80:
-                    self._trust_manager.boost(0.02, f"post_task SCARF {scarf_overall:.2f}")
+                    self._trust_manager.boost(0.02, f"post_task SCARF {scarf_overall:.2f}", target=target)
                 elif scarf_overall < 0.40:
-                    self._trust_manager.decay(0.02, f"post_task SCARF {scarf_overall:.2f}")
+                    self._trust_manager.decay(0.02, f"post_task SCARF {scarf_overall:.2f}", target=target)
             result["trust"] = {
-                "score": self._trust_manager.get(),
-                "tier": self._trust_manager.tier,
+                "score": self._trust_manager.get(target=target),
+                "tier": self._trust_manager.tier(target=target),
             }
         except Exception as e:
             result["trust"] = {"error": str(e)}
@@ -228,7 +229,7 @@ class SoulLoop:
         # 5. 反思记忆存储 — StepAuditor 评分 + 反思任务标记
         try:
             if self._auditor is None:
-                self._auditor = StepAuditor(trust_manager=self._trust_manager, engine=self._engine)
+                self._auditor = StepAuditor(trust_manager=self._trust_manager, engine=self._engine, target=target)
             audit_result = self._auditor.audit_step(
                 task_description=task_description,
                 git_commit=git_commit,

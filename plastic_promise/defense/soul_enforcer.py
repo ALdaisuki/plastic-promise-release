@@ -59,7 +59,7 @@ class TrustManager:
     def _set_trust(self, target: str, value: float):
         self._trusts[target] = max(TRUST_MIN, min(TRUST_MAX, value))
 
-    def boost(self, delta: float, reason: str = "", target: str = "") -> float:
+    def boost(self, delta: float, reason: str = "", *, target: str) -> float:
         if delta < 0:
             raise ValueError(f"boost delta must be non-negative, got {delta}")
         old = self._trust(target)
@@ -81,7 +81,7 @@ class TrustManager:
             self._store.log_history(target, delta, reason, old, new, "boost")
         return new
 
-    def decay(self, delta: float = TRUST_DECAY_RATE, reason: str = "", target: str = "") -> float:
+    def decay(self, delta: float = TRUST_DECAY_RATE, reason: str = "", *, target: str) -> float:
         if delta < 0:
             raise ValueError(f"decay delta must be non-negative, got {delta}")
         old = self._trust(target)
@@ -103,10 +103,10 @@ class TrustManager:
             self._store.log_history(target, -delta, reason, old, new, "decay")
         return new
 
-    def adjust(self, delta: float, reason: str = "", target: str = "") -> float:
+    def adjust(self, delta: float, reason: str = "", *, target: str = "") -> float:
         if delta >= 0:
-            return self.boost(delta, reason, target)
-        return self.decay(-delta, reason, target)
+            return self.boost(delta, reason, target=target)
+        return self.decay(-delta, reason, target=target)
 
     def get(self, target: str = "") -> float:
         if self._store:
@@ -147,7 +147,7 @@ class TrustManager:
         Low trust → narrower scope, conservative retrieval.
         Serves 实践层: 动态信任调节信息获取范围。
         """
-        _tier = self.tier
+        _tier = self.tier()
         if _tier == "high":
             return 1.3
         elif _tier == "medium":
@@ -169,13 +169,15 @@ class SoulEnforcer:
         _violation_log: 违规记录列表
     """
 
-    def __init__(self, trust_manager: Optional[TrustManager] = None) -> None:
+    def __init__(self, trust_manager: Optional[TrustManager] = None, target: str = "claude") -> None:
         """初始化 SoulEnforcer。
 
         Args:
             trust_manager: 信任分管理器实例。若为 None 则自动创建默认实例。
+            target: 信任分追踪目标 (claude/pi_builder/pi_reviewer 等)。
         """
         self.trust_manager: TrustManager = trust_manager or TrustManager()
+        self._default_target: str = target
         self._violation_log: List[Dict[str, Any]] = []
 
     def pre_check(self, action_description: str, action_type: str = "exec") -> Dict[str, Any]:
@@ -208,7 +210,7 @@ class SoulEnforcer:
         ]
 
         description_lower = action_description.lower()
-        trust = self.trust_manager.get()
+        trust = self.trust_manager.get(target=self._default_target)
 
         layer_checks: Dict[str, Any] = {
             "L0": {"checked": True, "passed": True, "message": "L0 hard-boundary check passed"},
@@ -239,7 +241,7 @@ class SoulEnforcer:
                 # Violation-driven decay: L0 violation → -0.05
                 if self.trust_manager:
                     try:
-                        self.trust_manager.decay(0.05, f"L0 violation: {pattern}")
+                        self.trust_manager.decay(0.05, f"L0 violation: {pattern}", target=self._default_target)
                     except Exception:
                         pass
                 return {
@@ -269,7 +271,7 @@ class SoulEnforcer:
             # Violation-driven decay: L1 critical trust → -0.02
             if self.trust_manager:
                 try:
-                    self.trust_manager.decay(0.02, f"L1 critical trust: {trust:.2f}")
+                    self.trust_manager.decay(0.02, f"L1 critical trust: {trust:.2f}", target=self._default_target)
                 except Exception:
                     pass
         elif trust < 0.40:
@@ -303,8 +305,8 @@ class SoulEnforcer:
             - trust: float — 当前信任分
             - tier: str — 当前信任等级
         """
-        trust = self.trust_manager.get()
-        tier = self.trust_manager.tier
+        trust = self.trust_manager.get(target=self._default_target)
+        tier = self.trust_manager.tier(target=self._default_target)
 
         # Count L0/L1 violations from the log
         l0_violations = sum(1 for v in self._violation_log if v["layer"] == "L0")

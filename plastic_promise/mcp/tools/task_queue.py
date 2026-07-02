@@ -548,7 +548,7 @@ async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
             from plastic_promise.defense.soul_enforcer import TrustManager
 
             tm = TrustManager()
-            tm.boost(delta, f"委托验收通过: {task_id}")
+            tm.boost(delta, f"委托验收通过: {task_id}", target=task["claimed_by"])
         except Exception:
             pass
 
@@ -609,7 +609,7 @@ async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
             from plastic_promise.defense.soul_enforcer import TrustManager
 
             tm = TrustManager()
-            tm.decay(delta, f"委托被打回: {task_id} — {comment[:100]}")
+            tm.decay(delta, f"委托被打回: {task_id} — {comment[:100]}", target=task["claimed_by"])
         except Exception:
             pass
 
@@ -912,7 +912,7 @@ async def handle_task_abandon(engine: Any, args: dict) -> list[TextContent]:
     conn.commit()
 
     try:
-        tm.decay(delta, f"主动弃单: {task_id} — {reason[:80]}")
+        tm.decay(delta, f"主动弃单: {task_id} — {reason[:80]}", target=agent_name)
     except Exception:
         pass
 
