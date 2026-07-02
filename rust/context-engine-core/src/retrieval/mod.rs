@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::domain::{DecayModel, MemoryConsolidator, Tier, TierManager, WorthCalculator};
 use crate::storage::{FtsIndex, SearchFilter, VectorIndex};
 
+pub mod bm25;
 pub mod embedder;
 pub mod fusion;
 pub mod diversity;

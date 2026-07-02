@@ -1090,22 +1090,25 @@ class ContextEngine:
         if task_vector is None or len(task_vector) == 0:
             task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
 
-        # Rust accelerator bypassed — placeholder engine returns uniform 0.50 scores.
-        # Python path has real LanceDB vector + BM25 + RRF retrieval.
-        # To re-enable Rust, uncomment the block below when retriever backends are implemented.
-        #
-        # if self._check_rust_health():
-        #     try:
-        #         return self._supply_rust(
-        #             task_description, task_vector, task_type, scope
-        #         )
-        #     except Exception as e:
-        #         logger.warning(
-        #             "Rust supply failed, falling back to Python: %s", e
-        #         )
-        #         with self._rust_lock:
-        #             self._rust_healthy = None
-        #             self._rust_engine_instance = None
+        # PP_FORCE_PYTHON_SUPPLY=1 bypasses Rust and forces the Python fallback path.
+        # Useful for emergency rollback and A/B testing.
+        if os.environ.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1":
+            return self._supply_python(task_description, task_vector, task_type, scope)
+
+        # Rust accelerator — primary supply path (Phase 2).
+        # Falls back to Python if Rust engine is unavailable or throws.
+        if self._check_rust_health():
+            try:
+                return self._supply_rust(
+                    task_description, task_vector, task_type, scope
+                )
+            except Exception as e:
+                logger.warning(
+                    "Rust supply failed, falling back to Python: %s", e
+                )
+                with self._rust_lock:
+                    self._rust_healthy = None
+                    self._rust_engine_instance = None
 
         return self._supply_python(task_description, task_vector, task_type, scope)
 
@@ -1777,28 +1780,19 @@ class ContextEngine:
 
     def _supply_rust(self, task_description: str, task_vector: list,
                      task_type: str, scope: str) -> ContextPack:
-        """Rust-accelerated supply path.
+        """Rust-accelerated supply path (Phase 2 primary).
 
-        Passes memory snapshot via PyO3 native Vec<PyObject> — zero JSON
-        serialization overhead. The snapshot is a shallow copy of the
-        current _memories dict (~0.5-2ms for 1000 records).
+        Rust engine reads from its own read-only SQLite connection to
+        plastic_memory.db. Memories are NOT passed from Python — the
+        Rust engine is self-contained. Passes empty list for backward
+        compatibility with the PyO3 signature.
         """
         from context_engine_core import ContextEngine as RustEngine
 
-        # Build memory list for PyO3 — pass raw dicts, no JSON serialize
-        # Performance: ~0.5-2ms for 1000 records (list comprehension + dict refs)
-        # Acceptable; if pool grows >5000, add pre-filter by scope/tier here
-        # Acquire _write_lock during iteration — prevents RuntimeError from
-        # concurrent GC or Daemon modifying self._memories during snapshotting
-        with self._write_lock:
-            memories = [
-                self._memories[mid]
-                for mid in self._memories
-            ]
-
         rust = RustEngine()
         rust.set_current_time(datetime.datetime.now().isoformat())
-        rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
+        # Empty memories — Rust reads from its own SQLite connection
+        rust_pack = rust.supply(task_description, task_vector, task_type, scope, [])
         return self._convert_rust_pack(rust_pack)
 
     # ========== 内部方法 ==========
@@ -2542,6 +2536,13 @@ class _SQLiteStorage:
             )
         except Exception:
             pass  # 列已存在
+        # 迁移: memory_version 表 — Rust 引擎用版本号检测 BM25 索引是否需要刷新
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS memory_version (version INTEGER DEFAULT 0)"
+        )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO memory_version (version) VALUES (0)"
+        )
         self._conn.commit()
 
         # 存量迁移: 对已有记忆一次性计算真实衰减值
@@ -2603,6 +2604,9 @@ class _SQLiteStorage:
         )
         if self._batch_depth <= 0:
             self._conn.commit()
+            # Increment memory_version so Rust engine knows to refresh BM25 index
+            self._conn.execute("UPDATE memory_version SET version = version + 1")
+            self._conn.commit()
 
     def get(self, mid: str) -> dict | None:
         """Retrieve a single memory record."""
@@ -2621,6 +2625,8 @@ class _SQLiteStorage:
         """Delete a memory record."""
         self._conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
         if self._batch_depth <= 0:
+            self._conn.commit()
+            self._conn.execute("UPDATE memory_version SET version = version + 1")
             self._conn.commit()
 
     def iter_all(self):

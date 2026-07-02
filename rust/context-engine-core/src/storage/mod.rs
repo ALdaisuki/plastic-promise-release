@@ -91,6 +91,9 @@ pub trait StorageBackend {
     fn list(&self, filter: &ListFilter) -> Result<Vec<MemoryRecord>, String>;
     fn stats(&self, scope: Option<&str>) -> Result<MemoryStats, String>;
     fn total_count(&self) -> Result<usize, String>;
+    /// Execute a scalar SQL query and return a single u64 value.
+    /// Used for reading memory_version from SQLite.
+    fn query_scalar(&self, sql: &str) -> Result<u64, String>;
 }
 
 pub trait VectorIndex {

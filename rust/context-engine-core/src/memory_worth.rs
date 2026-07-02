@@ -126,6 +126,20 @@ pub struct MemoryRecord {
     #[pyo3(get, set)]
     pub metadata_json: String,
 
+    // --- Phase 2: schema alignment with Python SQLite ---
+    /// 标签列表 (JSON array from Python)
+    #[pyo3(get, set)]
+    pub tags: Vec<String>,
+    /// 域标签 (Python: domain TEXT DEFAULT 'uncategorized')
+    #[pyo3(get, set)]
+    pub domain: String,
+    /// Weibull 衰减系数 (Python: decay_multiplier REAL DEFAULT 1.0)
+    #[pyo3(get, set)]
+    pub decay_multiplier: f64,
+    /// 有效半衰期/天 (Python: effective_half_life REAL DEFAULT 3.0)
+    #[pyo3(get, set)]
+    pub effective_half_life: f64,
+
     // --- 内部 ---
     /// 关联的实体 ID 列表
     #[pyo3(get, set)]
@@ -160,6 +174,10 @@ impl MemoryRecord {
             access_count: 0,
             last_accessed_at: String::new(),
             metadata_json: "{}".to_string(),
+            tags: Vec::new(),
+            domain: "uncategorized".to_string(),
+            decay_multiplier: 1.0,
+            effective_half_life: 3.0,
         }
     }
 
@@ -227,6 +245,10 @@ impl MemoryRecord {
         last_accessed_at: String,
         created_at: String,
         metadata_json: String,
+        tags: Vec<String>,
+        domain: String,
+        decay_multiplier: f64,
+        effective_half_life: f64,
     ) -> Self {
         Self {
             id,
@@ -247,6 +269,10 @@ impl MemoryRecord {
             entity_ids: Vec::new(),
             attributes: std::collections::HashMap::new(),
             metadata_json,
+            tags,
+            domain,
+            decay_multiplier,
+            effective_half_life,
         }
     }
 }
