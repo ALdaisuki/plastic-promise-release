@@ -266,6 +266,86 @@ class LanceDBStore:
         except Exception:
             return 0
 
+    def clear_all(self) -> int:
+        """Delete all rows from the table and return the count that was removed.
+
+        After clearing, the table is empty but still exists with its schema
+        and FTS index intact.
+        """
+        if self._table is None:
+            return 0
+        try:
+            count = self._table.count_rows()
+            if count > 0:
+                self._table.delete("memory_id IS NOT NULL")
+            logger.info("LanceDB: cleared %d rows", count)
+            return count
+        except Exception as e:
+            logger.error("LanceDB clear_all failed: %s", e)
+            return 0
+
+    def rebuild_all(self, engine: object) -> int:
+        """Clear LanceDB table and rebuild all vectors from SQLite memories.
+
+        Used when LanceDB vectors are out of sync with SQLite (ghost vectors,
+        stale entries, test pollution). Regenerates every vector via embedder.
+
+        Safety: calls clear_all() first, then embeds and inserts each memory.
+        Circuit-breaker: stops on first embedding failure (Ollama down).
+        Respects LDB_REBUILD_MAX_PER_CALL env var for batching.
+
+        Args:
+            engine: ContextEngine instance with _memories dict.
+
+        Returns:
+            Number of memories re-indexed.
+        """
+        import os as _os
+        _max_batch = int(_os.environ.get("LDB_REBUILD_MAX_PER_CALL", "200"))
+
+        removed = self.clear_all()
+        logger.info("LanceDB rebuild: removed %d rows, starting re-index", removed)
+
+        memories = getattr(engine, '_memories', {})
+        if not memories:
+            logger.warning("LanceDB rebuild: engine._memories is empty — nothing to rebuild")
+            return 0
+
+        rebuilt = 0
+        circuit_open = False
+
+        for mid, mem_data in memories.items():
+            if rebuilt >= _max_batch:
+                logger.info("LanceDB rebuild: hit batch limit (%d), %d remaining — deferring",
+                            _max_batch, len(memories) - rebuilt)
+                break
+
+            content = mem_data.get("content", "")
+            if not content or not content.strip():
+                continue
+
+            try:
+                if circuit_open:
+                    continue
+                vector = self._embedder.embed(content)
+            except Exception as e:
+                logger.error("LanceDB rebuild: embedder failed on '%s', circuit open: %s", mid, e)
+                circuit_open = True
+                continue
+
+            tier = mem_data.get("tier", "L1")
+            category = mem_data.get("category", "other")
+            scope = mem_data.get("scope", "global")
+
+            try:
+                self.insert(mid, vector, content, tier=tier, category=category, scope=scope)
+                rebuilt += 1
+            except Exception as e:
+                logger.error("LanceDB rebuild: insert failed for %s: %s", mid, e)
+
+        logger.info("LanceDB rebuild: complete — %d memories re-indexed", rebuilt)
+        return rebuilt
+
     def backfill(self, engine: object) -> int:
         """Backfill LanceDB from SQLite for memories missing vectors.
 

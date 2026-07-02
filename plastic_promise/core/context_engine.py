@@ -351,6 +351,17 @@ class ContextEngine:
                                                             "plastic_memory.lancedb"))
                     self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
                     self._ldb.backfill(self)
+                    # Ghost-vector detection: if LanceDB has more rows than SQLite,
+                    # there are stale test/pollution vectors — rebuild from SQLite
+                    ldb_count = self._ldb.count_rows()
+                    sqlite_count = len(self._memories)
+                    if ldb_count > sqlite_count:
+                        logging.warning(
+                            "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
+                            " — rebuilding to remove %d ghost vectors",
+                            ldb_count, sqlite_count, ldb_count - sqlite_count,
+                        )
+                        self._ldb.rebuild_all(self)
                     logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
                 except Exception as e:
                     logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
