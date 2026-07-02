@@ -198,10 +198,10 @@ class SoulBridge:
         try:
             if success:
                 delta = 0.02
-                self._trust.boost(delta, reason=f"Task success: {task_type}")
+                self._trust.boost(delta, reason=f"Task success: {task_type}", target="")
             else:
                 delta = -0.05
-                self._trust.decay(TRUST_DECAY_RATE, reason=f"Task failure: {task_type}")
+                self._trust.decay(TRUST_DECAY_RATE, reason=f"Task failure: {task_type}", target="")
                 delta = -TRUST_DECAY_RATE
             output["trust_delta"] = round(delta, 2)
         except Exception:

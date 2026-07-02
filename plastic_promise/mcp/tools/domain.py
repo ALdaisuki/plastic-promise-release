@@ -167,7 +167,17 @@ def _get_agent_id(engine: Any) -> str:
 async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
     """域联邦统一入口。action: stats|merge|unmerge|rename|rebuild|reset_throttle"""
     action = args.get("action", "stats")
-    engine.ensure_heavy_init()  # ensure DomainManager is initialized before access
+    try:
+        engine.ensure_heavy_init()  # ensure DomainManager is initialized before access
+    except Exception as e:
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"error": str(e), "tool": "domain"}, ensure_ascii=False
+                ),
+            )
+        ]
     dm = getattr(engine, "_dm", None)
     if dm is None:
         return [

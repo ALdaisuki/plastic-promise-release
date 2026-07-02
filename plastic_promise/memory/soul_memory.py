@@ -449,10 +449,12 @@ class RecMem:
         auto-trigger _ensure_heavy_init() and retry.
         """
         # Defensive: ensure heavy init completed so decay_multiplier is loaded
+        if not hasattr(self._engine, '_memories'):
+            return
         try:
             first_mem = next(iter(self._engine._memories.values()), {})
             if 'decay_multiplier' not in first_mem:
-                self._engine._ensure_heavy_init()
+                self._engine.ensure_heavy_init()
         except Exception:
             pass
 
