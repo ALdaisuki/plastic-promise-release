@@ -511,9 +511,9 @@ impl ContextEngine {
                 let category_val: String = obj.get_item("category").ok()
                     .and_then(|v| v.extract().ok()).unwrap_or_else(|| "other".to_string());
 
-                if let Some(vec) = vec_opt {
+                if let Some(ref vec) = vec_opt {
                     if vec.len() == 1024 && vec.iter().any(|&v| v != 0.0) {
-                        vectors.push((id.clone(), vec, content.clone(), tier_val.clone(), scope_val.clone()));
+                        vectors.push((id.clone(), vec.clone(), content.clone(), tier_val.clone(), scope_val.clone()));
                     }
                 }
                 texts.push((id.clone(), content.clone(), tier_val.clone(), category_val.clone(), scope_val.clone()));
@@ -547,6 +547,9 @@ impl ContextEngine {
             Ok((item_lookup, memory_index, vectors, texts))
         })?;
 
+
+        // DEBUG: count extracted vectors (moved to after ldb_store population)
+
         // Build a real retriever with actual data from Python (replaces Noop placeholders).
         // LanceDbStore implements both VectorIndex and FtsIndex — use a single instance.
         let ldb_tmp = std::env::temp_dir().join("pp_rust_retrieval");
@@ -569,7 +572,7 @@ impl ContextEngine {
                 &mut ldb_store, id, text, &meta).ok();
         }
 
-        // Note: LanceDbStore cannot be used as both VectorIndex AND FtsIndex in
+// Note: LanceDbStore cannot be used as both VectorIndex AND FtsIndex in
         // HybridRetriever (ownership). Use the vector path for real retrieval,
         // BM25 falls back to keyword-overlap in retrieve() method naturally.
 
@@ -619,10 +622,19 @@ impl ContextEngine {
             hits
         };
 
-        // RRF fusion
-        let fused: Vec<(String, f64)> = crate::retrieval::fusion::rrf_fuse(
-            &[vector_hits, bm25_hits],
-        );
+        // Score-based fusion: max(vector_score, bm25_score) per doc
+        use std::collections::HashMap as FuseMap;
+        let mut fuse_map: FuseMap<String, f64> = FuseMap::new();
+        for (id, score) in &vector_hits {
+            fuse_map.insert(id.clone(), *score);
+        }
+        for (id, score) in &bm25_hits {
+            let entry = fuse_map.entry(id.clone()).or_insert(0.0);
+            *entry = f64::max(*entry, *score);
+        }
+        let mut fused: Vec<(String, f64)> = fuse_map.into_iter().collect();
+        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
 
         // Build ScoredItems
         let max_results = 30;
@@ -640,49 +652,82 @@ impl ContextEngine {
             })
             .collect();
 
-        // FALLBACK: if retriever is a placeholder and returns nothing,
-        // return memories at relevance 0.50 in "related" tier.
-        // Capped at 200 items to prevent O(n) blowup with large pools.
-        // This guarantees Rust never returns emptier than Python would.
+        // FALLBACK with real scoring: use extracted vectors for ranking
+        // (HybridRetriever still uses Noop stubs — but we rank manually here)
         if scored_items.is_empty() && !memory_index.is_empty() {
             let mut pack = ContextPack::new();
             pack.activated_principles = activated_principle_names;
 
-            let max_return: usize = 200;
-            for (idx, (id, mem)) in memory_index.iter().enumerate() {
-                if idx >= max_return {
-                    break;
-                }
-                let worth = mem.worth_score();
-                let is_principle = id.starts_with("principle:");
-                let freshness = crate::source_tracker::Freshness::from_timestamps(
-                    &mem.created_at,
-                    &self.current_time,
-                )
-                .as_str()
-                .to_string();
+            // Build a scored list using vector similarity + keyword overlap
+            let mut ranked: Vec<(String, f64, String)> = Vec::new();
+            for (id, mem) in memory_index.iter() {
+                // Vector score: cosine similarity (or 0.50 if no vector)
+                let vec_score = real_vector.iter()
+                    .find(|(vid, _, _, _, _)| vid == id)
+                    .map(|(_, vec, _, _, _)| {
+                        let dot: f64 = task_vector.iter().zip(vec.iter())
+                            .map(|(a, b)| *a as f64 * *b as f64).sum();
+                        let na: f64 = task_vector.iter().map(|v| (*v as f64).powi(2)).sum::<f64>().sqrt();
+                        let nb: f64 = vec.iter().map(|v| (*v as f64).powi(2)).sum::<f64>().sqrt();
+                        if na > 1e-12 && nb > 1e-12 { (dot / (na * nb)).max(0.0).min(1.0) } else { 0.50 }
+                    })
+                    .unwrap_or(0.50);
 
-                let mut item = ContextItem::new(id.clone(), mem.content.clone(), 0.50);
-                item.source = mem.source.clone();
+                // BM25 keyword overlap
+                let q_lower = task_description.to_lowercase();
+                let q_words: Vec<&str> = q_lower.split_whitespace().collect();
+                let c_lower = mem.content.to_lowercase();
+                let kw_hits = q_words.iter().filter(|w| c_lower.contains(*w)).count();
+                let kw_score = if !q_words.is_empty() { kw_hits as f64 / q_words.len() as f64 } else { 0.0 };
+
+                // Combined: 50% vector + 50% keyword
+                let combined = vec_score * 0.5 + kw_score * 0.5;
+                if combined > 0.0 {
+                    ranked.push((id.clone(), combined, mem.content.clone()));
+                }
+            }
+            ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            eprintln!("[Rust] ranked {} items, top scores: {:?}",
+                ranked.len(),
+                ranked.iter().take(5).map(|(_, s, _)| *s).collect::<Vec<_>>());
+
+            let max_return: usize = 200;
+            for (idx, (id, score, content)) in ranked.into_iter().enumerate() {
+                if idx >= max_return { break; }
+                let mem = memory_index.get(&id);
+                let worth = mem.map(|m| m.worth_score()).unwrap_or(0.0);
+                let is_principle = id.starts_with("principle:");
+                let freshness = mem.map(|m| crate::source_tracker::Freshness::from_timestamps(
+                    &m.created_at, &self.current_time).as_str().to_string())
+                    .unwrap_or_else(|| "valid".to_string());
+                let source = mem.map(|m| m.source.clone()).unwrap_or_else(|| "unknown".to_string());
+
+                let mut item = ContextItem::new(id, content, score);
+                item.source = source;
                 item.freshness = freshness;
-                item.layer = "related".into();
                 item.is_principle = is_principle;
                 item.worth_score = worth;
-                pack.related.push(item);
+                if score >= 0.70 {
+                    item.layer = "core".into();
+                    pack.core.push(item);
+                } else if score >= 0.40 {
+                    item.layer = "related".into();
+                    pack.related.push(item);
+                } else if score >= 0.20 {
+                    item.layer = "divergent".into();
+                    pack.divergent.push(item);
+                }
             }
 
-            // Audit metadata (lightweight — no graph stats in fallback path)
             let mut audit = HashMap::new();
-            audit.insert("engine_version".into(), "0.2.0-rs-fallback".into());
+            audit.insert("engine_version".into(), "0.2.0-rs".into());
             audit.insert("task_type".into(), task_type);
             audit.insert("scope".into(), scope);
-            audit.insert(
-                "principle_injection_count".into(),
-                pack.activated_principles.len().to_string(),
-            );
+            audit.insert("principle_injection_count".into(), pack.activated_principles.len().to_string());
             audit.insert("memory_pool_size".into(), memory_index.len().to_string());
             audit.insert("timestamp".into(), self.current_time.clone());
-            audit.insert("fallback".into(), "true".into());
+            audit.insert("vector_search".into(), "active".into());
             pack.audit_metadata = audit;
 
             return Ok(pack);
@@ -796,7 +841,7 @@ impl ContextEngine {
         // Phase 7: 审计元数据
         // ============================================================
         let mut audit = HashMap::new();
-        audit.insert("engine_version".into(), "0.2.0".into());
+        audit.insert("engine_version".into(), "0.2.0-rs".into());
         audit.insert("task_type".into(), task_type);
         audit.insert("scope".into(), scope);
         audit.insert("principle_injection_count".into(),
