@@ -105,6 +105,7 @@ def _get_fuzzy_buffer(engine: Any):
 
 async def handle_system(engine: Any, args: dict) -> list[TextContent]:
     """系统工具统一入口。action: stats|backup|migrate"""
+    engine._ensure_heavy_init()  # NEW: ensure DomainManager + embedder are initialized
     action = args.get("action", "stats")
     if action == "backup":
         return await handle_system_backup(engine, args)
