@@ -1800,13 +1800,25 @@ class ContextEngine:
         rust = RustEngine()
         rust.set_current_time(datetime.datetime.now().isoformat())
 
-        # Pass memory snapshot from Python — Rust uses these for retrieval
-        # (read-only SQLite is used only for memory_version checks)
+        # Load all vectors from LanceDB at once for Rust enrichment
+        vector_lookup: dict[str, list[float]] = {}
+        if self._ldb:
+            try:
+                all_rows = self._ldb._table.search().limit(9999).to_list()
+                for row in all_rows:
+                    mid = row.get("memory_id", "")
+                    vec = row.get("vector", [])
+                    if mid and vec and len(vec) == 1024:
+                        vector_lookup[mid] = list(vec)
+            except Exception:
+                pass
+
         with self._write_lock:
-            memories = [
-                self._memories[mid]
-                for mid in self._memories
-            ]
+            memories = []
+            for mid in self._memories:
+                mem = dict(self._memories[mid])
+                mem["_vector"] = vector_lookup.get(mid, [])
+                memories.append(mem)
 
         rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
         return self._convert_rust_pack(rust_pack)

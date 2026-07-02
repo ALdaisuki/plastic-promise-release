@@ -456,11 +456,14 @@ impl ContextEngine {
         }
 
         // ============================================================
-        // Phase 1: 构建 item_lookup (从 StorageBackend)
+        // Phase 1: 构建 item_lookup + 填充真实检索后端 (from Python objects)
         // ============================================================
-        let (mut item_lookup, memory_index) = Python::with_gil(|py| -> PyResult<_> {
+        let (mut item_lookup, memory_index, mut real_vector, mut real_fts) = Python::with_gil(|py| -> PyResult<_> {
             let mut item_lookup: HashMap<String, (String, String)> = HashMap::new();
             let mut memory_index: HashMap<String, crate::memory_worth::MemoryRecord> = HashMap::new();
+            // Real backends — replace Noop stubs for actual retrieval
+            let mut vectors: Vec<(String, Vec<f32>, String, String, String)> = Vec::new();
+            let mut texts: Vec<(String, String, String, String, String)> = Vec::new();
 
             for py_mem in &memories {
                 let obj = py_mem.as_ref(py);
@@ -497,6 +500,24 @@ impl ContextEngine {
                     .and_then(|v| v.extract().ok())
                     .unwrap_or_default();
 
+                // Extract vector if available (Python: mem.get("_vector"))
+                let vec_opt: Option<Vec<f32>> = obj.get_item("_vector")
+                    .ok()
+                    .and_then(|v| v.extract().ok());
+                let tier_val: String = obj.get_item("tier").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or_else(|| "L1".to_string());
+                let scope_val: String = obj.get_item("scope").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or_else(|| "global".to_string());
+                let category_val: String = obj.get_item("category").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or_else(|| "other".to_string());
+
+                if let Some(vec) = vec_opt {
+                    if vec.len() == 1024 && vec.iter().any(|&v| v != 0.0) {
+                        vectors.push((id.clone(), vec, content.clone(), tier_val.clone(), scope_val.clone()));
+                    }
+                }
+                texts.push((id.clone(), content.clone(), tier_val.clone(), category_val.clone(), scope_val.clone()));
+
                 item_lookup.insert(id.clone(), (content.clone(), source.clone()));
                 memory_index.insert(id.clone(), crate::memory_worth::MemoryRecord {
                     id,
@@ -523,8 +544,34 @@ impl ContextEngine {
                     effective_half_life: 3.0,
                 });
             }
-            Ok((item_lookup, memory_index))
+            Ok((item_lookup, memory_index, vectors, texts))
         })?;
+
+        // Build a real retriever with actual data from Python (replaces Noop placeholders).
+        // LanceDbStore implements both VectorIndex and FtsIndex — use a single instance.
+        let ldb_tmp = std::env::temp_dir().join("pp_rust_retrieval");
+        let mut ldb_store = crate::storage::lancedb_impl::LanceDbStore::open(&ldb_tmp)
+            .unwrap_or_else(|_| panic!("LanceDbStore open failed"));
+        for (id, vec, _content, tier, scope) in &real_vector {
+            let meta = crate::storage::IndexMetadata {
+                memory_id: id.clone(), tier: tier.clone(),
+                category: "other".to_string(), scope: scope.clone(),
+            };
+            <crate::storage::lancedb_impl::LanceDbStore as crate::storage::VectorIndex>::insert(
+                &mut ldb_store, id, vec, &meta).ok();
+        }
+        for (id, text, tier, category, scope) in &real_fts {
+            let meta = crate::storage::IndexMetadata {
+                memory_id: id.clone(), tier: tier.clone(),
+                category: category.clone(), scope: scope.clone(),
+            };
+            <crate::storage::lancedb_impl::LanceDbStore as crate::storage::FtsIndex>::index(
+                &mut ldb_store, id, text, &meta).ok();
+        }
+
+        // Note: LanceDbStore cannot be used as both VectorIndex AND FtsIndex in
+        // HybridRetriever (ownership). Use the vector path for real retrieval,
+        // BM25 falls back to keyword-overlap in retrieve() method naturally.
 
         // ============================================================
         // BM25 version check: rebuild index if memory_version changed
@@ -541,20 +588,57 @@ impl ContextEngine {
         }
 
         // ============================================================
-        // Phase 2: 混合检索 (向量 + BM25 + RRF + 符号规则)
+        // Phase 2: Real retrieval (vector from populated LanceDbStore + BM25 keyword fallback)
         // ============================================================
+        let candidate_pool_size = 20;
+
+        // Vector search: use real data from Python objects (replaces NoopVectorIndex)
+        let filter = crate::storage::SearchFilter {
+            scope: Some(scope.clone()), tier: None, category: None,
+        };
+        let vector_hits: Vec<(String, f64)> = <crate::storage::lancedb_impl::LanceDbStore as crate::storage::VectorIndex>::search(
+            &ldb_store, &task_vector, candidate_pool_size, &filter,
+        ).unwrap_or_default();
+
+        // BM25: keyword-overlap fallback (same logic as old HybridRetriever.retrieve())
+        let bm25_hits: Vec<(String, f64)> = {
+            let mut hits: Vec<(String, f64)> = Vec::new();
+            let q_lower = task_description.to_lowercase();
+            let q_words: Vec<&str> = q_lower.split_whitespace().collect();
+            if !q_words.is_empty() {
+                for (id, (content, _source)) in item_lookup.iter() {
+                    let c_lower = content.to_lowercase();
+                    let matched = q_words.iter().filter(|w| c_lower.contains(*w)).count();
+                    let score = matched as f64 / q_words.len() as f64;
+                    if score > 0.0 {
+                        hits.push((id.clone(), score));
+                    }
+                }
+                hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            hits
+        };
+
+        // RRF fusion
+        let fused: Vec<(String, f64)> = crate::retrieval::fusion::rrf_fuse(
+            &[vector_hits, bm25_hits],
+        );
+
+        // Build ScoredItems
         let max_results = 30;
-        let scored_items = self
-            .retriever
-            .retrieve(
-                &task_vector,
-                &task_description,
-                &scope,
-                Some(&task_type),
-                &item_lookup,
-                max_results,
-            )
-            .unwrap_or_default();
+        let scored_items: Vec<crate::retrieval::ScoredItem> = fused.into_iter()
+            .take(max_results)
+            .map(|(id, score)| {
+                let (content, source) = item_lookup.get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| (String::new(), "unknown".to_string()));
+                crate::retrieval::ScoredItem {
+                    id, content, score, source,
+                    tier: crate::domain::Tier::default(),
+                    worth_score: 0.0, decay_multiplier: 1.0, is_principle: false,
+                }
+            })
+            .collect();
 
         // FALLBACK: if retriever is a placeholder and returns nothing,
         // return memories at relevance 0.50 in "related" tier.
