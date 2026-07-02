@@ -253,6 +253,51 @@ impl ContextEngine {
         self.current_time = iso_timestamp;
     }
 
+    /// Create a ContextEngine with real domain models (not placeholders).
+    ///
+    /// Vector + FTS channels use Noop stubs per architecture contract
+    /// (Python owns LanceDB). Domain models use real implementations:
+    /// WeibullDecay for tier-aware decay, WilsonWorthCalculator for
+    /// statistically-sound worth scoring, DefaultTierManager for
+    /// access-count-based tier promotion.
+    ///
+    /// The keyword-overlap BM25 fallback in HybridRetriever.retrieve()
+    /// (retrieval/mod.rs:131-147) provides text-based retrieval when
+    /// vector indices are unavailable.
+    #[staticmethod]
+    pub fn new_with_backends(_sqlite_path: String, _lancedb_path: String) -> PyResult<Self> {
+        use crate::domain::decay::WeibullDecay;
+        use crate::domain::worth::WilsonWorthCalculator;
+        use crate::domain::tier::DefaultTierManager;
+        // NoopVectorIndex / NoopFtsIndex are defined in retrieval/mod.rs:194,210
+        use crate::retrieval::NoopVectorIndex;
+        use crate::retrieval::NoopFtsIndex;
+        use crate::retrieval::NoopConsolidator;
+
+        let storage = crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+        let retriever = HybridRetriever::new(
+            Box::new(NoopVectorIndex),                  // vector search: Python-side
+            Box::new(NoopFtsIndex),                     // FTS: Python-side
+            Box::new(WeibullDecay::default()),          // REAL decay model
+            Box::new(WilsonWorthCalculator::default()), // REAL worth model
+            Box::new(DefaultTierManager),               // REAL tier manager
+            Box::new(NoopConsolidator),
+        );
+
+        Ok(Self {
+            graph: RefCell::new(EntityGraph::new()),
+            source_tracker: SourceTracker::new(),
+            feedback: AssociationFeedback::new(),
+            retriever,
+            storage: Box::new(storage),
+            enable_principles: true,
+            current_time: String::new(),
+            last_consolidation: Cell::new(Utc::now()),
+        })
+    }
+
     /// 加载/更新 EntityGraph（从 Python 侧传入 JSON 字符串）
     ///
     /// The JSON string must deserialize to a valid EntityGraph.

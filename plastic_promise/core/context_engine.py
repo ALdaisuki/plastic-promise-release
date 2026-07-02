@@ -68,7 +68,7 @@ class ContextPack:
     core: List[ContextItem] = field(default_factory=list)
     related: List[ContextItem] = field(default_factory=list)
     divergent: List[ContextItem] = field(default_factory=list)
-    activated_principles: List[str] = field(default_factory=list)
+    activated_principles: List[dict] = field(default_factory=list)
     audit_metadata: Dict[str, str] = field(default_factory=dict)
 
     def to_prompt(self) -> str:
@@ -76,15 +76,19 @@ class ContextPack:
         if self.activated_principles:
             lines.append("## 🧬 核心约定参考（约定优于约束——决策前主动查阅）")
             from plastic_promise.core.constants import CORE_PRINCIPLES
-            for name in self.activated_principles:
-                # Find principle by name and show full reference
-                match = next((p for p in CORE_PRINCIPLES if p["name"] == name), None)
-                if match:
-                    lines.append(f"### {name}")
-                    lines.append(f"> {match['content']}")
-                    lines.append(f"**⚠️ 违反后果**：{match.get('consequence', '未知后果')}")
+            for p in self.activated_principles:
+                if isinstance(p, dict):
+                    name = p.get("name", "?")
+                    content = p.get("content", "")
+                    consequence = p.get("consequence", "违反约定可能导致系统退化")
                 else:
-                    lines.append(f"- {name}")
+                    name = p
+                    match = next((cp for cp in CORE_PRINCIPLES if cp["name"] == name), None)
+                    content = match["content"] if match else ""
+                    consequence = match.get("consequence", "违反约定可能导致系统退化") if match else ""
+                lines.append(f"### {name}")
+                lines.append(f"> {content}")
+                lines.append(f"**⚠️ 违反后果**：{consequence}")
             lines.append("")
         if self.core:
             lines.append("## 🔵 核心上下文（必读）")
@@ -1416,9 +1420,13 @@ class ContextEngine:
         """Public wrapper for _ensure_heavy_init."""
         self._ensure_heavy_init()
 
-    def activate_principles(self, task_type: str, task_description: str) -> list[str]:
+    def activate_principles(self, task_type: str, task_description: str) -> list:
         """Public wrapper for _activate_principles."""
         return self._activate_principles(task_type, task_description)
+
+    def check_rust_health(self) -> bool:
+        """Public wrapper for _check_rust_health."""
+        return self._check_rust_health() is True
 
     def text_retrieval(self, task: str, trust_boost: float = 1.0) -> list[tuple]:
         """Public wrapper for _text_retrieval."""
@@ -1610,6 +1618,7 @@ class ContextEngine:
         current _memories dict (~0.5-2ms for 1000 records).
         """
         from context_engine_core import ContextEngine as RustEngine
+        import tempfile, os as _os
 
         # Build memory list for PyO3 — pass raw dicts, no JSON serialize
         # Performance: ~0.5-2ms for 1000 records (list comprehension + dict refs)
@@ -1622,7 +1631,9 @@ class ContextEngine:
                 for mid in self._memories
             ]
 
-        rust = RustEngine()
+        # Use real domain models (not placeholders)
+        lancedb_tmp = _os.path.join(tempfile.gettempdir(), "pp_rust_lancedb")
+        rust = RustEngine.new_with_backends(":memory:", lancedb_tmp)
         rust.set_current_time(datetime.datetime.now().isoformat())
         rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
         return self._convert_rust_pack(rust_pack)
@@ -1647,9 +1658,15 @@ class ContextEngine:
         """
         from plastic_promise.core.constants import CORE_PRINCIPLES
 
+        # T3 changed _activate_principles() return from List[str] → List[dict]
+        # Extract names so membership checks work correctly
+        activated_names_list = [
+            p["name"] if isinstance(p, dict) else p for p in activated_names
+        ]
+
         edges_created = 0
         for p in CORE_PRINCIPLES:
-            if p["name"] not in activated_names:
+            if p["name"] not in activated_names_list:
                 continue
 
             node_id = f"principle:{p['id']}"
@@ -1675,7 +1692,7 @@ class ContextEngine:
 
         return edges_created
 
-    def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
+    def _activate_principles(self, task_type: str, task_description: str) -> List[dict]:
         """P1: Three-channel principle activation.
 
         Channel 1 — Static task-type mapping: differentiated principle
@@ -1729,11 +1746,17 @@ class ContextEngine:
             except Exception:
                 pass  # Intent matching is best-effort; degrade gracefully
 
-        # Resolve IDs to names
+        # Resolve IDs to full principle dicts
         result = []
         for p in CORE_PRINCIPLES:
             if p["id"] in activated_ids:
-                result.append(p["name"])
+                result.append({
+                    "name": p["name"],
+                    "content": p["content"],
+                    "consequence": p.get("consequence", ""),
+                    "domain": p.get("domain", "all"),
+                    "keywords": p.get("keywords", ""),
+                })
         return result
 
     def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> List[tuple]:

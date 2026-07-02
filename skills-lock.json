@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "agentic-architect-designer": {
+      "source": "ZohaibCodez/ai-architect-automation-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/agentic-architect-designer/SKILL.md",
+      "computedHash": "d5e790cf17c1f156c811380095752e9ef10ac5a8e8645eb6f4d4bcb8e24b30b5"
+    },
+    "seo-readme-generator": {
+      "source": "ZohaibCodez/ai-architect-automation-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/seo-readme-generator/SKILL.md",
+      "computedHash": "e4a131867338067a0d0ad47cebf5084ad5cc2b128b19b32930bcbb45090584e7"
+    },
+    "skill-maker": {
+      "source": "ZohaibCodez/ai-architect-automation-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/skill-maker/SKILL.md",
+      "computedHash": "d23f070a38bec45e3a0744be2eedc78666feac7ed0907f9305d408d6cda3d786"
+    },
+    "tools-visual-ascii-arch": {
+      "source": "tjboudreaux/cc-plugin-text-visualizations",
+      "sourceType": "github",
+      "skillPath": "skills/tools-visual-ascii-arch/SKILL.md",
+      "computedHash": "9b63d63f29f1d2ba8953cb3d97a57a0a2508e8cbaa60b5c55064a30e6db7fe3d"
+    }
+  }
+}

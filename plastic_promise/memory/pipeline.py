@@ -318,16 +318,17 @@ class MemoryPipeline:
                         tags.append("embed:deferred")
                 continue  # stay in classified stage, retry next cycle
             for (mid, record), vec in zip(batch, vectors):
-                # ---- Zero-vector guard (classified stage): defer when no rec_mem ----
-                if self.rec_mem is None and not (mid in skip_set) and vec and not any(v != 0.0 for v in vec):
-                    tags = record.setdefault("tags", [])
-                    if "embed:deferred" not in tags:
-                        tags.append("embed:deferred")
+                # Classified-stage guard: if rec_mem is None and vector is zero,
+                # defer to avoid permanent zero-vector storage
+                if self.rec_mem is None and vec and not any(v != 0.0 for v in vec):
                     logging.warning(
-                        "Zero vector for %s (no rec_mem), deferring (tagged embed:deferred)",
+                        "Zero vector + no rec_mem for %s, deferring in classified",
                         mid,
                     )
-                    continue  # stay in classified stage, retry next cycle
+                    record.setdefault("tags", [])
+                    if "embed:deferred" not in record["tags"]:
+                        record["tags"].append("embed:deferred")
+                    continue  # stay in classified
                 record["vector"] = vec
                 record["stage"] = "embedded"
                 record["processed_at"] = datetime.datetime.now().isoformat()
@@ -357,16 +358,17 @@ class MemoryPipeline:
                 engine = getattr(self.rec_mem, '_engine', None)
                 vec = record.get("vector")
 
-                # ---- Zero-vector guard: skip persistence, not processing ----
+                # ---- Zero-vector guard: reject fallback embeddings ----
                 if vec and not any(v != 0.0 for v in vec):
                     logging.warning(
-                        "Zero vector detected for %s, skipping LanceDB write but continuing processing",
+                        "Zero vector detected for %s, deferring back to classified",
                         mid,
                     )
-                    record["tags"] = record.get("tags", [])
+                    record.setdefault("tags", [])
                     if "embed:fallback" not in record["tags"]:
                         record["tags"].append("embed:fallback")
-                    vec = None  # prevent vector persistence, still process item
+                    record["stage"] = "classified"  # rollback for retry
+                    continue
 
                 # ---- Step 4a: Vector dedup ----
                 if vec and self._lancedb is not None:
