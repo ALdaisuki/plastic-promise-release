@@ -7,7 +7,8 @@ This module does NOT perform searches or produce side effects.
 It only builds a GapSignal that consumers (sp-stage, Claude) may act on.
 """
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -89,8 +90,6 @@ def _extract_keywords(query: str) -> list[str]:
 
     Does NOT use spacy/nltk — keeps the dependency footprint zero.
     """
-    import re
-
     # Normalize
     cleaned = re.sub(r'[^\w\s\-]', ' ', query)
     tokens = cleaned.split()
@@ -175,27 +174,30 @@ def detect_gap(query: str, pack: "ContextPack") -> Optional[GapSignal]:
     Only triggers for queries containing technology keywords.
     Does NOT perform searches. Does NOT modify the pack.
     """
-    # Guard: only technical queries can trigger
-    if not _is_tech_query(query):
-        return None
+    try:
+        # Guard: only technical queries can trigger
+        if not _is_tech_query(query):
+            return None
 
-    # Tier 1: core layer populated → sufficient info
-    if pack.core:
-        return None
+        # Tier 1: core layer populated → sufficient info
+        if pack.core:
+            return None
 
-    # Tier 2: related layer has enough high-quality items
-    related_with_relevance = [
-        item for item in pack.related
-        if getattr(item, 'relevance', 0) > 0.45
-    ]
-    if len(related_with_relevance) >= 3:
-        return None
+        # Tier 2: related layer has enough high-quality items
+        related_with_relevance = [
+            item for item in pack.related
+            if getattr(item, 'relevance', 0) > 0.45
+        ]
+        if len(related_with_relevance) >= 3:
+            return None
 
-    # Tier 3: genuine knowledge gap
-    return GapSignal(
-        type="exemplar_needed",
-        problem=query,
-        suggested_search=_extract_keywords(query),
-        auto_task=True,
-        severity="medium",
-    )
+        # Tier 3: genuine knowledge gap
+        return GapSignal(
+            type="exemplar_needed",
+            problem=query,
+            suggested_search=_extract_keywords(query),
+            auto_task=True,
+            severity="medium",
+        )
+    except Exception:
+        return None
