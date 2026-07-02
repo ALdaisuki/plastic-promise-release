@@ -4,6 +4,7 @@ Tools: task_enqueue, task_claim, task_complete, task_verify,
        task_inbox, task_heartbeat, task_abandon
 """
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -24,6 +25,31 @@ def _get_db_path() -> str:
 def _generate_task_id() -> str:
     suffix = uuid.uuid4().hex[:8]
     return f"t_{datetime.now().strftime('%Y%m%d%H%M%S')}_{suffix}"
+
+
+def _compute_payload_hash(payload: dict) -> str:
+    """Compute a deterministic hash for dedup based on payload content.
+
+    Uses SHA256 first 8 hex chars of problem + sorted search_hints.
+    Returns empty string if payload is None or missing required fields.
+    """
+    if not payload:
+        return ""
+    problem = payload.get("problem", "") or payload.get("gap_signal", {}).get("problem", "")
+    search_hint = payload.get("search_hint", [])
+    if not problem:
+        return ""
+    seed = f"{problem}|{'|'.join(sorted(search_hint))}"
+    return hashlib.sha256(seed.encode()).hexdigest()[:8]
+
+
+def _inject_payload_hash(payload: dict) -> dict:
+    """Inject payload_hash into payload dict for later dedup queries."""
+    if not payload:
+        return payload
+    result = dict(payload)
+    result["payload_hash"] = _compute_payload_hash(payload)
+    return result
 
 
 def _get_conn():
@@ -71,7 +97,7 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
                     args.get("memory_id"), args.get("principle_id"),
                     args.get("source_scan"), args.get("parent_task_id"),
                     args.get("timeout_seconds", 300), max_escalations,
-                    json.dumps(args.get("payload")) if args.get("payload") else None,
+                    json.dumps(_inject_payload_hash(args.get("payload"))) if args.get("payload") else None,
                 ))
             conn.commit()
             conn.close()
@@ -102,6 +128,30 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
                 "reason": f"C级猎人（{rank['title']}）挂A/B级委托需Claude审批",
             }, ensure_ascii=False))]
 
+    # ── Dedup check (research_exemplar / verify_exemplar) ───
+    # For research-oriented task types, check if a pending task
+    # with the same payload_hash already exists.
+    if args["task_type"] in ("research_exemplar", "verify_exemplar"):
+        payload = args.get("payload")
+        if payload:
+            phash = _compute_payload_hash(payload)
+            if phash:
+                dedup_conn = _get_conn()
+                existing = dedup_conn.execute(
+                    "SELECT id FROM task_queue "
+                    "WHERE task_type = ? AND status = 'pending' "
+                    "AND json_extract(payload, '$.payload_hash') = ? "
+                    "LIMIT 1",
+                    (args["task_type"], phash),
+                ).fetchone()
+                dedup_conn.close()
+                if existing:
+                    return [TextContent(type="text", text=json.dumps({
+                        "status": "duplicate",
+                        "existing_task_id": existing["id"],
+                        "reason": f"Pending {args['task_type']} for this problem already exists",
+                    }, ensure_ascii=False))]
+
     # ── Normal enqueue ─────────────────────────────────────
     task_id = _generate_task_id()
     conn = _get_conn()
@@ -117,7 +167,7 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
             args.get("memory_id"), args.get("principle_id"),
             args.get("source_scan"), args.get("parent_task_id"),
             args.get("timeout_seconds", 300), max_escalations,
-            json.dumps(args.get("payload")) if args.get("payload") else None,
+            json.dumps(_inject_payload_hash(args.get("payload"))) if args.get("payload") else None,
         ))
     conn.commit()
 

@@ -74,6 +74,7 @@ class ContextPack:
     divergent: List[ContextItem] = field(default_factory=list)
     activated_principles: List[str] = field(default_factory=list)
     audit_metadata: Dict[str, str] = field(default_factory=dict)
+    gap_signal: Optional["GapSignal"] = None  # knowledge-gap detection signal
 
     def to_prompt(self) -> str:
         lines = []
@@ -1414,6 +1415,16 @@ class ContextEngine:
             "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
             "rerank_status": getattr(self, '_last_rerank_status', 'skipped_disabled'),
         }
+
+        # ── Exemplar gap detection ─────────────────────────
+        # Middleware: detect knowledge gaps before returning.
+        # Graceful degradation: if the detector fails, we still
+        # return the pack — gap_signal is optional enrichment.
+        try:
+            from plastic_promise.core.exemplar_gap_detector import detect_gap
+            pack.gap_signal = detect_gap(task_description, pack)
+        except Exception:
+            pass  # gap detection failure must not block context_supply
 
         return pack
 

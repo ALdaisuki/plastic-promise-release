@@ -644,8 +644,9 @@ MERGE_AUDIT_RETENTION_DAYS = 7         # merged records kept in SQLite before pe
 
 SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     # ── SuperPowers 原始 skills (概念层) ──
-    "brainstorming":               {"predecessors": [],           "successors": ["using-git-worktrees"]},
-    "using-git-worktrees":         {"predecessors": ["brainstorming"], "successors": ["writing-plans"]},
+    "brainstorming":               {"predecessors": [],           "successors": ["exemplar-research"]},
+    "exemplar-research":           {"predecessors": ["brainstorming"], "successors": ["using-git-worktrees"]},
+    "using-git-worktrees":         {"predecessors": ["exemplar-research"], "successors": ["writing-plans"]},
     "writing-plans":               {"predecessors": ["using-git-worktrees"], "successors": ["subagent-driven-development", "executing-plans"]},
     "subagent-driven-development": {"predecessors": ["writing-plans"], "successors": ["test-driven-development", "requesting-code-review"]},
     "executing-plans":             {"predecessors": ["writing-plans"], "successors": ["test-driven-development", "verification-before-completion"]},
@@ -662,8 +663,9 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     "using-superpowers":           {"predecessors": [], "successors": ["brainstorming", "systematic-debugging", "requesting-code-review"]},
 
     # ── Plastic Promise Programmatic Skills (sp-* 系列) — 与概念层一一对应 ──
-    "sp-brainstorming":               {"predecessors": [],                    "successors": ["sp-using-git-worktrees"]},
-    "sp-using-git-worktrees":         {"predecessors": ["sp-brainstorming"],  "successors": ["sp-writing-plans"]},
+    "sp-brainstorming":               {"predecessors": [],                    "successors": ["sp-exemplar-research"]},
+    "sp-exemplar-research":           {"predecessors": ["sp-brainstorming"],  "successors": ["sp-using-git-worktrees"]},
+    "sp-using-git-worktrees":         {"predecessors": ["sp-exemplar-research"], "successors": ["sp-writing-plans"]},
     "sp-writing-plans":               {"predecessors": ["sp-using-git-worktrees"], "successors": ["sp-subagent-driven-development", "sp-executing-plans"]},
     "sp-subagent-driven-development": {"predecessors": ["sp-writing-plans"],  "successors": ["sp-test-driven-development", "sp-requesting-code-review"]},
     "sp-executing-plans":             {"predecessors": ["sp-writing-plans"],  "successors": ["sp-test-driven-development", "sp-verification-before-completion"]},
@@ -679,6 +681,7 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
 SKILL_DOMAIN_MAP: dict[str, str] = {
     # SuperPowers 原始 skills
     "brainstorming":                  "designing",
+    "exemplar-research":              "designing",
     "writing-plans":                  "designing",
     "executing-plans":                "building",
     "subagent-driven-development":    "building",
@@ -695,6 +698,7 @@ SKILL_DOMAIN_MAP: dict[str, str] = {
 
     # Plastic Promise Programmatic Skills (sp-* 系列) — 与概念层一一对应
     "sp-brainstorming":               "designing",
+    "sp-exemplar-research":           "designing",
     "sp-using-git-worktrees":         "building",
     "sp-writing-plans":               "designing",
     "sp-subagent-driven-development": "building",
