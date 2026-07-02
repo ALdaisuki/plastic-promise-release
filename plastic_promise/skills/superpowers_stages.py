@@ -366,11 +366,18 @@ STAGE_DEGRADE = {
 SKILL_DEFS = {}
 
 for _stage_name, _atoms in STAGE_ATOMS.items():
-    # 审查阶段使用专用 handler，其他阶段使用泛型 handler
+    # 审查阶段和 exemplar-research 使用专用 handler，其他阶段使用泛型 handler
     if _stage_name == "requesting-code-review":
         _handler = _request_review_handler
     elif _stage_name == "receiving-code-review":
         _handler = _receive_review_handler
+    elif _stage_name == "exemplar-research":
+        # Use dedicated handler from exemplar_research module
+        try:
+            from plastic_promise.skills.exemplar_research import _exemplar_research_handler
+            _handler = _exemplar_research_handler
+        except ImportError:
+            _handler = _make_handler(_stage_name)
     else:
         _handler = _make_handler(_stage_name)
 
