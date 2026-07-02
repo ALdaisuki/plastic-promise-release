@@ -16,7 +16,7 @@ def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
     median = sorted_vals[len(sorted_vals) // 2]
     mean = sum(sorted_vals) / len(sorted_vals)
     variance = sum((v - mean) ** 2 for v in sorted_vals) / len(sorted_vals)
-    std = variance ** 0.5
+    std = variance**0.5
     threshold = median + 2 * std
     return (median, threshold)
 
@@ -36,8 +36,7 @@ async def scan_coupling(engine) -> dict:
         # 1. Tag co-occurrence anomalies: find tag pairs that co-occur
         #    significantly more often than expected by chance
         tag_memory_rows = conn.execute(
-            "SELECT id, tags FROM memories "
-            "WHERE tags IS NOT NULL AND tags != '[]' AND tags != ''"
+            "SELECT id, tags FROM memories WHERE tags IS NOT NULL AND tags != '[]' AND tags != ''"
         ).fetchall()
 
         if len(tag_memory_rows) >= 10:
@@ -71,7 +70,11 @@ async def scan_coupling(engine) -> dict:
             for (t1, t2), actual in cooccur_freq.items():
                 if tag_freq[t1] < 3 or tag_freq[t2] < 3 or actual < 3:
                     continue
-                expected = (tag_freq[t1] / total_memories) * (tag_freq[t2] / total_memories) * total_memories
+                expected = (
+                    (tag_freq[t1] / total_memories)
+                    * (tag_freq[t2] / total_memories)
+                    * total_memories
+                )
                 if expected > 0:
                     ratio = actual / expected
                     anomalies.append((t1, t2, actual, expected, ratio))
@@ -82,20 +85,22 @@ async def scan_coupling(engine) -> dict:
 
                 for t1, t2, actual, expected, ratio in anomalies:
                     if ratio > threshold_ratio and ratio > 3.0:
-                        findings.append({
-                            "type": "tag_cooccurrence_anomaly",
-                            "tags": [t1, t2],
-                            "actual": actual,
-                            "expected": round(expected, 1),
-                            "ratio": round(ratio, 1),
-                            "to_agent": "pi_reviewer",
-                            "priority": 3,
-                            "task_type_field": "investigate_coupling",
-                            "title": (
-                                f"Tag异常共现: [{t1}]+[{t2}] 实际{actual}次 "
-                                f"(期望{expected:.1f}, x{ratio:.1f})"
-                            ),
-                        })
+                        findings.append(
+                            {
+                                "type": "tag_cooccurrence_anomaly",
+                                "tags": [t1, t2],
+                                "actual": actual,
+                                "expected": round(expected, 1),
+                                "ratio": round(ratio, 1),
+                                "to_agent": "pi_reviewer",
+                                "priority": 3,
+                                "task_type_field": "investigate_coupling",
+                                "title": (
+                                    f"Tag异常共现: [{t1}]+[{t2}] 实际{actual}次 "
+                                    f"(期望{expected:.1f}, x{ratio:.1f})"
+                                ),
+                            }
+                        )
 
         # 2. Bridge node growth: entities (from entity_ids) that appear in
         #    memories across many different domains
@@ -128,23 +133,24 @@ async def scan_coupling(engine) -> dict:
                 spans = list(domain_spans.values())
                 median_span, threshold_span = _compute_median_and_threshold(spans)
 
-                for entity, span in sorted(domain_spans.items(),
-                                           key=lambda x: x[1], reverse=True):
+                for entity, span in sorted(domain_spans.items(), key=lambda x: x[1], reverse=True):
                     if span > threshold_span:
-                        findings.append({
-                            "type": "bridge_node",
-                            "entity": entity,
-                            "domain_span": span,
-                            "domains": sorted(entity_domains[entity]),
-                            "threshold": round(threshold_span, 1),
-                            "to_agent": "pi_reviewer",
-                            "priority": 3,
-                            "task_type_field": "investigate_coupling",
-                            "title": (
-                                f"Bridge节点: '{entity}' 连接{span}个域"
-                                f"(阈值={threshold_span:.1f})"
-                            ),
-                        })
+                        findings.append(
+                            {
+                                "type": "bridge_node",
+                                "entity": entity,
+                                "domain_span": span,
+                                "domains": sorted(entity_domains[entity]),
+                                "threshold": round(threshold_span, 1),
+                                "to_agent": "pi_reviewer",
+                                "priority": 3,
+                                "task_type_field": "investigate_coupling",
+                                "title": (
+                                    f"Bridge节点: '{entity}' 连接{span}个域"
+                                    f"(阈值={threshold_span:.1f})"
+                                ),
+                            }
+                        )
 
         # 3. Implicit dependencies: domains whose memory counts grow in
         #    lockstep over time, suggesting hidden coupling
@@ -156,7 +162,7 @@ async def scan_coupling(engine) -> dict:
             "AND domain IS NOT NULL AND domain != '' "
             "GROUP BY d, domain "
             "ORDER BY d",
-            (fourteen_days_ago,)
+            (fourteen_days_ago,),
         ).fetchall()
 
         if len(domain_timeline) >= 10:
@@ -186,8 +192,7 @@ async def scan_coupling(engine) -> dict:
                         if sum1 == 0 and sum2 == 0:
                             continue
                         mean1, mean2 = sum1 / n, sum2 / n
-                        num = sum((series1[k] - mean1) * (series2[k] - mean2)
-                                  for k in range(n))
+                        num = sum((series1[k] - mean1) * (series2[k] - mean2) for k in range(n))
                         den1 = sum((series1[k] - mean1) ** 2 for k in range(n))
                         den2 = sum((series2[k] - mean2) ** 2 for k in range(n))
                         if den1 > 0 and den2 > 0:
@@ -200,35 +205,40 @@ async def scan_coupling(engine) -> dict:
 
                     for d1, d2, corr in correlated_pairs:
                         if abs(corr) > max(threshold_cor, 0.7):
-                            findings.append({
-                                "type": "implicit_dependency",
-                                "domains": [d1, d2],
-                                "correlation": round(corr, 3),
-                                "threshold": round(threshold_cor, 3),
-                                "to_agent": "claude",
-                                "priority": 2,
-                                "task_type_field": "investigate_coupling",
-                                "title": (
-                                    f"隐式依赖: {d1} 与 {d2} "
-                                    f"增长高度相关 (r={corr:.2f})"
-                                ),
-                            })
+                            findings.append(
+                                {
+                                    "type": "implicit_dependency",
+                                    "domains": [d1, d2],
+                                    "correlation": round(corr, 3),
+                                    "threshold": round(threshold_cor, 3),
+                                    "to_agent": "claude",
+                                    "priority": 2,
+                                    "task_type_field": "investigate_coupling",
+                                    "title": (
+                                        f"隐式依赖: {d1} 与 {d2} 增长高度相关 (r={corr:.2f})"
+                                    ),
+                                }
+                            )
     finally:
         conn.close()
 
     # Dispatch findings
     from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
+
     dispatched = 0
     for f in findings:
         try:
-            await handle_task_enqueue(engine, {
-                "task_type": f["task_type_field"],
-                "title": f["title"],
-                "to_agent": f["to_agent"],
-                "priority": f["priority"],
-                "source_scan": "scan_coupling",
-                "payload": f,
-            })
+            await handle_task_enqueue(
+                engine,
+                {
+                    "task_type": f["task_type_field"],
+                    "title": f["title"],
+                    "to_agent": f["to_agent"],
+                    "priority": f["priority"],
+                    "source_scan": "scan_coupling",
+                    "payload": f,
+                },
+            )
             dispatched += 1
         except Exception:
             pass

@@ -21,7 +21,7 @@ async def _session_init_handler(ctx, params, atom_results):
 
     def parse(result):
         """Extract parsed JSON dict from atom result list[TextContent]."""
-        if result and hasattr(result[0], 'text'):
+        if result and hasattr(result[0], "text"):
             try:
                 return json.loads(result[0].text)
             except (json.JSONDecodeError, TypeError):
@@ -32,8 +32,10 @@ async def _session_init_handler(ctx, params, atom_results):
     scarf_data = parse(atom_results.get("scarf_reflect"))
     context_data = {}
     context_raw = atom_results.get("context_supply")
-    if context_raw and hasattr(context_raw[0], 'text'):
-        context_data = {"prompt": context_raw[0].text}  # ContextPack.to_prompt() returns formatted text
+    if context_raw and hasattr(context_raw[0], "text"):
+        context_data = {
+            "prompt": context_raw[0].text
+        }  # ContextPack.to_prompt() returns formatted text
     memory_data = parse(atom_results.get("memory_store"))
     domain_data = parse(atom_results.get("domain"))
     system_data = parse(atom_results.get("system"))
@@ -44,6 +46,7 @@ async def _session_init_handler(ctx, params, atom_results):
     try:
         from plastic_promise.mcp.tools.skill_tracking import get_current_stage
         from plastic_promise.core.constants import SKILL_CHAIN_MAP as _CHAIN_MAP
+
         current_stage = get_current_stage()
         chain_state = None
         if current_stage:

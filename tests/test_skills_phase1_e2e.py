@@ -57,10 +57,18 @@ def engine():
     # Patch list_tools() to return tool names matching our skill atoms.
     # AtomRegistry validation checks atom names against the MCP tool listing.
     ctx.list_tools = lambda: [
-        _tool(n) for n in [
-            "principle_activate", "context_supply", "memory_store",
-            "memory_recall", "memory_update", "domain", "system",
-            "defense", "memory_gc", "skill_session_start",
+        _tool(n)
+        for n in [
+            "principle_activate",
+            "context_supply",
+            "memory_store",
+            "memory_recall",
+            "memory_update",
+            "domain",
+            "system",
+            "defense",
+            "memory_gc",
+            "skill_session_start",
             "skill_session_complete",
         ]
     ]
@@ -83,10 +91,12 @@ def skill_engine(engine):
 
     async def mock_session_start(ctx, args):
         _counter[0] += 1
-        return _response({
-            "entity_id": f"skill:{args.get('skill_name', 'test')}:{_counter[0]}",
-            "status": "active",
-        })
+        return _response(
+            {
+                "entity_id": f"skill:{args.get('skill_name', 'test')}:{_counter[0]}",
+                "status": "active",
+            }
+        )
 
     async def mock_session_complete(ctx, args):
         return _response({"status": "done"})
@@ -96,17 +106,25 @@ def skill_engine(engine):
 
     # principle_activate: returns a basic success response
     async def mock_principle_activate(ctx, args):
-        return _response({
-            "activated": [{"id": 1, "name": "Occam's Razor"}],
-            "count": 1,
-        })
+        return _response(
+            {
+                "activated": [{"id": 1, "name": "Occam's Razor"}],
+                "count": 1,
+            }
+        )
+
     se._atoms["principle_activate"] = mock_principle_activate
 
     # context_supply: returns empty context pack
     async def mock_context_supply(ctx, args):
-        return _response({
-            "core": [], "related": [], "divergent": [],
-        })
+        return _response(
+            {
+                "core": [],
+                "related": [],
+                "divergent": [],
+            }
+        )
+
     se._atoms["context_supply"] = mock_context_supply
 
     # memory_store: actually persists to the real ContextEngine
@@ -116,35 +134,47 @@ def skill_engine(engine):
         source = args.get("source", "user")
         record = MemoryRecord(content=content, memory_type=mtype, source=source)
         mem_id = ctx.store_memory(record)
-        return _response({
-            "stored": True,
-            "memory_id": mem_id,
-            "content_preview": content[:200],
-        })
+        return _response(
+            {
+                "stored": True,
+                "memory_id": mem_id,
+                "content_preview": content[:200],
+            }
+        )
+
     se._atoms["memory_store"] = mock_memory_store
 
     # memory_recall: returns empty results (no duplicates)
     async def mock_memory_recall(ctx, args):
-        return _response({
-            "core": [], "related": [], "divergent": [],
-        })
+        return _response(
+            {
+                "core": [],
+                "related": [],
+                "divergent": [],
+            }
+        )
+
     se._atoms["memory_recall"] = mock_memory_recall
 
     # domain, system, defense, memory_gc: successful mocks
     async def mock_domain(ctx, args):
         return _response({"domains": {"building": {"score": 0.8}}})
+
     se._atoms["domain"] = mock_domain
 
     async def mock_system(ctx, args):
         return _response({"memory": {"total": 0, "healthy": 0, "decaying": 0}})
+
     se._atoms["system"] = mock_system
 
     async def mock_defense(ctx, args):
         return _response({"trust": 0.75, "tier": "standard"})
+
     se._atoms["defense"] = mock_defense
 
     async def mock_memory_gc(ctx, args):
         return _response({"dry_run": True, "candidates_count": 0})
+
     se._atoms["memory_gc"] = mock_memory_gc
 
     # Register the two Phase 1 skills
@@ -169,10 +199,14 @@ class TestPhase1E2E:
         Verifies the 7-atom chain executes: atoms with degrade_map "skip"
         (domain, system, memory_gc) may fail without aborting the skill.
         """
-        result = await skill_engine.exec("session-init", params={
-            "task_description": "E2E test of session-init",
-            "task_type": "general",
-        }, caller="claude")
+        result = await skill_engine.exec(
+            "session-init",
+            params={
+                "task_description": "E2E test of session-init",
+                "task_type": "general",
+            },
+            caller="claude",
+        )
 
         # Skill execution should record its name
         assert result.skill_name == "session-init"
@@ -180,8 +214,7 @@ class TestPhase1E2E:
         # Domain, system, memory_gc may degrade in test env — but the skill
         # MUST still succeed because their degrade_map is "skip"
         assert result.success is True, (
-            f"session-init failed. Errors: {result.errors}, "
-            f"Degrade log: {result.degrade_log}"
+            f"session-init failed. Errors: {result.errors}, Degrade log: {result.degrade_log}"
         )
 
         # Handler-produced data should be present
@@ -192,15 +225,17 @@ class TestPhase1E2E:
 
     async def test_smart_remember_stores_memory(self, skill_engine):
         """smart-remember must store a new memory when no duplicate exists."""
-        result = await skill_engine.exec("smart-remember", params={
-            "content": "E2E test: the sky is blue",
-            "memory_type": "experience",
-            "source": "test",
-        }, caller="claude")
-
-        assert result.success is True, (
-            f"smart-remember failed. Errors: {result.errors}"
+        result = await skill_engine.exec(
+            "smart-remember",
+            params={
+                "content": "E2E test: the sky is blue",
+                "memory_type": "experience",
+                "source": "test",
+            },
+            caller="claude",
         )
+
+        assert result.success is True, f"smart-remember failed. Errors: {result.errors}"
         assert result.data["action"] == "stored"
         assert result.data["memory_id"] != ""
 
@@ -213,19 +248,25 @@ class TestPhase1E2E:
         3. Verify the memory is retrievable via ContextEngine.get_memory()
         """
         # 1. Initialize session
-        init_result = await skill_engine.exec("session-init", params={
-            "task_description": "E2E full workflow test",
-        }, caller="claude")
-        assert init_result.success is True, (
-            f"session-init failed. Errors: {init_result.errors}"
+        init_result = await skill_engine.exec(
+            "session-init",
+            params={
+                "task_description": "E2E full workflow test",
+            },
+            caller="claude",
         )
+        assert init_result.success is True, f"session-init failed. Errors: {init_result.errors}"
 
         # 2. Store a memory via smart-remember
-        remember_result = await skill_engine.exec("smart-remember", params={
-            "content": "E2E workflow: Python is the preferred language",
-            "memory_type": "experience",
-            "source": "test",
-        }, caller="claude")
+        remember_result = await skill_engine.exec(
+            "smart-remember",
+            params={
+                "content": "E2E workflow: Python is the preferred language",
+                "memory_type": "experience",
+                "source": "test",
+            },
+            caller="claude",
+        )
         assert remember_result.success is True, (
             f"smart-remember failed. Errors: {remember_result.errors}"
         )
@@ -251,20 +292,22 @@ class TestPhase1E2E:
         # Replace the domain atom with a failing one
         skill_engine._atoms["domain"] = _failing_atom
 
-        result = await skill_engine.exec("session-init", params={
-            "task_description": "E2E degradation test",
-            "task_type": "general",
-        }, caller="claude")
+        result = await skill_engine.exec(
+            "session-init",
+            params={
+                "task_description": "E2E degradation test",
+                "task_type": "general",
+            },
+            caller="claude",
+        )
 
         # Skill must succeed even though domain atom failed
         assert result.success is True, (
-            f"session-init failed despite degrade_map having domain=skip. "
-            f"Errors: {result.errors}"
+            f"session-init failed despite degrade_map having domain=skip. Errors: {result.errors}"
         )
         # The degrade log should record the skipped domain atom
         assert any("domain" in log for log in result.degrade_log), (
-            f"Expected domain failure recorded in degrade_log. "
-            f"Got: {result.degrade_log}"
+            f"Expected domain failure recorded in degrade_log. Got: {result.degrade_log}"
         )
 
     async def test_smart_remember_handles_duplicate(self, skill_engine):
@@ -283,21 +326,31 @@ class TestPhase1E2E:
 
         # Override memory_recall to return the seeded memory as a duplicate
         async def mock_recall_with_dupe(ctx, args):
-            return _response({
-                "core": [
-                    {"id": seed_id, "content": "E2E duplicate test: tab over spaces",
-                     "relevance": 0.92},
-                ],
-                "related": [],
-                "divergent": [],
-            })
+            return _response(
+                {
+                    "core": [
+                        {
+                            "id": seed_id,
+                            "content": "E2E duplicate test: tab over spaces",
+                            "relevance": 0.92,
+                        },
+                    ],
+                    "related": [],
+                    "divergent": [],
+                }
+            )
+
         skill_engine._atoms["memory_recall"] = mock_recall_with_dupe
 
-        result = await skill_engine.exec("smart-remember", params={
-            "content": "E2E duplicate test: tab over spaces",
-            "memory_type": "experience",
-            "source": "test",
-        }, caller="claude")
+        result = await skill_engine.exec(
+            "smart-remember",
+            params={
+                "content": "E2E duplicate test: tab over spaces",
+                "memory_type": "experience",
+                "source": "test",
+            },
+            caller="claude",
+        )
 
         assert result.success is True, (
             f"smart-remember duplicate handling failed. Errors: {result.errors}"
@@ -316,8 +369,12 @@ class TestPhase1E2E:
     async def test_unauthorized_caller_blocked(self, skill_engine):
         """A caller not in allowed_callers must be rejected before atoms run."""
         # smart-remember allows claude/pi; test with "unauthorized"
-        result = await skill_engine.exec("smart-remember", params={
-            "content": "should not run",
-        }, caller="unauthorized")
+        result = await skill_engine.exec(
+            "smart-remember",
+            params={
+                "content": "should not run",
+            },
+            caller="unauthorized",
+        )
         assert result.success is False
         assert "not in allowed_callers" in result.errors[0]

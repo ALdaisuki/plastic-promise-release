@@ -55,25 +55,30 @@ def _generate_federation_signals(pack, domain_hint, engine, federation):
     """Generate cross-domain federation signals on retrieval."""
     if not federation or not domain_hint or domain_hint == "all":
         return []
-    dm = getattr(engine, '_dm', None)
+    dm = getattr(engine, "_dm", None)
     if dm is None:
         return []
     signals = []
     seen = set()
-    for item in (pack.core + pack.related):
-        item_domain = getattr(item, 'domain', '') or ''
+    for item in pack.core + pack.related:
+        item_domain = getattr(item, "domain", "") or ""
         if item_domain and item_domain != domain_hint and item_domain != "all":
             key = (item_domain, domain_hint)
             if key not in seen:
                 seen.add(key)
-                signals.append({
-                    "source": item_domain,
-                    "target": domain_hint,
-                    "signal": dm.generate_signal(item_domain, domain_hint,
-                                                  getattr(item, 'id', '?'),
-                                                  agent_id=getattr(engine, '_agent_owner', '')
-                                                    or os.environ.get("AGENT_OWNER", ""))
-                })
+                signals.append(
+                    {
+                        "source": item_domain,
+                        "target": domain_hint,
+                        "signal": dm.generate_signal(
+                            item_domain,
+                            domain_hint,
+                            getattr(item, "id", "?"),
+                            agent_id=getattr(engine, "_agent_owner", "")
+                            or os.environ.get("AGENT_OWNER", ""),
+                        ),
+                    }
+                )
     return signals
 
 
@@ -89,12 +94,18 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.adaptive_retrieval import should_retrieve
+
         query = args["query"]
         if not should_retrieve(query):
-            return [TextContent(type="text", text=json.dumps(
-                {"skipped": True, "reason": "adaptive_retrieval",
-                 "query": query[:100]},
-                ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"skipped": True, "reason": "adaptive_retrieval", "query": query[:100]},
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
         task_type = args.get("task_type", "general")
         max_results = args.get("max_results", 20)
@@ -108,6 +119,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             return [TextContent(type="text", text=cached)]
 
         from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
+
         domain_hint = args.get("domain_hint", None)
         federation = args.get("federation", True)
 
@@ -119,34 +131,62 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             vec = await embedder.aembed(query)
         pack = engine.supply(query, vec, task_type, scope)
 
-        result_json = json.dumps({
-            "core": [{"id": i.id, "content": i.content[:500], "relevance": i.relevance,
-                      "source": i.source, "freshness": i.freshness, "worth_score": i.worth_score}
-                     for i in pack.core[:max_results]],
-            "related": [{"id": i.id, "content": i.content[:500], "relevance": i.relevance}
-                        for i in pack.related[:max_results]],
-            "divergent": [{"id": i.id, "content": i.content[:500], "relevance": i.relevance}
-                          for i in pack.divergent[:max_results]],
-            "activated_principles": pack.activated_principles,
-            "domain_hint": domain_hint,
-            "federation_signals": _generate_federation_signals(pack, domain_hint, engine, federation),
-            "total_items": pack.total_items,
-            "audit": pack.audit_metadata,
-        }, ensure_ascii=False, indent=2)
+        result_json = json.dumps(
+            {
+                "core": [
+                    {
+                        "id": i.id,
+                        "content": i.content[:500],
+                        "relevance": i.relevance,
+                        "source": i.source,
+                        "freshness": i.freshness,
+                        "worth_score": i.worth_score,
+                    }
+                    for i in pack.core[:max_results]
+                ],
+                "related": [
+                    {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
+                    for i in pack.related[:max_results]
+                ],
+                "divergent": [
+                    {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
+                    for i in pack.divergent[:max_results]
+                ],
+                "activated_principles": pack.activated_principles,
+                "domain_hint": domain_hint,
+                "federation_signals": _generate_federation_signals(
+                    pack, domain_hint, engine, federation
+                ),
+                "total_items": pack.total_items,
+                "audit": pack.audit_metadata,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
         # strict mode: return empty on no core matches
         if strict and not pack.core:
-            return [TextContent(type="text", text=json.dumps(
-                {"strict": True, "core": [], "message": "no matches in strict mode"},
-                ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"strict": True, "core": [], "message": "no matches in strict mode"},
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
         # Cache the result
         _cache_set(query, task_type, max_results, scope, result_json)
 
         return [TextContent(type="text", text=result_json)]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "memory_recall"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "memory_recall"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- memory_store ----
@@ -163,20 +203,39 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.core.noise_filter import is_noise
+
         content = args.get("content", "")
         if not content or (isinstance(content, str) and not content.strip()):
-            return [TextContent(type="text", text=json.dumps(
-                {"stored": False, "reason": "empty_content",
-                 "note": "memory_store requires non-empty 'content'"},
-                ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "stored": False,
+                            "reason": "empty_content",
+                            "note": "memory_store requires non-empty 'content'",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
         if is_noise(content):
-            return [TextContent(type="text", text=json.dumps(
-                {"stored": False, "reason": "noise_filtered",
-                 "content_preview": content[:100]},
-                ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "stored": False,
+                            "reason": "noise_filtered",
+                            "content_preview": content[:100],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
         # Health check: detect MCP server availability (non-blocking, cached)
-        server_ok = getattr(engine, '_server_alive', True)
+        server_ok = getattr(engine, "_server_alive", True)
 
         memory_type = args.get("memory_type", "experience")
         source = args.get("source", "user")
@@ -195,8 +254,15 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         # This is the standard path, not a fallback. (原则 #4 上下文驱动, #10 自演化闭环)
         fb = _get_fuzzy_buffer(engine)
         _max_llm = args.get("max_llm_calls", 3)
-        fuzzy_id = fb.store_urgent(content, memory_type, source, entity_ids=all_entities, custom_tags=custom_tags,
-                                    max_llm_calls=_max_llm, skip_embed=(_max_llm == 0))
+        fuzzy_id = fb.store_urgent(
+            content,
+            memory_type,
+            source,
+            entity_ids=all_entities,
+            custom_tags=custom_tags,
+            max_llm_calls=_max_llm,
+            skip_embed=(_max_llm == 0),
+        )
 
         # Auto-link extracted entities to graph immediately
         for eid in all_entities:
@@ -208,31 +274,46 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         # Push SSE notification for real-time multi-agent awareness
         try:
             from plastic_promise.mcp.server import notify_issue_change
-            notify_issue_change({
-                "type": "memory_stored",
-                "memory_id": fuzzy_id,
-                "content_preview": content[:200],
-                "memory_type": memory_type,
-                "domain": getattr(engine, '_domain_hint', ''),
-                "timestamp": __import__('datetime').datetime.now().isoformat(),
-            })
+
+            notify_issue_change(
+                {
+                    "type": "memory_stored",
+                    "memory_id": fuzzy_id,
+                    "content_preview": content[:200],
+                    "memory_type": memory_type,
+                    "domain": getattr(engine, "_domain_hint", ""),
+                    "timestamp": __import__("datetime").datetime.now().isoformat(),
+                }
+            )
         except Exception:
             pass
 
-        return [TextContent(type="text", text=json.dumps({
-            "stored": True,
-            "memory_id": fuzzy_id,
-            "content_preview": content[:200],
-            "memory_type": memory_type,
-            "scope": scope,
-            "entity_ids": all_entities,
-            "pipeline": result["pipeline"],
-            "note": "必经流水线: raw→tagged→classified(大类)→embedded(细分)→主池",
-            "server_ok": server_ok,
-        }, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "stored": True,
+                        "memory_id": fuzzy_id,
+                        "content_preview": content[:200],
+                        "memory_type": memory_type,
+                        "scope": scope,
+                        "entity_ids": all_entities,
+                        "pipeline": result["pipeline"],
+                        "note": "必经流水线: raw→tagged→classified(大类)→embedded(细分)→主池",
+                        "server_ok": server_ok,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "memory_store"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "memory_store"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- memory_update ----
@@ -278,13 +359,25 @@ async def handle_memory_update(engine: Any, args: dict) -> list[TextContent]:
                 record.worth_failure = 0
                 engine.store_memory(record)  # re-store to persist
 
-        return [TextContent(type="text", text=json.dumps({
-            "updated": success,
-            "memory_id": memory_id,
-        }, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "updated": success,
+                        "memory_id": memory_id,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "memory_update"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "memory_update"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- memory_forget ----
@@ -306,7 +399,7 @@ async def handle_memory_forget(engine: Any, args: dict) -> list[TextContent]:
         reason = args.get("reason", "")
 
         # Clean LanceDB vector store first (prevents orphan vector entries)
-        ldb = getattr(engine, '_ldb', None)
+        ldb = getattr(engine, "_ldb", None)
         if ldb is not None:
             try:
                 ldb.delete(memory_id)
@@ -315,14 +408,26 @@ async def handle_memory_forget(engine: Any, args: dict) -> list[TextContent]:
 
         success = engine.delete_memory(memory_id)
 
-        return [TextContent(type="text", text=json.dumps({
-            "forgotten": success,
-            "memory_id": memory_id,
-            "reason": reason,
-        }, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "forgotten": success,
+                        "memory_id": memory_id,
+                        "reason": reason,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "memory_forget"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "memory_forget"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- memory_stats ----
@@ -365,8 +470,12 @@ async def handle_memory_stats(engine: Any, args: dict) -> list[TextContent]:
 
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "memory_stats"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "memory_stats"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- memory_list ----
@@ -399,16 +508,34 @@ async def handle_memory_list(engine: Any, args: dict) -> list[TextContent]:
             scope=scope,
         )
 
-        items = [{"id": r.id, "content": r.content[:300], "memory_type": r.memory_type,
-                  "source": r.source, "tier": r.tier, "worth_score": r.worth_score(),
-                  "created_at": r.created_at}
-                 for r in results]
+        items = [
+            {
+                "id": r.id,
+                "content": r.content[:300],
+                "memory_type": r.memory_type,
+                "source": r.source,
+                "tier": r.tier,
+                "worth_score": r.worth_score(),
+                "created_at": r.created_at,
+            }
+            for r in results
+        ]
 
-        return [TextContent(type="text", text=json.dumps(
-            {"items": items, "count": len(items)}, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"items": items, "count": len(items)}, ensure_ascii=False, indent=2
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "memory_list"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "memory_list"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- memory_gc ----
@@ -432,14 +559,19 @@ async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
         force = args.get("force", False)
 
         from plastic_promise.memory.soul_memory import RecMem, MemoryGC
+
         rm = RecMem(engine)
         gc = MemoryGC(rm)
         result = gc.collect(dry_run=dry_run, force=force)
 
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "memory_gc"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "memory_gc"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- _extract_entity_ids (internal helper) ----
@@ -452,6 +584,7 @@ def _extract_entity_ids(content: str, engine: Any) -> list[str]:
     entity_ids = []
     try:
         from plastic_promise.core.constants import CORE_PRINCIPLES
+
         # Match principle names
         for p in CORE_PRINCIPLES:
             if p["name"][:4] in content or p["name"][-4:] in content:
@@ -475,6 +608,7 @@ def _extract_entity_ids(content: str, engine: Any) -> list[str]:
 _fuzzy_buffers: dict[int, Any] = {}
 _rec_mem_cache: dict[int, Any] = {}
 
+
 def _get_fuzzy_buffer(engine: Any):
     """Get or create a FuzzyBuffer attached to the engine."""
     eid = id(engine)
@@ -488,12 +622,15 @@ def _get_fuzzy_buffer(engine: Any):
             embedder = get_embedder()
         except Exception:
             from plastic_promise.core.embedder import FallbackEmbedder
+
             embedder = FallbackEmbedder()
         tier_mgr = MemoryTierManager(rec_mem)
         _fuzzy_buffers[eid] = MemoryPipeline(
-            rec_mem=rec_mem, embedder=embedder, tier_manager=tier_mgr,
-            domain_manager=getattr(engine, '_dm', None),
-            lancedb=getattr(engine, '_ldb', None),
+            rec_mem=rec_mem,
+            embedder=embedder,
+            tier_manager=tier_mgr,
+            domain_manager=getattr(engine, "_dm", None),
+            lancedb=getattr(engine, "_ldb", None),
         )
         _rec_mem_cache[eid] = rec_mem
     return _fuzzy_buffers[eid]
@@ -507,8 +644,12 @@ async def handle_fuzzy_status(engine: Any, args: dict) -> list[TextContent]:
         stats = fb.stats()
         return [TextContent(type="text", text=json.dumps(stats, ensure_ascii=False, indent=2))]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "fuzzy_status"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "fuzzy_status"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- fuzzy_process (internal — not exposed as MCP tool) ----
@@ -519,8 +660,12 @@ async def handle_fuzzy_process(engine: Any, args: dict) -> list[TextContent]:
         result = fb.process_pipeline()
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "fuzzy_process"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "fuzzy_process"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---- memory_correct ----
@@ -538,8 +683,12 @@ async def handle_memory_correct(engine: Any, args: dict) -> list[TextContent]:
 
         record = engine.get_memory(memory_id)
         if record is None:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": f"Memory {memory_id} not found"}, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": f"Memory {memory_id} not found"}, ensure_ascii=False),
+                )
+            ]
 
         actions = []
 
@@ -570,27 +719,44 @@ async def handle_memory_correct(engine: Any, args: dict) -> list[TextContent]:
         # Trigger EvolveR after correction — 自演化闭环
         try:
             from plastic_promise.memory.soul_memory import RecMem, EvolveR
+
             rm = RecMem(engine)
             evolver = EvolveR(rm)
             evolver.evolve_cycle()
         except Exception:
             pass
 
-        return [TextContent(type="text", text=json.dumps({
-            "corrected": True,
-            "memory_id": memory_id,
-            "actions": actions,
-            "reason": reason,
-            "worth_score": record.worth_score() if hasattr(record, 'worth_score') else None,
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "corrected": True,
+                        "memory_id": memory_id,
+                        "actions": actions,
+                        "reason": reason,
+                        "worth_score": record.worth_score()
+                        if hasattr(record, "worth_score")
+                        else None,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "memory_correct"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "memory_correct"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ═══════════════════════════════════════════════════════════════
 # memory_reclassify — 批量重跑分类管线
 # ═══════════════════════════════════════════════════════════════
+
 
 async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]:
     """原地重分类存量记忆 — 只走规则分类(大类tier/domain/category)，不创建新记录。
@@ -608,9 +774,9 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
 
     fb = _get_fuzzy_buffer(engine)
     tier_mgr = fb._tier_manager
-    dm = getattr(engine, '_dm', None)
+    dm = getattr(engine, "_dm", None)
 
-    sqlite = getattr(engine, '_sqlite', None)
+    sqlite = getattr(engine, "_sqlite", None)
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     reclassified = 0
@@ -691,14 +857,16 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
 
             if changed and not dry_run:
                 # Update via public API
-                engine.update_memory_fields(mid, category=new_category, tier=new_tier, domain=new_domain, tags=new_tags)
+                engine.update_memory_fields(
+                    mid, category=new_category, tier=new_tier, domain=new_domain, tags=new_tags
+                )
 
                 # Update SQLite
                 if sqlite is not None:
                     try:
                         sqlite._conn.execute(
                             "UPDATE memories SET category = ?, tier = ?, domain = ?, tags = ? WHERE id = ?",
-                            (new_category, new_tier, new_domain, json.dumps(new_tags), mid)
+                            (new_category, new_tier, new_domain, json.dumps(new_tags), mid),
                         )
                         sqlite._conn.commit()
                     except Exception:
@@ -717,23 +885,32 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
         except Exception:
             errors += 1
 
-    return [TextContent(type="text", text=json.dumps({
-        "reclassified": reclassified,
-        "remaining": remaining,
-        "skipped": skipped,
-        "errors": errors,
-        "batch_size": batch_size,
-        "dry_run": dry_run,
-        "total": engine.memory_count,
-        "last_id": batch[-1][0] if batch else None,
-        "category_distribution": by_category,
-        "domain_distribution": by_domain,
-    }, ensure_ascii=False))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "reclassified": reclassified,
+                    "remaining": remaining,
+                    "skipped": skipped,
+                    "errors": errors,
+                    "batch_size": batch_size,
+                    "dry_run": dry_run,
+                    "total": engine.memory_count,
+                    "last_id": batch[-1][0] if batch else None,
+                    "category_distribution": by_category,
+                    "domain_distribution": by_domain,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════
 # memory_sync_files — 存量 .md 文件同步到 MCP 管道
 # ═══════════════════════════════════════════════════════════════
+
 
 def _parse_frontmatter(content: str) -> dict:
     """使用 yaml 标准库解析 frontmatter。失败时降级返回空 dict。"""
@@ -744,6 +921,7 @@ def _parse_frontmatter(content: str) -> dict:
         return {}
     try:
         import yaml
+
         result = yaml.safe_load(parts[1])
         return result if isinstance(result, dict) else {}
     except Exception:
@@ -756,10 +934,20 @@ async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]
     dry_run = args.get("dry_run", False)
 
     if not source_dir or not os.path.isdir(source_dir):
-        return [TextContent(type="text", text=json.dumps({
-            "error": f"Invalid source_dir: {source_dir}",
-            "synced": 0, "skipped": 0, "errors": 0
-        }, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": f"Invalid source_dir: {source_dir}",
+                        "synced": 0,
+                        "skipped": 0,
+                        "errors": 0,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     synced = 0
     skipped = 0
@@ -780,7 +968,9 @@ async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]
         fm = _parse_frontmatter(content)
         name = fm.get("name", fname.replace(".md", ""))
         metadata_fm = fm.get("metadata", {})
-        mem_type = metadata_fm.get("type", "reference") if isinstance(metadata_fm, dict) else "reference"
+        mem_type = (
+            metadata_fm.get("type", "reference") if isinstance(metadata_fm, dict) else "reference"
+        )
         description = fm.get("description", "")
 
         body = content
@@ -796,13 +986,16 @@ async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]
             continue
 
         try:
-            result = await handle_memory_store(engine, {
-                "content": f"[FILE SYNC] {name}: {description}\n\n{body}",
-                "memory_type": "experience",
-                "source": "file_sync",
-                "entity_ids": [entity_id],
-                "tags": tags,
-            })
+            result = await handle_memory_store(
+                engine,
+                {
+                    "content": f"[FILE SYNC] {name}: {description}\n\n{body}",
+                    "memory_type": "experience",
+                    "source": "file_sync",
+                    "entity_ids": [entity_id],
+                    "tags": tags,
+                },
+            )
             data = json.loads(result[0].text)
             if data.get("stored"):
                 synced += 1
@@ -814,9 +1007,17 @@ async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]
         except Exception:
             errors += 1
 
-    return [TextContent(type="text", text=json.dumps({
-        "synced": synced,
-        "skipped": skipped,
-        "errors": errors,
-        "source_dir": source_dir,
-    }, ensure_ascii=False))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "synced": synced,
+                    "skipped": skipped,
+                    "errors": errors,
+                    "source_dir": source_dir,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    ]

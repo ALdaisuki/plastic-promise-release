@@ -23,23 +23,24 @@ from dataclasses import dataclass, field
 @dataclass
 class StepAuditResult:
     """单步审计结果 — 4 阶段 + 3 维评分"""
+
     # 四阶段
-    root_cause: str         # 根因分析
-    improvement: str        # 改良措施
-    lesson: str             # 教训提炼（可迁移）
+    root_cause: str  # 根因分析
+    improvement: str  # 改良措施
+    lesson: str  # 教训提炼（可迁移）
 
     # 三维评分 (0.0-1.0)
-    simplicity_score: float      # 奥卡姆剃刀：步骤是否必要？方案是否最简？
-    transparency_score: float    # 可查可透明：是否有 git？是否可追溯？
-    audit_closure_score: float   # 审计闭环：根因+改良+教训是否完整？
+    simplicity_score: float  # 奥卡姆剃刀：步骤是否必要？方案是否最简？
+    transparency_score: float  # 可查可透明：是否有 git？是否可追溯？
+    audit_closure_score: float  # 审计闭环：根因+改良+教训是否完整？
 
     # 元数据
-    overall_score: float = 0.0   # 加权总分
+    overall_score: float = 0.0  # 加权总分
     step_id: str = ""
     timestamp: str = ""
     task_description: str = ""
-    git_commit: str = ""         # 关联的 git commit hash
-    audit_log: str = ""          # 审计日志摘要
+    git_commit: str = ""  # 关联的 git commit hash
+    audit_log: str = ""  # 审计日志摘要
 
 
 class StepAuditor:
@@ -113,7 +114,9 @@ class StepAuditor:
         # 4. 量化评分
         simplicity = self._score_simplicity(task_description, simplicity_rationale, git_commit)
         transparency = self._score_transparency(git_commit, transparency_rationale)
-        audit_closure = self._score_audit_closure(root_cause, improvement, lesson, audit_closure_rationale)
+        audit_closure = self._score_audit_closure(
+            root_cause, improvement, lesson, audit_closure_rationale
+        )
 
         overall = simplicity * 0.35 + transparency * 0.35 + audit_closure * 0.30
 
@@ -129,7 +132,9 @@ class StepAuditor:
             timestamp=datetime.datetime.now().isoformat(),
             task_description=task_description,
             git_commit=git_commit,
-            audit_log=self._build_audit_log(task_description, root_cause, improvement, lesson, overall),
+            audit_log=self._build_audit_log(
+                task_description, root_cause, improvement, lesson, overall
+            ),
         )
 
         # 5. 驱动信任分
@@ -147,26 +152,30 @@ class StepAuditor:
             content_to_store = lesson or derived_lesson
             if content_to_store:
                 try:
-                    self._engine.register_memory({
-                        "id": f"reflection_{result.step_id}",
-                        "content": content_to_store,
-                        "memory_type": "reflection",
-                        "source": "step_auditor",
-                        "tier": "L3",
-                    })
+                    self._engine.register_memory(
+                        {
+                            "id": f"reflection_{result.step_id}",
+                            "content": content_to_store,
+                            "memory_type": "reflection",
+                            "source": "step_auditor",
+                            "tier": "L3",
+                        }
+                    )
                 except Exception:
                     pass
             # 如果有有价值的改良措施，也一并存储
             improvement_to_store = improvement or derived_improvement
             if improvement_to_store and improvement_to_store != content_to_store:
                 try:
-                    self._engine.register_memory({
-                        "id": f"improvement_{result.step_id}",
-                        "content": improvement_to_store,
-                        "memory_type": "improvement",
-                        "source": "step_auditor",
-                        "tier": "L3",
-                    })
+                    self._engine.register_memory(
+                        {
+                            "id": f"improvement_{result.step_id}",
+                            "content": improvement_to_store,
+                            "memory_type": "improvement",
+                            "source": "step_auditor",
+                            "tier": "L3",
+                        }
+                    )
                 except Exception:
                     pass
 
@@ -174,12 +183,15 @@ class StepAuditor:
         try:
             from plastic_promise.core.domain_manager import DomainManager
             import os
+
             db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
             dm = DomainManager(db_path=db_path)
             decayed = dm.decay(agent_id="")
             if decayed:
                 result.audit_log = (result.audit_log or "") + (
-                    "\n[domain_decay] " + str(len(decayed)) + " domains decayed: "
+                    "\n[domain_decay] "
+                    + str(len(decayed))
+                    + " domains decayed: "
                     + ", ".join(d.get("name", "?") for d in decayed)
                 )
         except Exception:
@@ -205,8 +217,20 @@ class StepAuditor:
         if rationale:
             # 关键词加分
             simplicity_keywords = [
-                "简洁", "最少", "核心", "必要", "精简", "最简", "剃刀", "仅", "只用了",
-                "simple", "minimal", "bare", "essential", "lean",
+                "简洁",
+                "最少",
+                "核心",
+                "必要",
+                "精简",
+                "最简",
+                "剃刀",
+                "仅",
+                "只用了",
+                "simple",
+                "minimal",
+                "bare",
+                "essential",
+                "lean",
             ]
             hits = sum(1 for kw in simplicity_keywords if kw.lower() in rationale.lower())
             # 每条关键词 +0.04，上限 1.0
@@ -214,10 +238,22 @@ class StepAuditor:
 
             # 惩罚：检测到可能过度设计的信号
             overengineering_signals = [
-                "抽象", "工厂", "建造者", "访问者", "策略模式", "装饰器",
-                "abstract", "factory", "builder", "visitor", "strategy", "decorator",
+                "抽象",
+                "工厂",
+                "建造者",
+                "访问者",
+                "策略模式",
+                "装饰器",
+                "abstract",
+                "factory",
+                "builder",
+                "visitor",
+                "strategy",
+                "decorator",
             ]
-            signal_count = sum(1 for kw in overengineering_signals if kw.lower() in rationale.lower())
+            signal_count = sum(
+                1 for kw in overengineering_signals if kw.lower() in rationale.lower()
+            )
             if signal_count > 1:
                 score = max(0.3, score - signal_count * 0.05)
 
@@ -244,15 +280,29 @@ class StepAuditor:
 
         if rationale:
             transparency_keywords = [
-                "日志", "记录", "trace", "log", "commit", "审计", "可查", "可验",
-                "复现", "验证", "review", "sign-off", "approval", "test",
+                "日志",
+                "记录",
+                "trace",
+                "log",
+                "commit",
+                "审计",
+                "可查",
+                "可验",
+                "复现",
+                "验证",
+                "review",
+                "sign-off",
+                "approval",
+                "test",
             ]
             hits = sum(1 for kw in transparency_keywords if kw.lower() in rationale.lower())
             score = min(1.0, score + hits * 0.03)
 
         return round(max(0.0, min(1.0, score)), 4)
 
-    def _score_audit_closure(self, root_cause: str, improvement: str, lesson: str, rationale: str) -> float:
+    def _score_audit_closure(
+        self, root_cause: str, improvement: str, lesson: str, rationale: str
+    ) -> float:
         """自我审计闭环评分。
 
         评分策略：
@@ -262,17 +312,31 @@ class StepAuditor:
         """
         score = 0.65
 
-        filled_count = sum([
-            1 if root_cause else 0,
-            1 if improvement else 0,
-            1 if lesson else 0,
-        ])
+        filled_count = sum(
+            [
+                1 if root_cause else 0,
+                1 if improvement else 0,
+                1 if lesson else 0,
+            ]
+        )
         score += filled_count * 0.08
 
         if rationale:
             closure_keywords = [
-                "因果", "改进", "迁移", "规律", "下次", "避免", "根源", "深层",
-                "root", "cause", "lesson", "improve", "avoid", "prevent",
+                "因果",
+                "改进",
+                "迁移",
+                "规律",
+                "下次",
+                "避免",
+                "根源",
+                "深层",
+                "root",
+                "cause",
+                "lesson",
+                "improve",
+                "avoid",
+                "prevent",
             ]
             hits = sum(1 for kw in closure_keywords if kw.lower() in rationale.lower())
             score = min(1.0, score + hits * 0.02)
@@ -392,30 +456,39 @@ class StepAuditor:
     # ============================================================
 
     def _build_audit_log(self, task, root_cause, improvement, lesson, overall) -> str:
-        return json.dumps({
-            "task": task[:200],
-            "root_cause": root_cause[:300],
-            "improvement": improvement[:300],
-            "lesson": lesson[:300],
-            "score": overall,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "task": task[:200],
+                "root_cause": root_cause[:300],
+                "improvement": improvement[:300],
+                "lesson": lesson[:300],
+                "score": overall,
+            },
+            ensure_ascii=False,
+        )
 
     def _save(self, result: StepAuditResult):
         try:
             with open(self._audit_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "step_id": result.step_id,
-                    "timestamp": result.timestamp,
-                    "task": result.task_description[:200],
-                    "root_cause": result.root_cause[:300],
-                    "improvement": result.improvement[:300],
-                    "lesson": result.lesson[:300],
-                    "simplicity": result.simplicity_score,
-                    "transparency": result.transparency_score,
-                    "audit_closure": result.audit_closure_score,
-                    "overall": result.overall_score,
-                    "git_commit": result.git_commit,
-                }, ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "step_id": result.step_id,
+                            "timestamp": result.timestamp,
+                            "task": result.task_description[:200],
+                            "root_cause": result.root_cause[:300],
+                            "improvement": result.improvement[:300],
+                            "lesson": result.lesson[:300],
+                            "simplicity": result.simplicity_score,
+                            "transparency": result.transparency_score,
+                            "audit_closure": result.audit_closure_score,
+                            "overall": result.overall_score,
+                            "git_commit": result.git_commit,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
         except Exception:
             pass
 
@@ -437,23 +510,29 @@ class StepAuditor:
         """
         suggestions = []
         if result.simplicity_score < 0.60:
-            suggestions.append({
-                "dimension": "simplicity",
-                "current_score": result.simplicity_score,
-                "suggestion": "删除不必要的中间步骤，检查是否存在可以简化的逻辑路径",
-            })
+            suggestions.append(
+                {
+                    "dimension": "simplicity",
+                    "current_score": result.simplicity_score,
+                    "suggestion": "删除不必要的中间步骤，检查是否存在可以简化的逻辑路径",
+                }
+            )
         if result.transparency_score < 0.60:
-            suggestions.append({
-                "dimension": "transparency",
-                "current_score": result.transparency_score,
-                "suggestion": f"确保每一步有 git commit，当前任务缺少可追溯痕迹",
-            })
+            suggestions.append(
+                {
+                    "dimension": "transparency",
+                    "current_score": result.transparency_score,
+                    "suggestion": f"确保每一步有 git commit，当前任务缺少可追溯痕迹",
+                }
+            )
         if result.audit_closure_score < 0.60:
-            suggestions.append({
-                "dimension": "audit_closure",
-                "current_score": result.audit_closure_score,
-                "suggestion": "补充根因分析、改良措施或教训提炼，当前审计不完整",
-            })
+            suggestions.append(
+                {
+                    "dimension": "audit_closure",
+                    "current_score": result.audit_closure_score,
+                    "suggestion": "补充根因分析、改良措施或教训提炼，当前审计不完整",
+                }
+            )
         return suggestions
 
     # ============================================================

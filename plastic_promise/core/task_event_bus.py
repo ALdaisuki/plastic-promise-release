@@ -49,17 +49,13 @@ class TaskEventBus:
             except ValueError:
                 pass
 
-    async def broadcast(
-        self, event_type: str, data: dict, to_agents: list[str]
-    ) -> int:
+    async def broadcast(self, event_type: str, data: dict, to_agents: list[str]) -> int:
         """Broadcast a task event to specified agents.
 
         Returns the number of clients that received the event.
         Failed sends trigger automatic unregister (dead connection cleanup).
         """
-        payload = json.dumps(
-            {"event": event_type, "data": data}, ensure_ascii=False
-        )
+        payload = json.dumps({"event": event_type, "data": data}, ensure_ascii=False)
         notified = 0
         for agent in to_agents:
             if agent in self._clients:

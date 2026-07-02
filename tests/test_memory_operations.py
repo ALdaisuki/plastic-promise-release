@@ -11,10 +11,16 @@ class TestSmartRemember:
     @pytest.fixture
     def mock_engine(self):
         engine = MagicMock()
-        mock_tools = [_make_mock_tool(n) for n in [
-            "principle_activate", "memory_recall", "memory_store",
-            "skill_session_start", "skill_session_complete",
-        ]]
+        mock_tools = [
+            _make_mock_tool(n)
+            for n in [
+                "principle_activate",
+                "memory_recall",
+                "memory_store",
+                "skill_session_start",
+                "skill_session_complete",
+            ]
+        ]
         engine.list_tools = MagicMock(return_value=mock_tools)
         return engine
 
@@ -38,10 +44,13 @@ class TestSmartRemember:
 
         async def mock_memory_store(engine, args):
             call_order.append("memory_store")
-            return self._mock_response({
-                "stored": True, "memory_id": "mem_new_001",
-                "content_preview": args["content"][:50],
-            })
+            return self._mock_response(
+                {
+                    "stored": True,
+                    "memory_id": "mem_new_001",
+                    "content_preview": args["content"][:50],
+                }
+            )
 
         async def mock_session(engine, args):
             return self._mock_response({"entity_id": "skill:test:...", "status": "ok"})
@@ -53,11 +62,15 @@ class TestSmartRemember:
         se._atoms["skill_session_complete"] = mock_session
 
         se.register(skill_smart_remember)
-        result = await se.exec("smart-remember", params={
-            "content": "The user prefers tabs over spaces",
-            "memory_type": "experience",
-            "source": "user",
-        }, caller="claude")
+        result = await se.exec(
+            "smart-remember",
+            params={
+                "content": "The user prefers tabs over spaces",
+                "memory_type": "experience",
+                "source": "user",
+            },
+            caller="claude",
+        )
 
         assert result.success is True
         assert result.data.get("action") == "stored"
@@ -72,10 +85,12 @@ class TestSmartRemember:
             "plastic_promise.skills.memory_operations.handle_memory_update",
             new_callable=AsyncMock,
         ) as mock_update:
-            mock_update.return_value = [TextContent(
-                type="text",
-                text=json.dumps({"updated": True, "memory_id": "mem_existing_042"}),
-            )]
+            mock_update.return_value = [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"updated": True, "memory_id": "mem_existing_042"}),
+                )
+            ]
 
             se = SkillEngine(mock_engine)
             call_order = []
@@ -87,12 +102,19 @@ class TestSmartRemember:
             async def mock_memory_recall(engine, args):
                 call_order.append("memory_recall")
                 # Duplicate found — one existing memory with high relevance
-                return self._mock_response({
-                    "core": [
-                        {"id": "mem_existing_042", "content": "User prefers tabs over spaces", "relevance": 0.92}
-                    ],
-                    "related": [], "divergent": [],
-                })
+                return self._mock_response(
+                    {
+                        "core": [
+                            {
+                                "id": "mem_existing_042",
+                                "content": "User prefers tabs over spaces",
+                                "relevance": 0.92,
+                            }
+                        ],
+                        "related": [],
+                        "divergent": [],
+                    }
+                )
 
             async def mock_session(engine, args):
                 return self._mock_response({"entity_id": "skill:test:...", "status": "ok"})
@@ -103,11 +125,15 @@ class TestSmartRemember:
             se._atoms["skill_session_complete"] = mock_session
 
             se.register(skill_smart_remember)
-            result = await se.exec("smart-remember", params={
-                "content": "User prefers tabs over spaces",
-                "memory_type": "experience",
-                "source": "user",
-            }, caller="claude")
+            result = await se.exec(
+                "smart-remember",
+                params={
+                    "content": "User prefers tabs over spaces",
+                    "memory_type": "experience",
+                    "source": "user",
+                },
+                caller="claude",
+            )
 
             assert result.success is True
             assert result.data.get("action") == "updated"
@@ -115,7 +141,8 @@ class TestSmartRemember:
             assert call_order == ["principle_activate", "memory_recall"]
             assert "memory_store" not in call_order  # did not create duplicate
             mock_update.assert_awaited_once_with(
-                mock_engine, {"memory_id": "mem_existing_042", "content": "User prefers tabs over spaces"},
+                mock_engine,
+                {"memory_id": "mem_existing_042", "content": "User prefers tabs over spaces"},
             )
 
 

@@ -36,13 +36,15 @@ class EmotionAccount:
             操作后的账户余额。
         """
         self.balance += amount
-        self._transactions.append({
-            "type": "deposit",
-            "amount": amount,
-            "reason": reason,
-            "balance_after": self.balance,
-            "timestamp": time.time(),
-        })
+        self._transactions.append(
+            {
+                "type": "deposit",
+                "amount": amount,
+                "reason": reason,
+                "balance_after": self.balance,
+                "timestamp": time.time(),
+            }
+        )
         return self.balance
 
     def withdraw(self, amount: float, reason: str = "") -> float:
@@ -56,13 +58,15 @@ class EmotionAccount:
             操作后的账户余额。
         """
         self.balance -= amount
-        self._transactions.append({
-            "type": "withdraw",
-            "amount": amount,
-            "reason": reason,
-            "balance_after": self.balance,
-            "timestamp": time.time(),
-        })
+        self._transactions.append(
+            {
+                "type": "withdraw",
+                "amount": amount,
+                "reason": reason,
+                "balance_after": self.balance,
+                "timestamp": time.time(),
+            }
+        )
         return self.balance
 
     def get_balance(self) -> float:
@@ -100,8 +104,8 @@ class HormoneEngine:
                 同步推送到该管理器以联动信任分。
         """
         self.account = EmotionAccount()
-        self.dopamine: float = 0.5          # 中性基线
-        self.cortisol: float = 0.3          # 低基线
+        self.dopamine: float = 0.5  # 中性基线
+        self.cortisol: float = 0.3  # 低基线
         self.trust_manager = trust_manager
 
     def apply_feedback(

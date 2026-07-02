@@ -20,18 +20,25 @@ class AgentBehaviorTracker:
         memory_types: List[str],
         owner: str = "",
     ):
-        self._events.append({
-            "task_type": task_type,
-            "principles": principles,
-            "memory_types": memory_types,
-            "owner": owner,
-            "timestamp": datetime.datetime.now().isoformat(),
-        })
+        self._events.append(
+            {
+                "task_type": task_type,
+                "principles": principles,
+                "memory_types": memory_types,
+                "owner": owner,
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
 
     def stats(self) -> dict:
         total = len(self._events)
         if total == 0:
-            return {"session_count": 0, "top_task_types": [], "principle_heatmap": {}, "memory_type_distribution": {}}
+            return {
+                "session_count": 0,
+                "top_task_types": [],
+                "principle_heatmap": {},
+                "memory_type_distribution": {},
+            }
 
         task_counts: Dict[str, int] = {}
         principle_counts: Dict[str, int] = {}
@@ -56,8 +63,16 @@ class AgentBehaviorTracker:
         if s["session_count"] == 0:
             return "尚未积累足够的行为数据。"
         top_task = s["top_task_types"][0] if s["top_task_types"] else ("未知", 0)
-        top_p = max(s["principle_heatmap"].items(), key=lambda x: x[1]) if s["principle_heatmap"] else ("无", 0)
-        top_m = max(s["memory_type_distribution"].items(), key=lambda x: x[1]) if s["memory_type_distribution"] else ("无", 0)
+        top_p = (
+            max(s["principle_heatmap"].items(), key=lambda x: x[1])
+            if s["principle_heatmap"]
+            else ("无", 0)
+        )
+        top_m = (
+            max(s["memory_type_distribution"].items(), key=lambda x: x[1])
+            if s["memory_type_distribution"]
+            else ("无", 0)
+        )
         return (
             f"在过去 {s['session_count']} 次交互中：\n"
             f"  最常做 {top_task[0]} 类任务（{top_task[1]}次），\n"

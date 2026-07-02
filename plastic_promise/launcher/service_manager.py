@@ -110,7 +110,9 @@ class ServiceManager:
                             other_rt.status = ServiceStatus.FAILED
                             self._log(
                                 f"[START] {other_rt.definition.name} ..... FAILED"
-                                f" (dependency {rt.definition.name} failed)", log_file)
+                                f" (dependency {rt.definition.name} failed)",
+                                log_file,
+                            )
 
     async def _start_service(self, rt: ServiceRuntime, log_file: Optional[str] = None):
         """Start a single service and wait for health check."""
@@ -121,10 +123,11 @@ class ServiceManager:
         # Run pre-start commands
         for cmd in svc.pre_start:
             try:
-                subprocess.run(cmd, shell=True, cwd=self._project_root,
-                               timeout=30, check=True)
+                subprocess.run(cmd, shell=True, cwd=self._project_root, timeout=30, check=True)
             except Exception as e:
-                self._log(f"[START] {svc.name} .................... FAILED (pre_start: {e})", log_file)
+                self._log(
+                    f"[START] {svc.name} .................... FAILED (pre_start: {e})", log_file
+                )
                 rt.status = ServiceStatus.FAILED
                 return
 
@@ -155,18 +158,26 @@ class ServiceManager:
             if healthy:
                 rt.status = ServiceStatus.HEALTHY
                 rt.consecutive_failures = 0
-                self._log(f"[START] {svc.name} .................... healthy (pid={rt.pid})", log_file)
+                self._log(
+                    f"[START] {svc.name} .................... healthy (pid={rt.pid})", log_file
+                )
                 return
 
             # Check if process died during startup
             if rt.process and rt.process.poll() is not None:
-                self._log(f"[START] {svc.name} .................... FAILED"
-                          f" (exit code={rt.process.returncode})", log_file)
+                self._log(
+                    f"[START] {svc.name} .................... FAILED"
+                    f" (exit code={rt.process.returncode})",
+                    log_file,
+                )
                 rt.status = ServiceStatus.FAILED
                 return
 
         # Timeout
-        self._log(f"[START] {svc.name} .................... FAILED (timeout {svc.startup_timeout}s)", log_file)
+        self._log(
+            f"[START] {svc.name} .................... FAILED (timeout {svc.startup_timeout}s)",
+            log_file,
+        )
         self.stop_service(rt.definition.name)
         rt.status = ServiceStatus.FAILED
 
@@ -211,6 +222,7 @@ class ServiceManager:
         """Check if a PID is alive. psutil preferred, fallback to platform tools."""
         try:
             import psutil
+
             return psutil.pid_exists(pid)
         except ImportError:
             pass
@@ -219,7 +231,9 @@ class ServiceManager:
             try:
                 result = subprocess.run(
                     ["tasklist", "/FI", f"PID eq {pid}"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 return str(pid) in result.stdout
             except Exception:
@@ -271,7 +285,9 @@ class ServiceManager:
         """Stop all services in reverse dependency order."""
         for rt in reversed(self._topological_order()):
             if rt.status in (ServiceStatus.HEALTHY, ServiceStatus.STARTING, ServiceStatus.FAILED):
-                self._log(f"[STOP]  {rt.definition.name} .................... stopping...", log_file)
+                self._log(
+                    f"[STOP]  {rt.definition.name} .................... stopping...", log_file
+                )
                 self._stop_service(rt)
                 self._log(f"[STOP]  {rt.definition.name} .................... stopped", log_file)
 
@@ -288,7 +304,9 @@ class ServiceManager:
         # Cascade: flag dependents as eligible for restart
         for other_name, other_rt in self._runtimes.items():
             if name in other_rt.definition.depends_on and other_rt.status == ServiceStatus.FAILED:
-                self._log(f"[RESET] {other_name} .................... eligible for restart", log_file)
+                self._log(
+                    f"[RESET] {other_name} .................... eligible for restart", log_file
+                )
 
     @staticmethod
     def _log(message: str, log_file: Optional[str] = None):

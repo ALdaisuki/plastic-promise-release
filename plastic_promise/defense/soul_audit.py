@@ -152,6 +152,7 @@ class SoulAuditor:
         无历史数据时回退到 0.70。
         """
         import json as _json
+
         scores = []
         audit_log = os.path.join(os.path.dirname(self._db_path), "step_audit_log.jsonl")
         try:
@@ -237,7 +238,7 @@ class SoulAuditor:
         audit_log = os.path.join(os.path.dirname(self._db_path), "step_audit_log.jsonl")
         total = 0
         complete = 0  # 三项全有
-        partial = 0   # 至少一项有
+        partial = 0  # 至少一项有
 
         try:
             with open(audit_log, "r", encoding="utf-8") as f:
@@ -349,9 +350,7 @@ class SoulAuditor:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='trust_scores'"
             ).fetchone()
             if has_table:
-                rows = conn.execute(
-                    "SELECT agent_id, trust_score FROM trust_scores"
-                ).fetchall()
+                rows = conn.execute("SELECT agent_id, trust_score FROM trust_scores").fetchall()
                 conn.close()
 
                 if rows:
@@ -381,9 +380,7 @@ class SoulAuditor:
             ).fetchone()
             if has_table:
                 # 反馈信号 = 信任分有增有减，说明反馈在起作用
-                total_events = conn.execute(
-                    "SELECT COUNT(*) FROM trust_history"
-                ).fetchone()[0]
+                total_events = conn.execute("SELECT COUNT(*) FROM trust_history").fetchone()[0]
                 boost_events = conn.execute(
                     "SELECT COUNT(*) FROM trust_history WHERE delta > 0"
                 ).fetchone()[0]
@@ -419,7 +416,8 @@ class SoulAuditor:
 
             engine = get_engine()
             trace_result = await handle_skill_session_trace(
-                engine, {"session_scope": "all"},
+                engine,
+                {"session_scope": "all"},
             )
             trace_data = json.loads(trace_result[0].text)
             gaps = trace_data.get("gaps", [])
@@ -500,22 +498,22 @@ class SoulAuditor:
 
             # Flag any dimension below 0.60 as a P0 finding
             if score < 0.60:
-                report.findings.append({
-                    "severity": "P0",
-                    "dimension": dim_key,
-                    "dimension_name": dim_config["name"],
-                    "score": score,
-                    "threshold": 0.60,
-                    "message": (
-                        f"{dim_config['name']} scored {score:.2f}, "
-                        f"below critical threshold 0.60"
-                    ),
-                    "suggestion": self._suggest_fix(dim_key, score, details),
-                })
+                report.findings.append(
+                    {
+                        "severity": "P0",
+                        "dimension": dim_key,
+                        "dimension_name": dim_config["name"],
+                        "score": score,
+                        "threshold": 0.60,
+                        "message": (
+                            f"{dim_config['name']} scored {score:.2f}, "
+                            f"below critical threshold 0.60"
+                        ),
+                        "suggestion": self._suggest_fix(dim_key, score, details),
+                    }
+                )
 
-        report.overall_score = round(
-            weighted_sum / total_weight if total_weight > 0 else 0.0, 4
-        )
+        report.overall_score = round(weighted_sum / total_weight if total_weight > 0 else 0.0, 4)
         report.timestamp = datetime.datetime.now()
 
         self._reports.append(report)

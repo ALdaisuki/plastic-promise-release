@@ -37,6 +37,7 @@ async def _exemplar_research_handler(ctx, params, atom_results):
         # Extract search hints from task_description
         try:
             from plastic_promise.core.exemplar_gap_detector import _extract_keywords
+
             search_hints = _extract_keywords(task_desc)
         except ImportError:
             search_hints = []
@@ -45,7 +46,7 @@ async def _exemplar_research_handler(ctx, params, atom_results):
 
     # -- 2. Parse atom results --------------------------------------
     def parse(result):
-        if result and hasattr(result[0], 'text'):
+        if result and hasattr(result[0], "text"):
             try:
                 return json.loads(result[0].text)
             except (json.JSONDecodeError, TypeError):

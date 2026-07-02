@@ -23,7 +23,9 @@ def test_recall_quality():
     mem_count = int(audit.get("memory_pool_size", "0"))
     if ldb_count > mem_count:
         failures.append(f"Ghost vectors: LDB {ldb_count} > SQLite {mem_count}")
-    print(f"  [{'PASS' if ldb_count <= mem_count else 'FAIL'}] LDB rows: {ldb_count} <= SQLite: {mem_count}")
+    print(
+        f"  [{'PASS' if ldb_count <= mem_count else 'FAIL'}] LDB rows: {ldb_count} <= SQLite: {mem_count}"
+    )
 
     # Check 2: Vector search active
     vec_status = audit.get("vector_search", "fallback")
@@ -47,14 +49,18 @@ def test_recall_quality():
     all_content = " ".join(item.content for item in pack.core + pack.related)
     if "Performance test memory" in all_content:
         failures.append("Test pollution detected in results")
-    print(f"  [{'PASS' if 'Performance test memory' not in all_content else 'FAIL'}] No test pollution")
+    print(
+        f"  [{'PASS' if 'Performance test memory' not in all_content else 'FAIL'}] No test pollution"
+    )
 
     # Check 6: Principles activated (dict format)
     principles = pack.activated_principles
     if len(principles) < 2:
         failures.append(f"Only {len(principles)} principles activated")
     has_content = all("content" in (p if isinstance(p, dict) else {}) for p in principles)
-    print(f"  [{'PASS' if len(principles) >= 2 and has_content else 'FAIL'}] Principles: {len(principles)} (dict: {has_content})")
+    print(
+        f"  [{'PASS' if len(principles) >= 2 and has_content else 'FAIL'}] Principles: {len(principles)} (dict: {has_content})"
+    )
 
     # Check 7: BM25 hit rate
     text_results = engine._text_retrieval(query)

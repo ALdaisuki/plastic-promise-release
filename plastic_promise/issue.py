@@ -110,17 +110,20 @@ class IssueManager:
         # Push SSE notification for real-time multi-agent awareness
         try:
             from plastic_promise.mcp.server import notify_issue_change
-            notify_issue_change({
-                "type": "issue_transition",
-                "issue_id": iid,
-                "title": issue.get("title", ""),
-                "owner": issue.get("owner", ""),
-                "from_state": current,
-                "to_state": new_state,
-                "reason": reason,
-                "timestamp": now,
-                "summary": f"[{issue.get('owner','')}] {current}→{new_state}: {reason[:100]}"
-            })
+
+            notify_issue_change(
+                {
+                    "type": "issue_transition",
+                    "issue_id": iid,
+                    "title": issue.get("title", ""),
+                    "owner": issue.get("owner", ""),
+                    "from_state": current,
+                    "to_state": new_state,
+                    "reason": reason,
+                    "timestamp": now,
+                    "summary": f"[{issue.get('owner', '')}] {current}→{new_state}: {reason[:100]}",
+                }
+            )
         except Exception:
             pass  # notification is best-effort; don't block transition
         return result
@@ -170,7 +173,10 @@ class IssueManager:
             # Revert
             issue["blocks"].remove(blocks_id)
             blocked["blocked_by"].remove(iid)
-            return {"success": False, "message": "Adding this block would create a dependency cycle"}
+            return {
+                "success": False,
+                "message": "Adding this block would create a dependency cycle",
+            }
 
         return {"success": True, "message": f"{iid} now blocks {blocks_id}"}
 
@@ -202,9 +208,13 @@ class IssueManager:
         for bid in issue.get("blocks", []):
             b = self._issues.get(bid)
             if b:
-                chain.append({"id": bid, "title": b["title"], "state": b["state"], "relation": "blocks"})
+                chain.append(
+                    {"id": bid, "title": b["title"], "state": b["state"], "relation": "blocks"}
+                )
         for bid in issue.get("blocked_by", []):
             b = self._issues.get(bid)
             if b:
-                chain.append({"id": bid, "title": b["title"], "state": b["state"], "relation": "blocked_by"})
+                chain.append(
+                    {"id": bid, "title": b["title"], "state": b["state"], "relation": "blocked_by"}
+                )
         return chain

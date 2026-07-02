@@ -58,13 +58,15 @@ async def scan_scheduler_health(engine) -> dict:
             }
             if row["reject_rate"] > 0.50 and row["total"] >= 10:
                 entry["level"] = "red"
-                auto_actions.append({
-                    "scanner": row["source_scan"],
-                    "total": row["total"],
-                    "rejected": row["rejected"],
-                    "rate": row["reject_rate"],
-                    "action": "throttle_double",
-                })
+                auto_actions.append(
+                    {
+                        "scanner": row["source_scan"],
+                        "total": row["total"],
+                        "rejected": row["rejected"],
+                        "rate": row["reject_rate"],
+                        "action": "throttle_double",
+                    }
+                )
             elif row["reject_rate"] >= 0.30:
                 entry["level"] = "yellow"
             snr_top3.append(entry)
@@ -215,7 +217,9 @@ async def scan_scheduler_health(engine) -> dict:
 
         if prev_rows:
             try:
-                prev_content = json.loads(prev_rows[0]["content"]) if prev_rows[0]["content"] else {}
+                prev_content = (
+                    json.loads(prev_rows[0]["content"]) if prev_rows[0]["content"] else {}
+                )
                 if isinstance(prev_content, dict) and "audit_id" in prev_content:
                     previous_audit_id = prev_content["audit_id"]
                     prev_dims = prev_content.get("dimensions", {})
@@ -250,11 +254,13 @@ async def scan_scheduler_health(engine) -> dict:
                                 f"agent_timeout {t['agent']}: {prev_count}→{t['timeout_tasks']}"
                             )
                             if t["timeout_tasks"] > 5:
-                                follow_up_tasks.append({
-                                    "task_type": "review_agent_timeout",
-                                    "agent": t["agent"],
-                                    "reason": f"timeout increased {prev_count}→{t['timeout_tasks']}",
-                                })
+                                follow_up_tasks.append(
+                                    {
+                                        "task_type": "review_agent_timeout",
+                                        "agent": t["agent"],
+                                        "reason": f"timeout increased {prev_count}→{t['timeout_tasks']}",
+                                    }
+                                )
 
                     # Compare latency
                     prev_lat = prev_dims.get("dispatch_latency", {}).get("top3", [])
@@ -265,11 +271,13 @@ async def scan_scheduler_health(engine) -> dict:
                             degradations.append(
                                 f"dispatch_latency {l['task_type']}: {prev_wait}s→{l['avg_wait_seconds']}s"
                             )
-                            follow_up_tasks.append({
-                                "task_type": "review_dispatch_latency",
-                                "for_task_type": l["task_type"],
-                                "reason": f"latency 2x+ increase {prev_wait}s→{l['avg_wait_seconds']}s",
-                            })
+                            follow_up_tasks.append(
+                                {
+                                    "task_type": "review_dispatch_latency",
+                                    "for_task_type": l["task_type"],
+                                    "reason": f"latency 2x+ increase {prev_wait}s→{l['avg_wait_seconds']}s",
+                                }
+                            )
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
         else:
@@ -292,48 +300,60 @@ async def scan_scheduler_health(engine) -> dict:
     for s in snr_top3:
         if s["level"] in ("red", "yellow"):
             total_issues += 1
-            findings.append({
-                "dimension": "scanner_snr",
-                "level": s["level"],
-                "data": s,
-            })
+            findings.append(
+                {
+                    "dimension": "scanner_snr",
+                    "level": s["level"],
+                    "data": s,
+                }
+            )
     for t in timeout_top3:
         if t["level"] in ("red", "yellow"):
             total_issues += 1
-            findings.append({
-                "dimension": "agent_timeout",
-                "level": t["level"],
-                "data": t,
-            })
+            findings.append(
+                {
+                    "dimension": "agent_timeout",
+                    "level": t["level"],
+                    "data": t,
+                }
+            )
     for l in latency_top3:
         if l["level"] in ("red", "yellow"):
             total_issues += 1
-            findings.append({
-                "dimension": "dispatch_latency",
-                "level": l["level"],
-                "data": l,
-            })
+            findings.append(
+                {
+                    "dimension": "dispatch_latency",
+                    "level": l["level"],
+                    "data": l,
+                }
+            )
     if dimensions["priority_balance"]["level"] in ("red", "yellow"):
         total_issues += 1
-        findings.append({
-            "dimension": "priority_balance",
-            "level": dimensions["priority_balance"]["level"],
-            "data": dimensions["priority_balance"],
-        })
+        findings.append(
+            {
+                "dimension": "priority_balance",
+                "level": dimensions["priority_balance"]["level"],
+                "data": dimensions["priority_balance"],
+            }
+        )
     if dimensions["verification_throughput"]["level"] in ("red", "yellow"):
         total_issues += 1
-        findings.append({
-            "dimension": "verification_throughput",
-            "level": dimensions["verification_throughput"]["level"],
-            "data": dimensions["verification_throughput"],
-        })
+        findings.append(
+            {
+                "dimension": "verification_throughput",
+                "level": dimensions["verification_throughput"]["level"],
+                "data": dimensions["verification_throughput"],
+            }
+        )
     if degradations:
         total_issues += 1
-        findings.append({
-            "dimension": "trends",
-            "level": "yellow",
-            "data": {"degradations": degradations},
-        })
+        findings.append(
+            {
+                "dimension": "trends",
+                "level": "yellow",
+                "data": {"degradations": degradations},
+            }
+        )
 
     # Build audit report payload
     report = {
@@ -369,37 +389,43 @@ async def scan_scheduler_health(engine) -> dict:
             "verification_throughput": "fix_verification",
         }
         try:
-            await handle_task_enqueue(engine, {
-                "task_type": task_type_map.get(dim, "investigate_issue"),
-                "title": f"Fix {dim}: {str(f.get('data', ''))[:80]}",
-                "to_agent": "pi_fixer",
-                "priority": 2,  # A-level — red findings need immediate fix
-                "source_scan": "scan_scheduler_health",
-                "description": json.dumps(f, ensure_ascii=False, indent=2),
-                "payload": {"finding": f, "audit_id": audit_id},
-            })
+            await handle_task_enqueue(
+                engine,
+                {
+                    "task_type": task_type_map.get(dim, "investigate_issue"),
+                    "title": f"Fix {dim}: {str(f.get('data', ''))[:80]}",
+                    "to_agent": "pi_fixer",
+                    "priority": 2,  # A-level — red findings need immediate fix
+                    "source_scan": "scan_scheduler_health",
+                    "description": json.dumps(f, ensure_ascii=False, indent=2),
+                    "payload": {"finding": f, "audit_id": audit_id},
+                },
+            )
             dispatched += 1
         except Exception:
             pass
 
     # 2. Dispatch summary audit report to Claude
     try:
-        await handle_task_enqueue(engine, {
-            "task_type": "audit_scheduler",
-            "title": f"Scheduler Health Audit {audit_id}"
-                     f"{' (first)' if is_first_audit else ''} — {total_issues} findings, {dispatched} fix tasks",
-            "to_agent": "claude",
-            "priority": 3,
-            "source_scan": "scan_scheduler_health",
-            "description": (
-                f"6-dimension scheduler self-audit complete.\n"
-                f"Findings: {total_issues} | Fix tasks: {dispatched} | Auto-actions: {len(auto_actions)}\n"
-                f"SNR: {len(snr_top3)} scanners | "
-                f"Timeout: {len(timeout_top3)} agents | "
-                f"Latency: {len(latency_top3)} task types\n"
-            ),
-            "payload": report,
-        })
+        await handle_task_enqueue(
+            engine,
+            {
+                "task_type": "audit_scheduler",
+                "title": f"Scheduler Health Audit {audit_id}"
+                f"{' (first)' if is_first_audit else ''} — {total_issues} findings, {dispatched} fix tasks",
+                "to_agent": "claude",
+                "priority": 3,
+                "source_scan": "scan_scheduler_health",
+                "description": (
+                    f"6-dimension scheduler self-audit complete.\n"
+                    f"Findings: {total_issues} | Fix tasks: {dispatched} | Auto-actions: {len(auto_actions)}\n"
+                    f"SNR: {len(snr_top3)} scanners | "
+                    f"Timeout: {len(timeout_top3)} agents | "
+                    f"Latency: {len(latency_top3)} task types\n"
+                ),
+                "payload": report,
+            },
+        )
         dispatched += 1
     except Exception:
         pass
@@ -407,18 +433,21 @@ async def scan_scheduler_health(engine) -> dict:
     # 3. Dispatch auto-throttle notification separately if needed
     if auto_actions:
         try:
-            await handle_task_enqueue(engine, {
-                "task_type": "notify_throttle_change",
-                "title": f"Auto-throttle: {len(auto_actions)} scanner(s) throttled",
-                "to_agent": "claude",
-                "priority": 2,
-                "source_scan": "scan_scheduler_health",
-                "description": json.dumps(auto_actions, ensure_ascii=False, indent=2),
-                "payload": {
-                    "auto_actions": auto_actions,
-                    "rollback": "domain(action='reset_throttle', scanner='<name>')",
+            await handle_task_enqueue(
+                engine,
+                {
+                    "task_type": "notify_throttle_change",
+                    "title": f"Auto-throttle: {len(auto_actions)} scanner(s) throttled",
+                    "to_agent": "claude",
+                    "priority": 2,
+                    "source_scan": "scan_scheduler_health",
+                    "description": json.dumps(auto_actions, ensure_ascii=False, indent=2),
+                    "payload": {
+                        "auto_actions": auto_actions,
+                        "rollback": "domain(action='reset_throttle', scanner='<name>')",
+                    },
                 },
-            })
+            )
             dispatched += 1
         except Exception:
             pass

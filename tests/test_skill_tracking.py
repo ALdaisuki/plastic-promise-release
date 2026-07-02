@@ -1,4 +1,5 @@
 """Tests for skill_tracking MCP tools -- Skill Tracking Task 3."""
+
 import asyncio
 import json
 import pytest
@@ -25,9 +26,7 @@ class TestSkillSessionStart:
         with patch(
             "plastic_promise.mcp.tools.skill_tracking._activate_skill_principles"
         ) as mock_principles:
-            mock_principles.return_value = [
-                {"id": 2, "name": "全过程可查可透明"}
-            ]
+            mock_principles.return_value = [{"id": 2, "name": "全过程可查可透明"}]
             with patch(
                 "plastic_promise.mcp.tools.skill_tracking._recall_skill_memories"
             ) as mock_recall:
@@ -37,11 +36,16 @@ class TestSkillSessionStart:
                 ) as mock_store:
                     mock_store.return_value = "mem_skill_xyz"
 
-                    result = asyncio.run(handle_skill_session_start(engine, {
-                        "skill_name": "brainstorming",
-                        "task_description": "Design the skill tracking module",
-                        "parent_entity_id": None,
-                    }))
+                    result = asyncio.run(
+                        handle_skill_session_start(
+                            engine,
+                            {
+                                "skill_name": "brainstorming",
+                                "task_description": "Design the skill tracking module",
+                                "parent_entity_id": None,
+                            },
+                        )
+                    )
 
         assert len(result) == 1
         data = json.loads(result[0].text)
@@ -77,14 +81,18 @@ class TestSkillSessionStart:
                     "plastic_promise.mcp.tools.skill_tracking._store_skill_start",
                     return_value="mem_xyz",
                 ):
-
-                    result = asyncio.run(handle_skill_session_start(engine, {
-                        "skill_name": "writing-plans",
-                        "task_description": "Plan the module",
-                        "parent_entity_id": (
-                            "skill:test-driven-development:2026-06-30T14:00:00"
-                        ),
-                    }))
+                    result = asyncio.run(
+                        handle_skill_session_start(
+                            engine,
+                            {
+                                "skill_name": "writing-plans",
+                                "task_description": "Plan the module",
+                                "parent_entity_id": (
+                                    "skill:test-driven-development:2026-06-30T14:00:00"
+                                ),
+                            },
+                        )
+                    )
 
         data = json.loads(result[0].text)
         # writing-plans expects predecessor "brainstorming", not "test-driven-development"
@@ -120,12 +128,16 @@ class TestSkillSessionStart:
                     "plastic_promise.mcp.tools.skill_tracking._store_skill_start",
                     return_value="mem_xyz",
                 ):
-
-                    result = asyncio.run(handle_skill_session_start(engine, {
-                        "skill_name": "brainstorming",
-                        "task_description": "Design something",
-                        "parent_entity_id": None,
-                    }))
+                    result = asyncio.run(
+                        handle_skill_session_start(
+                            engine,
+                            {
+                                "skill_name": "brainstorming",
+                                "task_description": "Design something",
+                                "parent_entity_id": None,
+                            },
+                        )
+                    )
 
         data = json.loads(result[0].text)
         assert data["chain_warning"] is None
@@ -137,10 +149,15 @@ class TestSkillSessionStart:
 
         engine = MagicMock()
 
-        result = asyncio.run(handle_skill_session_start(engine, {
-            "skill_name": "nonexistent-skill",
-            "task_description": "Test",
-        }))
+        result = asyncio.run(
+            handle_skill_session_start(
+                engine,
+                {
+                    "skill_name": "nonexistent-skill",
+                    "task_description": "Test",
+                },
+            )
+        )
 
         data = json.loads(result[0].text)
         assert "error" in data
@@ -156,14 +173,17 @@ class TestSkillSessionComplete:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _make_engine_with_memory(entity_id="skill:brainstorming:2026-06-30T14:00:00.000000",
-                                 content="[SKILL START] brainstorming: Design something",
-                                 tags=None,
-                                 created_at=None):
+    def _make_engine_with_memory(
+        entity_id="skill:brainstorming:2026-06-30T14:00:00.000000",
+        content="[SKILL START] brainstorming: Design something",
+        tags=None,
+        created_at=None,
+    ):
         """Build a mock engine whose _memories dict contains one skill-start entry."""
         if created_at is None:
             # Use an ISO timestamp ~1 hour ago so duration_ms > 0
             import datetime as _dt
+
             created_at = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=1)).isoformat()
         if tags is None:
             tags = ["task:active", "skill:brainstorming", "domain:designing"]
@@ -185,11 +205,13 @@ class TestSkillSessionComplete:
         engine._memories = {memory_id: mem}
         # Wire up public API methods
         engine.iter_memories = lambda: iter(engine._memories.values())
+
         def _update_memory_fields(mid, **fields):
             if mid in engine._memories:
                 engine._memories[mid].update(fields)
                 return True
             return False
+
         engine.update_memory_fields = _update_memory_fields
         # Wire up get_memory / store_memory so feedback_apply works
         engine.get_memory.return_value = MagicMock(
@@ -222,27 +244,42 @@ class TestSkillSessionComplete:
         ) as mock_fb:
             # feedback_apply returns MCP TextContent list
             mock_fb.return_value = [
-                TextContent(type="text", text=json.dumps({
-                    "updated": True,
-                    "item_id": memory_id,
-                    "new_worth_score": 0.52,
-                }))
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "updated": True,
+                            "item_id": memory_id,
+                            "new_worth_score": 0.52,
+                        }
+                    ),
+                )
             ]
 
             with patch(
                 "plastic_promise.mcp.tools.memory.handle_memory_store",
             ) as mock_store:
                 mock_store.return_value = [
-                    TextContent(type="text", text=json.dumps({
-                        "memory_id": "mem_artifact_xyz",
-                    }))
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "memory_id": "mem_artifact_xyz",
+                            }
+                        ),
+                    )
                 ]
 
-                result = asyncio.run(handle_skill_session_complete(engine, {
-                    "entity_id": entity_id,
-                    # no outcome → normal completion
-                    "artifacts": ["docs/design.md"],
-                }))
+                result = asyncio.run(
+                    handle_skill_session_complete(
+                        engine,
+                        {
+                            "entity_id": entity_id,
+                            # no outcome → normal completion
+                            "artifacts": ["docs/design.md"],
+                        },
+                    )
+                )
 
         data = json.loads(result[0].text)
         assert data["status"] == "done"
@@ -289,10 +326,15 @@ class TestSkillSessionComplete:
         )
 
         # No patches needed — still_in_progress doesn't call other handlers
-        result = asyncio.run(handle_skill_session_complete(engine, {
-            "entity_id": entity_id,
-            "outcome": "still_in_progress",
-        }))
+        result = asyncio.run(
+            handle_skill_session_complete(
+                engine,
+                {
+                    "entity_id": entity_id,
+                    "outcome": "still_in_progress",
+                },
+            )
+        )
 
         data = json.loads(result[0].text)
         assert data["status"] == "still_active"
@@ -306,6 +348,7 @@ class TestSkillSessionComplete:
         engine_mem = engine._memories[memory_id]
         assert "last_accessed" in engine_mem
         import datetime as dt_mod
+
         # Should be a recent ISO timestamp
         assert "2026" in engine_mem["last_accessed"]
 
@@ -327,9 +370,8 @@ class TestSkillSessionComplete:
 
         entity_id = "skill:writing-plans:2026-06-30T12:00:00.222222"
         # Pre-populate content with 3 [still_in_progress] markers
-        content = (
-            "[SKILL START] writing-plans: Plan the module\n"
-            + "\n".join(["[still_in_progress]"] * MAX_STILL_IN_PROGRESS_RENEWALS)
+        content = "[SKILL START] writing-plans: Plan the module\n" + "\n".join(
+            ["[still_in_progress]"] * MAX_STILL_IN_PROGRESS_RENEWALS
         )
         engine, memory_id, mem = self._make_engine_with_memory(
             entity_id=entity_id,
@@ -337,10 +379,15 @@ class TestSkillSessionComplete:
             tags=["task:active", "skill:writing-plans", "domain:designing"],
         )
 
-        result = asyncio.run(handle_skill_session_complete(engine, {
-            "entity_id": entity_id,
-            "outcome": "still_in_progress",
-        }))
+        result = asyncio.run(
+            handle_skill_session_complete(
+                engine,
+                {
+                    "entity_id": entity_id,
+                    "outcome": "still_in_progress",
+                },
+            )
+        )
 
         data = json.loads(result[0].text)
         assert data["status"] == "still_active"
@@ -367,10 +414,15 @@ class TestSkillSessionComplete:
             entity_id=entity_id,
         )
 
-        result = asyncio.run(handle_skill_session_complete(engine, {
-            "entity_id": entity_id,
-            "outcome": "abandoned: requirement changed",
-        }))
+        result = asyncio.run(
+            handle_skill_session_complete(
+                engine,
+                {
+                    "entity_id": entity_id,
+                    "outcome": "abandoned: requirement changed",
+                },
+            )
+        )
 
         data = json.loads(result[0].text)
         assert data["status"] == "abandoned"
@@ -440,22 +492,24 @@ class TestSkillSessionTrace:
                     "[SKILL COMPLETE] duration_ms=1800000"
                 ),
                 "entity_ids": [entity_f],
-                "tags": ["task:done", "skill:finishing-a-development-branch",
-                         "domain:governing"],
+                "tags": ["task:done", "skill:finishing-a-development-branch", "domain:governing"],
                 "created_at": "2026-06-30T15:00:00.111111",
             },
         }
 
         # Wire up public API methods
-        engine.list_graph_nodes = lambda: [
-            {"id": k, **v} for k, v in engine._graph_nodes.items()
-        ]
+        engine.list_graph_nodes = lambda: [{"id": k, **v} for k, v in engine._graph_nodes.items()]
         engine.list_graph_edges = lambda: engine._graph_edges
         engine.iter_memories = lambda: iter(engine._memories.values())
 
-        result = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all",
-        }))
+        result = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                },
+            )
+        )
 
         assert len(result) == 1
         data = json.loads(result[0].text)
@@ -472,15 +526,15 @@ class TestSkillSessionTrace:
         assert skills == {"brainstorming", "finishing-a-development-branch"}
 
         # Brainstorming should have a child
-        b_sess = next(s for s in data["sessions"]
-                      if s["skill_name"] == "brainstorming")
+        b_sess = next(s for s in data["sessions"] if s["skill_name"] == "brainstorming")
         assert b_sess["status"] == "done"
         assert entity_f in b_sess["child_skills"]
         assert b_sess["parent_skill"] is None
 
         # Finishing branch should have a parent (brainstorming), no children
-        f_sess = next(s for s in data["sessions"]
-                      if s["skill_name"] == "finishing-a-development-branch")
+        f_sess = next(
+            s for s in data["sessions"] if s["skill_name"] == "finishing-a-development-branch"
+        )
         assert f_sess["status"] == "done"
         assert entity_b in f_sess["parent_skill"]
         assert f_sess["child_skills"] == []
@@ -504,6 +558,7 @@ class TestSkillSessionTrace:
         engine._graph_edges = []
 
         import datetime as _dt
+
         # last_accessed = 45 minutes ago
         la_ts = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(minutes=45)).isoformat()
 
@@ -518,15 +573,18 @@ class TestSkillSessionTrace:
             },
         }
 
-        engine.list_graph_nodes = lambda: [
-            {"id": k, **v} for k, v in engine._graph_nodes.items()
-        ]
+        engine.list_graph_nodes = lambda: [{"id": k, **v} for k, v in engine._graph_nodes.items()]
         engine.list_graph_edges = lambda: engine._graph_edges
         engine.iter_memories = lambda: iter(engine._memories.values())
 
-        result = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all",
-        }))
+        result = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                },
+            )
+        )
 
         assert len(result) == 1
         data = json.loads(result[0].text)
@@ -600,13 +658,10 @@ class TestSkillSessionAudit:
 
         # Find the brainstorming gap
         gap = next(
-            (g for g in data["gaps_found"]
-             if g["skill_name"] == "brainstorming"),
+            (g for g in data["gaps_found"] if g["skill_name"] == "brainstorming"),
             None,
         )
-        assert gap is not None, (
-            f"Expected a gap for 'brainstorming', got: {data['gaps_found']}"
-        )
+        assert gap is not None, f"Expected a gap for 'brainstorming', got: {data['gaps_found']}"
         assert gap["type"] == "missing_start"
         assert gap["domain"] == "designing"
         assert len(data["auto_fixed"]) == 0

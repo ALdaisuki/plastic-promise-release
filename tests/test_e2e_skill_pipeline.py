@@ -34,11 +34,12 @@ _OLD = lambda hours_ago: (_NOW - datetime.timedelta(hours=hours_ago)).isoformat(
 # Mock 工厂
 # ═══════════════════════════════════════════════════════════
 
+
 def _make_soul_loop_mock(core_items=None):
     """创建 SoulLoop.pre_task_v2 的 mock ContextPack 返回值。"""
     pack = MagicMock()
     core = []
-    for item in (core_items or []):
+    for item in core_items or []:
         i = MagicMock()
         i.id = item.get("id", "mem_default")
         i.content = item.get("content", "")
@@ -53,20 +54,44 @@ def _make_soul_loop_mock(core_items=None):
 
 def _make_start_mock(skill_name, domain="reflecting", entity_id=None):
     eid = entity_id or f"skill:{skill_name}:{_T(10, 0)}"
-    return [TextContent(type="text", text=json.dumps({
-        "entity_id": eid, "skill_name": skill_name, "status": "active",
-        "domain": domain,
-        "activated_principles": [{"id":2,"name":"全过程可查可透明"}, {"id":4,"name":"上下文驱动决策"}],
-        "related_memories": [], "chain_warning": None,
-    }))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "entity_id": eid,
+                    "skill_name": skill_name,
+                    "status": "active",
+                    "domain": domain,
+                    "activated_principles": [
+                        {"id": 2, "name": "全过程可查可透明"},
+                        {"id": 4, "name": "上下文驱动决策"},
+                    ],
+                    "related_memories": [],
+                    "chain_warning": None,
+                }
+            ),
+        )
+    ]
 
 
 def _make_complete_mock(status="done"):
-    return [TextContent(type="text", text=json.dumps({
-        "entity_id": "skill:test:2026-01-01T00:00:00", "skill_name": "test",
-        "status": status, "duration_ms": 5000, "outcome": "完成",
-        "next_skills": [], "worth_update": {"previous":0.70,"delta":0.02,"new":0.72},
-    }))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "entity_id": "skill:test:2026-01-01T00:00:00",
+                    "skill_name": "test",
+                    "status": status,
+                    "duration_ms": 5000,
+                    "outcome": "完成",
+                    "next_skills": [],
+                    "worth_update": {"previous": 0.70, "delta": 0.02, "new": 0.72},
+                }
+            ),
+        )
+    ]
 
 
 def _make_store_result(mid="mem_test"):
@@ -78,6 +103,7 @@ def _make_store_result(mid="mem_test"):
 # S1: Claude Code 完整 SuperPowers 开发会话
 # ═══════════════════════════════════════════════════════════
 
+
 class TestS1ClaudeCodeFullSession:
     """日常开发流程: auto_context_inject → brainstorming → writing-plans → SDD → trace。"""
 
@@ -88,31 +114,44 @@ class TestS1ClaudeCodeFullSession:
         engine = MagicMock()
         engine.register_entity.return_value = {
             "node_id": f"skill_session:skill:auto_inject:claude_code:{_T(10, 0)}",
-            "type": "skill_session", "is_new": True, "edges_created": 0,
+            "type": "skill_session",
+            "is_new": True,
+            "edges_created": 0,
         }
         engine._graph_nodes = {}
         engine._graph_edges = []
         engine._memories = {}
 
         # ── Phase 1: 会话启动 ──
-        with patch('plastic_promise.loop.soul_loop.SoulLoop') as MockLoop:
+        with patch("plastic_promise.loop.soul_loop.SoulLoop") as MockLoop:
             mock_loop = MagicMock()
             mock_loop.pre_task_v2.return_value = _make_soul_loop_mock()
             MockLoop.return_value = mock_loop
 
-            with patch('plastic_promise.mcp.tools.memory.handle_memory_store',
-                       return_value=_make_store_result()):
-                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+            with patch(
+                "plastic_promise.mcp.tools.memory.handle_memory_store",
+                return_value=_make_store_result(),
+            ):
+                with patch(
+                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+                ) as mock_start:
                     mock_start.return_value = _make_start_mock("auto_inject:claude_code")
-                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                    with patch(
+                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+                    ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        inject_result = asyncio.run(handle_auto_context_inject(engine, {
-                            "task_description": "为 Plastic Promise 设计用户认证模块",
-                            "task_type": "architecture",
-                            "source": "claude_code",
-                            "scope": "agent:claude",
-                        }))
+                        inject_result = asyncio.run(
+                            handle_auto_context_inject(
+                                engine,
+                                {
+                                    "task_description": "为 Plastic Promise 设计用户认证模块",
+                                    "task_type": "architecture",
+                                    "source": "claude_code",
+                                    "scope": "agent:claude",
+                                },
+                            )
+                        )
 
         inject_data = json.loads(inject_result[0].text)
         assert inject_data["skill_name"] == "auto_inject:claude_code"
@@ -121,7 +160,8 @@ class TestS1ClaudeCodeFullSession:
         # Manually add auto_inject node to graph (handler created it via register_entity mock)
         ai_eid = inject_data["entity_id"]
         engine._graph_nodes[f"skill_session:{ai_eid}"] = {
-            "type": "skill_session", "name": "auto_inject:claude_code",
+            "type": "skill_session",
+            "name": "auto_inject:claude_code",
             "description": "会话启动",
         }
         engine._memories[f"mem_ai"] = {
@@ -137,14 +177,15 @@ class TestS1ClaudeCodeFullSession:
 
         # ── Phase 2-4: 构建完整的 skill 链 ──
         for skill_name, ts, domain in [
-            ("brainstorming",                 _T(10, 5),  "designing"),
-            ("writing-plans",                 _T(10, 35), "designing"),
-            ("subagent-driven-development",   _T(11, 5),  "building"),
+            ("brainstorming", _T(10, 5), "designing"),
+            ("writing-plans", _T(10, 35), "designing"),
+            ("subagent-driven-development", _T(11, 5), "building"),
             ("finishing-a-development-branch", _T(12, 0), "governing"),
         ]:
             eid = f"skill:{skill_name}:{ts}"
             engine._graph_nodes[f"skill_session:{eid}"] = {
-                "type": "skill_session", "name": skill_name,
+                "type": "skill_session",
+                "name": skill_name,
                 "description": f"Executing {skill_name}",
             }
             engine._memories[f"mem_{skill_name}"] = {
@@ -159,21 +200,36 @@ class TestS1ClaudeCodeFullSession:
             }
 
         engine._graph_edges = [
-            {"from": f"skill_session:skill:brainstorming:{_T(10, 5)}",
-             "to": f"skill_session:skill:writing-plans:{_T(10, 35)}",
-             "relation": "parent_of", "weight": 0.8},
-            {"from": f"skill_session:skill:writing-plans:{_T(10, 35)}",
-             "to": f"skill_session:skill:subagent-driven-development:{_T(11, 5)}",
-             "relation": "parent_of", "weight": 0.8},
-            {"from": f"skill_session:skill:subagent-driven-development:{_T(11, 5)}",
-             "to": f"skill_session:skill:finishing-a-development-branch:{_T(12, 0)}",
-             "relation": "parent_of", "weight": 0.8},
+            {
+                "from": f"skill_session:skill:brainstorming:{_T(10, 5)}",
+                "to": f"skill_session:skill:writing-plans:{_T(10, 35)}",
+                "relation": "parent_of",
+                "weight": 0.8,
+            },
+            {
+                "from": f"skill_session:skill:writing-plans:{_T(10, 35)}",
+                "to": f"skill_session:skill:subagent-driven-development:{_T(11, 5)}",
+                "relation": "parent_of",
+                "weight": 0.8,
+            },
+            {
+                "from": f"skill_session:skill:subagent-driven-development:{_T(11, 5)}",
+                "to": f"skill_session:skill:finishing-a-development-branch:{_T(12, 0)}",
+                "relation": "parent_of",
+                "weight": 0.8,
+            },
         ]
 
         # ── Phase 5: trace 默认过滤 auto_inject ──
-        trace_result = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all", "include_auto_inject": False,
-        }))
+        trace_result = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                    "include_auto_inject": False,
+                },
+            )
+        )
         trace_data = json.loads(trace_result[0].text)
         sessions = trace_data["sessions"]
 
@@ -189,9 +245,15 @@ class TestS1ClaudeCodeFullSession:
         assert trace_data["chain_complete"] == True
 
         # ── Phase 6: trace 包含 auto_inject ──
-        trace_all = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all", "include_auto_inject": True,
-        }))
+        trace_all = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                    "include_auto_inject": True,
+                },
+            )
+        )
         all_data = json.loads(trace_all[0].text)
         assert len(all_data["sessions"]) == 5  # 4 skills + 1 auto_inject
 
@@ -202,28 +264,41 @@ class TestS1ClaudeCodeFullSession:
         engine = MagicMock()
         engine.register_entity.return_value = {
             "node_id": "skill_session:skill:auto_inject:claude_code:2026-07-01T10:00:00",
-            "type": "skill_session", "is_new": True, "edges_created": 0,
+            "type": "skill_session",
+            "is_new": True,
+            "edges_created": 0,
         }
         engine._graph_nodes = {}
         engine._memories = {}
 
-        with patch('plastic_promise.loop.soul_loop.SoulLoop') as MockLoop:
+        with patch("plastic_promise.loop.soul_loop.SoulLoop") as MockLoop:
             mock_loop = MagicMock()
             mock_loop.pre_task_v2.return_value = _make_soul_loop_mock()
             MockLoop.return_value = mock_loop
 
-            with patch('plastic_promise.mcp.tools.memory.handle_memory_store',
-                       return_value=_make_store_result()):
-                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+            with patch(
+                "plastic_promise.mcp.tools.memory.handle_memory_store",
+                return_value=_make_store_result(),
+            ):
+                with patch(
+                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+                ) as mock_start:
                     mock_start.return_value = _make_start_mock("auto_inject:claude_code")
-                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                    with patch(
+                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+                    ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(handle_auto_context_inject(engine, {
-                            "task_description": "会话启动",
-                            "source": "claude_code",
-                            "scope": "agent:claude",
-                        }))
+                        result = asyncio.run(
+                            handle_auto_context_inject(
+                                engine,
+                                {
+                                    "task_description": "会话启动",
+                                    "source": "claude_code",
+                                    "scope": "agent:claude",
+                                },
+                            )
+                        )
 
         data = json.loads(result[0].text)
         assert data["entity_id"] is not None
@@ -237,6 +312,7 @@ class TestS1ClaudeCodeFullSession:
 # S2: Pi Agent 自治流水线
 # ═══════════════════════════════════════════════════════════
 
+
 class TestS2PiAgentPipeline:
     """Pi Agent (Builder → Reviewer) 的自动化注入 + skill 追踪。"""
 
@@ -247,24 +323,36 @@ class TestS2PiAgentPipeline:
         engine = MagicMock()
         engine.register_entity.return_value = {
             "node_id": "skill_session:skill:auto_inject:pi_agent:builder:2026-01-01T00:00:00",
-            "type": "skill_session", "is_new": True,
+            "type": "skill_session",
+            "is_new": True,
         }
 
-        with patch('plastic_promise.loop.soul_loop.SoulLoop') as MockLoop:
+        with patch("plastic_promise.loop.soul_loop.SoulLoop") as MockLoop:
             MockLoop.return_value.pre_task_v2.return_value = _make_soul_loop_mock()
 
-            with patch('plastic_promise.mcp.tools.memory.handle_memory_store',
-                       return_value=_make_store_result()):
-                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+            with patch(
+                "plastic_promise.mcp.tools.memory.handle_memory_store",
+                return_value=_make_store_result(),
+            ):
+                with patch(
+                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+                ) as mock_start:
                     mock_start.return_value = _make_start_mock("auto_inject:pi_agent:builder")
-                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                    with patch(
+                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+                    ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(handle_auto_context_inject(engine, {
-                            "task_description": "创建 auth/jwt.py: login() + refresh()",
-                            "task_type": "code_generation",
-                            "source": "pi_agent:builder",
-                        }))
+                        result = asyncio.run(
+                            handle_auto_context_inject(
+                                engine,
+                                {
+                                    "task_description": "创建 auth/jwt.py: login() + refresh()",
+                                    "task_type": "code_generation",
+                                    "source": "pi_agent:builder",
+                                },
+                            )
+                        )
 
         data = json.loads(result[0].text)
         assert data["skill_name"] == "auto_inject:pi_agent:builder"
@@ -276,24 +364,36 @@ class TestS2PiAgentPipeline:
         engine = MagicMock()
         engine.register_entity.return_value = {
             "node_id": "skill_session:skill:auto_inject:pi_agent:reviewer:2026-01-01T00:00:00",
-            "type": "skill_session", "is_new": True,
+            "type": "skill_session",
+            "is_new": True,
         }
 
-        with patch('plastic_promise.loop.soul_loop.SoulLoop') as MockLoop:
+        with patch("plastic_promise.loop.soul_loop.SoulLoop") as MockLoop:
             MockLoop.return_value.pre_task_v2.return_value = _make_soul_loop_mock()
 
-            with patch('plastic_promise.mcp.tools.memory.handle_memory_store',
-                       return_value=_make_store_result()):
-                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+            with patch(
+                "plastic_promise.mcp.tools.memory.handle_memory_store",
+                return_value=_make_store_result(),
+            ):
+                with patch(
+                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+                ) as mock_start:
                     mock_start.return_value = _make_start_mock("auto_inject:pi_agent:reviewer")
-                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                    with patch(
+                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+                    ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(handle_auto_context_inject(engine, {
-                            "task_description": "审查 auth/jwt.py — login() 逻辑",
-                            "task_type": "code_review",
-                            "source": "pi_agent:reviewer",
-                        }))
+                        result = asyncio.run(
+                            handle_auto_context_inject(
+                                engine,
+                                {
+                                    "task_description": "审查 auth/jwt.py — login() 逻辑",
+                                    "task_type": "code_review",
+                                    "source": "pi_agent:reviewer",
+                                },
+                            )
+                        )
 
         data = json.loads(result[0].text)
         assert data["skill_name"] == "auto_inject:pi_agent:reviewer"
@@ -302,6 +402,7 @@ class TestS2PiAgentPipeline:
 # ═══════════════════════════════════════════════════════════
 # S3: 自反馈循环
 # ═══════════════════════════════════════════════════════════
+
 
 class TestS3SelfFeedbackLoop:
     """跨会话上下文积累 — 注入记录沉淀后下次可检索到。"""
@@ -312,7 +413,8 @@ class TestS3SelfFeedbackLoop:
         engine = MagicMock()
         engine.register_entity.return_value = {
             "node_id": "skill_session:skill:auto_inject:claude_code:2026-01-01T00:00:00",
-            "type": "skill_session", "is_new": True,
+            "type": "skill_session",
+            "is_new": True,
         }
 
         # 第一次注入留下的记忆
@@ -326,27 +428,38 @@ class TestS3SelfFeedbackLoop:
         }
         engine._memories = {"mem_first": first_record}
 
-        with patch('plastic_promise.loop.soul_loop.SoulLoop') as MockLoop:
+        with patch("plastic_promise.loop.soul_loop.SoulLoop") as MockLoop:
             mock_loop = MagicMock()
             # supply() 返回第一次记录（自反馈命中）
-            mock_loop.pre_task_v2.return_value = _make_soul_loop_mock(core_items=[
-                {"id": "mem_first", "content": first_record["content"], "relevance": 0.88}
-            ])
+            mock_loop.pre_task_v2.return_value = _make_soul_loop_mock(
+                core_items=[
+                    {"id": "mem_first", "content": first_record["content"], "relevance": 0.88}
+                ]
+            )
             MockLoop.return_value = mock_loop
 
-            with patch('plastic_promise.mcp.tools.memory.handle_memory_store') as mock_store:
+            with patch("plastic_promise.mcp.tools.memory.handle_memory_store") as mock_store:
                 mock_store.return_value = _make_store_result("mem_second")
-                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+                with patch(
+                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+                ) as mock_start:
                     mock_start.return_value = _make_start_mock("auto_inject:claude_code")
-                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                    with patch(
+                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+                    ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(handle_auto_context_inject(engine, {
-                            "task_description": "修复 OAuth token 刷新竞态条件",
-                            "task_type": "debugging",
-                            "source": "claude_code",
-                            "scope": "agent:claude",
-                        }))
+                        result = asyncio.run(
+                            handle_auto_context_inject(
+                                engine,
+                                {
+                                    "task_description": "修复 OAuth token 刷新竞态条件",
+                                    "task_type": "debugging",
+                                    "source": "claude_code",
+                                    "scope": "agent:claude",
+                                },
+                            )
+                        )
 
         data = json.loads(result[0].text)
         core = data["context_pack"]["core"]
@@ -361,37 +474,65 @@ class TestS3SelfFeedbackLoop:
         engine = MagicMock()
         engine.register_entity.return_value = {
             "node_id": "skill_session:skill:auto_inject:claude_code:2026-01-01T00:00:00",
-            "type": "skill_session", "is_new": True,
+            "type": "skill_session",
+            "is_new": True,
         }
 
         # 两轮历史注入
         engine._memories = {
-            "mem_r1": {"id": "mem_r1", "content": "[AUTO INJECT] 设计认证模块\ncore_items: 2",
-                       "memory_type": "experience", "tags": ["auto_inject"]},
-            "mem_r2": {"id": "mem_r2", "content": "[AUTO INJECT] 实现 JWT 登录\ncore_items: 3",
-                       "memory_type": "experience", "tags": ["auto_inject"]},
+            "mem_r1": {
+                "id": "mem_r1",
+                "content": "[AUTO INJECT] 设计认证模块\ncore_items: 2",
+                "memory_type": "experience",
+                "tags": ["auto_inject"],
+            },
+            "mem_r2": {
+                "id": "mem_r2",
+                "content": "[AUTO INJECT] 实现 JWT 登录\ncore_items: 3",
+                "memory_type": "experience",
+                "tags": ["auto_inject"],
+            },
         }
 
-        with patch('plastic_promise.loop.soul_loop.SoulLoop') as MockLoop:
+        with patch("plastic_promise.loop.soul_loop.SoulLoop") as MockLoop:
             mock_loop = MagicMock()
-            mock_loop.pre_task_v2.return_value = _make_soul_loop_mock(core_items=[
-                {"id": "mem_r2", "content": engine._memories["mem_r2"]["content"], "relevance": 0.90},
-                {"id": "mem_r1", "content": engine._memories["mem_r1"]["content"], "relevance": 0.80},
-            ])
+            mock_loop.pre_task_v2.return_value = _make_soul_loop_mock(
+                core_items=[
+                    {
+                        "id": "mem_r2",
+                        "content": engine._memories["mem_r2"]["content"],
+                        "relevance": 0.90,
+                    },
+                    {
+                        "id": "mem_r1",
+                        "content": engine._memories["mem_r1"]["content"],
+                        "relevance": 0.80,
+                    },
+                ]
+            )
             MockLoop.return_value = mock_loop
 
-            with patch('plastic_promise.mcp.tools.memory.handle_memory_store') as mock_store:
+            with patch("plastic_promise.mcp.tools.memory.handle_memory_store") as mock_store:
                 mock_store.return_value = _make_store_result("mem_r3")
-                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+                with patch(
+                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+                ) as mock_start:
                     mock_start.return_value = _make_start_mock("auto_inject:claude_code")
-                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                    with patch(
+                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+                    ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(handle_auto_context_inject(engine, {
-                            "task_description": "审查认证模块安全性",
-                            "task_type": "code_review",
-                            "source": "claude_code",
-                        }))
+                        result = asyncio.run(
+                            handle_auto_context_inject(
+                                engine,
+                                {
+                                    "task_description": "审查认证模块安全性",
+                                    "task_type": "code_review",
+                                    "source": "claude_code",
+                                },
+                            )
+                        )
 
         data = json.loads(result[0].text)
         core_ids = [c["id"] for c in data["context_pack"]["core"]]
@@ -402,6 +543,7 @@ class TestS3SelfFeedbackLoop:
 # ═══════════════════════════════════════════════════════════
 # S4: Bug 修复流程
 # ═══════════════════════════════════════════════════════════
+
 
 class TestS4BugFixWorkflow:
     """debugging → tdd → verification 完整追踪链。"""
@@ -415,8 +557,8 @@ class TestS4BugFixWorkflow:
         engine._memories = {}
 
         chain = [
-            ("systematic-debugging",          _T(14, 5),  "fixing"),
-            ("test-driven-development",       _T(14, 20), "building"),
+            ("systematic-debugging", _T(14, 5), "fixing"),
+            ("test-driven-development", _T(14, 20), "building"),
             ("verification-before-completion", _T(14, 35), "reflecting"),
             ("finishing-a-development-branch", _T(15, 0), "governing"),
         ]
@@ -424,7 +566,8 @@ class TestS4BugFixWorkflow:
         for skill_name, ts, domain in chain:
             eid = f"skill:{skill_name}:{ts}"
             engine._graph_nodes[f"skill_session:{eid}"] = {
-                "type": "skill_session", "name": skill_name,
+                "type": "skill_session",
+                "name": skill_name,
             }
             engine._memories[f"mem_{skill_name}"] = {
                 "id": f"mem_{skill_name}",
@@ -439,20 +582,35 @@ class TestS4BugFixWorkflow:
 
         # 合法 parent-child 边: debugging → tdd → verification → finishing
         engine._graph_edges = [
-            {"from": f"skill_session:skill:systematic-debugging:{_T(14, 5)}",
-             "to": f"skill_session:skill:test-driven-development:{_T(14, 20)}",
-             "relation": "parent_of", "weight": 0.9},
-            {"from": f"skill_session:skill:test-driven-development:{_T(14, 20)}",
-             "to": f"skill_session:skill:verification-before-completion:{_T(14, 35)}",
-             "relation": "parent_of", "weight": 0.9},
-            {"from": f"skill_session:skill:verification-before-completion:{_T(14, 35)}",
-             "to": f"skill_session:skill:finishing-a-development-branch:{_T(15, 0)}",
-             "relation": "parent_of", "weight": 0.9},
+            {
+                "from": f"skill_session:skill:systematic-debugging:{_T(14, 5)}",
+                "to": f"skill_session:skill:test-driven-development:{_T(14, 20)}",
+                "relation": "parent_of",
+                "weight": 0.9,
+            },
+            {
+                "from": f"skill_session:skill:test-driven-development:{_T(14, 20)}",
+                "to": f"skill_session:skill:verification-before-completion:{_T(14, 35)}",
+                "relation": "parent_of",
+                "weight": 0.9,
+            },
+            {
+                "from": f"skill_session:skill:verification-before-completion:{_T(14, 35)}",
+                "to": f"skill_session:skill:finishing-a-development-branch:{_T(15, 0)}",
+                "relation": "parent_of",
+                "weight": 0.9,
+            },
         ]
 
-        trace_result = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all", "include_auto_inject": False,
-        }))
+        trace_result = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                    "include_auto_inject": False,
+                },
+            )
+        )
 
         trace_data = json.loads(trace_result[0].text)
         sessions = trace_data["sessions"]
@@ -469,8 +627,8 @@ class TestS4BugFixWorkflow:
 # S5: 链路完整性审计
 # ═══════════════════════════════════════════════════════════
 
-class TestS5ChainIntegrityAudit:
 
+class TestS5ChainIntegrityAudit:
     def test_detect_chain_broken(self):
         """brainstorming 完成但无 writing-plans → chain_broken warning。"""
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
@@ -494,9 +652,15 @@ class TestS5ChainIntegrityAudit:
             },
         }
 
-        trace_result = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all", "include_auto_inject": False,
-        }))
+        trace_result = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                    "include_auto_inject": False,
+                },
+            )
+        )
 
         trace_data = json.loads(trace_result[0].text)
         chain_warnings = trace_data.get("chain_warnings", [])
@@ -527,9 +691,15 @@ class TestS5ChainIntegrityAudit:
             },
         }
 
-        trace_result = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all", "include_auto_inject": False,
-        }))
+        trace_result = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                    "include_auto_inject": False,
+                },
+            )
+        )
 
         trace_data = json.loads(trace_result[0].text)
         gaps = trace_data.get("gaps", [])
@@ -547,16 +717,17 @@ class TestS5ChainIntegrityAudit:
         engine._memories = {}
 
         skills = [
-            ("brainstorming",                   _T(10, 0)),
-            ("writing-plans",                   _T(10, 30)),
-            ("subagent-driven-development",     _T(11, 0)),
-            ("finishing-a-development-branch",  _T(12, 0)),
+            ("brainstorming", _T(10, 0)),
+            ("writing-plans", _T(10, 30)),
+            ("subagent-driven-development", _T(11, 0)),
+            ("finishing-a-development-branch", _T(12, 0)),
         ]
 
         for i, (name, ts) in enumerate(skills):
             eid = f"skill:{name}:{ts}"
             engine._graph_nodes[f"skill_session:{eid}"] = {
-                "type": "skill_session", "name": name,
+                "type": "skill_session",
+                "name": name,
             }
             engine._memories[f"mem_{name}"] = {
                 "id": f"mem_{name}",
@@ -570,15 +741,23 @@ class TestS5ChainIntegrityAudit:
             # Parent edge (except first)
             if i > 0:
                 prev_name, prev_ts = skills[i - 1]
-                engine._graph_edges.append({
-                    "from": f"skill_session:skill:{prev_name}:{prev_ts}",
-                    "to": f"skill_session:{eid}",
-                    "relation": "parent_of",
-                })
+                engine._graph_edges.append(
+                    {
+                        "from": f"skill_session:skill:{prev_name}:{prev_ts}",
+                        "to": f"skill_session:{eid}",
+                        "relation": "parent_of",
+                    }
+                )
 
-        trace_result = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all", "include_auto_inject": False,
-        }))
+        trace_result = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                    "include_auto_inject": False,
+                },
+            )
+        )
 
         trace_data = json.loads(trace_result[0].text)
         assert trace_data["chain_complete"] == True
@@ -589,8 +768,8 @@ class TestS5ChainIntegrityAudit:
 # S6: 优雅降级
 # ═══════════════════════════════════════════════════════════
 
-class TestS6GracefulDegradation:
 
+class TestS6GracefulDegradation:
     def test_pre_task_failure_fallback(self):
         """pre_task_v2 失败 → principle_activate fallback 生效。"""
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
@@ -598,29 +777,43 @@ class TestS6GracefulDegradation:
         engine = MagicMock()
         engine.register_entity.return_value = {
             "node_id": "skill_session:skill:auto_inject:claude_code:2026-01-01T00:00:00",
-            "type": "skill_session", "is_new": True,
+            "type": "skill_session",
+            "is_new": True,
         }
 
-        with patch('plastic_promise.loop.soul_loop.SoulLoop') as MockLoop:
+        with patch("plastic_promise.loop.soul_loop.SoulLoop") as MockLoop:
             mock_loop = MagicMock()
             mock_loop.pre_task_v2.side_effect = Exception("Embedding down")
             MockLoop.return_value = mock_loop
 
-            fallback = [{"id":1,"name":"奥卡姆剃刀"},{"id":2,"name":"全过程可查可透明"}]
-            with patch('plastic_promise.mcp.tools.principles.handle_principle_activate') as mock_pa:
-                mock_pa.return_value = [TextContent(type="text", text=json.dumps({"activated": fallback}))]
+            fallback = [{"id": 1, "name": "奥卡姆剃刀"}, {"id": 2, "name": "全过程可查可透明"}]
+            with patch("plastic_promise.mcp.tools.principles.handle_principle_activate") as mock_pa:
+                mock_pa.return_value = [
+                    TextContent(type="text", text=json.dumps({"activated": fallback}))
+                ]
 
-                with patch('plastic_promise.mcp.tools.memory.handle_memory_store',
-                           return_value=_make_store_result()):
-                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+                with patch(
+                    "plastic_promise.mcp.tools.memory.handle_memory_store",
+                    return_value=_make_store_result(),
+                ):
+                    with patch(
+                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+                    ) as mock_start:
                         mock_start.return_value = _make_start_mock("auto_inject:claude_code")
-                        with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                        with patch(
+                            "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+                        ) as mock_complete:
                             mock_complete.return_value = _make_complete_mock()
 
-                            result = asyncio.run(handle_auto_context_inject(engine, {
-                                "task_description": "修复 bug",
-                                "source": "claude_code",
-                            }))
+                            result = asyncio.run(
+                                handle_auto_context_inject(
+                                    engine,
+                                    {
+                                        "task_description": "修复 bug",
+                                        "source": "claude_code",
+                                    },
+                                )
+                            )
 
         data = json.loads(result[0].text)
         assert data.get("partial") == True
@@ -635,23 +828,35 @@ class TestS6GracefulDegradation:
         engine = MagicMock()
         engine.register_entity.return_value = {
             "node_id": "skill_session:skill:auto_inject:claude_code:2026-01-01T00:00:00",
-            "type": "skill_session", "is_new": True,
+            "type": "skill_session",
+            "is_new": True,
         }
 
-        with patch('plastic_promise.loop.soul_loop.SoulLoop') as MockLoop:
+        with patch("plastic_promise.loop.soul_loop.SoulLoop") as MockLoop:
             MockLoop.return_value.pre_task_v2.return_value = _make_soul_loop_mock()
 
-            with patch('plastic_promise.mcp.tools.memory.handle_memory_store',
-                       side_effect=Exception("DB down")):
-                with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start') as mock_start:
+            with patch(
+                "plastic_promise.mcp.tools.memory.handle_memory_store",
+                side_effect=Exception("DB down"),
+            ):
+                with patch(
+                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+                ) as mock_start:
                     mock_start.return_value = _make_start_mock("auto_inject:claude_code")
-                    with patch('plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete') as mock_complete:
+                    with patch(
+                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+                    ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(handle_auto_context_inject(engine, {
-                            "task_description": "修复 bug",
-                            "source": "claude_code",
-                        }))
+                        result = asyncio.run(
+                            handle_auto_context_inject(
+                                engine,
+                                {
+                                    "task_description": "修复 bug",
+                                    "source": "claude_code",
+                                },
+                            )
+                        )
 
         data = json.loads(result[0].text)
         assert data.get("partial") == True
@@ -664,10 +869,11 @@ class TestS6GracefulDegradation:
 # S7: 跨系统审计
 # ═══════════════════════════════════════════════════════════
 
-class TestS7CrossSystemAudit:
 
+class TestS7CrossSystemAudit:
     def test_audit_weights_sum_to_one(self):
         from plastic_promise.core.constants import AUDIT_DIMENSIONS
+
         total = sum(d["weight"] for d in AUDIT_DIMENSIONS.values())
         assert abs(total - 1.00) < 0.001, f"Sum={total}"
         assert "skill_trace" in AUDIT_DIMENSIONS
@@ -685,7 +891,8 @@ class TestS7CrossSystemAudit:
         for i in range(5):
             eid = f"skill:auto_inject:claude_code:2026-01-01T{i:02d}:00:00"
             engine._graph_nodes[f"skill_session:{eid}"] = {
-                "type": "skill_session", "name": "auto_inject:claude_code",
+                "type": "skill_session",
+                "name": "auto_inject:claude_code",
             }
             engine._memories[f"mem_ai_{i}"] = {
                 "id": f"mem_ai_{i}",
@@ -699,7 +906,8 @@ class TestS7CrossSystemAudit:
 
         eid = f"skill:brainstorming:{_T(15, 0)}"
         engine._graph_nodes[f"skill_session:{eid}"] = {
-            "type": "skill_session", "name": "brainstorming",
+            "type": "skill_session",
+            "name": "brainstorming",
         }
         engine._memories["mem_real"] = {
             "id": "mem_real",
@@ -711,26 +919,46 @@ class TestS7CrossSystemAudit:
             "last_accessed": _T(15, 30),
         }
 
-        trace = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all", "include_auto_inject": False,
-        }))
+        trace = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                    "include_auto_inject": False,
+                },
+            )
+        )
         data = json.loads(trace[0].text)
         assert data["total_count"] == 1
 
-        trace_all = asyncio.run(handle_skill_session_trace(engine, {
-            "session_scope": "all", "include_auto_inject": True,
-        }))
+        trace_all = asyncio.run(
+            handle_skill_session_trace(
+                engine,
+                {
+                    "session_scope": "all",
+                    "include_auto_inject": True,
+                },
+            )
+        )
         all_data = json.loads(trace_all[0].text)
         assert all_data["total_count"] == 6  # 5 auto + 1 real
 
     def test_mcp_tool_count_40(self):
         from plastic_promise.mcp.server import list_tools
+
         tools = asyncio.run(list_tools())
         assert len(tools) == 40
         names = [t.name for t in tools]
-        for expected in ["skill_session_start", "skill_session_complete",
-                         "skill_session_trace", "skill_session_audit",
-                         "skill_auto_track", "auto_context_inject",
-                         "memory_reclassify",
-                         "session-init", "smart-remember", "step-closure"]:
+        for expected in [
+            "skill_session_start",
+            "skill_session_complete",
+            "skill_session_trace",
+            "skill_session_audit",
+            "skill_auto_track",
+            "auto_context_inject",
+            "memory_reclassify",
+            "session-init",
+            "smart-remember",
+            "step-closure",
+        ]:
             assert expected in names, f"Missing tool: {expected}"

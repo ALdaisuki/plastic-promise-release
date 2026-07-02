@@ -119,17 +119,31 @@ class SoulLoop:
 
         return pack
 
-    def post_task(self, task_description: str = "", git_commit: str = "", mode: str = "full", issue_id: str = None,
-                  lesson: str = "", improvement: str = "", root_cause: str = "",
-                  optimization: str = "", trick: str = "") -> dict:
+    def post_task(
+        self,
+        task_description: str = "",
+        git_commit: str = "",
+        mode: str = "full",
+        issue_id: str = None,
+        lesson: str = "",
+        improvement: str = "",
+        root_cause: str = "",
+        optimization: str = "",
+        trick: str = "",
+    ) -> dict:
         """六联闭环 — 每步完成后的约定工程全层连线。
 
         Returns:
             dict with keys: alignment, scarf, hormone, trust, reflection, cei, repairs
         """
         result = {
-            "alignment": None, "scarf": None, "hormone": None,
-            "trust": None, "reflection": None, "cei": None, "repairs": [],
+            "alignment": None,
+            "scarf": None,
+            "hormone": None,
+            "trust": None,
+            "reflection": None,
+            "cei": None,
+            "repairs": [],
         }
 
         # Ensure engine is initialized
@@ -141,6 +155,7 @@ class SoulLoop:
         if self._trust_manager is None:
             from plastic_promise.defense.trust_store import TrustStore
             from plastic_promise.defense.soul_enforcer import TrustManager
+
             self._trust_manager = TrustManager(trust_store=TrustStore())
 
         # 1. 约定对齐检查 — 记录原则遵守
@@ -150,6 +165,7 @@ class SoulLoop:
             # Lazy-init PrincipleTracker
             if self._principle_tracker is None:
                 from plastic_promise.core.principles import PrincipleTracker
+
                 self._principle_tracker = PrincipleTracker()
             for p_name in activated:
                 pid = self._resolve_principle_id(p_name)
@@ -172,6 +188,7 @@ class SoulLoop:
         # 2. SCARF 五维自省
         try:
             from plastic_promise.reflection.soul_scarf import SCARFReflector
+
             reflector = SCARFReflector()
             scarf_result = reflector.reflect(task_description)
             result["scarf"] = scarf_result
@@ -182,10 +199,13 @@ class SoulLoop:
         try:
             if self._hormone_engine is None:
                 from plastic_promise.growth.soul_hormone import HormoneEngine
+
                 self._hormone_engine = HormoneEngine(trust_manager=self._trust_manager)
             overall = self._cached_cei
             feedback = "adopted" if overall >= 0.6 else "ignored" if overall >= 0.4 else "rejected"
-            hormone_result = self._hormone_engine.apply_feedback(feedback, context=task_description[:100])
+            hormone_result = self._hormone_engine.apply_feedback(
+                feedback, context=task_description[:100]
+            )
             result["hormone"] = hormone_result
         except Exception as e:
             result["hormone"] = {"error": str(e)}
@@ -222,7 +242,9 @@ class SoulLoop:
             final_root_cause = root_cause or ""
             final_optimization = optimization or ""
             if trick:
-                final_lesson = f"{final_lesson} | 窍门: {trick}" if final_lesson else f"窍门: {trick}"
+                final_lesson = (
+                    f"{final_lesson} | 窍门: {trick}" if final_lesson else f"窍门: {trick}"
+                )
 
             result["reflection"] = {
                 "overall_score": audit_result.overall_score,
@@ -237,8 +259,7 @@ class SoulLoop:
             # 过滤：如果已有 git commit，不再建议 "缺少 git commit"
             if git_commit and git_commit.strip():
                 result["repairs"] = [
-                    r for r in result["repairs"]
-                    if r.get("dimension") != "transparency"
+                    r for r in result["repairs"] if r.get("dimension") != "transparency"
                 ]
         except Exception as e:
             result["reflection"] = {"error": str(e)}
@@ -260,8 +281,11 @@ class SoulLoop:
             ctx_ready = self._engine.get_context_ready()
             now = datetime.datetime.now()
             # Clean expired entries (TTL 5 min)
-            expired = [k for k, v in ctx_ready.items()
-                       if (now - getattr(v, '_ts', now)).total_seconds() > 300]
+            expired = [
+                k
+                for k, v in ctx_ready.items()
+                if (now - getattr(v, "_ts", now)).total_seconds() > 300
+            ]
             self._engine.clear_expired_context_ready(expired)
         except Exception:
             pass
@@ -271,6 +295,7 @@ class SoulLoop:
     def _resolve_principle_id(self, name: str) -> int:
         """Resolve principle name to ID from CORE_PRINCIPLES."""
         from plastic_promise.core.constants import CORE_PRINCIPLES
+
         for p in CORE_PRINCIPLES:
             if p["name"] == name:
                 return p["id"]
@@ -358,6 +383,7 @@ class SoulLoop:
         层级影响系统的自主权策略和约束衰减系数。
         """
         from plastic_promise.core.constants import CEI_THRESHOLDS
+
         cei = self.calculate_cei()
         for tier_name, (low, high) in CEI_THRESHOLDS.items():
             if low <= cei < high:
@@ -431,9 +457,17 @@ def post_task(
     Returns:
         编排报告字典 (alignment, scarf, hormone, trust, reflection, cei, repairs)。
     """
-    return _get_default_loop().post_task(task_description, git_commit, mode, issue_id,
-                                          lesson, improvement, root_cause,
-                                          optimization, trick)
+    return _get_default_loop().post_task(
+        task_description,
+        git_commit,
+        mode,
+        issue_id,
+        lesson,
+        improvement,
+        root_cause,
+        optimization,
+        trick,
+    )
 
 
 # Module-level CEI cache — updated by SoulLoop.post_task() on every

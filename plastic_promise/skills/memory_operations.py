@@ -22,7 +22,7 @@ async def _smart_remember_handler(ctx, params, atom_results):
     """
 
     def parse(result):
-        if result and hasattr(result[0], 'text'):
+        if result and hasattr(result[0], "text"):
             try:
                 return json.loads(result[0].text)
             except (json.JSONDecodeError, TypeError):
@@ -42,10 +42,13 @@ async def _smart_remember_handler(ctx, params, atom_results):
     if duplicate:
         # Update existing — call handle_memory_update directly (not as an engine atom)
         try:
-            update_result = await handle_memory_update(ctx, {
-                "memory_id": duplicate["id"],
-                "content": params.get("content", ""),
-            })
+            update_result = await handle_memory_update(
+                ctx,
+                {
+                    "memory_id": duplicate["id"],
+                    "content": params.get("content", ""),
+                },
+            )
             update_data = parse(update_result)
             memory_id = update_data.get("memory_id", duplicate.get("id", "?"))
         except Exception as e:
@@ -53,8 +56,10 @@ async def _smart_remember_handler(ctx, params, atom_results):
                 skill_name="smart-remember",
                 success=False,
                 data={"action": "update_failed", "duplicate_of": duplicate.get("id")},
-                atom_results={}, degrade_log=[f"handle_memory_update: {e}"],
-                audit_trail={}, errors=[f"memory_update failed: {e}"],
+                atom_results={},
+                degrade_log=[f"handle_memory_update: {e}"],
+                audit_trail={},
+                errors=[f"memory_update failed: {e}"],
             )
         return SkillResult(
             skill_name="smart-remember",
@@ -65,7 +70,10 @@ async def _smart_remember_handler(ctx, params, atom_results):
                 "duplicate_of": duplicate.get("id"),
                 "relevance": duplicate.get("relevance"),
             },
-            atom_results={}, degrade_log=[], audit_trail={}, errors=[],
+            atom_results={},
+            degrade_log=[],
+            audit_trail={},
+            errors=[],
         )
     else:
         # Store new
@@ -78,7 +86,10 @@ async def _smart_remember_handler(ctx, params, atom_results):
                 "memory_id": store_data.get("memory_id", "?"),
                 "pipeline": store_data.get("pipeline", {}),
             },
-            atom_results={}, degrade_log=[], audit_trail={}, errors=[],
+            atom_results={},
+            degrade_log=[],
+            audit_trail={},
+            errors=[],
         )
 
 

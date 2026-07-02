@@ -17,8 +17,7 @@ class TestMemoryMerge:
         self.gc = MemoryGC(self.rec_mem)
         yield
 
-    def _make_record(self, mid, content, tier="L3",
-                     created_at="2026-06-30T12:00:00"):
+    def _make_record(self, mid, content, tier="L3", created_at="2026-06-30T12:00:00"):
         """Helper: create a MemoryRecord and add to rec_mem._records."""
         record = MemoryRecord(
             content=content,
@@ -45,7 +44,7 @@ class TestMemoryMerge:
         # Second call (mem_002) returns mem_001 as similar
         mock_ldb.search_similar.side_effect = [
             [("mem_002", 0.82), ("mem_003", 0.45)],  # mem_001 → similar to mem_002
-            [("mem_001", 0.82)],                       # mem_002 → similar to mem_001
+            [("mem_001", 0.82)],  # mem_002 → similar to mem_001
         ]
 
         # Mock engine
@@ -69,10 +68,12 @@ class TestMemoryMerge:
 
     def test_merge_similar_survivor_keeps_higher_worth(self):
         """Survivor should be the record with higher worth_score."""
-        r1 = self._make_record("mem_high", "Rust is great",
-                               created_at="2026-06-01T00:00:00")  # older but higher score
-        r2 = self._make_record("mem_low", "Rust is excellent",
-                               created_at="2026-06-30T00:00:00")   # newer but lower score
+        r1 = self._make_record(
+            "mem_high", "Rust is great", created_at="2026-06-01T00:00:00"
+        )  # older but higher score
+        r2 = self._make_record(
+            "mem_low", "Rust is excellent", created_at="2026-06-30T00:00:00"
+        )  # newer but lower score
         # Force different worth_success/failure so computed worth_score differs
         r1.worth_success = 10
         r1.worth_failure = 0

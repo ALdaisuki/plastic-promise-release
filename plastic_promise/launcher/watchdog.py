@@ -21,6 +21,7 @@ _heartbeat_counter = 0
 
 def setup_signal_handlers(manager: ServiceManager, log_file: Optional[str] = None):
     """Register signal handlers for graceful shutdown."""
+
     def _handle_shutdown(signum, frame):
         global _shutdown_flag
         _shutdown_flag = True
@@ -83,13 +84,19 @@ async def _handle_crash(manager: ServiceManager, rt, log_file: Optional[str] = N
 
     if rt.is_unrecoverable():
         rt.status = ServiceStatus.UNRECOVERABLE
-        _log(f"[ALERT] {svc.name} UNRECOVERABLE -- {recent} restarts in "
-             f"{svc.restart_policy.window_seconds}s, manual intervention needed", log_file)
+        _log(
+            f"[ALERT] {svc.name} UNRECOVERABLE -- {recent} restarts in "
+            f"{svc.restart_policy.window_seconds}s, manual intervention needed",
+            log_file,
+        )
         return
 
     backoff = rt.backoff_seconds()
-    _log(f"[RESTART] {svc.name} crashed -- restarting (attempt {recent}/"
-         f"{svc.restart_policy.max_retries}, backoff {backoff:.1f}s)", log_file)
+    _log(
+        f"[RESTART] {svc.name} crashed -- restarting (attempt {recent}/"
+        f"{svc.restart_policy.max_retries}, backoff {backoff:.1f}s)",
+        log_file,
+    )
 
     await asyncio.sleep(backoff)
     await manager._start_service(rt, log_file)

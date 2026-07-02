@@ -48,8 +48,9 @@ class HunterPenaltyEngine:
             db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
         self._db_path = os.path.abspath(db_path)
 
-    def compute_penalty(self, agent_name: str, failure_type: str,
-                        repeat_count: int, same_type_count: int = 0) -> dict:
+    def compute_penalty(
+        self, agent_name: str, failure_type: str, repeat_count: int, same_type_count: int = 0
+    ) -> dict:
         """Compute penalty without applying it. Pure function for testability."""
         rule = PENALTY_RULES[failure_type]
         result = {
@@ -71,35 +72,35 @@ class HunterPenaltyEngine:
 
         return result
 
-    def count_failures(self, agent_name: str, failure_type: str,
-                       window_days: int = 30) -> int:
+    def count_failures(self, agent_name: str, failure_type: str, window_days: int = 30) -> int:
         """Count failures of a given type in the time window."""
         conn = sqlite3.connect(self._db_path)
         count = conn.execute(
             "SELECT COUNT(*) FROM hunter_failure_log "
             "WHERE agent_name=? AND failure_type=? "
             "AND occurred_at >= datetime('now', ?)",
-            (agent_name, failure_type, f"-{window_days} days")
+            (agent_name, failure_type, f"-{window_days} days"),
         ).fetchone()[0]
         conn.close()
         return count
 
-    def count_same_type_failures(self, agent_name: str, task_type: str,
-                                 window_days: int = 30) -> int:
+    def count_same_type_failures(
+        self, agent_name: str, task_type: str, window_days: int = 30
+    ) -> int:
         """Count rejected failures for the same task_type."""
         conn = sqlite3.connect(self._db_path)
         count = conn.execute(
             "SELECT COUNT(*) FROM hunter_failure_log "
             "WHERE agent_name=? AND failure_type='rejected' AND task_type=? "
             "AND occurred_at >= datetime('now', ?)",
-            (agent_name, task_type, f"-{window_days} days")
+            (agent_name, task_type, f"-{window_days} days"),
         ).fetchone()[0]
         conn.close()
         return count
 
-    async def apply_penalty(self, agent_name: str, task_id: str,
-                            task_type: str, failure_type: str,
-                            current_trust: float) -> dict:
+    async def apply_penalty(
+        self, agent_name: str, task_id: str, task_type: str, failure_type: str, current_trust: float
+    ) -> dict:
         """Apply penalty: log + trust adjust + check upgrades."""
         repeat_count = self.count_failures(agent_name, failure_type) + 1
         same_type_count = self.count_same_type_failures(agent_name, task_type)
@@ -115,9 +116,15 @@ class HunterPenaltyEngine:
             "INSERT INTO hunter_failure_log "
             "(agent_name, task_id, task_type, failure_type, trust_before, trust_after, penalty_applied) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (agent_name, task_id, task_type, failure_type,
-             current_trust, new_trust,
-             penalty["base_penalty"] + penalty["upgrade_penalty"])
+            (
+                agent_name,
+                task_id,
+                task_type,
+                failure_type,
+                current_trust,
+                new_trust,
+                penalty["base_penalty"] + penalty["upgrade_penalty"],
+            ),
         )
         conn.commit()
         conn.close()
@@ -125,12 +132,14 @@ class HunterPenaltyEngine:
         # Apply trust adjustment
         try:
             from plastic_promise.defense.soul_enforcer import TrustManager
+
             tm = TrustManager()
-            tm.decay(abs(penalty["base_penalty"]),
-                     f"{failure_type}: {task_id}")
+            tm.decay(abs(penalty["base_penalty"]), f"{failure_type}: {task_id}")
             if penalty["upgrade_triggered"]:
-                tm.decay(abs(penalty["upgrade_penalty"]),
-                         f"{failure_type}_upgrade (x{repeat_count}): {task_id}")
+                tm.decay(
+                    abs(penalty["upgrade_penalty"]),
+                    f"{failure_type}_upgrade (x{repeat_count}): {task_id}",
+                )
         except Exception as e:
             logger.warning("Trust adjust failed: %s", e)
 

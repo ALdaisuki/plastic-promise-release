@@ -1,4 +1,5 @@
 """Test that DECAY_CONFIG covers all active tiers."""
+
 import pytest
 from plastic_promise.core.constants import DECAY_CONFIG
 

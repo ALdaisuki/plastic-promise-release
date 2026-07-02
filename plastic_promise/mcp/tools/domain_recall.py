@@ -32,6 +32,7 @@ def _compute_freshness(mem: dict, decay_calc=None) -> float:
         return 1.0
     if decay_calc is None:
         from plastic_promise.core.decay_engine import WeibullDecayCalculator
+
         decay_calc = WeibullDecayCalculator()
     tier = mem.get("tier", "L2")
     effective_tier = tier if tier in ("L1", "L3") else "default"
@@ -48,8 +49,9 @@ def _compute_worth(mem: dict) -> float:
     return success / total
 
 
-def _score(mem: dict, text_relevance: float, freshness: float, worth: float,
-           domain_match_type: str) -> float:
+def _score(
+    mem: dict, text_relevance: float, freshness: float, worth: float, domain_match_type: str
+) -> float:
     """Composite score: text relevance + freshness + worth + domain bonus.
 
     Weights:
@@ -86,10 +88,18 @@ async def handle_domain_recall(engine: Any, args: dict) -> list[TextContent]:
     try:
         domain = args.get("domain", "")
         if not domain or domain not in VALID_DOMAINS:
-            return [TextContent(type="text", text=json.dumps({
-                "error": f"Invalid or missing domain. Valid: {', '.join(sorted(VALID_DOMAINS))}",
-                "domain": domain,
-            }, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "error": f"Invalid or missing domain. Valid: {', '.join(sorted(VALID_DOMAINS))}",
+                            "domain": domain,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
         query = args.get("query", "")
         max_results = min(args.get("max_results", 20), 100)
@@ -100,7 +110,7 @@ async def handle_domain_recall(engine: Any, args: dict) -> list[TextContent]:
         # Ensure DomainManager is loaded
         engine.ensure_heavy_init()
 
-        dm = getattr(engine, '_dm', None)
+        dm = getattr(engine, "_dm", None)
         domain_config = dm.domains.get(domain) if dm else None
         domain_tags: set = domain_config.tags if domain_config else set()
 
@@ -108,20 +118,21 @@ async def handle_domain_recall(engine: Any, args: dict) -> list[TextContent]:
         has_query = bool(query and query.strip())
         query_bigrams: set = set()
         if has_query:
-            has_cjk = bool(re.search(r'[一-鿿]', query))
+            has_cjk = bool(re.search(r"[一-鿿]", query))
             if has_cjk:
                 for i in range(len(query) - 1):
-                    bg = query[i:i + 2]
-                    if not re.search(r'[\s，。！？、；：,.!?;:\s]', bg):
+                    bg = query[i : i + 2]
+                    if not re.search(r"[\s，。！？、；：,.!?;:\s]", bg):
                         query_bigrams.add(bg)
             else:
                 query_bigrams = set(query.lower().split())
 
         # Init decay calculator once
         from plastic_promise.core.decay_engine import WeibullDecayCalculator
+
         decay_calc = WeibullDecayCalculator()
 
-        current_owner = __import__('os').environ.get("AGENT_OWNER", "")
+        current_owner = __import__("os").environ.get("AGENT_OWNER", "")
 
         scored: list[dict] = []
 
@@ -177,20 +188,22 @@ async def handle_domain_recall(engine: Any, args: dict) -> list[TextContent]:
             # —— Composite score ——
             composite = _score(mem, text_relevance, freshness, worth, domain_match_type)
 
-            scored.append({
-                "id": mid,
-                "content": mem.get("content", "")[:300],
-                "source": mem.get("source", "?"),
-                "tier": mem.get("tier", "L2"),
-                "domain": mem_domain or "uncategorized",
-                "domain_match": domain_match_type,
-                "text_relevance": round(text_relevance, 4),
-                "freshness": round(freshness, 4),
-                "worth_score": round(worth, 4),
-                "composite_score": round(composite, 4),
-                "tags": mem.get("tags", [])[:8],
-                "created_at": mem.get("created_at", ""),
-            })
+            scored.append(
+                {
+                    "id": mid,
+                    "content": mem.get("content", "")[:300],
+                    "source": mem.get("source", "?"),
+                    "tier": mem.get("tier", "L2"),
+                    "domain": mem_domain or "uncategorized",
+                    "domain_match": domain_match_type,
+                    "text_relevance": round(text_relevance, 4),
+                    "freshness": round(freshness, 4),
+                    "worth_score": round(worth, 4),
+                    "composite_score": round(composite, 4),
+                    "tags": mem.get("tags", [])[:8],
+                    "created_at": mem.get("created_at", ""),
+                }
+            )
 
         # Sort by composite score descending
         scored.sort(key=lambda x: x["composite_score"], reverse=True)
@@ -200,7 +213,39 @@ async def handle_domain_recall(engine: Any, args: dict) -> list[TextContent]:
 
         # Domain stats
         total_in_domain = sum(
-            1 for mem in engine.iter_memories()
+            1
+            for mem in engine.iter_memories()
             if mem.get("domain") == domain
             or (domain == "all")
-            or (domain_tags and set(mem.get("tags",
+            or (domain_tags and set(mem.get("tags", [])) & domain_tags)
+        )
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "domain": domain,
+                        "query": query,
+                        "results": results,
+                        "total_in_domain": total_in_domain,
+                        "total_results": len(results),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
+    except Exception as e:
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": str(e),
+                        "domain": args.get("domain", ""),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]

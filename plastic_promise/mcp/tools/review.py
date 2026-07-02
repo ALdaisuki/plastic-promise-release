@@ -49,6 +49,7 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
     try:
         from plastic_promise.defense.soul_enforcer import TrustManager
         from plastic_promise.defense.trust_store import TrustStore
+
         trust_manager = TrustManager(trust_store=TrustStore())
     except Exception:
         pass  # trust 不可用时降级 — 审查仍可执行
@@ -61,23 +62,40 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
     try:
         if action == "prepare":
             prep = review_engine.prepare(commit_range, spec_path=spec_path)
-            return [TextContent(type="text", text=json.dumps({
-                "action": "prepare",
-                "commit_range": commit_range,
-                "files_changed": prep["changed_files"],
-                "files_count": len(prep["changed_files"]),
-                "pre_check": prep["pre_check_results"],
-                "git_available": prep["git_available"],
-                "prompt": prep["structured_prompt"],
-                "prompt_length": len(prep["structured_prompt"]),
-                "context_memories_count": len(prep.get("context_memories", [])),
-            }, ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "action": "prepare",
+                            "commit_range": commit_range,
+                            "files_changed": prep["changed_files"],
+                            "files_count": len(prep["changed_files"]),
+                            "pre_check": prep["pre_check_results"],
+                            "git_available": prep["git_available"],
+                            "prompt": prep["structured_prompt"],
+                            "prompt_length": len(prep["structured_prompt"]),
+                            "context_memories_count": len(prep.get("context_memories", [])),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
 
         elif action == "evaluate":
             if not review_output:
-                return [TextContent(type="text", text=json.dumps({
-                    "error": "review_output is required for evaluate action",
-                }, ensure_ascii=False))]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "review_output is required for evaluate action",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
 
             # 需要先跑 prepare 获取 diff
             prep = review_engine.prepare(commit_range, spec_path=spec_path)
@@ -88,21 +106,40 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
                 pre_check=prep["pre_check_results"],
                 review_output=review_output,
             )
-            return [TextContent(type="text", text=json.dumps({
-                "action": "evaluate",
-                "report": report.to_dict(),
-                "findings_count": len(report.findings),
-                "blocker_count": sum(1 for f in report.findings if f.severity == "blocker"),
-                "major_count": sum(1 for f in report.findings if f.severity == "major"),
-                "trust_delta": report.trust_delta,
-            }, ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "action": "evaluate",
+                            "report": report.to_dict(),
+                            "findings_count": len(report.findings),
+                            "blocker_count": sum(
+                                1 for f in report.findings if f.severity == "blocker"
+                            ),
+                            "major_count": sum(1 for f in report.findings if f.severity == "major"),
+                            "trust_delta": report.trust_delta,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
 
         elif action == "apply":
             # 需要完整的审查输出 + diff 上下文
             if not review_output:
-                return [TextContent(type="text", text=json.dumps({
-                    "error": "review_output is required for apply action",
-                }, ensure_ascii=False))]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "review_output is required for apply action",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
 
             prep = review_engine.prepare(commit_range, spec_path=spec_path)
             report = review_engine.evaluate(
@@ -116,17 +153,26 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
                 author_target=author_target,
                 reviewer_target=reviewer_target,
             )
-            return [TextContent(type="text", text=json.dumps({
-                "action": "apply",
-                "status": report.status,
-                "recommendation": report.recommendation,
-                "trust_changes": result["trust_changes"],
-                "memory_ids": result["memory_ids"],
-                "fix_tasks": result["fix_tasks"],
-                "fix_tasks_count": len(result["fix_tasks"]),
-                "closure": result.get("closure"),
-                "summary": report.summary,
-            }, ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "action": "apply",
+                            "status": report.status,
+                            "recommendation": report.recommendation,
+                            "trust_changes": result["trust_changes"],
+                            "memory_ids": result["memory_ids"],
+                            "fix_tasks": result["fix_tasks"],
+                            "fix_tasks_count": len(result["fix_tasks"]),
+                            "closure": result.get("closure"),
+                            "summary": report.summary,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
 
         elif action == "full":
             # 完整管线: prepare → evaluate → apply
@@ -134,16 +180,25 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
 
             if not review_output:
                 # 仅返回 prepare 结果 + 提示
-                return [TextContent(type="text", text=json.dumps({
-                    "action": "full",
-                    "phase": "prepare_only",
-                    "message": "审查 prompt 已生成。请执行审查后将输出作为 review_output 参数传入以完成管线。",
-                    "commit_range": commit_range,
-                    "files_changed": prep["changed_files"],
-                    "pre_check": prep["pre_check_results"],
-                    "prompt": prep["structured_prompt"],
-                    "prompt_length": len(prep["structured_prompt"]),
-                }, ensure_ascii=False, indent=2))]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "action": "full",
+                                "phase": "prepare_only",
+                                "message": "审查 prompt 已生成。请执行审查后将输出作为 review_output 参数传入以完成管线。",
+                                "commit_range": commit_range,
+                                "files_changed": prep["changed_files"],
+                                "pre_check": prep["pre_check_results"],
+                                "prompt": prep["structured_prompt"],
+                                "prompt_length": len(prep["structured_prompt"]),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                    )
+                ]
 
             report = review_engine.evaluate(
                 diff_text=prep["diff_text"],
@@ -156,25 +211,51 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
                 author_target=author_target,
                 reviewer_target=reviewer_target,
             )
-            return [TextContent(type="text", text=json.dumps({
-                "action": "full",
-                "report": report.to_dict(),
-                "trust_changes": result["trust_changes"],
-                "memory_ids": result["memory_ids"],
-                "fix_tasks": result["fix_tasks"],
-                "fix_tasks_count": len(result["fix_tasks"]),
-                "closure": result.get("closure"),
-                "stats": review_engine.get_stats(),
-            }, ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "action": "full",
+                            "report": report.to_dict(),
+                            "trust_changes": result["trust_changes"],
+                            "memory_ids": result["memory_ids"],
+                            "fix_tasks": result["fix_tasks"],
+                            "fix_tasks_count": len(result["fix_tasks"]),
+                            "closure": result.get("closure"),
+                            "stats": review_engine.get_stats(),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
 
         else:
-            return [TextContent(type="text", text=json.dumps({
-                "error": f"Unknown action: {action}. Valid: prepare, evaluate, apply, full",
-            }, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "error": f"Unknown action: {action}. Valid: prepare, evaluate, apply, full",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps({
-            "error": str(e),
-            "action": action,
-            "commit_range": commit_range,
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": str(e),
+                        "action": action,
+                        "commit_range": commit_range,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]

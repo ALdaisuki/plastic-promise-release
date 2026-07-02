@@ -18,6 +18,7 @@ from mcp.types import TextContent
 # scarf_reflect (stub)
 # ---------------------------------------------------------------------------
 
+
 async def handle_scarf_reflect(engine: Any, args: dict) -> list[TextContent]:
     """Execute SCARF five-dimension self-reflection or inertia check.
 
@@ -36,26 +37,42 @@ async def handle_scarf_reflect(engine: Any, args: dict) -> list[TextContent]:
     # standard SCARF reflection
     try:
         from plastic_promise.reflection.soul_scarf import SCARFReflector
+
         context = args.get("context", "")
         dimensions = args.get("dimensions")
         reflector = SCARFReflector()
         # Offload to thread: reflect() does 15 sync embedder.embed() HTTP calls
         import asyncio as _asyncio
+
         result = await _asyncio.to_thread(reflector.reflect, context)
         if dimensions:
             result = {d: result.get(d) for d in dimensions if d in result}
-        return [TextContent(type="text", text=json.dumps({
-            "tool": "scarf_reflect",
-            "reflection": result,
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "tool": "scarf_reflect",
+                        "reflection": result,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "scarf_reflect"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "scarf_reflect"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
 # inertia_check (stub)
 # ---------------------------------------------------------------------------
+
 
 async def handle_inertia_check(engine: Any, args: dict) -> list[TextContent]:
     """Inertia suppression detection: check if recent tasks are too similar (stub).
@@ -69,23 +86,38 @@ async def handle_inertia_check(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.reflection.soul_proprioception import ProprioceptionManager
+
         recent_tasks = args.get("recent_tasks", [])
         pm = ProprioceptionManager()
         for task in recent_tasks:
             pm.record_task(task)
         result = pm.check_inertia()
-        return [TextContent(type="text", text=json.dumps({
-            "tool": "inertia_check",
-            "inertia": result,
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "tool": "inertia_check",
+                        "inertia": result,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "inertia_check"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "inertia_check"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
 # feedback_apply
 # ---------------------------------------------------------------------------
+
 
 async def handle_feedback_apply(engine: Any, args: dict) -> list[TextContent]:
     """Apply feedback to a memory, updating its worth counters.
@@ -108,8 +140,12 @@ async def handle_feedback_apply(engine: Any, args: dict) -> list[TextContent]:
         # Get the memory record
         record = engine.get_memory(item_id)
         if record is None:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": f"Memory {item_id} not found"}, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": f"Memory {item_id} not found"}, ensure_ascii=False),
+                )
+            ]
 
         # Apply feedback
         if feedback_type == "adopted":
@@ -125,13 +161,25 @@ async def handle_feedback_apply(engine: Any, args: dict) -> list[TextContent]:
         # P2: Sync feedback to graph edge weights
         engine.apply_edge_feedback_for_memory(item_id)
 
-        return [TextContent(type="text", text=json.dumps({
-            "updated": True,
-            "item_id": item_id,
-            "feedback_type": feedback_type,
-            "new_worth_score": record.worth_score(),
-            "observations": record.total_observations,
-        }, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "updated": True,
+                        "item_id": item_id,
+                        "feedback_type": feedback_type,
+                        "new_worth_score": record.worth_score(),
+                        "observations": record.total_observations,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "feedback_apply"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "feedback_apply"}, ensure_ascii=False),
+            )
+        ]

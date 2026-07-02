@@ -11,7 +11,10 @@ from plastic_promise.growth.soul_classifier import TaskClassifier, classify_task
 from plastic_promise.growth.skill_extractor import SkillExtractor, extract_skill
 
 __all__ = [
-    "HormoneEngine", "EmotionAccount",
-    "TaskClassifier", "classify_task",
-    "SkillExtractor", "extract_skill",
+    "HormoneEngine",
+    "EmotionAccount",
+    "TaskClassifier",
+    "classify_task",
+    "SkillExtractor",
+    "extract_skill",
 ]

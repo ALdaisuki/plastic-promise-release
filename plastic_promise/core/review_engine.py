@@ -42,6 +42,7 @@ from plastic_promise.core.constants import (
 # 数据结构
 # ═══════════════════════════════════════════════════════════════
 
+
 @dataclass
 class ReviewFinding:
     """单个审查发现。
@@ -56,6 +57,7 @@ class ReviewFinding:
         suggestion: 具体修复建议
         auto_fixable: 是否可自动修复
     """
+
     severity: str = "minor"
     category: str = "code_quality"
     file: str = ""
@@ -104,6 +106,7 @@ class ReviewReport:
         trust_delta: 建议的信任分调整值 (正=boost, 负=decay)
         metadata: {commit_range, files_changed, pre_check_passed, reviewer, ...}
     """
+
     status: str = "pass"
     principle_observations: dict = field(default_factory=dict)
     findings: List[ReviewFinding] = field(default_factory=list)
@@ -140,6 +143,7 @@ class ReviewReport:
 # ═══════════════════════════════════════════════════════════════
 # ReviewEngine
 # ═══════════════════════════════════════════════════════════════
+
 
 class ReviewEngine:
     """代码审查编排引擎。
@@ -184,8 +188,12 @@ class ReviewEngine:
         ("依赖安全", "新增/升级的依赖是否有已知 CVE？"),
     ]
 
-    def __init__(self, trust_manager: Any = None, context_engine: Any = None,
-                 project_root: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        trust_manager: Any = None,
+        context_engine: Any = None,
+        project_root: Optional[str] = None,
+    ) -> None:
         """初始化审查引擎。
 
         Args:
@@ -204,8 +212,7 @@ class ReviewEngine:
     # Phase 1: Prepare
     # ═══════════════════════════════════════════════════════════
 
-    def prepare(self, commit_range: str = "HEAD~1..HEAD",
-                spec_path: Optional[str] = None) -> dict:
+    def prepare(self, commit_range: str = "HEAD~1..HEAD", spec_path: Optional[str] = None) -> dict:
         """准备审查上下文 — 获取 diff + 运行预检 + 生成审查 prompt。
 
         Args:
@@ -246,9 +253,7 @@ class ReviewEngine:
         result["pre_check_results"] = self._run_pre_checks()
 
         # 3. 检索关联记忆
-        result["context_memories"] = self._recall_review_context(
-            result["changed_files"]
-        )
+        result["context_memories"] = self._recall_review_context(result["changed_files"])
 
         # 4. 生成结构化审查 prompt
         result["structured_prompt"] = self.generate_review_prompt(
@@ -270,18 +275,23 @@ class ReviewEngine:
         try:
             result = subprocess.run(
                 ["git", "-C", self._project_root, "diff", commit_range],
-                capture_output=True, text=True, timeout=30,
-                encoding="utf-8", errors="replace",
+                capture_output=True,
+                text=True,
+                timeout=30,
+                encoding="utf-8",
+                errors="replace",
             )
             if result.returncode != 0:
                 # 尝试将 commit_range 作为两个独立的 ref
                 parts = commit_range.split("..")
                 if len(parts) == 2:
                     result = subprocess.run(
-                        ["git", "-C", self._project_root, "diff",
-                         f"{parts[0]}..{parts[1]}"],
-                        capture_output=True, text=True, timeout=30,
-                encoding="utf-8", errors="replace",
+                        ["git", "-C", self._project_root, "diff", f"{parts[0]}..{parts[1]}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        encoding="utf-8",
+                        errors="replace",
                     )
             return result.stdout or "(空 diff — 无变更或 commit 范围无效)"
         except FileNotFoundError:
@@ -295,17 +305,28 @@ class ReviewEngine:
             parts = commit_range.split("..")
             if len(parts) == 2:
                 result = subprocess.run(
-                    ["git", "-C", self._project_root, "diff", "--name-only",
-                     f"{parts[0]}..{parts[1]}"],
-                    capture_output=True, text=True, timeout=15,
-                encoding="utf-8", errors="replace",
+                    [
+                        "git",
+                        "-C",
+                        self._project_root,
+                        "diff",
+                        "--name-only",
+                        f"{parts[0]}..{parts[1]}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    encoding="utf-8",
+                    errors="replace",
                 )
             else:
                 result = subprocess.run(
-                    ["git", "-C", self._project_root, "diff", "--name-only",
-                     commit_range],
-                    capture_output=True, text=True, timeout=15,
-                encoding="utf-8", errors="replace",
+                    ["git", "-C", self._project_root, "diff", "--name-only", commit_range],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    encoding="utf-8",
+                    errors="replace",
                 )
             if result.returncode == 0:
                 return [f.strip() for f in result.stdout.splitlines() if f.strip()]
@@ -326,8 +347,11 @@ class ReviewEngine:
         try:
             test_result = subprocess.run(
                 [sys.executable, "-m", "pytest", "--co", "-q"],
-                capture_output=True, text=True, timeout=30,
-                encoding="utf-8", errors="replace",
+                capture_output=True,
+                text=True,
+                timeout=30,
+                encoding="utf-8",
+                errors="replace",
                 cwd=self._project_root,
             )
             # --co = collect-only, 快速检查测试是否可发现
@@ -345,8 +369,11 @@ class ReviewEngine:
             if py_files:
                 lint_result = subprocess.run(
                     [sys.executable, "-m", "py_compile"] + py_files,
-                    capture_output=True, text=True, timeout=15,
-                encoding="utf-8", errors="replace",
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    encoding="utf-8",
+                    errors="replace",
                     cwd=self._project_root,
                 )
                 pre_check["lint"] = "passed" if lint_result.returncode == 0 else "failed"
@@ -379,11 +406,13 @@ class ReviewEngine:
                         except json.JSONDecodeError:
                             tags = []
                     if "review" in tags or "finding" in tags:
-                        memories.append({
-                            "id": mem_id,
-                            "content": str(mem.get("content", ""))[:200],
-                            "tags": tags,
-                        })
+                        memories.append(
+                            {
+                                "id": mem_id,
+                                "content": str(mem.get("content", ""))[:200],
+                                "tags": tags,
+                            }
+                        )
                         if len(memories) >= 5:
                             break
         except Exception:
@@ -395,8 +424,9 @@ class ReviewEngine:
     # Phase 2: Evaluate
     # ═══════════════════════════════════════════════════════════
 
-    def evaluate(self, diff_text: str, changed_files: list,
-                 pre_check: dict, review_output: str) -> ReviewReport:
+    def evaluate(
+        self, diff_text: str, changed_files: list, pre_check: dict, review_output: str
+    ) -> ReviewReport:
         """解析 LLM 审查输出，生成结构化 ReviewReport。
 
         尝试 JSON 解析，失败时降级为 regex 提取关键字段。
@@ -498,7 +528,7 @@ class ReviewEngine:
             pass
 
         # Level 2: JSON 代码块
-        json_block_pattern = r'```(?:json)?\s*\n?(.*?)\n?```'
+        json_block_pattern = r"```(?:json)?\s*\n?(.*?)\n?```"
         matches = re.findall(json_block_pattern, review_output, re.DOTALL)
         for match in matches:
             try:
@@ -511,8 +541,7 @@ class ReviewEngine:
 
         # 提取 status
         status_match = re.search(
-            r'["\']status["\']\s*:\s*["\'](pass|fail)["\']',
-            review_output, re.IGNORECASE
+            r'["\']status["\']\s*:\s*["\'](pass|fail)["\']', review_output, re.IGNORECASE
         )
         if status_match:
             parsed["status"] = status_match.group(1).lower()
@@ -520,31 +549,30 @@ class ReviewEngine:
         # 提取 recommendation
         rec_match = re.search(
             r'["\']recommendation["\']\s*:\s*["\'](approve|revise|block)["\']',
-            review_output, re.IGNORECASE
+            review_output,
+            re.IGNORECASE,
         )
         if rec_match:
             parsed["recommendation"] = rec_match.group(1).lower()
 
         # 提取 findings (数组)
-        findings_match = re.search(
-            r'["\']findings["\']\s*:\s*\[(.*?)\]',
-            review_output, re.DOTALL
-        )
+        findings_match = re.search(r'["\']findings["\']\s*:\s*\[(.*?)\]', review_output, re.DOTALL)
         if findings_match:
             findings_block = findings_match.group(1)
             # 尝试提取 finding 对象
-            finding_objects = re.findall(
-                r'\{(.*?)\}', findings_block, re.DOTALL
-            )
+            finding_objects = re.findall(r"\{(.*?)\}", findings_block, re.DOTALL)
             parsed["findings"] = []
             for fo in finding_objects:
                 finding = {}
-                for field in ["severity", "category", "file", "line_range",
-                              "description", "suggestion"]:
-                    fm = re.search(
-                        rf'["\']{field}["\']\s*:\s*["\']([^"\']*)["\']',
-                        fo
-                    )
+                for field in [
+                    "severity",
+                    "category",
+                    "file",
+                    "line_range",
+                    "description",
+                    "suggestion",
+                ]:
+                    fm = re.search(rf'["\']{field}["\']\s*:\s*["\']([^"\']*)["\']', fo)
                     if fm:
                         finding[field] = fm.group(1)
                 if finding:
@@ -552,8 +580,7 @@ class ReviewEngine:
 
         # 提取 principle_observations
         po_block = re.search(
-            r'["\']principle_observations["\']\s*:\s*(\{.*?\})',
-            review_output, re.DOTALL
+            r'["\']principle_observations["\']\s*:\s*(\{.*?\})', review_output, re.DOTALL
         )
         if po_block:
             try:
@@ -562,17 +589,13 @@ class ReviewEngine:
                 parsed["principle_observations"] = {}
 
         # 提取 summary
-        summary_match = re.search(
-            r'["\']summary["\']\s*:\s*["\']([^"\']{10,})["\']',
-            review_output
-        )
+        summary_match = re.search(r'["\']summary["\']\s*:\s*["\']([^"\']{10,})["\']', review_output)
         if summary_match:
             parsed["summary"] = summary_match.group(1)
 
         return parsed
 
-    def _calculate_trust_delta(self, status: str,
-                                findings: List[ReviewFinding]) -> float:
+    def _calculate_trust_delta(self, status: str, findings: List[ReviewFinding]) -> float:
         """根据审查结果计算信任分 delta。
 
         - pass + 无 blocker → +TRUST_REVIEW_PASS_BOOST
@@ -597,8 +620,9 @@ class ReviewEngine:
             delta += major_count * TRUST_REVIEW_BLOCKER_PENALTY * 0.5
             return -min(delta, 0.15)  # 硬上限: 单次审查最多 -0.15
 
-    def _generate_summary(self, status: str, findings: List[ReviewFinding],
-                           changed_files: list) -> str:
+    def _generate_summary(
+        self, status: str, findings: List[ReviewFinding], changed_files: list
+    ) -> str:
         """自动生成审查摘要。"""
         parts = []
         parts.append(f"审查状态: {status.upper()}")
@@ -625,9 +649,12 @@ class ReviewEngine:
     # Phase 3: Apply
     # ═══════════════════════════════════════════════════════════
 
-    def apply(self, report: ReviewReport,
-              author_target: str = "pi_builder",
-              reviewer_target: str = "pi_reviewer") -> dict:
+    def apply(
+        self,
+        report: ReviewReport,
+        author_target: str = "pi_builder",
+        reviewer_target: str = "pi_reviewer",
+    ) -> dict:
         """应用审查结果 — 信任分调整 + 发现入池 + fix 任务 + 六联闭环。
 
         Args:
@@ -666,6 +693,7 @@ class ReviewEngine:
         # 4. 调用 post_task 六联闭环
         try:
             from plastic_promise.loop.soul_loop import post_task
+
             lesson = self._extract_lesson(report)
             improvement = self._extract_improvement(report)
             closure = post_task(
@@ -684,9 +712,9 @@ class ReviewEngine:
 
         return result
 
-    def _apply_trust_deltas(self, report: ReviewReport,
-                             author_target: str,
-                             reviewer_target: str) -> list:
+    def _apply_trust_deltas(
+        self, report: ReviewReport, author_target: str, reviewer_target: str
+    ) -> list:
         """应用信任分调整。
 
         Returns:
@@ -706,11 +734,15 @@ class ReviewEngine:
                     f"审查通过: {report.summary[:80]}",
                     target=author_target,
                 )
-                changes.append({
-                    "target": author_target, "delta": author_delta,
-                    "old": old, "new": new_val,
-                    "reason": "review_pass",
-                })
+                changes.append(
+                    {
+                        "target": author_target,
+                        "delta": author_delta,
+                        "old": old,
+                        "new": new_val,
+                        "reason": "review_pass",
+                    }
+                )
             elif author_delta < 0:
                 old = self._trust.get(author_target)
                 new_val = self._trust.decay(
@@ -718,11 +750,15 @@ class ReviewEngine:
                     f"审查未通过: {report.summary[:80]}",
                     target=author_target,
                 )
-                changes.append({
-                    "target": author_target, "delta": author_delta,
-                    "old": old, "new": new_val,
-                    "reason": "review_fail",
-                })
+                changes.append(
+                    {
+                        "target": author_target,
+                        "delta": author_delta,
+                        "old": old,
+                        "new": new_val,
+                        "reason": "review_fail",
+                    }
+                )
 
             # 审查者 (reviewer) — 完成审查总是轻微 boost
             old = self._trust.get(reviewer_target)
@@ -731,11 +767,15 @@ class ReviewEngine:
                 f"审查完成: {report.status}",
                 target=reviewer_target,
             )
-            changes.append({
-                "target": reviewer_target, "delta": TRUST_REVIEW_REVIEWER_BOOST,
-                "old": old, "new": new_val,
-                "reason": "review_completed",
-            })
+            changes.append(
+                {
+                    "target": reviewer_target,
+                    "delta": TRUST_REVIEW_REVIEWER_BOOST,
+                    "old": old,
+                    "new": new_val,
+                    "reason": "review_completed",
+                }
+            )
         except Exception:
             pass
 
@@ -756,37 +796,43 @@ class ReviewEngine:
         try:
             # 主审查报告
             report_id = f"review_{ts}"
-            self._engine.register_memory({
-                "id": report_id,
-                "content": json.dumps(report.to_dict(), ensure_ascii=False),
-                "memory_type": "reflection",
-                "source": "review_engine",
-                "tags": [
-                    "review", "domain:reflecting",
-                    f"status:{report.status}",
-                    f"recommendation:{report.recommendation}",
-                ],
-                "tier": "L2",
-            })
+            self._engine.register_memory(
+                {
+                    "id": report_id,
+                    "content": json.dumps(report.to_dict(), ensure_ascii=False),
+                    "memory_type": "reflection",
+                    "source": "review_engine",
+                    "tags": [
+                        "review",
+                        "domain:reflecting",
+                        f"status:{report.status}",
+                        f"recommendation:{report.recommendation}",
+                    ],
+                    "tier": "L2",
+                }
+            )
             memory_ids.append(report_id)
 
             # 每个 finding 单独入池 (仅 blocker 和 major)
             for i, finding in enumerate(report.findings):
                 if finding.severity in ("blocker", "major"):
                     finding_id = f"review_finding_{ts}_{i}"
-                    self._engine.register_memory({
-                        "id": finding_id,
-                        "content": json.dumps(finding.to_dict(), ensure_ascii=False),
-                        "memory_type": "experience",
-                        "source": "review_engine",
-                        "tags": [
-                            "review", "finding",
-                            f"severity:{finding.severity}",
-                            f"category:{finding.category}",
-                            f"principle:{finding.principle_id}",
-                        ],
-                        "tier": "L1",
-                    })
+                    self._engine.register_memory(
+                        {
+                            "id": finding_id,
+                            "content": json.dumps(finding.to_dict(), ensure_ascii=False),
+                            "memory_type": "experience",
+                            "source": "review_engine",
+                            "tags": [
+                                "review",
+                                "finding",
+                                f"severity:{finding.severity}",
+                                f"category:{finding.category}",
+                                f"principle:{finding.principle_id}",
+                            ],
+                            "tier": "L1",
+                        }
+                    )
                     memory_ids.append(finding_id)
 
         except Exception:
@@ -794,8 +840,7 @@ class ReviewEngine:
 
         return memory_ids
 
-    def _create_fix_tasks(self, report: ReviewReport,
-                           author_target: str) -> list:
+    def _create_fix_tasks(self, report: ReviewReport, author_target: str) -> list:
         """为审查发现创建 fix 任务。
 
         Returns:
@@ -820,26 +865,30 @@ class ReviewEngine:
                     f"建议: {finding.suggestion}"
                 )
 
-                self._engine.register_memory({
-                    "id": task_id,
-                    "content": task_content,
-                    "memory_type": "task",
-                    "source": "review_engine",
-                    "tags": [
-                        "task:pending",
-                        f"assignee:{author_target}",
-                        "domain:fixing",
-                        f"type:fix_review_finding",
-                        f"severity:{finding.severity}",
-                        f"ts:{ts}",
-                    ],
-                    "tier": "L1",
-                })
-                fix_tasks.append({
-                    "id": task_id,
-                    "description": task_content[:100],
-                    "severity": finding.severity,
-                })
+                self._engine.register_memory(
+                    {
+                        "id": task_id,
+                        "content": task_content,
+                        "memory_type": "task",
+                        "source": "review_engine",
+                        "tags": [
+                            "task:pending",
+                            f"assignee:{author_target}",
+                            "domain:fixing",
+                            f"type:fix_review_finding",
+                            f"severity:{finding.severity}",
+                            f"ts:{ts}",
+                        ],
+                        "tier": "L1",
+                    }
+                )
+                fix_tasks.append(
+                    {
+                        "id": task_id,
+                        "description": task_content[:100],
+                        "severity": finding.severity,
+                    }
+                )
         except Exception:
             pass
 
@@ -850,9 +899,7 @@ class ReviewEngine:
         lessons = []
         for finding in report.findings:
             if finding.severity in ("blocker", "major") and finding.description:
-                lessons.append(
-                    f"[{finding.category}] {finding.description[:120]}"
-                )
+                lessons.append(f"[{finding.category}] {finding.description[:120]}")
         if lessons:
             return "审查教训: " + " | ".join(lessons[:3])
         if report.status == "pass":
@@ -864,22 +911,25 @@ class ReviewEngine:
         improvements = []
         for finding in report.findings:
             if finding.suggestion and finding.severity in ("blocker", "major"):
-                improvements.append(
-                    f"[{finding.file}] {finding.suggestion[:120]}"
-                )
+                improvements.append(f"[{finding.file}] {finding.suggestion[:120]}")
         if improvements:
             return "修复建议: " + " | ".join(improvements[:3])
         if report.status == "pass":
             return "无阻塞问题，可合入"
-        return f"修复 {sum(1 for f in report.findings if f.severity in ('blocker','major'))} 个严重问题后重新审查"
+        return f"修复 {sum(1 for f in report.findings if f.severity in ('blocker', 'major'))} 个严重问题后重新审查"
 
     # ═══════════════════════════════════════════════════════════
     # 审查 Prompt 生成
     # ═══════════════════════════════════════════════════════════
 
-    def generate_review_prompt(self, diff_text: str, changed_files: list,
-                                pre_check: dict, context_memories: list,
-                                spec_path: Optional[str] = None) -> str:
+    def generate_review_prompt(
+        self,
+        diff_text: str,
+        changed_files: list,
+        pre_check: dict,
+        context_memories: list,
+        spec_path: Optional[str] = None,
+    ) -> str:
         """生成结构化审查 prompt。
 
         这是 Pi worker 和 Claude Code 共享的审查 prompt 模板。
@@ -940,7 +990,9 @@ class ReviewEngine:
         # ── Context memories ──
         if context_memories:
             parts.append("\n## 历史审查记录\n")
-            parts.append("以下是与变更文件相关的历史审查发现，请特别关注之前出现过的问题是否已修复:\n")
+            parts.append(
+                "以下是与变更文件相关的历史审查发现，请特别关注之前出现过的问题是否已修复:\n"
+            )
             for mem in context_memories[:5]:
                 content = str(mem.get("content", ""))[:150]
                 tags = mem.get("tags", [])

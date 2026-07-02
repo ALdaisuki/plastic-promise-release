@@ -18,31 +18,49 @@ def export_pack(
     for m in memories:
         if memory_ids and m.id in memory_ids:
             selected.append(m)
-        elif tags and hasattr(m, 'entity_ids'):
-            mem_entity_ids = getattr(m, 'entity_ids', [])
+        elif tags and hasattr(m, "entity_ids"):
+            mem_entity_ids = getattr(m, "entity_ids", [])
             if any(t in mem_entity_ids or t in m.content for t in tags):
                 selected.append(m)
 
     pack = {
         "pack": {
-            "name": name, "version": "1.0.0", "author": author,
-            "description": description, "license": "MIT",
-            "quality_score": round(sum(getattr(m, 'worth_score', lambda: 0.5)() for m in selected) / max(len(selected), 1), 2),
-            "provenance": [{"action": "exported", "agent": author, "timestamp": datetime.datetime.now().isoformat()}],
-            "memory_count": len(selected), "created": datetime.datetime.now().isoformat(),
+            "name": name,
+            "version": "1.0.0",
+            "author": author,
+            "description": description,
+            "license": "MIT",
+            "quality_score": round(
+                sum(getattr(m, "worth_score", lambda: 0.5)() for m in selected)
+                / max(len(selected), 1),
+                2,
+            ),
+            "provenance": [
+                {
+                    "action": "exported",
+                    "agent": author,
+                    "timestamp": datetime.datetime.now().isoformat(),
+                }
+            ],
+            "memory_count": len(selected),
+            "created": datetime.datetime.now().isoformat(),
         },
         "memories": [
             {
                 "id": f"exp_{uuid.uuid4().hex[:8]}",
                 "content": m.content[:1000],
-                "type": "fact" if m.memory_type == "knowledge" else "lesson" if m.memory_type == "reflection" else "procedure",
-                "tags": getattr(m, 'entity_ids', []),
+                "type": "fact"
+                if m.memory_type == "knowledge"
+                else "lesson"
+                if m.memory_type == "reflection"
+                else "procedure",
+                "tags": getattr(m, "entity_ids", []),
                 "source_memory_id": m.id,
                 "distilled_by": author,
                 "distilled_at": datetime.datetime.now().isoformat(),
-                "entity_ids": getattr(m, 'entity_ids', []),
-                "created_at": getattr(m, 'created_at', ''),
-                "worth_score": m.worth_score() if hasattr(m, 'worth_score') else 0.5,
+                "entity_ids": getattr(m, "entity_ids", []),
+                "created_at": getattr(m, "created_at", ""),
+                "worth_score": m.worth_score() if hasattr(m, "worth_score") else 0.5,
             }
             for m in selected
         ],
@@ -63,19 +81,29 @@ def import_pack(engine: Any, path: str, owner: str = "") -> dict:
     imported = 0
     for mem in pack.get("memories", []):
         try:
-            engine.register_memory({
-                "id": mem.get("id", f"exp_{uuid.uuid4().hex[:8]}"),
-                "content": mem["content"],
-                "memory_type": "reflection" if mem.get("type") == "lesson" else "knowledge" if mem.get("type") == "fact" else "experience",
-                "source": "pack_import",
-                "owner": owner,
-                "tier": "L3",
-            })
+            engine.register_memory(
+                {
+                    "id": mem.get("id", f"exp_{uuid.uuid4().hex[:8]}"),
+                    "content": mem["content"],
+                    "memory_type": "reflection"
+                    if mem.get("type") == "lesson"
+                    else "knowledge"
+                    if mem.get("type") == "fact"
+                    else "experience",
+                    "source": "pack_import",
+                    "owner": owner,
+                    "tier": "L3",
+                }
+            )
             imported += 1
         except Exception:
             pass
 
-    return {"imported": imported, "pack_name": pack["pack"]["name"], "total": len(pack.get("memories", []))}
+    return {
+        "imported": imported,
+        "pack_name": pack["pack"]["name"],
+        "total": len(pack.get("memories", [])),
+    }
 
 
 def recall_pack(engine: Any, query: str, pack_name: str = None, strict: bool = True) -> dict:
@@ -89,14 +117,16 @@ def recall_pack(engine: Any, query: str, pack_name: str = None, strict: bool = T
             continue
         mem = memories[mid]
         owner = mem.get("owner", "")
-        items.append({
-            "source_memory_id": mid,
-            "content": content[:500],
-            "relevance": round(score, 3),
-            "type": "reflection" if mem.get("memory_type") == "reflection" else "experience",
-            "owner": owner,
-            "tier": mem.get("tier", "L1"),
-        })
+        items.append(
+            {
+                "source_memory_id": mid,
+                "content": content[:500],
+                "relevance": round(score, 3),
+                "type": "reflection" if mem.get("memory_type") == "reflection" else "experience",
+                "owner": owner,
+                "tier": mem.get("tier", "L1"),
+            }
+        )
 
     # ENRICH: expand via entity_ids
     enriched = []
@@ -106,14 +136,15 @@ def recall_pack(engine: Any, query: str, pack_name: str = None, strict: bool = T
         for eid in mem.get("entity_ids", []):
             for edge in engine.list_graph_edges():
                 if edge.get("to") == eid and edge.get("from") not in seen:
-                if edge.get("to") == eid and edge.get("from") not in seen:
                     linked = memories.get(edge["from"], {})
                     if linked:
-                        enriched.append({
-                            "source_memory_id": edge["from"],
-                            "content": linked.get("content", "")[:300],
-                            "relation": f"linked via {eid}",
-                        })
+                        enriched.append(
+                            {
+                                "source_memory_id": edge["from"],
+                                "content": linked.get("content", "")[:300],
+                                "relation": f"linked via {eid}",
+                            }
+                        )
                         seen.add(edge["from"])
 
     if strict and not items:

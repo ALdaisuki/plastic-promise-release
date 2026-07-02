@@ -33,9 +33,11 @@ from plastic_promise.core.constants import (
 # 数据模型 (与 Rust 结构体一一对应)
 # ============================================================
 
+
 @dataclass
 class ContextItem:
     """上下文包中的单个条目 — 含完整生命轨迹 (P3a + P3b)"""
+
     id: str
     content: str
     relevance: float
@@ -46,14 +48,14 @@ class ContextItem:
     worth_score: float = 0.0
     is_auto_recall: bool = True  # True = internal retrieval, False = user-initiated
     # P3a: 发散联想灵感质量
-    novelty_score: float = 0.0       # 与检索集中其他项的不相似度 [0,1]
-    confidence: float = 0.5           # 检索置信度（来源质量+worth+相关性）
-    inspiration_score: float = 0.0    # novelty * confidence（灵感综合分）
+    novelty_score: float = 0.0  # 与检索集中其他项的不相似度 [0,1]
+    confidence: float = 0.5  # 检索置信度（来源质量+worth+相关性）
+    inspiration_score: float = 0.0  # novelty * confidence（灵感综合分）
     # P3b: 生命轨迹
-    adoption_count: int = 0           # 被采纳次数 (← worth_success)
-    rejection_count: int = 0          # 被拒绝次数 (← worth_failure)
-    times_retrieved: int = 0          # 被检索次数 (← access_count)
-    decay_status: str = "healthy"     # fresh|healthy|stale|decaying|expired
+    adoption_count: int = 0  # 被采纳次数 (← worth_success)
+    rejection_count: int = 0  # 被拒绝次数 (← worth_failure)
+    times_retrieved: int = 0  # 被检索次数 (← access_count)
+    decay_status: str = "healthy"  # fresh|healthy|stale|decaying|expired
 
     def to_prompt_line(self) -> str:
         """Render one context item with life-trajectory annotations (P3b)."""
@@ -69,6 +71,7 @@ class ContextItem:
 @dataclass
 class ContextPack:
     """三层上下文包"""
+
     core: List[ContextItem] = field(default_factory=list)
     related: List[ContextItem] = field(default_factory=list)
     divergent: List[ContextItem] = field(default_factory=list)
@@ -81,6 +84,7 @@ class ContextPack:
         if self.activated_principles:
             lines.append("## 🧬 核心约定参考（约定优于约束——决策前主动查阅）")
             from plastic_promise.core.constants import CORE_PRINCIPLES
+
             for name in self.activated_principles:
                 # Find principle by name and show full reference
                 match = next((p for p in CORE_PRINCIPLES if p["name"] == name), None)
@@ -117,6 +121,7 @@ class ContextPack:
 # MemoryRecord — Python 实现 (与 Rust context_engine_core.MemoryRecord 接口一致)
 # ============================================================
 
+
 class MemoryRecord:
     """Python MemoryRecord — mirrors context_engine_core.MemoryRecord interface.
 
@@ -124,18 +129,23 @@ class MemoryRecord:
     attributes and methods so tool handlers work transparently.
     """
 
-    def __init__(self, id: str = "", content: str = "",
-                 memory_type: str = "experience", source: str = "user",
-                 owner: str = ""):
+    def __init__(
+        self,
+        id: str = "",
+        content: str = "",
+        memory_type: str = "experience",
+        source: str = "user",
+        owner: str = "",
+    ):
         self.id = id
         self.content = content
         self.memory_type = memory_type
         self.source = source
         self.owner: str = owner or os.environ.get("AGENT_OWNER", "")
-        self.scope: str = "global"           # deprecated — use domain
-        self.category: str = "other"         # deprecated — use domain
-        self.tags: list[str] = []             # NEW: 多标签
-        self.domain: str = "uncategorized"    # NEW: 域标签
+        self.scope: str = "global"  # deprecated — use domain
+        self.category: str = "other"  # deprecated — use domain
+        self.tags: list[str] = []  # NEW: 多标签
+        self.domain: str = "uncategorized"  # NEW: 域标签
         self.importance: float = 0.7
         self.entity_ids: list[str] = []
         self.created_at: str = ""
@@ -196,6 +206,7 @@ class GraphInfo:
 # ContextEngine — Python 实现
 # ============================================================
 
+
 class ContextEngine:
     """上下文供应引擎 (Python 回退版)
 
@@ -205,7 +216,9 @@ class ContextEngine:
     def __init__(self, use_sqlite: bool = None):
         self._graph_nodes: Dict[str, Dict[str, Any]] = {}
         self._graph_edges: List[Dict[str, Any]] = []
-        self._feedback: Dict[str, float] = {}  # item_id -> accumulated delta (P2: 替换为 worth_score)
+        self._feedback: Dict[
+            str, float
+        ] = {}  # item_id -> accumulated delta (P2: 替换为 worth_score)
         self.enable_principles: bool = True
         self._current_time: str = ""
         self._memories: Dict[str, Dict[str, Any]] = {}
@@ -240,12 +253,11 @@ class ContextEngine:
         self._write_lock = threading.RLock()
 
         # Rust engine integration — stateless accelerator for supply()
-        self._rust_healthy: bool | None = None       # None = unchecked, True = healthy, None on failure
-        self._rust_health_checked_at: float = 0.0     # epoch timestamp of last health check
-        self._rust_health_ttl: float = 300.0          # cache TTL in seconds (5 minutes)
-        self._rust_engine_instance = None              # cached Rust engine instance (reused)
-        self._rust_lock = threading.Lock()             # protects all _rust_* fields from concurrent access
-
+        self._rust_healthy: bool | None = None  # None = unchecked, True = healthy, None on failure
+        self._rust_health_checked_at: float = 0.0  # epoch timestamp of last health check
+        self._rust_health_ttl: float = 300.0  # cache TTL in seconds (5 minutes)
+        self._rust_engine_instance = None  # cached Rust engine instance (reused)
+        self._rust_lock = threading.Lock()  # protects all _rust_* fields from concurrent access
 
     def _rebuild_graph_from_memories(self):
         """Rebuild graph edges from persisted memories on init.
@@ -307,8 +319,11 @@ class ContextEngine:
         for mid, mem in self._memories.items():
             total_edges += self._build_principle_edges_for_memory(mid, mem)
         if total_edges > 0:
-            logging.info("_rebuild_graph_from_memories: created %d principle↔memory edges from %d memories",
-                         total_edges, len(self._memories))
+            logging.info(
+                "_rebuild_graph_from_memories: created %d principle↔memory edges from %d memories",
+                total_edges,
+                len(self._memories),
+            )
 
     def _ensure_heavy_init(self):
         """Lazy-initialize heavy components: DomainManager, LanceDB, embedder, principle anchors.
@@ -333,6 +348,7 @@ class ContextEngine:
             # DomainManager for domain-weighted retrieval
             try:
                 from plastic_promise.core.domain_manager import DomainManager
+
                 self._dm = DomainManager(db_path=db_path)
                 self._dm_ok = True
             except Exception as e:
@@ -344,18 +360,28 @@ class ContextEngine:
             if self._embedder is None:
                 try:
                     from plastic_promise.core.embedder import get_embedder
+
                     self._embedder = get_embedder(fallback_on_error=True)
                 except Exception:
-                    logging.warning("ContextEngine: embedder unavailable — intent matching disabled")
+                    logging.warning(
+                        "ContextEngine: embedder unavailable — intent matching disabled"
+                    )
 
             # Initialize LanceDB vector store
             if self._ldb is None:
                 try:
                     from plastic_promise.core.lancedb_store import LanceDBStore
-                    ldb_path = os.environ.get("PLASTIC_LANCEDB_PATH",
-                                               os.path.join(os.path.dirname(db_path or "plastic_memory.db"),
-                                                            "plastic_memory.lancedb"))
-                    self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
+
+                    ldb_path = os.environ.get(
+                        "PLASTIC_LANCEDB_PATH",
+                        os.path.join(
+                            os.path.dirname(db_path or "plastic_memory.db"),
+                            "plastic_memory.lancedb",
+                        ),
+                    )
+                    self._ldb = LanceDBStore(
+                        ldb_path, self._embedder or get_embedder(fallback_on_error=True)
+                    )
                     self._ldb.backfill(self)
                     # Ghost-vector detection: if LanceDB has more rows than SQLite,
                     # there are stale test/pollution vectors — rebuild from SQLite
@@ -365,12 +391,16 @@ class ContextEngine:
                         logging.warning(
                             "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
                             " — rebuilding to remove %d ghost vectors",
-                            ldb_count, sqlite_count, ldb_count - sqlite_count,
+                            ldb_count,
+                            sqlite_count,
+                            ldb_count - sqlite_count,
                         )
                         self._ldb.rebuild_all(self)
                     logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
                 except Exception as e:
-                    logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
+                    logging.warning(
+                        "ContextEngine: LanceDBStore init failed — vector search disabled: %s", e
+                    )
                     self._ldb = None
 
             # P1: Build principle anchor embeddings for intent matching (cached by embedder)
@@ -392,7 +422,7 @@ class ContextEngine:
             "source": record.get("source", "user"),
             "owner": record.get("owner", os.environ.get("AGENT_OWNER", "")),
             "tier": record.get("tier", "L1"),
-            "scope": record.get("scope", "global"),       # deprecated — use domain
+            "scope": record.get("scope", "global"),  # deprecated — use domain
             "category": record.get("category", "other"),  # deprecated — use domain
             "tags": record.get("tags", []),
             "domain": record.get("domain", "uncategorized"),
@@ -433,6 +463,7 @@ class ContextEngine:
         Use update_memory_fields() to modify data.
         """
         import copy
+
         mem = self._memories.get(mid)
         if mem is None:
             return None
@@ -445,6 +476,7 @@ class ContextEngine:
     def get_memories_batch(self, mids: list[str]) -> list[dict]:
         """Get multiple memory records by id. Missing ids are skipped."""
         import copy
+
         results = []
         for mid in mids:
             mem = self._memories.get(mid)
@@ -457,9 +489,7 @@ class ContextEngine:
 
     # ========== P0: 原则↔记忆图谱边 (深层语法) ==========
 
-    def _build_principle_edges_for_memory(
-        self, memory_id: str, memory_data: dict
-    ) -> int:
+    def _build_principle_edges_for_memory(self, memory_id: str, memory_data: dict) -> int:
         """Create bidirectional principle↔memory edges based on keyword overlap.
 
         For each of the 12 core principles, computes the overlap between
@@ -500,7 +530,9 @@ class ContextEngine:
                 continue
 
             keyword_ratio = min(hits / len(keywords), 1.0)
-            weight = min(PRINCIPLE_EDGE_BASE_WEIGHT + PRINCIPLE_EDGE_SCALE_WEIGHT * keyword_ratio, 1.0)
+            weight = min(
+                PRINCIPLE_EDGE_BASE_WEIGHT + PRINCIPLE_EDGE_SCALE_WEIGHT * keyword_ratio, 1.0
+            )
             principle_node = f"principle:{p['id']}"
             memory_node = memory_id
 
@@ -556,8 +588,11 @@ class ContextEngine:
         try:
             for p in CORE_PRINCIPLES:
                 if consecutive_failures >= 2:
-                    logging.info("_build_principle_anchors: circuit open after 2 failures — "
-                                "skipping remaining %d principles", len(CORE_PRINCIPLES) - len(anchors))
+                    logging.info(
+                        "_build_principle_anchors: circuit open after 2 failures — "
+                        "skipping remaining %d principles",
+                        len(CORE_PRINCIPLES) - len(anchors),
+                    )
                     break
                 try:
                     vec = self._embedder.embed(p["content"])
@@ -566,11 +601,18 @@ class ContextEngine:
                         consecutive_failures = 0
                 except Exception:
                     consecutive_failures += 1
-                    logging.debug("_build_principle_anchors: embed failed for principle %d (%d/%d failures)",
-                                 p["id"], consecutive_failures, 2)
+                    logging.debug(
+                        "_build_principle_anchors: embed failed for principle %d (%d/%d failures)",
+                        p["id"],
+                        consecutive_failures,
+                        2,
+                    )
             if anchors:
-                logging.info("_build_principle_anchors: computed %d/%d principle anchors",
-                            len(anchors), len(CORE_PRINCIPLES))
+                logging.info(
+                    "_build_principle_anchors: computed %d/%d principle anchors",
+                    len(anchors),
+                    len(CORE_PRINCIPLES),
+                )
         except Exception as e:
             logging.warning("_build_principle_anchors failed: %s — intent matching disabled", e)
             anchors = {}
@@ -603,9 +645,9 @@ class ContextEngine:
 
     # ========== Graph CRUD (6 methods, added by Task 4) ==========
 
-    def add_graph_edge(self, source: str, target: str,
-                       relation: str = "references",
-                       weight: float = 0.5) -> bool:
+    def add_graph_edge(
+        self, source: str, target: str, relation: str = "references", weight: float = 0.5
+    ) -> bool:
         """Add an edge to the entity graph. No-op if duplicate exists.
 
         Returns True if the edge was added, False if it already existed.
@@ -621,12 +663,12 @@ class ContextEngine:
             return True
         return False
 
-    def remove_graph_edge(self, source: str, target: str,
-                          relation: str = None) -> int:
+    def remove_graph_edge(self, source: str, target: str, relation: str = None) -> int:
         """Remove matching edges. Returns number of edges removed."""
         before = len(self._graph_edges)
         self._graph_edges[:] = [
-            e for e in self._graph_edges
+            e
+            for e in self._graph_edges
             if not (
                 e.get("from") == source
                 and e.get("to") == target
@@ -642,6 +684,7 @@ class ContextEngine:
     def get_graph_node(self, node_id: str) -> dict | None:
         """Get a graph node by id. Returns a deep copy."""
         import copy
+
         node = self._graph_nodes.get(node_id)
         if node is None:
             return None
@@ -650,6 +693,7 @@ class ContextEngine:
     def list_graph_nodes(self, node_type: str = None) -> list[dict]:
         """List graph nodes, optionally filtered by type field."""
         import copy
+
         results = []
         for nid, node in self._graph_nodes.items():
             if node_type and node.get("type") != node_type:
@@ -729,8 +773,7 @@ class ContextEngine:
         record.effective_half_life = mem.get("effective_half_life", 3.0)
         return record
 
-    def update_memory(self, memory_id: str, content=None,
-                      importance=None, category=None) -> bool:
+    def update_memory(self, memory_id: str, content=None, importance=None, category=None) -> bool:
         """Update a memory's fields. Returns True if the memory exists."""
         mem = self._memories.get(memory_id)
         if mem is None:
@@ -882,8 +925,9 @@ class ContextEngine:
             return True
         return False
 
-    def list_memories(self, memory_type=None, source=None,
-                      min_worth=None, limit=50, scope=None, offset=0) -> list:
+    def list_memories(
+        self, memory_type=None, source=None, min_worth=None, limit=50, scope=None, offset=0
+    ) -> list:
         """List memories with optional filters and offset pagination.
 
         Args:
@@ -981,10 +1025,11 @@ class ContextEngine:
             Deep copies of memory dicts, one at a time.
         """
         import copy
+
         all_ids = list(self._memories.keys())
         offset = 0
         while offset < len(all_ids):
-            page_ids = all_ids[offset:offset + page_size]
+            page_ids = all_ids[offset : offset + page_size]
             for mid in page_ids:
                 mem = self._memories.get(mid)
                 if mem is None:
@@ -1039,15 +1084,18 @@ class ContextEngine:
             else:
                 decaying += 1
 
-        return json.dumps({
-            "total": total,
-            "healthy": healthy,
-            "decaying": decaying,
-            "by_type": by_type,
-            "by_category": by_category,
-            "by_tier": by_tier,
-            "average_worth": round(worth_sum / total, 3) if total > 0 else 0.0,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "total": total,
+                "healthy": healthy,
+                "decaying": decaying,
+                "by_type": by_type,
+                "by_category": by_category,
+                "by_tier": by_tier,
+                "average_worth": round(worth_sum / total, 3) if total > 0 else 0.0,
+            },
+            ensure_ascii=False,
+        )
 
     # ========== 核心方法: supply() ==========
 
@@ -1059,7 +1107,7 @@ class ContextEngine:
         """
         try:
             self._ensure_heavy_init()
-            if hasattr(self, '_embedder') and self._embedder:
+            if hasattr(self, "_embedder") and self._embedder:
                 return self._embedder.embed(task_description)
         except Exception:
             pass
@@ -1104,9 +1152,7 @@ class ContextEngine:
         # Falls back to Python if Rust engine is unavailable or throws.
         if self._check_rust_health():
             try:
-                return self._supply_rust(
-                    task_description, task_vector, task_type, scope
-                )
+                return self._supply_rust(task_description, task_vector, task_type, scope)
             except Exception as e:
                 logger.warning("Rust supply failed, falling back to Python: %s", e)
                 with self._rust_lock:
@@ -1151,15 +1197,16 @@ class ContextEngine:
         seen_prefixes: set[str] = set()  # first 40 chars for template detection
 
         for item in items_sorted:
-            if getattr(item, 'is_principle', False):
+            if getattr(item, "is_principle", False):
                 selected.append(item)
                 continue
 
             # Stage 1: content dedup — full match (80 chars) + prefix match (25 chars for templates)
             content_key = item.content[:80].strip().lower()
             prefix_key = item.content[:20].strip().lower()
-            if (content_key and content_key in seen_contents) or \
-               (prefix_key and prefix_key in seen_prefixes):
+            if (content_key and content_key in seen_contents) or (
+                prefix_key and prefix_key in seen_prefixes
+            ):
                 item.relevance *= 0.50  # hard penalty for near-dup patterns
                 deferred.append(item)
                 continue
@@ -1172,7 +1219,8 @@ class ContextEngine:
                 try:
                     # Use LanceDB to get the stored vector for this item
                     similar = self._ldb.search_similar(
-                        [0.0] * 1024, k=1  # dummy — we just need to check if ID exists
+                        [0.0] * 1024,
+                        k=1,  # dummy — we just need to check if ID exists
                     )
                 except Exception:
                     similar = []
@@ -1200,17 +1248,19 @@ class ContextEngine:
             timeout = float(os.environ.get("PP_RERANK_TIMEOUT", "5.0"))
             ollama_url = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
             docs = [item.content[:500] for item in candidates]
-            payload = json.dumps({
-                "model": model or "mxbai-embed-large",
-                "prompt": (
-                    f"Query: {query}\n\n"
-                    f"Rate each document's relevance to the query on a scale of 0-100.\n\n"
-                    + "\n\n".join(f"[{i}] {doc}" for i, doc in enumerate(docs))
-                    + "\n\nReturn JSON: {\"scores\": [score0, score1, ...]}"
-                ),
-                "stream": False,
-                "options": {"temperature": 0},
-            }).encode("utf-8")
+            payload = json.dumps(
+                {
+                    "model": model or "mxbai-embed-large",
+                    "prompt": (
+                        f"Query: {query}\n\n"
+                        f"Rate each document's relevance to the query on a scale of 0-100.\n\n"
+                        + "\n\n".join(f"[{i}] {doc}" for i, doc in enumerate(docs))
+                        + '\n\nReturn JSON: {"scores": [score0, score1, ...]}'
+                    ),
+                    "stream": False,
+                    "options": {"temperature": 0},
+                }
+            ).encode("utf-8")
             req = urllib.request.Request(
                 f"{ollama_url}/api/generate",
                 data=payload,
@@ -1223,7 +1273,7 @@ class ContextEngine:
                 scores_data = json.loads(response_text)
                 rerank_scores = scores_data.get("scores", [])
             except json.JSONDecodeError:
-                match = re.search(r'\[[\d,\s]+\]', response_text)
+                match = re.search(r"\[[\d,\s]+\]", response_text)
                 if match:
                     rerank_scores = json.loads(match.group())
                 else:
@@ -1277,6 +1327,7 @@ class ContextEngine:
         # Trust-aware retrieval: higher trust → broader context
         try:
             from plastic_promise.defense.soul_enforcer import TrustManager
+
             tm = TrustManager()
             trust_boost = max(tm.get_retrieval_boost(), 0.80)
         except Exception:
@@ -1291,15 +1342,21 @@ class ContextEngine:
         text_results = self._text_retrieval(task_description, trust_boost)
 
         # 粗 (vector): 语义向量相关性 (零向量时跳过)
-        vector_results = self._vector_retrieval(task_vector) if any(v != 0.0 for v in task_vector) else []
+        vector_results = (
+            self._vector_retrieval(task_vector) if any(v != 0.0 for v in task_vector) else []
+        )
 
         # Phase 2: Hybrid fusion (vector + text) then layer with graph
         if vector_results:
             vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
-            fused_results = self._hybrid_fuse(vector_results, text_results, vector_weight=vector_weight)
+            fused_results = self._hybrid_fuse(
+                vector_results, text_results, vector_weight=vector_weight
+            )
         else:
             # No vector available (Ollama down / zero vector) — use text only
-            fused_results = [(mid, score * 0.8, content, source) for mid, score, content, source in text_results]
+            fused_results = [
+                (mid, score * 0.8, content, source) for mid, score, content, source in text_results
+            ]
         all_results = self._layered_fuse(graph_results, fused_results, [])
 
         # P2: Evolve edge weights based on feedback patterns
@@ -1310,13 +1367,16 @@ class ContextEngine:
             FEEDBACK_SCORE_MULTIPLIER_MIN,
             FEEDBACK_SCORE_MULTIPLIER_RANGE,
         )
+
         pack = ContextPack(activated_principles=activated)
 
         for item_id, score, content, source in all_results:
             # --- Symbol rule boost (was _apply_symbol_rules) ---
             boost = 1.0
             for category, keywords in SYMBOL_RULE_KEYWORDS.items():
-                if any(kw in task_description for kw in keywords) or any(kw in content for kw in keywords):
+                if any(kw in task_description for kw in keywords) or any(
+                    kw in content for kw in keywords
+                ):
                     if category == "security":
                         boost *= 1.5
                     elif category == "commitment":
@@ -1399,9 +1459,7 @@ class ContextEngine:
             # Compute divergent quality
             if pack.divergent:
                 all_retrieved = pack.core + pack.related + pack.divergent
-                pack.divergent = self._compute_divergent_quality(
-                    pack.divergent, all_retrieved
-                )
+                pack.divergent = self._compute_divergent_quality(pack.divergent, all_retrieved)
 
         # Phase 6: 审计元数据
         pack.audit_metadata = {
@@ -1413,7 +1471,7 @@ class ContextEngine:
             "memory_pool_size": str(len(self._memories)),
             "vector_search": "active" if vector_results else "fallback_text_only",
             "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
-            "rerank_status": getattr(self, '_last_rerank_status', 'skipped_disabled'),
+            "rerank_status": getattr(self, "_last_rerank_status", "skipped_disabled"),
         }
 
         # ── Exemplar gap detection ─────────────────────────
@@ -1422,6 +1480,7 @@ class ContextEngine:
         # return the pack — gap_signal is optional enrichment.
         try:
             from plastic_promise.core.exemplar_gap_detector import detect_gap
+
             pack.gap_signal = detect_gap(task_description, pack)
         except Exception:
             pass  # gap detection failure must not block context_supply
@@ -1454,8 +1513,7 @@ class ContextEngine:
         valid_types = {"principle", "task", "memory", "code_module", "skill_session"}
         if entity_type not in valid_types:
             raise ValueError(
-                f"Unknown entity_type '{entity_type}'. "
-                f"Valid: {', '.join(sorted(valid_types))}"
+                f"Unknown entity_type '{entity_type}'. Valid: {', '.join(sorted(valid_types))}"
             )
 
         node_id = f"{entity_type}:{entity_id}"
@@ -1549,9 +1607,7 @@ class ContextEngine:
                     neighbor_ids.add(e.get("from"))
                     edges.append(e)
             nodes = {
-                nid: self._graph_nodes[nid]
-                for nid in neighbor_ids
-                if nid in self._graph_nodes
+                nid: self._graph_nodes[nid] for nid in neighbor_ids if nid in self._graph_nodes
             }
             return {"nodes": nodes, "edges": edges, "neighbor_count": len(nodes)}
 
@@ -1571,6 +1627,7 @@ class ContextEngine:
             all_edges = []
 
             from collections import deque
+
             q = deque([(start_node, 0)])
             while q:
                 current, depth = q.popleft()
@@ -1597,7 +1654,7 @@ class ContextEngine:
 
         return {
             "error": f"Unknown query_type '{query_type}'. "
-                     f"Valid: node_info, traverse, full_graph, neighbors"
+            f"Valid: node_info, traverse, full_graph, neighbors"
         }
 
     # ========== Public wrappers for internal methods (Task 10) ==========
@@ -1620,19 +1677,19 @@ class ContextEngine:
 
     def get_context_ready(self) -> dict:
         """Get the context_ready cache dict."""
-        if not hasattr(self, '_context_ready'):
+        if not hasattr(self, "_context_ready"):
             self._context_ready = {}
         return self._context_ready
 
     def clear_expired_context_ready(self, expired_keys: list):
         """Remove expired entries from context_ready cache."""
-        if hasattr(self, '_context_ready'):
+        if hasattr(self, "_context_ready"):
             for k in expired_keys:
                 self._context_ready.pop(k, None)
 
     def get_fuzzy_buffer(self):
         """Get or None the fuzzy buffer pipeline."""
-        return getattr(self, '_fuzzy_buffer', None)
+        return getattr(self, "_fuzzy_buffer", None)
 
     def set_fuzzy_buffer(self, fb):
         """Set the fuzzy buffer pipeline."""
@@ -1640,7 +1697,7 @@ class ContextEngine:
 
     def get_rec_mem(self):
         """Get or None the RecMem instance."""
-        return getattr(self, '_rec_mem', None)
+        return getattr(self, "_rec_mem", None)
 
     def set_rec_mem(self, rm):
         """Set the RecMem instance."""
@@ -1648,8 +1705,9 @@ class ContextEngine:
 
     def get_issue_manager(self):
         """Get or create the IssueManager."""
-        if not hasattr(self, '_issue_manager') or self._issue_manager is None:
+        if not hasattr(self, "_issue_manager") or self._issue_manager is None:
             from plastic_promise.issue import IssueManager
+
             self._issue_manager = IssueManager()
         return self._issue_manager
 
@@ -1680,30 +1738,39 @@ class ContextEngine:
         with self._rust_lock:
             now = time.time()
             # Return cached result if within TTL
-            if self._rust_healthy is not None and \
-               (now - self._rust_health_checked_at) < self._rust_health_ttl:
+            if (
+                self._rust_healthy is not None
+                and (now - self._rust_health_checked_at) < self._rust_health_ttl
+            ):
                 return self._rust_healthy
 
             try:
                 # Ensure Rust .pyd is on sys.path — MCP server doesn't inherit
                 # the working directory's PYTHONPATH
                 import sys as _sys
+
                 _rust_path = os.path.join(
                     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                    "rust", "context-engine-core", "target", "release"
+                    "rust",
+                    "context-engine-core",
+                    "target",
+                    "release",
                 )
                 if _rust_path not in _sys.path:
                     _sys.path.insert(0, _rust_path)
                 from context_engine_core import ContextEngine as RustEngine
+
                 # Smoke test: supply with empty memories — validates import + PyO3 bridge
                 engine = RustEngine()
                 engine.set_current_time(datetime.datetime.now().isoformat())
                 pack = engine.supply("test", [0.0] * 1024, "general", "global", [])
                 # Validate response shape — must have core + related attributes
-                assert hasattr(pack, 'core'), "Rust ContextPack missing 'core'"
-                assert hasattr(pack, 'related'), "Rust ContextPack missing 'related'"
-                assert hasattr(pack, 'divergent'), "Rust ContextPack missing 'divergent'"
-                assert hasattr(pack, 'activated_principles'), "Rust ContextPack missing 'activated_principles'"
+                assert hasattr(pack, "core"), "Rust ContextPack missing 'core'"
+                assert hasattr(pack, "related"), "Rust ContextPack missing 'related'"
+                assert hasattr(pack, "divergent"), "Rust ContextPack missing 'divergent'"
+                assert hasattr(pack, "activated_principles"), (
+                    "Rust ContextPack missing 'activated_principles'"
+                )
                 self._rust_engine_instance = engine
                 self._rust_healthy = True
             except Exception as e:
@@ -1780,7 +1847,7 @@ class ContextEngine:
         pack.activated_principles = list(rust_pack.activated_principles)
         # Preserve audit metadata from Rust for observability
         # Use isinstance guard: PyO3 may return PyDict wrapper, not plain dict
-        if hasattr(rust_pack, 'audit_metadata') and rust_pack.audit_metadata:
+        if hasattr(rust_pack, "audit_metadata") and rust_pack.audit_metadata:
             if isinstance(rust_pack.audit_metadata, dict):
                 pack.audit_metadata = dict(rust_pack.audit_metadata)
             else:
@@ -1791,8 +1858,9 @@ class ContextEngine:
 
         return pack
 
-    def _supply_rust(self, task_description: str, task_vector: list,
-                     task_type: str, scope: str) -> ContextPack:
+    def _supply_rust(
+        self, task_description: str, task_vector: list, task_type: str, scope: str
+    ) -> ContextPack:
         """Rust-accelerated supply path (Phase 2 primary).
 
         Rust engine reads from its own read-only SQLite connection to
@@ -1836,9 +1904,7 @@ class ContextEngine:
 
     # ========== 内部方法 ==========
 
-    def _inject_activated_to_graph(
-        self, activated_names: List[str], task_type: str
-    ) -> int:
+    def _inject_activated_to_graph(self, activated_names: List[str], task_type: str) -> int:
         """Write activated principles into the entity graph.
 
         Called automatically during supply() Phase 0. Creates/updates
@@ -1945,18 +2011,98 @@ class ContextEngine:
 
     # ========== BM25 helpers (static methods on ContextEngine) ==========
 
-    _EN_STOPWORDS = frozenset({
-        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-        'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought',
-        'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
-        'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
-        'between', 'under', 'again', 'further', 'then', 'once', 'here', 'there',
-        'when', 'where', 'why', 'how', 'all', 'both', 'each', 'few', 'more',
-        'most', 'other', 'some', 'such', 'only', 'own', 'same', 'so', 'than',
-        'too', 'very', 'just', 'because', 'but', 'and', 'or', 'if', 'while',
-        'about', 'not', 'this', 'that', 'these', 'those', 'it', 'its',
-    })
+    _EN_STOPWORDS = frozenset(
+        {
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "could",
+            "should",
+            "may",
+            "might",
+            "shall",
+            "can",
+            "need",
+            "dare",
+            "ought",
+            "used",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "from",
+            "as",
+            "into",
+            "through",
+            "during",
+            "before",
+            "after",
+            "above",
+            "below",
+            "between",
+            "under",
+            "again",
+            "further",
+            "then",
+            "once",
+            "here",
+            "there",
+            "when",
+            "where",
+            "why",
+            "how",
+            "all",
+            "both",
+            "each",
+            "few",
+            "more",
+            "most",
+            "other",
+            "some",
+            "such",
+            "only",
+            "own",
+            "same",
+            "so",
+            "than",
+            "too",
+            "very",
+            "just",
+            "because",
+            "but",
+            "and",
+            "or",
+            "if",
+            "while",
+            "about",
+            "not",
+            "this",
+            "that",
+            "these",
+            "those",
+            "it",
+            "its",
+        }
+    )
 
     @staticmethod
     def _porter_stem(word: str) -> str:
@@ -1964,25 +2110,45 @@ class ContextEngine:
         w = word.lower()
         if len(w) <= 3:
             return w
-        if w.endswith('sses'):
+        if w.endswith("sses"):
             w = w[:-2]
-        elif w.endswith('ies'):
+        elif w.endswith("ies"):
             w = w[:-2]
-        elif w.endswith('ss'):
+        elif w.endswith("ss"):
             pass
-        elif w.endswith('s'):
+        elif w.endswith("s"):
             w = w[:-1]
-        if w.endswith('eed') and len(w) > 4:
+        if w.endswith("eed") and len(w) > 4:
             w = w[:-1]
-        elif w.endswith('ed') and not w.endswith('eed') and len(w) > 3:
+        elif w.endswith("ed") and not w.endswith("eed") and len(w) > 3:
             w = w[:-2]
-        elif w.endswith('ing') and len(w) > 4:
+        elif w.endswith("ing") and len(w) > 4:
             w = w[:-3]
-        for suffix in ('ement', 'ment', 'ence', 'ance', 'able', 'ible',
-                       'ment', 'ent', 'ant', 'ism', 'ate', 'iti', 'ous',
-                       'ive', 'ize', 'ion', 'al', 'er', 'ic', 'ou', 'ly'):
+        for suffix in (
+            "ement",
+            "ment",
+            "ence",
+            "ance",
+            "able",
+            "ible",
+            "ment",
+            "ent",
+            "ant",
+            "ism",
+            "ate",
+            "iti",
+            "ous",
+            "ive",
+            "ize",
+            "ion",
+            "al",
+            "er",
+            "ic",
+            "ou",
+            "ly",
+        ):
             if w.endswith(suffix) and len(w) - len(suffix) >= 3:
-                w = w[:-len(suffix)]
+                w = w[: -len(suffix)]
                 break
         return w
 
@@ -1993,14 +2159,14 @@ class ContextEngine:
             return []
         # CJK detection: require >30% CJK chars to avoid false positives
         # from garbled/mixed-encoding text
-        cjk_chars = sum(1 for c in text if '一' <= c <= '鿿')
+        cjk_chars = sum(1 for c in text if "一" <= c <= "鿿")
         has_cjk = (cjk_chars / max(len(text), 1)) > 0.3
         if has_cjk:
             chars = [c for c in text if not c.isspace()]
             return [chars[i] + chars[i + 1] for i in range(len(chars) - 1)]
         words = text.lower().split()
         return [
-            ContextEngine._porter_stem(w.strip('.,!?;:()[]{}"\'-'))
+            ContextEngine._porter_stem(w.strip(".,!?;:()[]{}\"'-"))
             for w in words
             if len(w) >= 3 and w.lower() not in ContextEngine._EN_STOPWORDS
         ]
@@ -2049,8 +2215,8 @@ class ContextEngine:
             return results
 
         current_owner = os.environ.get("AGENT_OWNER", "")
-        domain_hint = getattr(self, '_domain_hint', None)
-        dm = getattr(self, '_dm', None)
+        domain_hint = getattr(self, "_domain_hint", None)
+        dm = getattr(self, "_dm", None)
         has_dm = dm is not None and domain_hint and domain_hint != "all"
         hint_dm = dm.domains.get(domain_hint) if has_dm else None
 
@@ -2079,7 +2245,9 @@ class ContextEngine:
             return results
 
         total_docs = len(eligible)
-        avg_doc_len = sum(len(t) for t in doc_terms.values()) / total_docs if total_docs > 0 else 1.0
+        avg_doc_len = (
+            sum(len(t) for t in doc_terms.values()) / total_docs if total_docs > 0 else 1.0
+        )
         idf = ContextEngine._compute_idf(doc_freq, total_docs)
 
         # Score each document
@@ -2136,10 +2304,13 @@ class ContextEngine:
             raw_results = self._ldb.search(
                 vector=task_vector,
                 k=20,
-                scope=getattr(self, '_domain_hint', None),
+                scope=getattr(self, "_domain_hint", None),
             )
             # Convert LanceDB results to internal tuple format
-            return [(mid, score, text[:300], "vector") for mid, score, text, _tier, _scope in raw_results]
+            return [
+                (mid, score, text[:300], "vector")
+                for mid, score, text, _tier, _scope in raw_results
+            ]
         except Exception as e:
             logging.warning("_vector_retrieval LanceDB failed, returning empty: %s", e)
             return []
@@ -2185,9 +2356,12 @@ class ContextEngine:
             else:
                 combined[mid] = (w, content, source)
 
-        return [(mid, score, content, source)
-                for mid, (score, content, source) in
-                sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
+        return [
+            (mid, score, content, source)
+            for mid, (score, content, source) in sorted(
+                combined.items(), key=lambda x: x[1][0], reverse=True
+            )
+        ]
 
     def _graph_traversal(self, task_type: str) -> List[tuple]:
         """Fine-grained: principle association + entity link + deep-grammar traversal.
@@ -2210,8 +2384,9 @@ class ContextEngine:
                 if dst.startswith("principle:"):
                     principle_nodes.add(dst)
                 node = self._graph_nodes.get(dst, {})
-                results.append((dst, edge.get("weight", 0.5),
-                                node.get("description", dst), "graph"))
+                results.append(
+                    (dst, edge.get("weight", 0.5), node.get("description", dst), "graph")
+                )
 
         # Pass 2: references + governs — now principle_nodes is fully populated
         for edge in self._graph_edges:
@@ -2226,8 +2401,9 @@ class ContextEngine:
             elif rel == "governs":
                 if src in principle_nodes and dst in self._memories:
                     mem = self._memories[dst]
-                    results.append((dst, edge.get("weight", 0.3),
-                                    mem.get("content", "")[:300], "graph"))
+                    results.append(
+                        (dst, edge.get("weight", 0.3), mem.get("content", "")[:300], "graph")
+                    )
 
         return results
 
@@ -2246,8 +2422,10 @@ class ContextEngine:
             else:
                 combined[item_id] = (w, content, source)
 
-        return [(k, v[0], v[1], v[2]) for k, v in
-                sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
+        return [
+            (k, v[0], v[1], v[2])
+            for k, v in sorted(combined.items(), key=lambda x: x[1][0], reverse=True)
+        ]
 
     def _apply_symbol_rules(self, items, task: str) -> List[tuple]:
         result = []
@@ -2318,9 +2496,17 @@ class ContextEngine:
 
             # Determine which node is the memory
             memory_id = None
-            if edge["from"].startswith("memory:") or not edge["from"].startswith("principle:") and not edge["from"].startswith("task_type:"):
+            if (
+                edge["from"].startswith("memory:")
+                or not edge["from"].startswith("principle:")
+                and not edge["from"].startswith("task_type:")
+            ):
                 memory_id = edge["from"]
-            elif edge["to"].startswith("memory:") or not edge["to"].startswith("principle:") and not edge["to"].startswith("task_type:"):
+            elif (
+                edge["to"].startswith("memory:")
+                or not edge["to"].startswith("principle:")
+                and not edge["to"].startswith("task_type:")
+            ):
                 memory_id = edge["to"]
 
             if memory_id and memory_id in self._memories:
@@ -2332,8 +2518,9 @@ class ContextEngine:
 
                 old_weight = edge.get("weight", 0.5)
                 new_weight = (1.0 - alpha) * old_weight + alpha * worth
-                edge["weight"] = max(FEEDBACK_EDGE_WEIGHT_MIN,
-                                    min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight))
+                edge["weight"] = max(
+                    FEEDBACK_EDGE_WEIGHT_MIN, min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight)
+                )
 
     def _apply_edge_feedback_for_memory(self, memory_id: str):
         """P2: Update all graph edges involving a specific memory.
@@ -2364,8 +2551,9 @@ class ContextEngine:
             if edge.get("from") == memory_id or edge.get("to") == memory_id:
                 old_weight = edge.get("weight", 0.5)
                 new_weight = (1.0 - alpha) * old_weight + alpha * worth
-                edge["weight"] = max(FEEDBACK_EDGE_WEIGHT_MIN,
-                                    min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight))
+                edge["weight"] = max(
+                    FEEDBACK_EDGE_WEIGHT_MIN, min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight)
+                )
 
     def _calc_freshness(self, item_id: str) -> str:
         mem = self._memories.get(item_id, {})
@@ -2380,7 +2568,9 @@ class ContextEngine:
             created_parts = created_date.split("-")
             now_parts = now_date.split("-")
             if len(created_parts) == 3 and len(now_parts) == 3:
-                created_days = int(created_parts[0]) * 365 + int(created_parts[1]) * 30 + int(created_parts[2])
+                created_days = (
+                    int(created_parts[0]) * 365 + int(created_parts[1]) * 30 + int(created_parts[2])
+                )
                 now_days = int(now_parts[0]) * 365 + int(now_parts[1]) * 30 + int(now_parts[2])
                 diff = now_days - created_days
                 if diff <= 1:
@@ -2420,7 +2610,9 @@ class ContextEngine:
             if len(created_parts) != 3 or len(now_parts) != 3:
                 return "healthy"
 
-            created_days = int(created_parts[0]) * 365 + int(created_parts[1]) * 30 + int(created_parts[2])
+            created_days = (
+                int(created_parts[0]) * 365 + int(created_parts[1]) * 30 + int(created_parts[2])
+            )
             now_days = int(now_parts[0]) * 365 + int(now_parts[1]) * 30 + int(now_parts[2])
             age_days = max(0, now_days - created_days)
 
@@ -2429,8 +2621,9 @@ class ContextEngine:
             # Simple exponential decay: decay = 2^(-age/half_life)
             decay = 2.0 ** (-age_days / half_life) if half_life > 0 else 1.0
 
-            for label, threshold in sorted(DECAY_STATUS_THRESHOLDS.items(),
-                                           key=lambda x: x[1], reverse=True):
+            for label, threshold in sorted(
+                DECAY_STATUS_THRESHOLDS.items(), key=lambda x: x[1], reverse=True
+            ):
                 if decay >= threshold:
                     return label
             return "expired"
@@ -2489,13 +2682,17 @@ class ContextEngine:
             item.inspiration_score = item.novelty_score * item.confidence
 
         # Filter: keep only items above quality threshold
-        return [item for item in divergent_items
-                if item.inspiration_score >= DIVERGENT_QUALITY_THRESHOLD]
+        return [
+            item
+            for item in divergent_items
+            if item.inspiration_score >= DIVERGENT_QUALITY_THRESHOLD
+        ]
 
 
 # ============================================================
 # SQLite 持久化存储 — 写穿透模式
 # ============================================================
+
 
 class _SQLiteStorage:
     """SQLite write-through backend for ContextEngine memories.
@@ -2510,6 +2707,7 @@ class _SQLiteStorage:
 
     def __init__(self, db_path: str = None):
         import sqlite3
+
         if db_path is None:
             db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
         self._conn = sqlite3.connect(db_path)
@@ -2539,9 +2737,7 @@ class _SQLiteStorage:
 
         # 迁移: 新增 tags 和 domain 列 (SQLite ALTER TABLE 不支持 IF NOT EXISTS)
         try:
-            self._conn.execute(
-                "ALTER TABLE memories ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'"
-            )
+            self._conn.execute("ALTER TABLE memories ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
         except Exception:
             pass  # 列已存在
         try:
@@ -2571,17 +2767,14 @@ class _SQLiteStorage:
         except Exception:
             pass  # 列已存在
         # 迁移: memory_version 表 — Rust 引擎用版本号检测 BM25 索引是否需要刷新
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS memory_version (version INTEGER DEFAULT 0)"
-        )
-        self._conn.execute(
-            "INSERT OR IGNORE INTO memory_version (version) VALUES (0)"
-        )
+        self._conn.execute("CREATE TABLE IF NOT EXISTS memory_version (version INTEGER DEFAULT 0)")
+        self._conn.execute("INSERT OR IGNORE INTO memory_version (version) VALUES (0)")
         self._conn.commit()
 
         # 存量迁移: 对已有记忆一次性计算真实衰减值
         try:
             from plastic_promise.core.decay_engine import WeibullDecayCalculator
+
             decay_calc = WeibullDecayCalculator()
             now = datetime.datetime.now().isoformat()
             rows = self._conn.execute(
@@ -2596,8 +2789,7 @@ class _SQLiteStorage:
                         current_time_str=now,
                     )
                     self._conn.execute(
-                        "UPDATE memories SET decay_multiplier = ? WHERE id = ?",
-                        (dm, mid)
+                        "UPDATE memories SET decay_multiplier = ? WHERE id = ?", (dm, mid)
                     )
                 self._conn.commit()
                 logging.info("Bulk decay migration: %d memories updated", len(rows))
@@ -2607,6 +2799,7 @@ class _SQLiteStorage:
     def upsert(self, mid: str, data: dict):
         """Insert or update a memory record."""
         import json
+
         self._conn.execute(
             "INSERT OR REPLACE INTO memories (id, content, memory_type, source, owner, "
             "tier, scope, category, tags, domain, importance, entity_ids, created_at, access_count, "
@@ -2649,7 +2842,8 @@ class _SQLiteStorage:
             "tags, domain, importance, entity_ids, created_at, access_count, "
             "worth_success, worth_failure, activation_weight, "
             "decay_multiplier, effective_half_life, last_accessed "
-            "FROM memories WHERE id = ?", (mid,)
+            "FROM memories WHERE id = ?",
+            (mid,),
         ).fetchone()
         if row is None:
             return None
@@ -2681,6 +2875,7 @@ class _SQLiteStorage:
 
     class _BatchContext:
         """Context manager for batch writes — defers commits until exit."""
+
         def __init__(self, storage):
             self._storage = storage
 
@@ -2709,6 +2904,7 @@ class _SQLiteStorage:
     def _row_to_dict(self, row) -> dict:
         """Convert a SQLite row to a dict matching the in-memory format."""
         import json
+
         return {
             "id": row[0],
             "content": row[1],

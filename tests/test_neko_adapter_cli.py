@@ -1,4 +1,5 @@
 """CLI integration test for neko-adapter.py."""
+
 import subprocess
 import sys
 import os

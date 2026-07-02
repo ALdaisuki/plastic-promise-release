@@ -6,6 +6,7 @@ AccessReinforcement: spaced-repetition half-life extension on active recall.
 Formulas adapted from memory-lancedb-pro's decay-engine.ts and
 access-tracker.ts, reimplemented in Python for Plastic Promise.
 """
+
 import math
 import datetime
 import logging
@@ -28,6 +29,7 @@ class WeibullDecayCalculator:
 
     def __init__(self, config: Optional[dict] = None) -> None:
         from plastic_promise.core.constants import DECAY_CONFIG
+
         self._config = config or DECAY_CONFIG
 
     def _get_params(self, tier: str) -> tuple[float, float]:
@@ -44,9 +46,13 @@ class WeibullDecayCalculator:
         except Exception:
             return 0.0
 
-    def compute_decay(self, tier: str, created_at: str,
-                      effective_half_life: Optional[float] = None,
-                      current_time_str: Optional[str] = None) -> float:
+    def compute_decay(
+        self,
+        tier: str,
+        created_at: str,
+        effective_half_life: Optional[float] = None,
+        current_time_str: Optional[str] = None,
+    ) -> float:
         """Compute decay_multiplier for a single memory.
 
         Args:
@@ -63,18 +69,19 @@ class WeibullDecayCalculator:
         if effective_half_life is not None and effective_half_life > 0:
             half_life = effective_half_life
         # lambda = ln(2) / half_life^beta  ensures decay = 0.5 at t=half_life
-        lam = math.log(2) / (half_life ** beta)
+        lam = math.log(2) / (half_life**beta)
 
         now = current_time_str or datetime.datetime.now().isoformat()
         days = self._days_since(created_at, now)
         if days <= 0:
             return 1.0
 
-        raw = math.exp(-lam * (days ** beta))
+        raw = math.exp(-lam * (days**beta))
         return max(0.05, min(1.0, raw))
 
-    def evaluate_all(self, records: list, current_time_str: Optional[str] = None
-                     ) -> list[tuple[str, float]]:
+    def evaluate_all(
+        self, records: list, current_time_str: Optional[str] = None
+    ) -> list[tuple[str, float]]:
         """Batch-evaluate decay for multiple MemoryRecord objects.
 
         Args:
@@ -90,15 +97,15 @@ class WeibullDecayCalculator:
         for r in records:
             try:
                 dm = self.compute_decay(
-                    tier=getattr(r, 'tier', 'L1'),
-                    created_at=getattr(r, 'created_at', now),
-                    effective_half_life=getattr(r, 'effective_half_life', None),
+                    tier=getattr(r, "tier", "L1"),
+                    created_at=getattr(r, "created_at", now),
+                    effective_half_life=getattr(r, "effective_half_life", None),
                     current_time_str=now,
                 )
                 results.append((r.memory_id, dm))
             except Exception as e:
-                logger.warning("Decay eval failed for %s: %s", getattr(r, 'memory_id', '?'), e)
-                results.append((getattr(r, 'memory_id', ''), 1.0))
+                logger.warning("Decay eval failed for %s: %s", getattr(r, "memory_id", "?"), e)
+                results.append((getattr(r, "memory_id", ""), 1.0))
         return results
 
 
@@ -117,6 +124,7 @@ class AccessReinforcement:
 
     def __init__(self, config: Optional[dict] = None) -> None:
         from plastic_promise.core.constants import REINFORCEMENT_CONFIG
+
         cfg = config or REINFORCEMENT_CONFIG
         self.reinforcement_factor = cfg["reinforcement_factor"]
         self.max_multiplier = cfg["max_multiplier"]
@@ -130,27 +138,27 @@ class AccessReinforcement:
         except Exception:
             return 0.0
 
-    def compute_effective_access(self, access_count: int, last_accessed: str,
-                                 current_time_str: str) -> float:
+    def compute_effective_access(
+        self, access_count: int, last_accessed: str, current_time_str: str
+    ) -> float:
         """Compute time-decayed effective access count."""
         days = self._days_since(last_accessed, current_time_str)
         decay_factor = math.exp(-days / self.access_decay_days)
         return access_count * decay_factor
 
-    def compute_effective_half_life(self, base_half_life: float,
-                                    access_count: int, last_accessed: str,
-                                    current_time_str: str) -> float:
+    def compute_effective_half_life(
+        self, base_half_life: float, access_count: int, last_accessed: str, current_time_str: str
+    ) -> float:
         """Compute extended half-life from access history."""
         effective_access = self.compute_effective_access(
             access_count, last_accessed, current_time_str
         )
-        extension = (base_half_life * self.reinforcement_factor *
-                     math.log1p(effective_access))
-        return min(base_half_life + extension,
-                   base_half_life * self.max_multiplier)
+        extension = base_half_life * self.reinforcement_factor * math.log1p(effective_access)
+        return min(base_half_life + extension, base_half_life * self.max_multiplier)
 
-    def compute_reinforcement_score(self, base_half_life: float,
-                                    effective_half_life: float) -> float:
+    def compute_reinforcement_score(
+        self, base_half_life: float, effective_half_life: float
+    ) -> float:
         """Normalize reinforcement to [0, 1].
 
         0.0 = no reinforcement (effective == base)
@@ -162,10 +170,14 @@ class AccessReinforcement:
         raw = (effective_half_life - base_half_life) / (max_hl - base_half_life)
         return max(0.0, min(1.0, raw))
 
-    def compute_boost(self, access_count: int, last_accessed: str,
-                      base_half_life: float, is_auto_recall: bool = False,
-                      current_time_str: Optional[str] = None
-                      ) -> tuple[float, float]:
+    def compute_boost(
+        self,
+        access_count: int,
+        last_accessed: str,
+        base_half_life: float,
+        is_auto_recall: bool = False,
+        current_time_str: Optional[str] = None,
+    ) -> tuple[float, float]:
         """Compute reinforcement score and new effective half-life.
 
         Args:

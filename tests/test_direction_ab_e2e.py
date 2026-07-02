@@ -43,8 +43,9 @@ class TestDirectionABIntegration:
 
         # Stage 1: store_urgent with extraction
         # extract_memories is lazily imported inside store_urgent — patch the source
-        with patch('plastic_promise.smart_extractor.extract_memories') as mock_extract:
+        with patch("plastic_promise.smart_extractor.extract_memories") as mock_extract:
             from plastic_promise.smart_extractor import ExtractedMemory
+
             mock_extract.return_value = [
                 ExtractedMemory(
                     category="preference",
@@ -95,18 +96,23 @@ class TestDirectionABIntegration:
         tags = ["cat:fact", "deployment"]
 
         # L1: 15 days >> 3 day half-life → heavily decayed
-        score_l1 = gate.score(extracted=extracted, tags=tags, domain_hint="building",
-                              created_at=old_date, tier="L1")
+        score_l1 = gate.score(
+            extracted=extracted, tags=tags, domain_hint="building", created_at=old_date, tier="L1"
+        )
         # L3: 15 days << 90 day half-life → mildly decayed
-        score_l3 = gate.score(extracted=extracted, tags=tags, domain_hint="building",
-                              created_at=old_date, tier="L3")
+        score_l3 = gate.score(
+            extracted=extracted, tags=tags, domain_hint="building", created_at=old_date, tier="L3"
+        )
 
         # L3 should score higher because freshness penalty is much smaller
-        assert score_l3 > score_l1, f"L3={score_l3:.3f} should > L1={score_l1:.3f} for 15-day-old memory"
+        assert score_l3 > score_l1, (
+            f"L3={score_l3:.3f} should > L1={score_l1:.3f} for 15-day-old memory"
+        )
 
         # New memory (no created_at) → freshness = 1.0 regardless of tier
-        score_new = gate.score(extracted=extracted, tags=tags, domain_hint="building",
-                               created_at=None, tier="L1")
+        score_new = gate.score(
+            extracted=extracted, tags=tags, domain_hint="building", created_at=None, tier="L1"
+        )
         assert score_new > 0.8  # fresh + good extraction
 
     # ================================================================
@@ -120,8 +126,11 @@ class TestDirectionABIntegration:
 
         # Create an existing L3 memory
         existing = MemoryRecord(
-            content="用户喜欢 Rust 后端开发", memory_type="experience",
-            source="user", memory_id="existing_abc", tier="L3",
+            content="用户喜欢 Rust 后端开发",
+            memory_type="experience",
+            source="user",
+            memory_id="existing_abc",
+            tier="L3",
         )
         existing.access_count = 3
         existing.last_accessed = "2026-06-25T00:00:00"
@@ -131,7 +140,7 @@ class TestDirectionABIntegration:
         existing.access_count += 1
         existing.last_accessed = "2026-06-30T12:00:00"
 
-        tier = getattr(existing, 'tier', 'L1')
+        tier = getattr(existing, "tier", "L1")
         base_hl = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])["half_life_days"]
         reinforcer = AccessReinforcement()
         _, new_hl = reinforcer.compute_boost(
@@ -159,8 +168,10 @@ class TestDirectionABIntegration:
         # High-quality memory (high worth, recent, reinforced)
         r1 = MemoryRecord(
             content="用户偏爱 Rust 因其内存安全和性能",
-            memory_type="experience", source="user",
-            memory_id="mem_best", tier="L3",
+            memory_type="experience",
+            source="user",
+            memory_id="mem_best",
+            tier="L3",
         )
         r1.worth_success = 10
         r1.worth_failure = 0
@@ -171,8 +182,10 @@ class TestDirectionABIntegration:
         # Low-quality memory (low worth, decayed)
         r2 = MemoryRecord(
             content="Rust 挺好的",
-            memory_type="experience", source="user",
-            memory_id="mem_worst", tier="L1",
+            memory_type="experience",
+            source="user",
+            memory_id="mem_worst",
+            tier="L1",
         )
         r2.worth_success = 1
         r2.worth_failure = 3
@@ -209,10 +222,20 @@ class TestDirectionABIntegration:
         gc = MemoryGC(self.rec_mem)
 
         # Add some records to the pool
-        r1 = MemoryRecord(content="Rust backend", memory_type="experience",
-                          source="user", memory_id="gc_test_1", tier="L3")
-        r2 = MemoryRecord(content="Go backend", memory_type="experience",
-                          source="user", memory_id="gc_test_2", tier="L1")
+        r1 = MemoryRecord(
+            content="Rust backend",
+            memory_type="experience",
+            source="user",
+            memory_id="gc_test_1",
+            tier="L3",
+        )
+        r2 = MemoryRecord(
+            content="Go backend",
+            memory_type="experience",
+            source="user",
+            memory_id="gc_test_2",
+            tier="L1",
+        )
         self.rec_mem._records[r1.memory_id] = r1
         self.rec_mem._records[r2.memory_id] = r2
 
@@ -237,8 +260,10 @@ class TestDirectionABIntegration:
     def test_memory_record_has_all_ab_fields(self):
         """After pipeline store, a MemoryRecord carries all Direction A + B fields."""
         record = MemoryRecord(
-            content="完整测试记忆", memory_type="experience",
-            source="user", tier="L3",
+            content="完整测试记忆",
+            memory_type="experience",
+            source="user",
+            tier="L3",
         )
         record.worth_success = 7
         record.worth_failure = 1
@@ -248,13 +273,17 @@ class TestDirectionABIntegration:
         record.metadata["quality"] = "store"
         record.metadata["gate_score"] = 0.72
         record.metadata["merged_from"] = [
-            {"memory_id": "old_001", "content_abstract": "相似旧记忆...",
-             "merged_at": "2026-06-30T12:00:00", "worth_score": 0.45}
+            {
+                "memory_id": "old_001",
+                "content_abstract": "相似旧记忆...",
+                "merged_at": "2026-06-30T12:00:00",
+                "worth_score": 0.45,
+            }
         ]
 
         # Direction A fields present
-        assert hasattr(record, 'decay_multiplier')
-        assert hasattr(record, 'effective_half_life')
+        assert hasattr(record, "decay_multiplier")
+        assert hasattr(record, "effective_half_life")
         assert record.decay_multiplier == 0.85
         assert record.effective_half_life == 110.0
 

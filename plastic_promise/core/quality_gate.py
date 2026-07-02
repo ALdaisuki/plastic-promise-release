@@ -92,6 +92,7 @@ class QualityGate:
             return 0.5
         try:
             from plastic_promise.core.domain_manager import PREDEFINED_DOMAINS
+
             domain_config = PREDEFINED_DOMAINS.get(domain_hint, {})
             domain_tags = domain_config.get("tags", set())
             if not domain_tags:
@@ -103,8 +104,7 @@ class QualityGate:
             return 0.5
 
     @staticmethod
-    def _compute_freshness(created_at: Optional[str] = None,
-                           tier: Optional[str] = None) -> float:
+    def _compute_freshness(created_at: Optional[str] = None, tier: Optional[str] = None) -> float:
         """Time-decay freshness via Direction A Weibull engine.
 
         Delegates to WeibullDecayCalculator for consistency with composite_score.
@@ -115,6 +115,7 @@ class QualityGate:
             return 1.0
         try:
             from plastic_promise.core.decay_engine import WeibullDecayCalculator
+
             wdc = WeibullDecayCalculator()
             effective_tier = tier if tier in ("L1", "L3") else "default"
             decay = wdc.compute_decay(effective_tier, created_at)
@@ -136,9 +137,21 @@ class QualityGate:
         if not extracted:
             return 0.5
 
-        l0_score = 0.3 if extracted.get("l0_abstract") and len(extracted.get("l0_abstract", "")) > 10 else 0.0
-        l1_score = 0.3 if extracted.get("l1_summary") and len(extracted.get("l1_summary", "")) > 20 else 0.0
-        l2_score = 0.2 if extracted.get("l2_content") and len(extracted.get("l2_content", "")) > 50 else 0.0
+        l0_score = (
+            0.3
+            if extracted.get("l0_abstract") and len(extracted.get("l0_abstract", "")) > 10
+            else 0.0
+        )
+        l1_score = (
+            0.3
+            if extracted.get("l1_summary") and len(extracted.get("l1_summary", "")) > 20
+            else 0.0
+        )
+        l2_score = (
+            0.2
+            if extracted.get("l2_content") and len(extracted.get("l2_content", "")) > 50
+            else 0.0
+        )
         structure_score = 0.2 if extracted.get("category") and tags else 0.0
 
         return l0_score + l1_score + l2_score + structure_score

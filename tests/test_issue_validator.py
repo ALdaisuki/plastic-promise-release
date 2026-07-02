@@ -1,8 +1,14 @@
 """Issue Validator + Trust-Freedom Matrix 测试"""
+
 import pytest
 from plastic_promise.core.issue_validator import (
-    validate_issue_context, validate_deliverable, get_tier, check_permission, REQUIRED_CONTEXT
+    validate_issue_context,
+    validate_deliverable,
+    get_tier,
+    check_permission,
+    REQUIRED_CONTEXT,
 )
+
 
 class TestIssueValidator:
     def test_valid_context_passes(self):
@@ -56,7 +62,10 @@ class TestIssueValidator:
                 "files": ["a.py"],
                 "interfaces": "def f():",
                 "acceptance": "pytest",
-                "deliverable": ["plastic_promise/core/issue_validator.py", "tests/test_issue_validator.py"],
+                "deliverable": [
+                    "plastic_promise/core/issue_validator.py",
+                    "tests/test_issue_validator.py",
+                ],
             }
         }
         result = validate_deliverable(issue)

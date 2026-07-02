@@ -24,9 +24,19 @@ class DomainInfo:
     """域信息 — 一个语义域（行为域或候选域）"""
 
     __slots__ = (
-        "name", "score", "tags", "aliases", "merged_from",
-        "parent", "status", "memory_count", "principle_ids",
-        "access_count", "last_accessed", "created_at", "last_active",
+        "name",
+        "score",
+        "tags",
+        "aliases",
+        "merged_from",
+        "parent",
+        "status",
+        "memory_count",
+        "principle_ids",
+        "access_count",
+        "last_accessed",
+        "created_at",
+        "last_active",
     )
 
     def __init__(
@@ -166,6 +176,7 @@ class DomainManager:
 
         # SQLite 持久化
         import sqlite3
+
         if db_path is None:
             db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -175,14 +186,17 @@ class DomainManager:
 
         # Auto-rebuild guard: domains 表空但 memories 有数据 → 自动重建
         try:
-            row = self._conn.execute("SELECT COUNT(*) FROM domains WHERE status != 'candidate'").fetchone()
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM domains WHERE status != 'candidate'"
+            ).fetchone()
             domain_count = row[0] if row else 0
             mem_count_row = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()
             mem_count = mem_count_row[0] if mem_count_row else 0
 
             if domain_count == 0 and mem_count > 0:
-                if hasattr(self, 'rebuild_from_memories'):
+                if hasattr(self, "rebuild_from_memories"):
                     import time as _time
+
                     logging.warning(
                         f"domains 表为空但 memories 表有 {mem_count} 条记忆。"
                         f"将在 5 秒后自动重建域图谱。按 Ctrl+C 取消。"
@@ -234,9 +248,7 @@ class DomainManager:
     def _run_migrations(self):
         """检查 schema 版本并执行迁移链。"""
         try:
-            row = self._conn.execute(
-                "SELECT MAX(version) FROM schema_version"
-            ).fetchone()
+            row = self._conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
             current = row[0] if row and row[0] else 0
         except Exception:
             current = 0  # 表不存在 = v0
@@ -256,15 +268,13 @@ class DomainManager:
             if method_name:
                 getattr(self, method_name)()
                 self._conn.execute(
-                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
-                    (v,)
+                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (v,)
                 )
                 self._conn.commit()
 
         # 记录最终 schema 版本
         self._conn.execute(
-            "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
-            (self.SCHEMA_VERSION,)
+            "INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (self.SCHEMA_VERSION,)
         )
         self._conn.commit()
 
@@ -317,8 +327,10 @@ class DomainManager:
                 # merge DB tags into predefined
                 d.tags.update(set(tags_raw))
             else:
-                tags = set(tags_raw) if isinstance(tags_raw, list) else (
-                    set(tags_raw.keys()) if isinstance(tags_raw, dict) else set()
+                tags = (
+                    set(tags_raw)
+                    if isinstance(tags_raw, list)
+                    else (set(tags_raw.keys()) if isinstance(tags_raw, dict) else set())
                 )
                 self.domains[name] = DomainInfo(
                     name=name,
@@ -359,7 +371,11 @@ class DomainManager:
         """写入审计日志。线程安全（调用方已持有锁）。"""
         self._conn.execute(
             "INSERT INTO audit_log (timestamp, operation, detail) VALUES (?,?,?)",
-            (datetime.datetime.now().isoformat(), operation, json.dumps(detail, ensure_ascii=False)),
+            (
+                datetime.datetime.now().isoformat(),
+                operation,
+                json.dumps(detail, ensure_ascii=False),
+            ),
         )
         self._conn.commit()
 
@@ -421,9 +437,11 @@ class DomainManager:
                 key=lambda n: (
                     scores[n],
                     self.domains[n].score,
-                    -(datetime.datetime.fromisoformat(
-                        self.domains[n].created_at or "2000-01-01T00:00:00"
-                    ).timestamp()),
+                    -(
+                        datetime.datetime.fromisoformat(
+                            self.domains[n].created_at or "2000-01-01T00:00:00"
+                        ).timestamp()
+                    ),
                 ),
             )
             best_score = scores[best_name] / max(len(tags), 1)
@@ -469,11 +487,14 @@ class DomainManager:
                 dom.status = "active"
                 dom.score = 0.5
                 self._rebuild_tag_index()
-                self._write_audit_log("domain_create", {
-                    "name": main_tag,
-                    "tags": sorted(dom.tags),
-                    "memory_count": dom.memory_count,
-                })
+                self._write_audit_log(
+                    "domain_create",
+                    {
+                        "name": main_tag,
+                        "tags": sorted(dom.tags),
+                        "memory_count": dom.memory_count,
+                    },
+                )
 
             self._persist_domain(main_tag)
             return "uncategorized"
@@ -513,10 +534,14 @@ class DomainManager:
             self._persist_domain(source)
             self._persist_domain(target)
             self._rebuild_tag_index()
-            self._write_audit_log("domain_merge", {
-                "source": source, "target": target,
-                "merged_tags": sorted(src.tags),
-            })
+            self._write_audit_log(
+                "domain_merge",
+                {
+                    "source": source,
+                    "target": target,
+                    "merged_tags": sorted(src.tags),
+                },
+            )
             return True
 
     def unmerge(self, source: str) -> bool:
@@ -540,9 +565,13 @@ class DomainManager:
             self._persist_domain(source)
             self._persist_domain(parent_name)
             self._rebuild_tag_index()
-            self._write_audit_log("domain_unmerge", {
-                "source": source, "from": parent_name,
-            })
+            self._write_audit_log(
+                "domain_unmerge",
+                {
+                    "source": source,
+                    "from": parent_name,
+                },
+            )
             return True
 
     def rename(self, old: str, new: str, agent_id: str = "") -> bool:
@@ -592,7 +621,9 @@ class DomainManager:
 
                 if dom.status == "candidate":
                     if days_inactive >= 7:
-                        decayed.append({"name": name, "action": "remove_candidate", "days": days_inactive})
+                        decayed.append(
+                            {"name": name, "action": "remove_candidate", "days": days_inactive}
+                        )
                         del self.domains[name]
                         self._conn.execute("DELETE FROM domains WHERE name = ?", (name,))
                         self._conn.commit()
@@ -600,7 +631,14 @@ class DomainManager:
 
                 if days_inactive >= 7 and dom.access_count == 0:
                     dom.score = round(dom.score * 0.8, 4)
-                    decayed.append({"name": name, "action": "decay", "new_score": dom.score, "days": days_inactive})
+                    decayed.append(
+                        {
+                            "name": name,
+                            "action": "decay",
+                            "new_score": dom.score,
+                            "days": days_inactive,
+                        }
+                    )
 
                     # 萎缩: score < 0.1
                     if dom.score < 0.1:
@@ -640,7 +678,9 @@ class DomainManager:
 
         return best_name
 
-    def generate_signal(self, from_domain: str, to_domain: str, context: str, agent_id: str = "") -> str:
+    def generate_signal(
+        self, from_domain: str, to_domain: str, context: str, agent_id: str = ""
+    ) -> str:
         """实时生成联邦信号摘要（≤200 字符，不持久化）。
 
         Args:
@@ -687,7 +727,8 @@ class DomainManager:
             (
                 dom.name,
                 dom.score,
-                json.dumps(sorted(dom.tags), ensure_ascii=False) if dom.status == "active"
+                json.dumps(sorted(dom.tags), ensure_ascii=False)
+                if dom.status == "active"
                 else json.dumps({t: 1 for t in dom.tags}, ensure_ascii=False),
                 json.dumps(dom.aliases, ensure_ascii=False),
                 json.dumps(dom.merged_from, ensure_ascii=False),
@@ -717,11 +758,12 @@ class DomainManager:
 
         with self._lock:
             if memories_source is None or memories_source == "sqlite":
-                rows = self._conn.execute(
-                    "SELECT id, tags FROM memories"
-                ).fetchall()
+                rows = self._conn.execute("SELECT id, tags FROM memories").fetchall()
                 memories_source = [
-                    {"id": r[0], "tags": _json.loads(r[1]) if isinstance(r[1], str) else (r[1] or [])}
+                    {
+                        "id": r[0],
+                        "tags": _json.loads(r[1]) if isinstance(r[1], str) else (r[1] or []),
+                    }
                     for r in rows
                 ]
 
@@ -738,7 +780,7 @@ class DomainManager:
                     tag_freq[t] += 1
                     all_tags.add(t)
                 for i, t1 in enumerate(tags):
-                    for t2 in tags[i+1:]:
+                    for t2 in tags[i + 1 :]:
                         key = tuple(sorted([t1, t2]))
                         tag_cooccur[key] += 1
 
@@ -773,8 +815,10 @@ class DomainManager:
                 else:
                     name = max(cluster_tags, key=lambda t: tag_freq.get(t, 0))
                     merged_domains[name] = {
-                        "score": 0.5, "tags": cluster_tags,
-                        "principle_ids": [], "status": "active",
+                        "score": 0.5,
+                        "tags": cluster_tags,
+                        "principle_ids": [],
+                        "status": "active",
                     }
 
             # Phase 4: 写入
@@ -793,22 +837,27 @@ class DomainManager:
             self._rebuild_tag_index()
 
             # Phase 6: 审计
-            self._write_audit_log("domain_rebuild", {
-                "source": "memories table",
-                "domains_restored": len(merged_domains),
-                "tags_total": len(all_tags),
-            })
+            self._write_audit_log(
+                "domain_rebuild",
+                {
+                    "source": "memories table",
+                    "domains_restored": len(merged_domains),
+                    "tags_total": len(all_tags),
+                },
+            )
 
             return {"restored_domains": len(merged_domains), "tags_indexed": len(all_tags)}
 
     def _cluster_by_cooccurrence(self, cooccur, tag_freq, all_tags):
         """基于标签共现频次聚类。cooccur > 3 → 认为属于同一域候选"""
         parent = {}
+
         def find(x):
             while parent.get(x, x) != x:
                 parent[x] = parent.get(parent[x], parent[x])
                 x = parent[x]
             return x
+
         def union(a, b):
             ra, rb = find(a), find(b)
             if ra != rb:

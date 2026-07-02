@@ -46,8 +46,7 @@ class TrustManager:
         _store: Optional TrustStore for persistence
     """
 
-    def __init__(self, initial_trust: float = TRUST_INITIAL,
-                 trust_store: Any = None) -> None:
+    def __init__(self, initial_trust: float = TRUST_INITIAL, trust_store: Any = None) -> None:
         self._trusts: Dict[str, float] = {}
         self._history: List[Dict[str, Any]] = []
         self._store = trust_store  # None = in-memory only (legacy)
@@ -66,11 +65,17 @@ class TrustManager:
         old = self._trust(target)
         new = min(TRUST_MAX, old + delta)
         self._set_trust(target, new)
-        self._history.append({
-            "delta": delta, "reason": reason, "target": target,
-            "old_value": old, "new_value": new,
-            "timestamp": datetime.now(timezone.utc).isoformat(), "direction": "boost",
-        })
+        self._history.append(
+            {
+                "delta": delta,
+                "reason": reason,
+                "target": target,
+                "old_value": old,
+                "new_value": new,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "direction": "boost",
+            }
+        )
         if self._store:
             self._store.save(target, new, self.tier(target), self.autonomy_level(target))
             self._store.log_history(target, delta, reason, old, new, "boost")
@@ -82,11 +87,17 @@ class TrustManager:
         old = self._trust(target)
         new = max(TRUST_MIN, old - delta)
         self._set_trust(target, new)
-        self._history.append({
-            "delta": -delta, "reason": reason, "target": target,
-            "old_value": old, "new_value": new,
-            "timestamp": datetime.now(timezone.utc).isoformat(), "direction": "decay",
-        })
+        self._history.append(
+            {
+                "delta": -delta,
+                "reason": reason,
+                "target": target,
+                "old_value": old,
+                "new_value": new,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "direction": "decay",
+            }
+        )
         if self._store:
             self._store.save(target, new, self.tier(target), self.autonomy_level(target))
             self._store.log_history(target, -delta, reason, old, new, "decay")
@@ -111,16 +122,22 @@ class TrustManager:
 
     def tier(self, target: str = "") -> str:
         t = self._trust(target)
-        if t >= 0.80: return "high"
-        elif t >= 0.50: return "medium"
-        elif t >= 0.30: return "low"
+        if t >= 0.80:
+            return "high"
+        elif t >= 0.50:
+            return "medium"
+        elif t >= 0.30:
+            return "low"
         return "critical"
 
     def autonomy_level(self, target: str = "") -> str:
         _t = self.tier(target)
-        if _t == "high": return "full"
-        elif _t == "medium": return "standard"
-        elif _t == "low": return "restricted"
+        if _t == "high":
+            return "full"
+        elif _t == "medium":
+            return "standard"
+        elif _t == "low":
+            return "restricted"
         return "minimal"
 
     def get_retrieval_boost(self) -> float:
@@ -178,16 +195,16 @@ class SoulEnforcer:
         """
         # 危险模式列表 (L0 硬边界)
         DANGEROUS_PATTERNS = [
-            r'\brm\s+-rf\b',
-            r'\bDROP\s+TABLE\b',
-            r'\bDROP\s+DATABASE\b',
-            r'\bformat\s+[CFD]:',
-            r'\bshutdown\b',
-            r'\bdel\s+/f\b',
-            r'\bDEL\s+/F\b',
-            r'\bdd\s+if=',
-            r'\bmkfs\.',
-            r'\bchmod\s+777\b',
+            r"\brm\s+-rf\b",
+            r"\bDROP\s+TABLE\b",
+            r"\bDROP\s+DATABASE\b",
+            r"\bformat\s+[CFD]:",
+            r"\bshutdown\b",
+            r"\bdel\s+/f\b",
+            r"\bDEL\s+/F\b",
+            r"\bdd\s+if=",
+            r"\bmkfs\.",
+            r"\bchmod\s+777\b",
         ]
 
         description_lower = action_description.lower()
@@ -211,12 +228,14 @@ class SoulEnforcer:
                 layer_checks["L0"]["message"] = (
                     f"L0 BLOCKED: dangerous pattern detected — '{pattern}'"
                 )
-                self._violation_log.append({
-                    "action": action_description,
-                    "layer": "L0",
-                    "reason": f"Dangerous pattern match: {pattern}",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                self._violation_log.append(
+                    {
+                        "action": action_description,
+                        "layer": "L0",
+                        "reason": f"Dangerous pattern match: {pattern}",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
                 # Violation-driven decay: L0 violation → -0.05
                 if self.trust_manager:
                     try:
@@ -239,12 +258,14 @@ class SoulEnforcer:
             layer_checks["L1"]["message"] = (
                 f"L1 BLOCKED: trust ({trust:.2f}) below critical threshold (0.15)"
             )
-            self._violation_log.append({
-                "action": action_description,
-                "layer": "L1",
-                "reason": f"Trust too low: {trust:.2f} < 0.15",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            self._violation_log.append(
+                {
+                    "action": action_description,
+                    "layer": "L1",
+                    "reason": f"Trust too low: {trust:.2f} < 0.15",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             # Violation-driven decay: L1 critical trust → -0.02
             if self.trust_manager:
                 try:
@@ -324,12 +345,14 @@ class SoulEnforcer:
             layer: 违规发生的防线层级 (L0/L1/L2)
             reason: 违规原因描述
         """
-        self._violation_log.append({
-            "action": action,
-            "layer": layer,
-            "reason": reason,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        self._violation_log.append(
+            {
+                "action": action,
+                "layer": layer,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
 
     def get_violation_stats(self) -> Dict[str, Any]:
         """获取违规统计数据。

@@ -40,6 +40,7 @@ async def _run_async(engine: Any = None) -> dict:
     # ── 1. 八维度完整审计 (SoulAuditor) ──
     try:
         from plastic_promise.defense.soul_audit import SoulAuditor
+
         auditor = SoulAuditor()
         audit_report = await auditor.run_audit(scope="full")
 
@@ -74,7 +75,7 @@ async def _run_async(engine: Any = None) -> dict:
     # ── 2. 记忆池统计 ──
     if engine is not None:
         try:
-            stats_str = engine.memory_stats_json() if hasattr(engine, 'memory_stats_json') else None
+            stats_str = engine.memory_stats_json() if hasattr(engine, "memory_stats_json") else None
             if isinstance(stats_str, str):
                 report["memory_stats"] = json.loads(stats_str)
             elif stats_str:
@@ -100,24 +101,29 @@ async def _run_async(engine: Any = None) -> dict:
         report["memory_stats"] = {"note": "no engine provided"}
 
     # ── 3. 存储审计报告为记忆 ──
-    if engine is not None and hasattr(engine, 'register_memory'):
+    if engine is not None and hasattr(engine, "register_memory"):
         try:
             audit_summary = (
                 f"日审计 {report['date']}: overall={report.get('overall_score', 'N/A')}, "
                 f"findings={len(report.get('findings', []))}"
             )
-            engine.register_memory({
-                "id": f"daily_audit_{report['date'].replace('-', '')}",
-                "content": json.dumps({
-                    "summary": audit_summary,
-                    "overall_score": report.get("overall_score"),
-                    "findings": report.get("findings", []),
-                    "recommendations": report.get("recommendations", []),
-                }, ensure_ascii=False),
-                "memory_type": "reflection",
-                "source": "audit_daily",
-                "tier": "L2",
-            })
+            engine.register_memory(
+                {
+                    "id": f"daily_audit_{report['date'].replace('-', '')}",
+                    "content": json.dumps(
+                        {
+                            "summary": audit_summary,
+                            "overall_score": report.get("overall_score"),
+                            "findings": report.get("findings", []),
+                            "recommendations": report.get("recommendations", []),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "memory_type": "reflection",
+                    "source": "audit_daily",
+                    "tier": "L2",
+                }
+            )
             report["stored"] = True
         except Exception:
             report["stored"] = False

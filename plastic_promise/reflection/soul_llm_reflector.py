@@ -39,7 +39,7 @@ class ReflectionResult:
     improvement: str = ""
     root_cause: str = ""
     optimization: str = ""
-    source: str = ""       # "llm" | ""
+    source: str = ""  # "llm" | ""
     model: str = ""
 
 

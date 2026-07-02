@@ -13,22 +13,87 @@ from typing import Any, Dict, List, Optional, Tuple
 # ── 中文动词/名词粗提取 ──────────────────────────────────────────────
 # 常见中文动词后缀与高频技术动词，用于从任务描述中抽关键词。
 _CN_VERB_PATTERNS = [
-    r"创建", r"构建", r"配置", r"部署", r"调试", r"修复",
-    r"重构", r"实现", r"设计", r"编写", r"优化", r"集成",
-    r"迁移", r"测试", r"分析", r"提取", r"生成", r"转换",
-    r"合并", r"拆分", r"导入", r"导出", r"打包", r"发布",
-    r"初始化", r"安装", r"更新", r"升级", r"回滚", r"监控",
-    r"调度", r"编排", r"注册", r"解析", r"序列化", r"压缩",
-    r"加密", r"签名", r"验证", r"清理", r"归档", r"索引",
+    r"创建",
+    r"构建",
+    r"配置",
+    r"部署",
+    r"调试",
+    r"修复",
+    r"重构",
+    r"实现",
+    r"设计",
+    r"编写",
+    r"优化",
+    r"集成",
+    r"迁移",
+    r"测试",
+    r"分析",
+    r"提取",
+    r"生成",
+    r"转换",
+    r"合并",
+    r"拆分",
+    r"导入",
+    r"导出",
+    r"打包",
+    r"发布",
+    r"初始化",
+    r"安装",
+    r"更新",
+    r"升级",
+    r"回滚",
+    r"监控",
+    r"调度",
+    r"编排",
+    r"注册",
+    r"解析",
+    r"序列化",
+    r"压缩",
+    r"加密",
+    r"签名",
+    r"验证",
+    r"清理",
+    r"归档",
+    r"索引",
 ]
 
 _CN_NOUN_PATTERNS = [
-    r"Rust库", r"Python包", r"API", r"CLI", r"数据库", r"缓存",
-    r"容器", r"镜像", r"配置", r"日志", r"监控", r"管道",
-    r"向量嵌入", r"模型", r"特征", r"训练", r"推理", r"数据集",
-    r"接口", r"服务", r"微服务", r"插件", r"模块", r"工作流",
-    r"认证", r"授权", r"令牌", r"密钥", r"证书", r"会话",
-    r"消息队列", r"事件", r"存储", r"备份", r"网络", r"代理",
+    r"Rust库",
+    r"Python包",
+    r"API",
+    r"CLI",
+    r"数据库",
+    r"缓存",
+    r"容器",
+    r"镜像",
+    r"配置",
+    r"日志",
+    r"监控",
+    r"管道",
+    r"向量嵌入",
+    r"模型",
+    r"特征",
+    r"训练",
+    r"推理",
+    r"数据集",
+    r"接口",
+    r"服务",
+    r"微服务",
+    r"插件",
+    r"模块",
+    r"工作流",
+    r"认证",
+    r"授权",
+    r"令牌",
+    r"密钥",
+    r"证书",
+    r"会话",
+    r"消息队列",
+    r"事件",
+    r"存储",
+    r"备份",
+    r"网络",
+    r"代理",
 ]
 
 
@@ -79,15 +144,34 @@ def _extract_triggers(description: str, limit: int = 8) -> List[str]:
 def _derive_category(triggers: List[str]) -> str:
     """根据触发词推导技能类别。"""
     cat_map = {
-        "创建": "build", "构建": "build", "初始化": "build",
-        "实现": "build", "编写": "build", "生成": "build",
-        "部署": "deploy", "发布": "deploy", "打包": "deploy",
-        "配置": "config", "安装": "config", "更新": "config", "升级": "config",
-        "测试": "test", "调试": "test", "验证": "test",
-        "修复": "fix", "重构": "fix", "优化": "fix",
-        "分析": "analyze", "监控": "analyze", "提取": "analyze",
-        "合并": "merge", "拆分": "merge", "迁移": "merge",
-        "加密": "security", "签名": "security", "认证": "security",
+        "创建": "build",
+        "构建": "build",
+        "初始化": "build",
+        "实现": "build",
+        "编写": "build",
+        "生成": "build",
+        "部署": "deploy",
+        "发布": "deploy",
+        "打包": "deploy",
+        "配置": "config",
+        "安装": "config",
+        "更新": "config",
+        "升级": "config",
+        "测试": "test",
+        "调试": "test",
+        "验证": "test",
+        "修复": "fix",
+        "重构": "fix",
+        "优化": "fix",
+        "分析": "analyze",
+        "监控": "analyze",
+        "提取": "analyze",
+        "合并": "merge",
+        "拆分": "merge",
+        "迁移": "merge",
+        "加密": "security",
+        "签名": "security",
+        "认证": "security",
     }
     for t in triggers:
         if t in cat_map:
@@ -330,9 +414,7 @@ class SkillExtractor:
 
         # 平均成功率
         avg_success_rate = (
-            round(sum(s.get("success_rate", 0.0) for s in skills) / total, 4)
-            if total > 0
-            else 0.0
+            round(sum(s.get("success_rate", 0.0) for s in skills) / total, 4) if total > 0 else 0.0
         )
 
         # 重复对数量
@@ -341,9 +423,7 @@ class SkillExtractor:
         # 最近提取时间
         last_extraction: Optional[str] = None
         if skills:
-            last_extraction = max(
-                s.get("extracted_at", "") for s in skills
-            ) or None
+            last_extraction = max(s.get("extracted_at", "") for s in skills) or None
 
         return {
             "total_skills": total,

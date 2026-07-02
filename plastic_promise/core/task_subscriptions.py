@@ -38,9 +38,7 @@ def match_subscribers(task: dict) -> list[str]:
     conn.row_factory = sqlite3.Row
 
     try:
-        rows = conn.execute(
-            "SELECT * FROM task_subscriptions WHERE enabled = 1"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM task_subscriptions WHERE enabled = 1").fetchall()
     except sqlite3.OperationalError:
         # Table doesn't exist yet -- schema not initialized
         conn.close()

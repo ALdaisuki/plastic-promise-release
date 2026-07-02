@@ -69,12 +69,14 @@ def get_engine():
 
     # Python 主引擎 — 完整数据管道
     from plastic_promise.core.context_engine import ContextEngine as PyEngine
+
     _engine = PyEngine()
     logging.info("ContextEngine: Python 核心已加载 (SQLite + LanceDB)")
 
     # 预导入 Rust 加速器（如果可用），供 _supply_rust 路径使用
     try:
         from context_engine_core import ContextEngine as _RustEngine
+
         logging.info("ContextEngine: Rust 加速器可用（待 supply 路径启用）")
     except ImportError:
         logging.info("ContextEngine: Rust 加速器不可用（需编译 context_engine_core）")
@@ -100,10 +102,7 @@ def get_skill_engine():
     for _name, _def in _SP_DEFS.items():
         _skill_engine.register(_def)
     sp_names = ", ".join(_SP_DEFS.keys())
-    logging.info(
-        f"SkillEngine: Phase 1 技能已注册 "
-        f"(session-init, smart-remember, {sp_names})"
-    )
+    logging.info(f"SkillEngine: Phase 1 技能已注册 (session-init, smart-remember, {sp_names})")
     return _skill_engine
 
 
@@ -117,619 +116,863 @@ server = Server("plastic-promise", version="0.1.0")
 # 能力声明
 # ---------------------------------------------------------------------------
 
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """声明所有 MCP 工具"""
     tools: list[Tool] = []
 
     # === 记忆域 ===
-    tools.extend([
-        Tool(
-            name="memory_recall",
-            description="混合检索记忆（文本+图遍历双通道），返回三层上下文包。strict=True 时无匹配返回空。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "检索查询 / 任务描述"},
-                    "task_type": {"type": "string", "description": "任务类型: code_generation/code_review/debugging/architecture/refactoring/learning/collaboration"},
-                    "max_results": {"type": "integer", "description": "最大返回数 (默认 20)"},
-                    "min_relevance": {"type": "number", "description": "最低关联分数 (默认 0.2)"},
-                    "include_principles": {"type": "boolean", "description": "是否注入原则 (默认 true)"},
-                    "strict": {"type": "boolean", "description": "严格模式: 无匹配时返回空 (默认 false)"},
+    tools.extend(
+        [
+            Tool(
+                name="memory_recall",
+                description="混合检索记忆（文本+图遍历双通道），返回三层上下文包。strict=True 时无匹配返回空。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索查询 / 任务描述"},
+                        "task_type": {
+                            "type": "string",
+                            "description": "任务类型: code_generation/code_review/debugging/architecture/refactoring/learning/collaboration",
+                        },
+                        "max_results": {"type": "integer", "description": "最大返回数 (默认 20)"},
+                        "min_relevance": {
+                            "type": "number",
+                            "description": "最低关联分数 (默认 0.2)",
+                        },
+                        "include_principles": {
+                            "type": "boolean",
+                            "description": "是否注入原则 (默认 true)",
+                        },
+                        "strict": {
+                            "type": "boolean",
+                            "description": "严格模式: 无匹配时返回空 (默认 false)",
+                        },
+                    },
+                    "required": ["query"],
                 },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="memory_store",
-            description="存储一条记忆到 Plastic Promise 记忆池。自动分类 (task/experience/principle/code) 并建立实体关联。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string", "description": "记忆内容"},
-                    "memory_type": {"type": "string", "description": "类型: task/experience/principle/code"},
-                    "source": {"type": "string", "description": "来源: user/system/previous_output"},
-                    "entity_ids": {"type": "array", "items": {"type": "string"}, "description": "关联实体 ID 列表"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "自定义标签 (task:pending, assignee:pi_builder 等)"},
+            ),
+            Tool(
+                name="memory_store",
+                description="存储一条记忆到 Plastic Promise 记忆池。自动分类 (task/experience/principle/code) 并建立实体关联。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "记忆内容"},
+                        "memory_type": {
+                            "type": "string",
+                            "description": "类型: task/experience/principle/code",
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "来源: user/system/previous_output",
+                        },
+                        "entity_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "关联实体 ID 列表",
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "自定义标签 (task:pending, assignee:pi_builder 等)",
+                        },
+                    },
+                    "required": ["content", "memory_type"],
                 },
-                "required": ["content", "memory_type"],
-            },
-        ),
-        Tool(
-            name="memory_update",
-            description="更新已有记忆的内容或元数据。更新后重置 worth 计数以重新评估。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "memory_id": {"type": "string", "description": "记忆 ID"},
-                    "content": {"type": "string", "description": "新内容"},
-                    "reset_worth": {"type": "boolean", "description": "是否重置 worth 计数器"},
+            ),
+            Tool(
+                name="memory_update",
+                description="更新已有记忆的内容或元数据。更新后重置 worth 计数以重新评估。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {"type": "string", "description": "记忆 ID"},
+                        "content": {"type": "string", "description": "新内容"},
+                        "reset_worth": {"type": "boolean", "description": "是否重置 worth 计数器"},
+                    },
+                    "required": ["memory_id"],
                 },
-                "required": ["memory_id"],
-            },
-        ),
-        Tool(
-            name="memory_forget",
-            description="软删除记忆（标记为衰退，7天后 GC 清理）。不会立即删除，可恢复。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "memory_id": {"type": "string", "description": "记忆 ID"},
-                    "reason": {"type": "string", "description": "删除原因"},
+            ),
+            Tool(
+                name="memory_forget",
+                description="软删除记忆（标记为衰退，7天后 GC 清理）。不会立即删除，可恢复。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {"type": "string", "description": "记忆 ID"},
+                        "reason": {"type": "string", "description": "删除原因"},
+                    },
+                    "required": ["memory_id"],
                 },
-                "required": ["memory_id"],
-            },
-        ),
-        Tool(
-            name="memory_list",
-            description="按条件列出记忆：类型、来源、时间范围、worth 范围。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "memory_type": {"type": "string", "description": "筛选类型"},
-                    "source": {"type": "string", "description": "筛选来源"},
-                    "min_worth": {"type": "number", "description": "最低 worth_score"},
-                    "limit": {"type": "integer", "description": "返回数量上限"},
+            ),
+            Tool(
+                name="memory_list",
+                description="按条件列出记忆：类型、来源、时间范围、worth 范围。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_type": {"type": "string", "description": "筛选类型"},
+                        "source": {"type": "string", "description": "筛选来源"},
+                        "min_worth": {"type": "number", "description": "最低 worth_score"},
+                        "limit": {"type": "integer", "description": "返回数量上限"},
+                    },
                 },
-            },
-        ),
-        Tool(
-            name="memory_gc",
-            description="手动触发垃圾回收：清除 worth_score 低于阈值且超过 7 天未访问的衰退记忆。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "dry_run": {"type": "boolean", "description": "仅预览，不实际删除 (默认 true)"},
-                    "force": {"type": "boolean", "description": "强制删除所有标记记忆"},
+            ),
+            Tool(
+                name="memory_gc",
+                description="手动触发垃圾回收：清除 worth_score 低于阈值且超过 7 天未访问的衰退记忆。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "仅预览，不实际删除 (默认 true)",
+                        },
+                        "force": {"type": "boolean", "description": "强制删除所有标记记忆"},
+                    },
                 },
-            },
-        ),
-        Tool(
-            name="memory_correct",
-            description="人类纠正记忆：编辑内容、标记为错误/已废弃/已纠正。服务于原则 2（可查可透明）和原则 3（审计闭环）。",
-            inputSchema={
-                "type": "object",
-                "required": ["memory_id"],
-                "properties": {
-                    "memory_id": {"type": "string", "description": "目标记忆 ID"},
-                    "content": {"type": "string", "description": "纠正后的新内容 (可选)"},
-                    "mark_as": {"type": "string", "description": "质量标记: corrected / deprecated / wrong"},
-                    "reason": {"type": "string", "description": "纠正原因说明"},
+            ),
+            Tool(
+                name="memory_correct",
+                description="人类纠正记忆：编辑内容、标记为错误/已废弃/已纠正。服务于原则 2（可查可透明）和原则 3（审计闭环）。",
+                inputSchema={
+                    "type": "object",
+                    "required": ["memory_id"],
+                    "properties": {
+                        "memory_id": {"type": "string", "description": "目标记忆 ID"},
+                        "content": {"type": "string", "description": "纠正后的新内容 (可选)"},
+                        "mark_as": {
+                            "type": "string",
+                            "description": "质量标记: corrected / deprecated / wrong",
+                        },
+                        "reason": {"type": "string", "description": "纠正原因说明"},
+                    },
                 },
-            },
-        ),
-        Tool(
-            name="memory_reclassify",
-            description="强制已有记忆重跑分类管线（tier/domain/category）。批量处理，支持断点续传。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "batch_size": {"type": "integer", "description": "每批处理数量 (默认 50)"},
-                    "resume_from": {"type": "integer", "description": "断点续传游标 (从第几条开始)"},
-                    "dry_run": {"type": "boolean", "description": "仅预览不执行 (默认 false)"},
+            ),
+            Tool(
+                name="memory_reclassify",
+                description="强制已有记忆重跑分类管线（tier/domain/category）。批量处理，支持断点续传。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "batch_size": {"type": "integer", "description": "每批处理数量 (默认 50)"},
+                        "resume_from": {
+                            "type": "integer",
+                            "description": "断点续传游标 (从第几条开始)",
+                        },
+                        "dry_run": {"type": "boolean", "description": "仅预览不执行 (默认 false)"},
+                    },
                 },
-            },
-        ),
-    ])
+            ),
+        ]
+    )
 
     # === 原则域 ===
-    tools.extend([
-        Tool(
-            name="principle_activate",
-            description="根据任务类型自动激活相关核心原则。返回原则列表及其关联权重。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_type": {"type": "string", "description": "任务类型"},
-                    "task_description": {"type": "string", "description": "任务描述（用于关键词匹配）"},
-                    "max_principles": {"type": "integer", "description": "最多返回原则数"},
-                    "domain_hint": {"type": "string", "description": "可选，限定域: building|fixing|designing|reflecting|governing|connecting|all"},
+    tools.extend(
+        [
+            Tool(
+                name="principle_activate",
+                description="根据任务类型自动激活相关核心原则。返回原则列表及其关联权重。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_type": {"type": "string", "description": "任务类型"},
+                        "task_description": {
+                            "type": "string",
+                            "description": "任务描述（用于关键词匹配）",
+                        },
+                        "max_principles": {"type": "integer", "description": "最多返回原则数"},
+                        "domain_hint": {
+                            "type": "string",
+                            "description": "可选，限定域: building|fixing|designing|reflecting|governing|connecting|all",
+                        },
+                    },
+                    "required": ["task_type"],
                 },
-                "required": ["task_type"],
-            },
-        ),
-        Tool(
-            name="principle_evaluate",
-            description="反事实评估：对指定原则进行「如果违反会怎样」的预演，为 Agent 提供非强制但充分的决策依据。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "principle_id": {"type": "string", "description": "原则 ID"},
-                    "scenario": {"type": "string", "description": "当前决策场景描述"},
+            ),
+            Tool(
+                name="principle_evaluate",
+                description="反事实评估：对指定原则进行「如果违反会怎样」的预演，为 Agent 提供非强制但充分的决策依据。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "principle_id": {"type": "string", "description": "原则 ID"},
+                        "scenario": {"type": "string", "description": "当前决策场景描述"},
+                    },
+                    "required": ["principle_id", "scenario"],
                 },
-                "required": ["principle_id", "scenario"],
-            },
-        ),
-    ])
+            ),
+        ]
+    )
 
     # === 上下文域 ===
-    tools.extend([
-        Tool(
-            name="context_supply",
-            description="【核心工具】调用 ContextEngine.supply()，返回三层结构化上下文包：🔵核心层/🟡关联层/🟢发散层。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_description": {"type": "string", "description": "当前任务的完整自然语言描述（含前文上下文）"},
-                    "task_type": {"type": "string", "description": "任务类型标签"},
-                    "scope": {"type": "string", "description": "检索范围: global (默认) 或 domain 限定"},
+    tools.extend(
+        [
+            Tool(
+                name="context_supply",
+                description="【核心工具】调用 ContextEngine.supply()，返回三层结构化上下文包：🔵核心层/🟡关联层/🟢发散层。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_description": {
+                            "type": "string",
+                            "description": "当前任务的完整自然语言描述（含前文上下文）",
+                        },
+                        "task_type": {"type": "string", "description": "任务类型标签"},
+                        "scope": {
+                            "type": "string",
+                            "description": "检索范围: global (默认) 或 domain 限定",
+                        },
+                    },
+                    "required": ["task_description"],
                 },
-                "required": ["task_description"],
-            },
-        ),
-        Tool(
-            name="context_inject",
-            description="手动向 EntityGraph 注入原则关联边，或注册新实体节点。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "entity_type": {"type": "string", "description": "实体类型: task/principle/code_module/memory"},
-                    "entity_id": {"type": "string"},
-                    "entity_name": {"type": "string"},
-                    "entity_description": {"type": "string"},
-                    "related_entities": {"type": "array", "items": {"type": "string"}, "description": "关联实体 ID"},
+            ),
+            Tool(
+                name="context_inject",
+                description="手动向 EntityGraph 注入原则关联边，或注册新实体节点。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entity_type": {
+                            "type": "string",
+                            "description": "实体类型: task/principle/code_module/memory",
+                        },
+                        "entity_id": {"type": "string"},
+                        "entity_name": {"type": "string"},
+                        "entity_description": {"type": "string"},
+                        "related_entities": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "关联实体 ID",
+                        },
+                    },
+                    "required": ["entity_type", "entity_id", "entity_name"],
                 },
-                "required": ["entity_type", "entity_id", "entity_name"],
-            },
-        ),
-        Tool(
-            name="context_graph",
-            description="查询实体关联图谱：节点列表、边关系、多跳遍历、激活路径可视化数据。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "start_node": {"type": "string", "description": "起始节点 ID"},
-                    "max_hops": {"type": "integer", "description": "最大跳数 (默认 3)"},
-                    "query_type": {"type": "string", "description": "查询类型: traverse/node_info/edge_list/activated_principles"},
+            ),
+            Tool(
+                name="context_graph",
+                description="查询实体关联图谱：节点列表、边关系、多跳遍历、激活路径可视化数据。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "start_node": {"type": "string", "description": "起始节点 ID"},
+                        "max_hops": {"type": "integer", "description": "最大跳数 (默认 3)"},
+                        "query_type": {
+                            "type": "string",
+                            "description": "查询类型: traverse/node_info/edge_list/activated_principles",
+                        },
+                    },
                 },
-            },
-        ),
-        Tool(
-            name="auto_context_inject",
-            description="统一自动化上下文注入：skill_session_start→SoulLoop.pre_task_v2→memory_store→skill_session_complete。优雅降级，绝不阻塞。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_description": {"type": "string", "description": "当前任务的完整自然语言描述"},
-                    "task_type": {"type": "string", "description": "任务类型标签 (默认 general)"},
-                    "source": {"type": "string", "description": "来源: pi_agent|claude_code|manual (默认 manual)"},
-                    "scope": {"type": "string", "description": "检索范围: global (默认) 或 domain 限定"},
+            ),
+            Tool(
+                name="auto_context_inject",
+                description="统一自动化上下文注入：skill_session_start→SoulLoop.pre_task_v2→memory_store→skill_session_complete。优雅降级，绝不阻塞。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_description": {
+                            "type": "string",
+                            "description": "当前任务的完整自然语言描述",
+                        },
+                        "task_type": {
+                            "type": "string",
+                            "description": "任务类型标签 (默认 general)",
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "来源: pi_agent|claude_code|manual (默认 manual)",
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": "检索范围: global (默认) 或 domain 限定",
+                        },
+                    },
+                    "required": ["task_description"],
                 },
-                "required": ["task_description"],
-            },
-        ),
-    ])
+            ),
+        ]
+    )
 
     # === 审计与防线 ===
-    tools.extend([
-        Tool(
-            name="audit_run",
-            description="执行七维审计: action=full(默认)|report",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "scope": {"type": "string", "description": "审计范围: full/quick/principles_only/memory_only"},
-                    "time_range_hours": {"type": "integer", "description": "审计时间范围（小时）"},
-                    "action": {"type": "string", "description": "full|report"},
+    tools.extend(
+        [
+            Tool(
+                name="audit_run",
+                description="执行七维审计: action=full(默认)|report",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "scope": {
+                            "type": "string",
+                            "description": "审计范围: full/quick/principles_only/memory_only",
+                        },
+                        "time_range_hours": {
+                            "type": "integer",
+                            "description": "审计时间范围（小时）",
+                        },
+                        "action": {"type": "string", "description": "full|report"},
+                    },
                 },
-            },
-        ),
-        Tool(
-            name="audit_pre_check",
-            description="实时合规检查：对即将执行的操作进行 L0 硬边界和 L1 约束衰减检查。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "action_description": {"type": "string", "description": "操作描述"},
-                    "action_type": {"type": "string", "description": "操作类型: exec/write/edit/delete/read"},
+            ),
+            Tool(
+                name="audit_pre_check",
+                description="实时合规检查：对即将执行的操作进行 L0 硬边界和 L1 约束衰减检查。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action_description": {"type": "string", "description": "操作描述"},
+                        "action_type": {
+                            "type": "string",
+                            "description": "操作类型: exec/write/edit/delete/read",
+                        },
+                    },
+                    "required": ["action_description"],
                 },
-                "required": ["action_description"],
-            },
-        ),
-        Tool(
-            name="defense",
-            description="防线管理: action=get|history|adjust|status",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "get|history|adjust|status"},
-                    "delta": {"type": "number", "description": "调整量 (±0.01 ~ ±0.10)"},
-                    "reason": {"type": "string", "description": "调整原因"},
+            ),
+            Tool(
+                name="defense",
+                description="防线管理: action=get|history|adjust|status",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "get|history|adjust|status"},
+                        "delta": {"type": "number", "description": "调整量 (±0.01 ~ ±0.10)"},
+                        "reason": {"type": "string", "description": "调整原因"},
+                    },
+                    "required": ["action"],
                 },
-                "required": ["action"],
-            },
-        ),
-    ])
+            ),
+        ]
+    )
 
     # === 自省与演化 ===
-    tools.extend([
-        Tool(
-            name="scarf_reflect",
-            description="SCARF 五维自省: mode=standard|inertia",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "context": {"type": "string", "description": "当前上下文/最近行为描述"},
-                    "dimensions": {"type": "array", "items": {"type": "string"}, "description": "指定维度 (空=全部)"},
-                    "mode": {"type": "string", "description": "standard|inertia"},
+    tools.extend(
+        [
+            Tool(
+                name="scarf_reflect",
+                description="SCARF 五维自省: mode=standard|inertia",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "context": {"type": "string", "description": "当前上下文/最近行为描述"},
+                        "dimensions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "指定维度 (空=全部)",
+                        },
+                        "mode": {"type": "string", "description": "standard|inertia"},
+                    },
+                    "required": ["context"],
                 },
-                "required": ["context"],
-            },
-        ),
-        Tool(
-            name="feedback_apply",
-            description="向记忆或上下文条目手动应用反馈：adopted/ignored/rejected，更新 worth 计数器和自演化权重。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "item_id": {"type": "string", "description": "条目 ID"},
-                    "feedback_type": {"type": "string", "description": "反馈类型: adopted/ignored/rejected"},
-                    "task_context": {"type": "string", "description": "触发反馈的任务上下文"},
+            ),
+            Tool(
+                name="feedback_apply",
+                description="向记忆或上下文条目手动应用反馈：adopted/ignored/rejected，更新 worth 计数器和自演化权重。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "item_id": {"type": "string", "description": "条目 ID"},
+                        "feedback_type": {
+                            "type": "string",
+                            "description": "反馈类型: adopted/ignored/rejected",
+                        },
+                        "task_context": {"type": "string", "description": "触发反馈的任务上下文"},
+                    },
+                    "required": ["item_id", "feedback_type"],
                 },
-                "required": ["item_id", "feedback_type"],
-            },
-        ),
-    ])
+            ),
+        ]
+    )
 
     # === 管理域 ===
-    tools.extend([
-        Tool(
-            name="system",
-            description="系统工具: action=stats|backup|migrate。stats 含模糊缓存积压计数。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "stats|backup|migrate"},
-                    "format": {"type": "string", "description": "导出格式: json/sqlite"},
-                    "source_path": {"type": "string", "description": "源数据路径"},
-                    "source_type": {"type": "string", "description": "源类型: lancedb/json/csv"},
-                    "include_audit_history": {"type": "boolean"},
-                    "dry_run": {"type": "boolean", "description": "仅预览，不实际导入"},
+    tools.extend(
+        [
+            Tool(
+                name="system",
+                description="系统工具: action=stats|backup|migrate。stats 含模糊缓存积压计数。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "stats|backup|migrate"},
+                        "format": {"type": "string", "description": "导出格式: json/sqlite"},
+                        "source_path": {"type": "string", "description": "源数据路径"},
+                        "source_type": {
+                            "type": "string",
+                            "description": "源类型: lancedb/json/csv",
+                        },
+                        "include_audit_history": {"type": "boolean"},
+                        "dry_run": {"type": "boolean", "description": "仅预览，不实际导入"},
+                    },
+                    "required": ["action"],
                 },
-                "required": ["action"],
-            },
-        ),
-        Tool(
-            name="issue_create",
-            description="创建新 Issue，关联原则和依赖关系。服务实践层：约定→任务→追踪。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Issue 标题"},
-                    "description": {"type": "string", "description": "详细描述"},
-                    "principle_id": {"type": "integer", "description": "关联原则 ID (1-12)"},
-                    "memory_ids": {"type": "array", "items": {"type": "string"}},
-                    "blocks": {"type": "array", "items": {"type": "string"}, "description": "此 Issue 阻塞的 Issue ID 列表"},
-                    "blocked_by": {"type": "array", "items": {"type": "string"}, "description": "阻塞此 Issue 的 Issue ID 列表"},
-                    "owner": {"type": "string", "description": "Agent owner"},
+            ),
+            Tool(
+                name="issue_create",
+                description="创建新 Issue，关联原则和依赖关系。服务实践层：约定→任务→追踪。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Issue 标题"},
+                        "description": {"type": "string", "description": "详细描述"},
+                        "principle_id": {"type": "integer", "description": "关联原则 ID (1-12)"},
+                        "memory_ids": {"type": "array", "items": {"type": "string"}},
+                        "blocks": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "此 Issue 阻塞的 Issue ID 列表",
+                        },
+                        "blocked_by": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "阻塞此 Issue 的 Issue ID 列表",
+                        },
+                        "owner": {"type": "string", "description": "Agent owner"},
+                    },
+                    "required": ["title"],
                 },
-                "required": ["title"],
-            },
-        ),
-        Tool(
-            name="issue_transition",
-            description="推进 Issue 状态: open→in_progress→resolved→closed。自动检查依赖。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "issue_id": {"type": "string"},
-                    "state": {"type": "string", "description": "目标状态: in_progress/resolved/closed"},
-                    "reason": {"type": "string"},
+            ),
+            Tool(
+                name="issue_transition",
+                description="推进 Issue 状态: open→in_progress→resolved→closed。自动检查依赖。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "issue_id": {"type": "string"},
+                        "state": {
+                            "type": "string",
+                            "description": "目标状态: in_progress/resolved/closed",
+                        },
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["issue_id", "state"],
                 },
-                "required": ["issue_id", "state"],
-            },
-        ),
-        Tool(
-            name="issue_list",
-            description="列出 Issue，支持按状态和 owner 筛选。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "state": {"type": "string", "description": "筛选状态: open/in_progress/resolved/closed"},
-                    "owner": {"type": "string", "description": "筛选 owner"},
+            ),
+            Tool(
+                name="issue_list",
+                description="列出 Issue，支持按状态和 owner 筛选。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "state": {
+                            "type": "string",
+                            "description": "筛选状态: open/in_progress/resolved/closed",
+                        },
+                        "owner": {"type": "string", "description": "筛选 owner"},
+                    },
                 },
-            },
-        ),
-        Tool(
-            name="pack_export",
-            description="Export memories as a shareable JSON experience pack. Filter by tags or memory IDs.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Pack name (used as filename)"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags to filter memories by"},
-                    "memory_ids": {"type": "array", "items": {"type": "string"}, "description": "Specific memory IDs to include"},
-                    "author": {"type": "string", "description": "Author identifier (default: claude)"},
-                    "description": {"type": "string", "description": "Pack description"},
+            ),
+            Tool(
+                name="pack_export",
+                description="Export memories as a shareable JSON experience pack. Filter by tags or memory IDs.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Pack name (used as filename)"},
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Tags to filter memories by",
+                        },
+                        "memory_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Specific memory IDs to include",
+                        },
+                        "author": {
+                            "type": "string",
+                            "description": "Author identifier (default: claude)",
+                        },
+                        "description": {"type": "string", "description": "Pack description"},
+                    },
+                    "required": ["name"],
                 },
-                "required": ["name"],
-            },
-        ),
-        Tool(
-            name="pack_import",
-            description="导入经验包。strategy: skip(默认)|replace|merge。merge 时 domain 以包内为准。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Path to the JSON pack file"},
-                    "owner": {"type": "string", "description": "Owner to assign to imported memories"},
-                    "strategy": {"type": "string", "description": "skip|replace|merge"},
+            ),
+            Tool(
+                name="pack_import",
+                description="导入经验包。strategy: skip(默认)|replace|merge。merge 时 domain 以包内为准。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Path to the JSON pack file"},
+                        "owner": {
+                            "type": "string",
+                            "description": "Owner to assign to imported memories",
+                        },
+                        "strategy": {"type": "string", "description": "skip|replace|merge"},
+                    },
+                    "required": ["path"],
                 },
-                "required": ["path"],
-            },
-        ),
-    ])
+            ),
+        ]
+    )
 
     # === 域联邦域 ===
-    tools.extend([
-        Tool(
-            name="domain",
-            description="域联邦统一入口: action=stats|merge|unmerge|rename|rebuild",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "stats|merge|unmerge|rename|rebuild"},
-                    "source": {"type": "string", "description": "源域 (merge/unmerge)"},
-                    "target": {"type": "string", "description": "目标域 (merge)"},
-                    "old_name": {"type": "string", "description": "旧域名 (rename)"},
-                    "new_name": {"type": "string", "description": "新域名 (rename)"},
+    tools.extend(
+        [
+            Tool(
+                name="domain",
+                description="域联邦统一入口: action=stats|merge|unmerge|rename|rebuild",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "description": "stats|merge|unmerge|rename|rebuild",
+                        },
+                        "source": {"type": "string", "description": "源域 (merge/unmerge)"},
+                        "target": {"type": "string", "description": "目标域 (merge)"},
+                        "old_name": {"type": "string", "description": "旧域名 (rename)"},
+                        "new_name": {"type": "string", "description": "新域名 (rename)"},
+                    },
+                    "required": ["action"],
                 },
-                "required": ["action"],
-            },
-        ),
-    ])
+            ),
+        ]
+    )
 
     # === 任务队列域 ===
-    tools.extend([
-        Tool(
-            name="task_enqueue",
-            description="Hunter Guild 委托上架 — 将任务挂到公会板上。自动验证提交者等级权限，C级猎人挂A/B级委托需Claude审批。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_type": {"type": "string", "description": "任务类型: fix_memory/gc_*/build_*/refactor_*/review_*/investigate_*"},
-                    "title": {"type": "string", "description": "任务标题"},
-                    "to_agent": {"type": "string", "description": "目标 Agent"},
-                    "priority": {"type": "integer", "description": "优先级: 1=S级 2=A级 3=B级 4=C级 (默认 3)"},
-                    "from_agent": {"type": "string", "description": "提交者 (默认 daemon)"},
-                    "from_trust_score": {"type": "number", "description": "提交者信任分 (非 daemon/claude 时需提供)"},
-                    "description": {"type": "string", "description": "任务描述"},
-                    "domain": {"type": "string", "description": "域"},
-                    "memory_id": {"type": "string", "description": "关联记忆 ID"},
-                    "principle_id": {"type": "string", "description": "关联原则 ID"},
-                    "source_scan": {"type": "string", "description": "来源扫描器"},
-                    "parent_task_id": {"type": "string", "description": "父任务 ID"},
-                    "timeout_seconds": {"type": "integer", "description": "超时秒数 (默认 300)"},
-                    "max_escalations": {"type": "integer", "description": "最大升级次数 (默认 3)"},
-                    "payload": {"type": "object", "description": "附加数据"},
+    tools.extend(
+        [
+            Tool(
+                name="task_enqueue",
+                description="Hunter Guild 委托上架 — 将任务挂到公会板上。自动验证提交者等级权限，C级猎人挂A/B级委托需Claude审批。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_type": {
+                            "type": "string",
+                            "description": "任务类型: fix_memory/gc_*/build_*/refactor_*/review_*/investigate_*",
+                        },
+                        "title": {"type": "string", "description": "任务标题"},
+                        "to_agent": {"type": "string", "description": "目标 Agent"},
+                        "priority": {
+                            "type": "integer",
+                            "description": "优先级: 1=S级 2=A级 3=B级 4=C级 (默认 3)",
+                        },
+                        "from_agent": {"type": "string", "description": "提交者 (默认 daemon)"},
+                        "from_trust_score": {
+                            "type": "number",
+                            "description": "提交者信任分 (非 daemon/claude 时需提供)",
+                        },
+                        "description": {"type": "string", "description": "任务描述"},
+                        "domain": {"type": "string", "description": "域"},
+                        "memory_id": {"type": "string", "description": "关联记忆 ID"},
+                        "principle_id": {"type": "string", "description": "关联原则 ID"},
+                        "source_scan": {"type": "string", "description": "来源扫描器"},
+                        "parent_task_id": {"type": "string", "description": "父任务 ID"},
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "description": "超时秒数 (默认 300)",
+                        },
+                        "max_escalations": {
+                            "type": "integer",
+                            "description": "最大升级次数 (默认 3)",
+                        },
+                        "payload": {"type": "object", "description": "附加数据"},
+                    },
+                    "required": ["task_type", "title", "to_agent"],
                 },
-                "required": ["task_type", "title", "to_agent"],
-            },
-        ),
-        Tool(
-            name="task_claim",
-            description="Hunter Guild 委托揭榜 — 猎人认领公会板上的委托。原子操作，先到先得。自动检查等级匹配，force=True 可越级揭榜(会记录)。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "agent_name": {"type": "string", "description": "揭榜猎人名称"},
-                    "task_id": {"type": "string", "description": "要认领的委托 ID"},
-                    "trust_score": {"type": "number", "description": "猎人当前信任分"},
-                    "force": {"type": "boolean", "description": "强制越级揭榜 (默认 false)"},
+            ),
+            Tool(
+                name="task_claim",
+                description="Hunter Guild 委托揭榜 — 猎人认领公会板上的委托。原子操作，先到先得。自动检查等级匹配，force=True 可越级揭榜(会记录)。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_name": {"type": "string", "description": "揭榜猎人名称"},
+                        "task_id": {"type": "string", "description": "要认领的委托 ID"},
+                        "trust_score": {"type": "number", "description": "猎人当前信任分"},
+                        "force": {"type": "boolean", "description": "强制越级揭榜 (默认 false)"},
+                    },
+                    "required": ["agent_name", "task_id", "trust_score"],
                 },
-                "required": ["agent_name", "task_id", "trust_score"],
-            },
-        ),
-        Tool(
-            name="task_complete",
-            description="Hunter Guild 委托完成 — 猎人提交已完成委托，自动创建验收子任务给 Claude。只有揭榜猎人才能提交完成。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "委托 ID"},
-                    "agent_name": {"type": "string", "description": "提交完成的猎人名称"},
-                    "result": {"type": "string", "description": "完成结果描述"},
-                    "artifacts": {"type": "array", "items": {"type": "string"}, "description": "产物路径列表"},
+            ),
+            Tool(
+                name="task_complete",
+                description="Hunter Guild 委托完成 — 猎人提交已完成委托，自动创建验收子任务给 Claude。只有揭榜猎人才能提交完成。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "委托 ID"},
+                        "agent_name": {"type": "string", "description": "提交完成的猎人名称"},
+                        "result": {"type": "string", "description": "完成结果描述"},
+                        "artifacts": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "产物路径列表",
+                        },
+                    },
+                    "required": ["task_id", "agent_name", "result"],
                 },
-                "required": ["task_id", "agent_name", "result"],
-            },
-        ),
-        Tool(
-            name="task_verify",
-            description="Hunter Guild 委托验收 — 长老验收已完成委托。accepted 信任分+0.02，rejected/reassigned 信任分-0.03 并自动重派。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "待验收的委托 ID"},
-                    "verdict": {"type": "string", "description": "验收结论: accepted | rejected | reassigned"},
-                    "verified_by": {"type": "string", "description": "验收者 (默认 claude)"},
-                    "comment": {"type": "string", "description": "验收评语"},
-                    "reassign_to_agent": {"type": "string", "description": "重派目标 Agent (默认原 to_agent)"},
+            ),
+            Tool(
+                name="task_verify",
+                description="Hunter Guild 委托验收 — 长老验收已完成委托。accepted 信任分+0.02，rejected/reassigned 信任分-0.03 并自动重派。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "待验收的委托 ID"},
+                        "verdict": {
+                            "type": "string",
+                            "description": "验收结论: accepted | rejected | reassigned",
+                        },
+                        "verified_by": {"type": "string", "description": "验收者 (默认 claude)"},
+                        "comment": {"type": "string", "description": "验收评语"},
+                        "reassign_to_agent": {
+                            "type": "string",
+                            "description": "重派目标 Agent (默认原 to_agent)",
+                        },
+                    },
+                    "required": ["task_id", "verdict"],
                 },
-                "required": ["task_id", "verdict"],
-            },
-        ),
-    ])
+            ),
+        ]
+    )
 
     # === 技能追踪域 ===
-    tools.extend([
-        Tool(
-            name="skill_session_start",
-            description="创建技能执行实例实体，自动激活关联原则并建立父→子链追踪。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "skill_name": {"type": "string", "description": "技能名称"},
-                    "task_description": {"type": "string", "description": "本次执行的任务描述"},
-                    "parent_entity_id": {"type": "string", "description": "父技能会话的 entity_id"},
-                    "estimated_duration_minutes": {"type": "integer", "description": "预估耗时（分钟）"},
-                },
-                "required": ["skill_name", "task_description"],
-            },
-        ),
-        Tool(
-            name="skill_session_complete",
-            description="标记技能执行完成，自动处理标签状态转换和 worth 更新，支持 still_in_progress/abandoned/normal 三种结果。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "entity_id": {"type": "string", "description": "技能会话 entity_id"},
-                    "outcome": {"type": "string", "description": "结果: still_in_progress / abandoned: <原因> / 留空=正常完成"},
-                    "artifacts": {"type": "array", "items": {"type": "string"}, "description": "产物路径列表"},
-                },
-                "required": ["entity_id", "outcome"],
-            },
-        ),
-        Tool(
-            name="skill_session_trace",
-            description="追踪技能执行链：查询、完整性检测、违反警告。支持当前/分支/全部范围。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "session_scope": {"type": "string", "description": "查询范围: current|branch|all (默认 all)"},
-                    "skill_name": {"type": "string", "description": "按技能名称筛选"},
-                    "status": {"type": "string", "description": "按状态筛选: active|done|abandoned"},
-                },
-            },
-        ),
-        Tool(
-            name="skill_session_audit",
-            description="事后间隙扫描：检测技能记忆中提到但缺少 session 实体的技能，支持自动补录修复。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "time_range_hours": {"type": "integer", "description": "审计时间范围（小时）"},
-                    "auto_fix": {"type": "boolean", "description": "自动补录缺失的 session (默认 false)"},
-                },
-            },
-        ),
-        Tool(
-            name="skill_auto_track",
-            description="Hook 调用的自动 Skill 追踪（PreToolUse/PostToolUse → mcp_tool），零摩擦追踪每次 Skill 调用。",
-            inputSchema={
-                "type": "object",
-                "required": ["phase", "skill_name"],
-                "properties": {
-                    "phase": {"type": "string", "description": "'start' | 'complete'"},
-                    "skill_name": {"type": "string", "description": "Skill 名称"},
-                },
-            },
-        ),
-        Tool(
-            name="memory_sync_files",
-            description="同步文件系统 .md 记忆到 MCP 管道。扫描目录、解析 frontmatter、去重、标记已同步。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "source_dir": {"type": "string", "description": ".md 记忆文件目录路径"},
-                    "dry_run": {"type": "boolean", "description": "仅扫描不写入 (默认 false)"},
-                },
-                "required": ["source_dir"],
-            },
-        ),
-        # === Skills 域 (程序化技能 — Phase 1) ===
-        Tool(
-            name="session-init",
-            description="会话启动 — 封装 CLAUDE.md 步骤 0-5：原则激活 + 上下文注入 + 域健康 + 信任分 + GC 预览。替代原有的 6 个独立 MCP 调用。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_description": {"type": "string", "description": "当前任务描述"},
-                    "task_type": {"type": "string", "description": "任务类型: general/code_generation/debugging/architecture"},
-                },
-                "required": ["task_description"],
-            },
-        ),
-        Tool(
-            name="smart-remember",
-            description="智能记忆存储 — 自动去重检查（相似度 ≥ 0.85 则更新已有记忆），通过完整质量管道（分类+向量+门控）。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string", "description": "记忆内容"},
-                    "memory_type": {"type": "string", "description": "类型: task/experience/principle/code"},
-                    "source": {"type": "string", "description": "来源: user/system/claude_code"},
-                },
-                "required": ["content", "memory_type"],
-            },
-        ),
-        Tool(
-            name="step-closure",
-            description="每步完成后的六联闭环：原则对齐检查 → SCARF 五维自省 → 激素更新 → 信任分联动 → LLM反思生成(经验/优化/根因) → CEI 复合指数。mode=light 仅做对齐+注入，mode=full 走完整六联。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_description": {"type": "string", "description": "本步操作描述"},
-                    "git_commit": {"type": "string", "description": "关联的 git commit hash (可选)"},
-                    "mode": {"type": "string", "description": "light (仅对齐+注入) | full (完整六联闭环+LLM反思，默认)"},
-                    "lesson": {"type": "string", "description": "经验教训 — 执行者自己反思：本次学到了什么？"},
-                    "improvement": {"type": "string", "description": "优化建议 — 下次如何做得更好？"},
-                    "root_cause": {"type": "string", "description": "根因分析 — 如果存在问题，根本原因是什么？"},
-                    "optimization": {"type": "string", "description": "优化动作 — 立即可执行的一个具体改进"},
-                    "trick": {"type": "string", "description": "窍门/技巧 (可选)"},
-                },
-                "required": ["task_description"],
-            },
-        ),
-        # === 审查域 ===
-        Tool(
-            name="review_run",
-            description="执行结构化代码审查 — 三阶段管线 (prepare→evaluate→apply)。获取 git diff + 12原则检查 + 安全审查 + 信任分联动 + 发现入池 + fix任务创建。支持 action=prepare|evaluate|apply|full。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "审查阶段: prepare(获取diff+生成prompt) | evaluate(解析审查输出) | apply(信任分+记忆+fix任务) | full(完整管线)",
-                        "enum": ["prepare", "evaluate", "apply", "full"],
+    tools.extend(
+        [
+            Tool(
+                name="skill_session_start",
+                description="创建技能执行实例实体，自动激活关联原则并建立父→子链追踪。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string", "description": "技能名称"},
+                        "task_description": {"type": "string", "description": "本次执行的任务描述"},
+                        "parent_entity_id": {
+                            "type": "string",
+                            "description": "父技能会话的 entity_id",
+                        },
+                        "estimated_duration_minutes": {
+                            "type": "integer",
+                            "description": "预估耗时（分钟）",
+                        },
                     },
-                    "commit_range": {"type": "string", "description": "审查的 git commit 范围, 如 HEAD~3..HEAD"},
-                    "review_output": {"type": "string", "description": "LLM 审查输出文本 (JSON 格式, evaluate/apply/full 时需要)"},
-                    "author_target": {"type": "string", "description": "被审查的 agent trust target (默认 pi_builder)"},
-                    "reviewer_target": {"type": "string", "description": "审查者 agent trust target (默认 pi_reviewer)"},
-                    "spec_path": {"type": "string", "description": "spec 文件路径 (可选, 用于 spec 合规检查)"},
+                    "required": ["skill_name", "task_description"],
                 },
-                "required": ["action"],
-            },
-        ),
-        # === SuperPowers 流水线阶段技能 (统一入口) ===
-        Tool(
-            name="sp-stage",
-            description="SuperPowers 流水线统一阶段入口。stage 参数对应 SuperPowers 标准阶段: brainstorming | exemplar-research | writing-plans | executing-plans | subagent-driven-development | test-driven-development | verification-before-completion | finishing-a-development-branch | requesting-code-review | receiving-code-review | systematic-debugging | using-git-worktrees | dispatching-parallel-agents。自动触发 skill_session_start/complete 追踪。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "stage": {
-                        "type": "string",
-                        "description": "SuperPowers 阶段名称",
-                        "enum": ["brainstorming", "exemplar-research", "writing-plans", "executing-plans", "subagent-driven-development", "test-driven-development", "verification-before-completion", "finishing-a-development-branch", "requesting-code-review", "receiving-code-review", "systematic-debugging", "using-git-worktrees", "dispatching-parallel-agents"],
+            ),
+            Tool(
+                name="skill_session_complete",
+                description="标记技能执行完成，自动处理标签状态转换和 worth 更新，支持 still_in_progress/abandoned/normal 三种结果。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entity_id": {"type": "string", "description": "技能会话 entity_id"},
+                        "outcome": {
+                            "type": "string",
+                            "description": "结果: still_in_progress / abandoned: <原因> / 留空=正常完成",
+                        },
+                        "artifacts": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "产物路径列表",
+                        },
                     },
-                    "task_description": {"type": "string", "description": "当前阶段任务描述"},
+                    "required": ["entity_id", "outcome"],
                 },
-                "required": ["stage", "task_description"],
-            },
-        ),
-    ])
+            ),
+            Tool(
+                name="skill_session_trace",
+                description="追踪技能执行链：查询、完整性检测、违反警告。支持当前/分支/全部范围。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_scope": {
+                            "type": "string",
+                            "description": "查询范围: current|branch|all (默认 all)",
+                        },
+                        "skill_name": {"type": "string", "description": "按技能名称筛选"},
+                        "status": {
+                            "type": "string",
+                            "description": "按状态筛选: active|done|abandoned",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="skill_session_audit",
+                description="事后间隙扫描：检测技能记忆中提到但缺少 session 实体的技能，支持自动补录修复。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "time_range_hours": {
+                            "type": "integer",
+                            "description": "审计时间范围（小时）",
+                        },
+                        "auto_fix": {
+                            "type": "boolean",
+                            "description": "自动补录缺失的 session (默认 false)",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="skill_auto_track",
+                description="Hook 调用的自动 Skill 追踪（PreToolUse/PostToolUse → mcp_tool），零摩擦追踪每次 Skill 调用。",
+                inputSchema={
+                    "type": "object",
+                    "required": ["phase", "skill_name"],
+                    "properties": {
+                        "phase": {"type": "string", "description": "'start' | 'complete'"},
+                        "skill_name": {"type": "string", "description": "Skill 名称"},
+                    },
+                },
+            ),
+            Tool(
+                name="memory_sync_files",
+                description="同步文件系统 .md 记忆到 MCP 管道。扫描目录、解析 frontmatter、去重、标记已同步。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "source_dir": {"type": "string", "description": ".md 记忆文件目录路径"},
+                        "dry_run": {"type": "boolean", "description": "仅扫描不写入 (默认 false)"},
+                    },
+                    "required": ["source_dir"],
+                },
+            ),
+            # === Skills 域 (程序化技能 — Phase 1) ===
+            Tool(
+                name="session-init",
+                description="会话启动 — 封装 CLAUDE.md 步骤 0-5：原则激活 + 上下文注入 + 域健康 + 信任分 + GC 预览。替代原有的 6 个独立 MCP 调用。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_description": {"type": "string", "description": "当前任务描述"},
+                        "task_type": {
+                            "type": "string",
+                            "description": "任务类型: general/code_generation/debugging/architecture",
+                        },
+                    },
+                    "required": ["task_description"],
+                },
+            ),
+            Tool(
+                name="smart-remember",
+                description="智能记忆存储 — 自动去重检查（相似度 ≥ 0.85 则更新已有记忆），通过完整质量管道（分类+向量+门控）。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "记忆内容"},
+                        "memory_type": {
+                            "type": "string",
+                            "description": "类型: task/experience/principle/code",
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "来源: user/system/claude_code",
+                        },
+                    },
+                    "required": ["content", "memory_type"],
+                },
+            ),
+            Tool(
+                name="step-closure",
+                description="每步完成后的六联闭环：原则对齐检查 → SCARF 五维自省 → 激素更新 → 信任分联动 → LLM反思生成(经验/优化/根因) → CEI 复合指数。mode=light 仅做对齐+注入，mode=full 走完整六联。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_description": {"type": "string", "description": "本步操作描述"},
+                        "git_commit": {
+                            "type": "string",
+                            "description": "关联的 git commit hash (可选)",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "description": "light (仅对齐+注入) | full (完整六联闭环+LLM反思，默认)",
+                        },
+                        "lesson": {
+                            "type": "string",
+                            "description": "经验教训 — 执行者自己反思：本次学到了什么？",
+                        },
+                        "improvement": {
+                            "type": "string",
+                            "description": "优化建议 — 下次如何做得更好？",
+                        },
+                        "root_cause": {
+                            "type": "string",
+                            "description": "根因分析 — 如果存在问题，根本原因是什么？",
+                        },
+                        "optimization": {
+                            "type": "string",
+                            "description": "优化动作 — 立即可执行的一个具体改进",
+                        },
+                        "trick": {"type": "string", "description": "窍门/技巧 (可选)"},
+                    },
+                    "required": ["task_description"],
+                },
+            ),
+            # === 审查域 ===
+            Tool(
+                name="review_run",
+                description="执行结构化代码审查 — 三阶段管线 (prepare→evaluate→apply)。获取 git diff + 12原则检查 + 安全审查 + 信任分联动 + 发现入池 + fix任务创建。支持 action=prepare|evaluate|apply|full。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "description": "审查阶段: prepare(获取diff+生成prompt) | evaluate(解析审查输出) | apply(信任分+记忆+fix任务) | full(完整管线)",
+                            "enum": ["prepare", "evaluate", "apply", "full"],
+                        },
+                        "commit_range": {
+                            "type": "string",
+                            "description": "审查的 git commit 范围, 如 HEAD~3..HEAD",
+                        },
+                        "review_output": {
+                            "type": "string",
+                            "description": "LLM 审查输出文本 (JSON 格式, evaluate/apply/full 时需要)",
+                        },
+                        "author_target": {
+                            "type": "string",
+                            "description": "被审查的 agent trust target (默认 pi_builder)",
+                        },
+                        "reviewer_target": {
+                            "type": "string",
+                            "description": "审查者 agent trust target (默认 pi_reviewer)",
+                        },
+                        "spec_path": {
+                            "type": "string",
+                            "description": "spec 文件路径 (可选, 用于 spec 合规检查)",
+                        },
+                    },
+                    "required": ["action"],
+                },
+            ),
+            # === SuperPowers 流水线阶段技能 (统一入口) ===
+            Tool(
+                name="sp-stage",
+                description="SuperPowers 流水线统一阶段入口。stage 参数对应 SuperPowers 标准阶段: brainstorming | exemplar-research | writing-plans | executing-plans | subagent-driven-development | test-driven-development | verification-before-completion | finishing-a-development-branch | requesting-code-review | receiving-code-review | systematic-debugging | using-git-worktrees | dispatching-parallel-agents。自动触发 skill_session_start/complete 追踪。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "stage": {
+                            "type": "string",
+                            "description": "SuperPowers 阶段名称",
+                            "enum": [
+                                "brainstorming",
+                                "exemplar-research",
+                                "writing-plans",
+                                "executing-plans",
+                                "subagent-driven-development",
+                                "test-driven-development",
+                                "verification-before-completion",
+                                "finishing-a-development-branch",
+                                "requesting-code-review",
+                                "receiving-code-review",
+                                "systematic-debugging",
+                                "using-git-worktrees",
+                                "dispatching-parallel-agents",
+                            ],
+                        },
+                        "task_description": {"type": "string", "description": "当前阶段任务描述"},
+                    },
+                    "required": ["stage", "task_description"],
+                },
+            ),
+        ]
+    )
 
     return tools
 
@@ -737,6 +980,7 @@ async def list_tools() -> list[Tool]:
 # ---------------------------------------------------------------------------
 # 闭环仪表盘摘要格式化
 # ---------------------------------------------------------------------------
+
 
 def _format_closure_dashboard(result: dict, history: deque) -> str:
     """Build a human-readable step-closure dashboard from post_task result.
@@ -781,7 +1025,7 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
             vals = [h.get(key, 0) for h in history]
             mean = sum(vals) / len(vals)
             variance = sum((v - mean) ** 2 for v in vals) / len(vals)
-            std = variance ** 0.5
+            std = variance**0.5
             if std > 0 and abs(current - mean) > 2 * std:
                 tag += " ⚡"
         return tag
@@ -840,6 +1084,7 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
 # 工具调用路由
 # ---------------------------------------------------------------------------
 
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Route MCP tool calls to handler modules.
@@ -854,144 +1099,204 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         # Memory domain
         if name == "memory_recall":
             from plastic_promise.mcp.tools.memory import handle_memory_recall
+
             return await handle_memory_recall(engine, arguments)
         elif name == "memory_store":
             from plastic_promise.mcp.tools.memory import handle_memory_store
+
             return await handle_memory_store(engine, arguments)
         elif name == "memory_update":
             from plastic_promise.mcp.tools.memory import handle_memory_update
+
             return await handle_memory_update(engine, arguments)
         elif name == "memory_forget":
             from plastic_promise.mcp.tools.memory import handle_memory_forget
+
             return await handle_memory_forget(engine, arguments)
         elif name == "memory_list":
             from plastic_promise.mcp.tools.memory import handle_memory_list
+
             return await handle_memory_list(engine, arguments)
         elif name == "memory_gc":
             from plastic_promise.mcp.tools.memory import handle_memory_gc
+
             return await handle_memory_gc(engine, arguments)
         elif name == "memory_correct":
             from plastic_promise.mcp.tools.memory import handle_memory_correct
+
             return await handle_memory_correct(engine, arguments)
         elif name == "memory_reclassify":
             from plastic_promise.mcp.tools.memory import handle_memory_reclassify
+
             return await handle_memory_reclassify(engine, arguments)
         # Principle domain
         elif name == "principle_activate":
             from plastic_promise.mcp.tools.principles import handle_principle_activate
+
             return await handle_principle_activate(engine, arguments)
         elif name == "principle_evaluate":
             from plastic_promise.mcp.tools.principles import handle_principle_evaluate
+
             return await handle_principle_evaluate(engine, arguments)
 
         # Context domain
         elif name == "context_supply":
             from plastic_promise.mcp.tools.context import handle_context_supply
+
             return await handle_context_supply(engine, arguments)
         elif name == "context_inject":
             from plastic_promise.mcp.tools.context import handle_context_inject
+
             return await handle_context_inject(engine, arguments)
         elif name == "context_graph":
             from plastic_promise.mcp.tools.context import handle_context_graph
+
             return await handle_context_graph(engine, arguments)
         elif name == "auto_context_inject":
             from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
             return await handle_auto_context_inject(engine, arguments)
 
         # Audit and defense
         elif name == "audit_run":
             from plastic_promise.mcp.tools.audit_defense import handle_audit_run
+
             return await handle_audit_run(engine, arguments)
         elif name == "audit_pre_check":
             from plastic_promise.mcp.tools.audit_defense import handle_audit_pre_check
+
             return await handle_audit_pre_check(engine, arguments)
         elif name == "defense":
             from plastic_promise.mcp.tools.audit_defense import handle_defense
+
             return await handle_defense(engine, arguments)
 
         # Reflection
         elif name == "scarf_reflect":
             from plastic_promise.mcp.tools.reflection import handle_scarf_reflect
+
             return await handle_scarf_reflect(engine, arguments)
         elif name == "feedback_apply":
             from plastic_promise.mcp.tools.reflection import handle_feedback_apply
+
             return await handle_feedback_apply(engine, arguments)
 
         # Management
         elif name == "system":
             from plastic_promise.mcp.tools.management import handle_system
+
             return await handle_system(engine, arguments)
         elif name == "issue_create":
             from plastic_promise.mcp.tools.management import handle_issue_create
+
             return await handle_issue_create(engine, arguments)
         elif name == "issue_transition":
             from plastic_promise.mcp.tools.management import handle_issue_transition
+
             return await handle_issue_transition(engine, arguments)
         elif name == "issue_list":
             from plastic_promise.mcp.tools.management import handle_issue_list
+
             return await handle_issue_list(engine, arguments)
         elif name == "pack_export":
             from plastic_promise.mcp.tools.management import handle_pack_export
+
             return await handle_pack_export(engine, arguments)
         elif name == "pack_import":
             from plastic_promise.mcp.tools.management import handle_pack_import
+
             return await handle_pack_import(engine, arguments)
         # Domain federation
         elif name == "domain":
             from plastic_promise.mcp.tools.domain import handle_domain
+
             return await handle_domain(engine, arguments)
 
         # Task queue
         elif name == "task_enqueue":
             from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
+
             return await handle_task_enqueue(engine, arguments)
         elif name == "task_claim":
             from plastic_promise.mcp.tools.task_queue import handle_task_claim
+
             return await handle_task_claim(engine, arguments)
         elif name == "task_complete":
             from plastic_promise.mcp.tools.task_queue import handle_task_complete
+
             return await handle_task_complete(engine, arguments)
         elif name == "task_verify":
             from plastic_promise.mcp.tools.task_queue import handle_task_verify
+
             return await handle_task_verify(engine, arguments)
 
         # Skill tracking
         elif name == "skill_session_start":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
+
             return await handle_skill_session_start(engine, arguments)
         elif name == "skill_session_complete":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
+
             return await handle_skill_session_complete(engine, arguments)
         elif name == "skill_session_trace":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
+
             return await handle_skill_session_trace(engine, arguments)
         elif name == "skill_session_audit":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_audit
+
             return await handle_skill_session_audit(engine, arguments)
         elif name == "skill_auto_track":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_auto_track
+
             return await handle_skill_auto_track(engine, arguments)
 
         # === Skills 域 (Phase 1) ===
         elif name == "session-init":
             se = get_skill_engine()
             result = await se.exec("session-init", arguments, caller="claude")
-            return [TextContent(type="text", text=json.dumps(
-                {"skill": result.skill_name, "success": result.success,
-                 "data": result.data, "degrade_log": result.degrade_log,
-                 "errors": result.errors, "audit_trail": result.audit_trail},
-                ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "skill": result.skill_name,
+                            "success": result.success,
+                            "data": result.data,
+                            "degrade_log": result.degrade_log,
+                            "errors": result.errors,
+                            "audit_trail": result.audit_trail,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
         elif name == "smart-remember":
             se = get_skill_engine()
             result = await se.exec("smart-remember", arguments, caller="claude")
-            return [TextContent(type="text", text=json.dumps(
-                {"skill": result.skill_name, "success": result.success,
-                 "data": result.data, "degrade_log": result.degrade_log,
-                 "errors": result.errors, "audit_trail": result.audit_trail},
-                ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "skill": result.skill_name,
+                            "success": result.success,
+                            "data": result.data,
+                            "degrade_log": result.degrade_log,
+                            "errors": result.errors,
+                            "audit_trail": result.audit_trail,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
         elif name == "step-closure":
             import asyncio
             from plastic_promise.loop.soul_loop import post_task
+
             task_desc = arguments.get("task_description", "")
             git_commit = arguments.get("git_commit", "")
             mode = arguments.get("mode", "full")
@@ -1001,9 +1306,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             optimization = arguments.get("optimization", "")
             trick = arguments.get("trick", "")
             result = await asyncio.to_thread(
-                post_task, task_desc, git_commit, mode,
+                post_task,
+                task_desc,
+                git_commit,
+                mode,
                 None,  # issue_id
-                lesson, improvement, root_cause, optimization, trick,
+                lesson,
+                improvement,
+                root_cause,
+                optimization,
+                trick,
             )
 
             def safe_serialize(obj):
@@ -1011,10 +1323,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return {k: safe_serialize(v) for k, v in obj.items()}
                 elif isinstance(obj, (list, tuple)):
                     return [safe_serialize(i) for i in obj]
-                elif hasattr(obj, '__dict__'):
-                    return {k: safe_serialize(v) for k, v in obj.__dict__.items()
-                            if not k.startswith('_')}
-                elif callable(obj) and not isinstance(obj, (str, int, float, bool, list, dict, type(None))):
+                elif hasattr(obj, "__dict__"):
+                    return {
+                        k: safe_serialize(v)
+                        for k, v in obj.__dict__.items()
+                        if not k.startswith("_")
+                    }
+                elif callable(obj) and not isinstance(
+                    obj, (str, int, float, bool, list, dict, type(None))
+                ):
                     return str(obj)
                 else:
                     try:
@@ -1022,14 +1339,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         return obj
                     except (TypeError, ValueError):
                         return str(obj)
+
             safe = safe_serialize(result)
 
             # Record closure in sliding window for trend tracking
-            _closure_history.append({
-                "scarf": safe.get("scarf", {}).get("summary", {}).get("overall_score", 0),
-                "trust": safe.get("trust", {}).get("score", 0),
-                "cei": safe.get("cei", {}).get("score", 0),
-            })
+            _closure_history.append(
+                {
+                    "scarf": safe.get("scarf", {}).get("summary", {}).get("overall_score", 0),
+                    "trust": safe.get("trust", {}).get("score", 0),
+                    "cei": safe.get("cei", {}).get("score", 0),
+                }
+            )
 
             # 5. 反思持久化 — 执行者 (Claude) 提供的 lesson/improvement/root_cause/optimization
             #    合并为一条结构化记忆，通过 smart-remember 走完整分类管线入池
@@ -1047,10 +1367,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
                 # 至少有一个字段有内容才入库
                 any_content = (
-                    (lesson_text and len(lesson_text) > 5) or
-                    (improvement_text and len(improvement_text) > 5) or
-                    (root_cause_text and len(root_cause_text) > 5) or
-                    (optimization_text and len(optimization_text) > 5)
+                    (lesson_text and len(lesson_text) > 5)
+                    or (improvement_text and len(improvement_text) > 5)
+                    or (root_cause_text and len(root_cause_text) > 5)
+                    or (optimization_text and len(optimization_text) > 5)
                 )
                 if any_content:
                     try:
@@ -1058,6 +1378,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         from plastic_promise.skills.session_lifecycle import skill_session_init
                         from plastic_promise.skills.memory_operations import skill_smart_remember
                         from plastic_promise.skills.superpowers_stages import SKILL_DEFS as _SP_DEFS
+
                         sr_engine = SkillEngine(get_engine())
                         sr_engine.register(skill_session_init)
                         sr_engine.register(skill_smart_remember)
@@ -1079,13 +1400,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         step_id = safe.get("reflection", {}).get("step_id", "")
                         tags = ["closure", "domain:reflecting", f"step:{step_id}"]
 
-                        sr_result = await sr_engine.exec("smart-remember", {
-                            "content": structured_content,
-                            "memory_type": "reflection",
-                            "source": "step-closure",
-                            "scope": "global",
-                            "tags": tags,
-                        }, caller="claude")
+                        sr_result = await sr_engine.exec(
+                            "smart-remember",
+                            {
+                                "content": structured_content,
+                                "memory_type": "reflection",
+                                "source": "step-closure",
+                                "scope": "global",
+                                "tags": tags,
+                            },
+                            caller="claude",
+                        )
                         if sr_result.success and sr_result.data:
                             smart_memory_id = sr_result.data.get("memory_id", "")
                     except Exception as e:
@@ -1100,6 +1425,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         # === 审查域 ===
         elif name == "review_run":
             from plastic_promise.mcp.tools.review import handle_review_run
+
             return await handle_review_run(engine, arguments)
 
         # === SuperPowers 流水线阶段技能 (统一入口) ===
@@ -1109,6 +1435,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             # ── Chain validation: reject invalid stage transitions ──
             from plastic_promise.mcp.tools.skill_tracking import get_current_stage
             from plastic_promise.core.constants import SKILL_CHAIN_MAP as _CHAIN_MAP
+
             current = get_current_stage()
             if current and current != stage:
                 # Strip "sp-" prefix for lookup if needed
@@ -1119,40 +1446,68 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 # Normalize: remove sp- prefix for comparison
                 valid_next_normalized = [s.replace("sp-", "") for s in valid_next]
                 if lookup_stage not in valid_next and lookup_stage not in valid_next_normalized:
-                    return [TextContent(type="text", text=json.dumps({
-                        "error": "chain_violation",
-                        "message": f"Stage '{stage}' is not a valid successor of '{current}'. Valid next stages: {valid_next}",
-                        "current_stage": current,
-                        "valid_next": valid_next,
-                    }, ensure_ascii=False))]
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "chain_violation",
+                                    "message": f"Stage '{stage}' is not a valid successor of '{current}'. Valid next stages: {valid_next}",
+                                    "current_stage": current,
+                                    "valid_next": valid_next,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
             # ── End chain validation ──
             se = get_skill_engine()
             skill_name = f"sp-{stage}" if not stage.startswith("sp-") else stage
             result = await se.exec(skill_name, {"task_description": task_desc}, caller="trae")
             if not result.success:
-                return [TextContent(type="text", text=json.dumps(
-                    {"stage": stage, "success": False, "errors": result.errors},
-                    ensure_ascii=False))]
-            return [TextContent(type="text", text=json.dumps(
-                {"stage": stage, "success": True, "data": result.data},
-                ensure_ascii=False))]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {"stage": stage, "success": False, "errors": result.errors},
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"stage": stage, "success": True, "data": result.data}, ensure_ascii=False
+                    ),
+                )
+            ]
 
         elif name == "memory_sync_files":
             from plastic_promise.mcp.tools.memory import handle_memory_sync_files
+
             return await handle_memory_sync_files(engine, arguments)
 
         else:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": f"Unknown tool: {name}"}, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False),
+                )
+            ]
     except Exception as e:
         logging.exception(f"Tool {name} failed")
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": name}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text", text=json.dumps({"error": str(e), "tool": name}, ensure_ascii=False)
+            )
+        ]
 
 
 # ===================================================================
 # Resources
 # ===================================================================
+
 
 @server.list_resources()
 async def list_resources() -> list[Resource]:
@@ -1198,6 +1553,7 @@ async def read_resource(uri: str) -> str:
         return json.dumps(CORE_PRINCIPLES, ensure_ascii=False, indent=2)
     elif uri == "plastic-promise://systems":
         from plastic_promise.core.constants import DIGITAL_BODY_SYSTEMS
+
         return json.dumps(DIGITAL_BODY_SYSTEMS, ensure_ascii=False, indent=2)
     elif uri == "plastic-promise://trust-history":
         return json.dumps({"trust_history": [], "current_trust": 0.60}, ensure_ascii=False)
@@ -1211,6 +1567,7 @@ async def read_resource(uri: str) -> str:
 # ===================================================================
 # Prompts
 # ===================================================================
+
 
 @server.list_prompts()
 async def list_prompts() -> list[Prompt]:
@@ -1287,6 +1644,7 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
 # 启动入口
 # ===================================================================
 
+
 async def main():
     """MCP Server 启动入口 — 支持 stdio 和 SSE 双模式"""
     import sys
@@ -1323,12 +1681,14 @@ async def run_sse(port: int = 9020):
     logger = logging.getLogger("plastic-promise-sse")
     import signal
     import time as _time
+
     start_time = _time.time()
 
     sse = SseServerTransport("/messages")
 
     # Notification queue — issue transitions push here, /events streams
     import asyncio as _asyncio
+
     _notify_queue: _asyncio.Queue = _asyncio.Queue()
 
     def notify_issue_change(data: dict):
@@ -1340,17 +1700,17 @@ async def run_sse(port: int = 9020):
 
     class _NoOpResponse(Response):
         """Sentinel response — the SSE transport already handled the send via request._send."""
+
         async def __call__(self, scope, receive, send):
             pass  # response already sent by SSE transport — do nothing
 
     async def handle_sse(request: Request):
-        async with sse.connect_sse(
-            request.scope, request.receive, request._send
-        ) as (read_stream, write_stream):
+        async with sse.connect_sse(request.scope, request.receive, request._send) as (
+            read_stream,
+            write_stream,
+        ):
             init_options = server.create_initialization_options()
-            await server.run(
-                read_stream, write_stream, init_options, raise_exceptions=False
-            )
+            await server.run(read_stream, write_stream, init_options, raise_exceptions=False)
         return _NoOpResponse()
 
     async def handle_events(request: Request):
@@ -1361,15 +1721,17 @@ async def run_sse(port: int = 9020):
         import json as _json
 
         # Send SSE headers manually
-        await request._send({
-            "type": "http.response.start",
-            "status": 200,
-            "headers": [
-                (b"content-type", b"text/event-stream"),
-                (b"cache-control", b"no-cache"),
-                (b"connection", b"keep-alive"),
-            ],
-        })
+        await request._send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/event-stream"),
+                    (b"cache-control", b"no-cache"),
+                    (b"connection", b"keep-alive"),
+                ],
+            }
+        )
 
         # Send initial connected event
         body = f"data: {_json.dumps({'type': 'connected'})}\n\n".encode()
@@ -1386,9 +1748,11 @@ async def run_sse(port: int = 9020):
                 await request._send({"type": "http.response.body", "body": body, "more_body": True})
             except _asyncio.TimeoutError:
                 # Send heartbeat to keep connection alive
-                body = b"data: {\"type\":\"heartbeat\"}\n\n"
+                body = b'data: {"type":"heartbeat"}\n\n'
                 try:
-                    await request._send({"type": "http.response.body", "body": body, "more_body": True})
+                    await request._send(
+                        {"type": "http.response.body", "body": body, "more_body": True}
+                    )
                 except Exception:
                     break
 
@@ -1402,6 +1766,7 @@ async def run_sse(port: int = 9020):
         """接收外部推送并广播到 SSE /events。Daemon/Worker 状态变更入口。"""
         import json as _json
         from starlette.responses import JSONResponse
+
         try:
             body = await request.body()
             event = _json.loads(body.decode())
@@ -1420,12 +1785,18 @@ async def run_sse(port: int = 9020):
                             if "status:replaced" not in mtags:
                                 mtags.append("status:replaced")
                                 engine.update_memory_fields(mid, tags=mtags)
-                    engine.register_memory({
-                        "content": report_text,
-                        "memory_type": "reflection",
-                        "tags": ["audit", "domain:governing", f"score:{event.get('overall',0):.2f}"],
-                        "source": "maintenance_daemon",
-                    })
+                    engine.register_memory(
+                        {
+                            "content": report_text,
+                            "memory_type": "reflection",
+                            "tags": [
+                                "audit",
+                                "domain:governing",
+                                f"score:{event.get('overall', 0):.2f}",
+                            ],
+                            "source": "maintenance_daemon",
+                        }
+                    )
                 except Exception:
                     pass
 
@@ -1457,34 +1828,41 @@ async def run_sse(port: int = 9020):
     async def health(request):
         import json as _json
         from starlette.responses import JSONResponse
-        return JSONResponse({
-            "status": "ok",
-            "uptime": round(_time.time() - start_time, 1),
-            "version": "0.1.0",
-            "pid": os.getpid(),
-        })
+
+        return JSONResponse(
+            {
+                "status": "ok",
+                "uptime": round(_time.time() - start_time, 1),
+                "version": "0.1.0",
+                "pid": os.getpid(),
+            }
+        )
 
     async def api_stats(request):
         """Return memory pool + body system statistics."""
         import json as _json
         from starlette.responses import JSONResponse
+
         try:
             engine = get_engine()
             stats_raw = engine.memory_stats_json()
             stats = _json.loads(stats_raw) if isinstance(stats_raw, str) else stats_raw
             from plastic_promise.core.constants import DIGITAL_BODY_SYSTEMS
+
             systems = {}
             for k, v in DIGITAL_BODY_SYSTEMS.items():
                 systems[k] = {
                     "name": v.get("name", k),
                     "maturity": v.get("maturity", 0.0),
                 }
-            return JSONResponse({
-                "memory": stats,
-                "body_systems": systems,
-                "uptime": round(_time.time() - start_time, 1),
-                "version": "0.1.0",
-            })
+            return JSONResponse(
+                {
+                    "memory": stats,
+                    "body_systems": systems,
+                    "uptime": round(_time.time() - start_time, 1),
+                    "version": "0.1.0",
+                }
+            )
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1492,9 +1870,11 @@ async def run_sse(port: int = 9020):
         """Return active issue list."""
         import json as _json
         from starlette.responses import JSONResponse
+
         try:
             engine = get_engine()
             from plastic_promise.mcp.tools.management import handle_issue_list
+
             result = await handle_issue_list(engine, {})
             data = _json.loads(result[0].text) if result else {"issues": []}
             return JSONResponse(data)
@@ -1505,9 +1885,11 @@ async def run_sse(port: int = 9020):
         """Return trust/defense status."""
         import json as _json
         from starlette.responses import JSONResponse
+
         try:
             engine = get_engine()
             from plastic_promise.mcp.tools.audit_defense import handle_defense, handle_audit_run
+
             result = await handle_defense(engine, {"action": "get"})
             data = _json.loads(result[0].text) if result else {}
             # Add audit summary
@@ -1525,14 +1907,19 @@ async def run_sse(port: int = 9020):
         """Lightweight HTTP endpoint for skill_auto_track (used by hook scripts)."""
         import json as _json
         from starlette.responses import JSONResponse
+
         try:
             body = await request.json()
             engine = get_engine()
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_auto_track
-            result = await handle_skill_auto_track(engine, {
-                "phase": body.get("phase", "start"),
-                "skill_name": body.get("skill_name", ""),
-            })
+
+            result = await handle_skill_auto_track(
+                engine,
+                {
+                    "phase": body.get("phase", "start"),
+                    "skill_name": body.get("skill_name", ""),
+                },
+            )
             data = _json.loads(result[0].text) if result else {}
             return JSONResponse(data)
         except Exception as e:
@@ -1541,6 +1928,7 @@ async def run_sse(port: int = 9020):
     async def dashboard(request):
         """Serve the monitoring dashboard HTML page."""
         from starlette.responses import HTMLResponse
+
         html = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1667,18 +2055,21 @@ setInterval(refresh, 5000);
         await sse.handle_post_message(request.scope, request.receive, request._send)
         return _NoOpResponse()
 
-    app = Starlette(routes=[
-        Route("/sse", endpoint=handle_sse, methods=["GET"]),
-        Route("/messages", endpoint=handle_messages, methods=["POST"]),
-        Route("/events", endpoint=handle_events, methods=["GET"]),
-        Route("/notify", endpoint=handle_notify, methods=["POST"]),
-        Route("/health", endpoint=health),
-        Route("/api/stats", endpoint=api_stats),
-        Route("/api/issues", endpoint=api_issues),
-        Route("/api/trust", endpoint=api_trust),
-        Route("/api/skill-track", endpoint=api_skill_track, methods=["POST"]),
-        Route("/dashboard", endpoint=dashboard),
-    ], on_shutdown=[shutdown])
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse, methods=["GET"]),
+            Route("/messages", endpoint=handle_messages, methods=["POST"]),
+            Route("/events", endpoint=handle_events, methods=["GET"]),
+            Route("/notify", endpoint=handle_notify, methods=["POST"]),
+            Route("/health", endpoint=health),
+            Route("/api/stats", endpoint=api_stats),
+            Route("/api/issues", endpoint=api_issues),
+            Route("/api/trust", endpoint=api_trust),
+            Route("/api/skill-track", endpoint=api_skill_track, methods=["POST"]),
+            Route("/dashboard", endpoint=dashboard),
+        ],
+        on_shutdown=[shutdown],
+    )
 
     logger.info(f"Plastic Promise MCP Server v0.1.0")
     logger.info(f"SSE endpoint: http://127.0.0.1:{port}/sse")
@@ -1690,5 +2081,6 @@ setInterval(refresh, 5000);
 
 if __name__ == "__main__":
     import asyncio
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
     asyncio.run(main())

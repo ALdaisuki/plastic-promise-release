@@ -1,5 +1,7 @@
 """Commitment Engineering Integration — post_task mode + TrustManager multi-agent"""
+
 import os, sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -7,6 +9,7 @@ class TestCommitmentIntegration:
     def test_post_task_light_mode(self):
         """post_task(mode='light') 只做 alignment，不抛异常"""
         from plastic_promise.loop.soul_loop import SoulLoop
+
         loop = SoulLoop()
         result = loop.post_task("委派 Issue #12 给 pi_builder", mode="light", issue_id="issue_12")
         assert "alignment" in result
@@ -18,6 +21,7 @@ class TestCommitmentIntegration:
     def test_post_task_full_mode_backward_compat(self):
         """post_task(mode='full') 保持现有六联闭环行为"""
         from plastic_promise.loop.soul_loop import SoulLoop
+
         loop = SoulLoop()
         result = loop.post_task("验收通过", mode="full")
         assert "alignment" in result
@@ -27,6 +31,7 @@ class TestCommitmentIntegration:
     def test_trust_manager_multi_agent(self):
         """TrustManager 支持按 target 独立追踪信任分"""
         from plastic_promise.defense.soul_enforcer import TrustManager
+
         tm = TrustManager()
 
         # Claude 默认 trust = 0.60
@@ -46,9 +51,10 @@ class TestCommitmentIntegration:
     def test_trust_tier_per_agent(self):
         """不同 Agent 有独立的 trust tier"""
         from plastic_promise.defense.soul_enforcer import TrustManager
+
         tm = TrustManager()
         tm.boost(0.25, target="pi_builder")  # 0.60 + 0.25 = 0.85 → high
-        tm.decay(0.35, target="pi_fixer")    # 0.60 - 0.35 = 0.25 → critical
+        tm.decay(0.35, target="pi_fixer")  # 0.60 - 0.35 = 0.25 → critical
 
         assert tm.tier("pi_builder") == "high"
         assert tm.tier("pi_fixer") == "critical"

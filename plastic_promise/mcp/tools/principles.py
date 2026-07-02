@@ -59,24 +59,39 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
             principles = [p for p in principles if p["domain"] in (domain_hint, "all")]
 
         # consequences and recommendations now come from CORE_PRINCIPLES fields
-        return [TextContent(type="text", text=json.dumps({
-            "task_type": task_type,
-            "activated": [
-                {
-                    "id": p["id"],
-                    "name": p["name"],
-                    "content": p["content"],
-                    "consequence": p.get("consequence", ""),
-                    "recommendation": p.get("recommendation", ""),
-                    "domain": p["domain"],
-                }
-                for p in principles
-            ],
-            "count": len(principles),
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "task_type": task_type,
+                        "activated": [
+                            {
+                                "id": p["id"],
+                                "name": p["name"],
+                                "content": p["content"],
+                                "consequence": p.get("consequence", ""),
+                                "recommendation": p.get("recommendation", ""),
+                                "domain": p["domain"],
+                            }
+                            for p in principles
+                        ],
+                        "count": len(principles),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "principle_activate"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"error": str(e), "tool": "principle_activate"}, ensure_ascii=False
+                ),
+            )
+        ]
 
 
 async def handle_principle_evaluate(engine: Any, args: dict) -> list[TextContent]:
@@ -99,26 +114,45 @@ async def handle_principle_evaluate(engine: Any, args: dict) -> list[TextContent
         principle_id = args["principle_id"]
         scenario = args.get("scenario", "")
 
-        principle = next(
-            (p for p in CORE_PRINCIPLES if p["id"] == principle_id), None
-        )
+        principle = next((p for p in CORE_PRINCIPLES if p["id"] == principle_id), None)
         if not principle:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": f"Principle {principle_id} not found"}, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"error": f"Principle {principle_id} not found"}, ensure_ascii=False
+                    ),
+                )
+            ]
 
         # Counterfactual: what happens if violated — reads from CORE_PRINCIPLES
         consequence = principle.get("consequence", "未知后果")
 
-        return [TextContent(type="text", text=json.dumps({
-            "principle_id": principle_id,
-            "name": principle["name"],
-            "content": principle["content"],
-            "scenario": scenario,
-            "violation_consequence": consequence,
-            "recommendation": (
-                f"保持对原则 {principle_id} 的遵守，避免: {consequence}"
-            ),
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "principle_id": principle_id,
+                        "name": principle["name"],
+                        "content": principle["content"],
+                        "scenario": scenario,
+                        "violation_consequence": consequence,
+                        "recommendation": (
+                            f"保持对原则 {principle_id} 的遵守，避免: {consequence}"
+                        ),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "principle_evaluate"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"error": str(e), "tool": "principle_evaluate"}, ensure_ascii=False
+                ),
+            )
+        ]

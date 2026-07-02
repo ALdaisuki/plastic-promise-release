@@ -43,6 +43,7 @@ def run_env_checks(skip_ollama: bool = False) -> tuple[bool, list[str]]:
     # 3. LanceDB
     try:
         import lancedb  # noqa: F401
+
         messages.append("[ENV]   LanceDB ....................... [OK]")
     except ImportError:
         messages.append("[ENV]   LanceDB ....................... [FAIL] (not installed)")

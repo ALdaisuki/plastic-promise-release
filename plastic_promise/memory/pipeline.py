@@ -24,8 +24,9 @@ class MemoryPipeline:
         embedded   — 向量嵌入（细分），准备入主池
     """
 
-    def __init__(self, rec_mem=None, embedder=None, tier_manager=None,
-                 domain_manager=None, lancedb=None) -> None:
+    def __init__(
+        self, rec_mem=None, embedder=None, tier_manager=None, domain_manager=None, lancedb=None
+    ) -> None:
         self._buffer: Dict[str, Dict[str, Any]] = {}
         self.rec_mem = rec_mem
         self.embedder = embedder
@@ -40,8 +41,12 @@ class MemoryPipeline:
     # ================================================================
 
     def store_urgent(
-        self, content: str, memory_type: str = "experience", source: str = "user",
-        entity_ids: list[str] = None, custom_tags: list[str] = None,
+        self,
+        content: str,
+        memory_type: str = "experience",
+        source: str = "user",
+        entity_ids: list[str] = None,
+        custom_tags: list[str] = None,
         domain_hint: str = None,
         max_llm_calls: int = 3,
         skip_embed: bool = False,
@@ -61,6 +66,7 @@ class MemoryPipeline:
         extracted_list = []
         try:
             from plastic_promise.smart_extractor import extract_memories
+
             extracted_list = extract_memories(content, max_llm_calls=max_llm_calls)
         except Exception:
             pass  # Fallback: raw content without extraction metadata
@@ -128,8 +134,11 @@ class MemoryPipeline:
 
         # Fix #1: Log multi-extraction for traceability
         if len(extracted_list) > 1:
-            logging.info("store_urgent: %d memories extracted from content, returning first ID %s",
-                         len(extracted_list), first_mid)
+            logging.info(
+                "store_urgent: %d memories extracted from content, returning first ID %s",
+                len(extracted_list),
+                first_mid,
+            )
 
         return first_mid
 
@@ -139,8 +148,12 @@ class MemoryPipeline:
         Returns:
             dict with counts per stage and migration total.
         """
-        counts = {"raw→tagged": 0, "tagged→classified": 0,
-                  "classified→embedded": 0, "embedded→migrated": 0}
+        counts = {
+            "raw→tagged": 0,
+            "tagged→classified": 0,
+            "classified→embedded": 0,
+            "embedded→migrated": 0,
+        }
 
         # Stage 1: raw → tagged (noise filter + keyword extraction)
         counts["raw→tagged"] = self._process_raw_to_tagged()
@@ -198,31 +211,63 @@ class MemoryPipeline:
         """
         # Guard: structured markers carry their own semantics via custom_tags;
         # word-splitting them produces garbage like "[SKILL", "START]".
-        if content.startswith(("[SKILL START]", "[SKILL COMPLETE]",
-                               "[SKILL ARTIFACT]", "[SKILL ABANDONED]",
-                               "[AUTO INJECT]")):
+        if content.startswith(
+            (
+                "[SKILL START]",
+                "[SKILL COMPLETE]",
+                "[SKILL ARTIFACT]",
+                "[SKILL ABANDONED]",
+                "[AUTO INJECT]",
+            )
+        ):
             return []
 
         tags: list[str] = []
         seen: set[str] = set()
 
         # Layer 1: 规则提取 (always)
-        has_cjk = bool(re.search(r'[一-鿿]', content))
+        has_cjk = bool(re.search(r"[一-鿿]", content))
         if has_cjk:
             for i in range(len(content) - 1):
-                bigram = content[i:i+2]
-                if re.search(r'[一-鿿]', bigram) and bigram not in seen:
+                bigram = content[i : i + 2]
+                if re.search(r"[一-鿿]", bigram) and bigram not in seen:
                     tags.append(bigram)
                     seen.add(bigram)
                 if len(tags) >= 5:
                     break
         if not tags:
-            tags = [w for w in re.split(r'\s+|[,，。.!！?？;；:：\n]+', content)
-                    if len(w) >= 2 and w.lower() not in {'the','this','that','and','for','was','are','not','but','all','can','has','had','get','got','put','set','use','used'}][:5]
+            tags = [
+                w
+                for w in re.split(r"\s+|[,，。.!！?？;；:：\n]+", content)
+                if len(w) >= 2
+                and w.lower()
+                not in {
+                    "the",
+                    "this",
+                    "that",
+                    "and",
+                    "for",
+                    "was",
+                    "are",
+                    "not",
+                    "but",
+                    "all",
+                    "can",
+                    "has",
+                    "had",
+                    "get",
+                    "got",
+                    "put",
+                    "set",
+                    "use",
+                    "used",
+                }
+            ][:5]
 
         # Layer 2: 种子标签匹配 (从预定义域标签中匹配)
         try:
             from plastic_promise.core.domain_manager import PREDEFINED_DOMAINS
+
             for domain_cfg in PREDEFINED_DOMAINS.values():
                 for seed_tag in domain_cfg.get("tags", set()):
                     if seed_tag.lower() in content.lower() and seed_tag not in seen:
@@ -244,6 +289,7 @@ class MemoryPipeline:
         for mid, record in items:
             try:
                 from plastic_promise.core.noise_filter import is_noise
+
                 if is_noise(record["content"]):
                     del self._buffer[mid]
                     continue
@@ -262,6 +308,7 @@ class MemoryPipeline:
             if self._tier_manager is not None:
                 try:
                     from plastic_promise.memory.soul_memory import MemoryRecord
+
                     mr = MemoryRecord(
                         content=record["content"],
                         memory_type=record["memory_type"],
@@ -275,8 +322,8 @@ class MemoryPipeline:
 
             # 新增: domain 分配
             tags = record.get("tags", [])
-            if hasattr(self, '_dm') and self._dm is not None:
-                record["domain"] = self._dm.assign(tags, agent_id=getattr(self, '_owner', ''))
+            if hasattr(self, "_dm") and self._dm is not None:
+                record["domain"] = self._dm.assign(tags, agent_id=getattr(self, "_owner", ""))
             else:
                 record["domain"] = "uncategorized"
 
@@ -293,7 +340,7 @@ class MemoryPipeline:
 
         count = 0
         for i in range(0, len(items), self._batch_size):
-            batch = items[i:i + self._batch_size]
+            batch = items[i : i + self._batch_size]
             contents = [r["content"] for _, r in batch]
             # Skip Ollama embed for items marked skip_embed (e.g. auto_inject structured content)
             skip_set = {mid for mid, r in batch if r.get("skip_embed")}
@@ -310,7 +357,9 @@ class MemoryPipeline:
             except Exception as e:
                 logging.warning(
                     "Embed batch failed, deferring %d items (skip_set=%d): %s",
-                    len(batch), len(skip_set), e
+                    len(batch),
+                    len(skip_set),
+                    e,
                 )
                 for _mid, record in batch:
                     tags = record.setdefault("tags", [])
@@ -355,7 +404,7 @@ class MemoryPipeline:
                     del self._buffer[mid]
                     continue
 
-                engine = getattr(self.rec_mem, '_engine', None)
+                engine = getattr(self.rec_mem, "_engine", None)
                 vec = record.get("vector")
 
                 # ---- Zero-vector guard: reject fallback embeddings ----
@@ -388,23 +437,30 @@ class MemoryPipeline:
                                 existing_eids = set(mem.get("entity_ids", []) if mem else [])
                                 new_eids = set(record.get("entity_ids", []))
                                 if new_eids - existing_eids:
-                                    engine.update_memory_fields(dup_id, entity_ids=list(existing_eids | new_eids))
-                            if dup_id in getattr(self.rec_mem, '_records', {}):
+                                    engine.update_memory_fields(
+                                        dup_id, entity_ids=list(existing_eids | new_eids)
+                                    )
+                            if dup_id in getattr(self.rec_mem, "_records", {}):
                                 py_rec = self.rec_mem._records[dup_id]
                                 py_rec.access_count += 1
                                 py_rec.worth_success += 1
                                 py_rec.last_accessed = now_iso
                                 # Merge entity_ids into Python record as well
-                                py_eids = set(getattr(py_rec, 'entity_ids', []))
+                                py_eids = set(getattr(py_rec, "entity_ids", []))
                                 new_eids = set(record.get("entity_ids", []))
                                 if new_eids - py_eids:
                                     py_rec.entity_ids = list(py_eids | new_eids)
                                 # ---- Gap 1 fix: Recompute effective_half_life via AccessReinforcement ----
                                 try:
-                                    from plastic_promise.core.decay_engine import AccessReinforcement
+                                    from plastic_promise.core.decay_engine import (
+                                        AccessReinforcement,
+                                    )
                                     from plastic_promise.core.constants import DECAY_CONFIG
-                                    tier = getattr(py_rec, 'tier', 'L1')
-                                    base_hl = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])["half_life_days"]
+
+                                    tier = getattr(py_rec, "tier", "L1")
+                                    base_hl = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])[
+                                        "half_life_days"
+                                    ]
                                     reinforcer = AccessReinforcement()
                                     _, new_hl = reinforcer.compute_boost(
                                         access_count=py_rec.access_count,
@@ -415,11 +471,13 @@ class MemoryPipeline:
                                     )
                                     py_rec.effective_half_life = new_hl
                                     if engine.memory_exists(dup_id):
-                                        engine.update_memory_fields(dup_id, effective_half_life=new_hl)
+                                        engine.update_memory_fields(
+                                            dup_id, effective_half_life=new_hl
+                                        )
                                 except Exception:
                                     pass  # Graceful: boost is a quality improvement, not a hard gate
                             # SQLite incremental update — includes last_accessed (Fix #6) and entity_ids merge (Fix #7)
-                            sqlite = getattr(engine, '_sqlite', None)
+                            sqlite = getattr(engine, "_sqlite", None)
                             if sqlite is not None:
                                 try:
                                     # Merge entity_ids
@@ -429,7 +487,11 @@ class MemoryPipeline:
                                     merged_eids = list(set(record.get("entity_ids", [])))
                                     if existing_row and existing_row[0]:
                                         try:
-                                            old_eids = json.loads(existing_row[0]) if isinstance(existing_row[0], str) else existing_row[0]
+                                            old_eids = (
+                                                json.loads(existing_row[0])
+                                                if isinstance(existing_row[0], str)
+                                                else existing_row[0]
+                                            )
                                             merged_eids = list(set(old_eids + merged_eids))
                                         except Exception:
                                             pass
@@ -437,16 +499,20 @@ class MemoryPipeline:
                                         "UPDATE memories SET access_count = access_count + 1, "
                                         "worth_success = worth_success + 1, "
                                         "last_accessed = ?, entity_ids = ? WHERE id = ?",
-                                        (now_iso, json.dumps(merged_eids), dup_id)
+                                        (now_iso, json.dumps(merged_eids), dup_id),
                                     )
                                     sqlite._conn.commit()
                                 except Exception:
                                     pass
                             del self._buffer[mid]
-                            logging.info("Dedup: %s -> merged into %s (similarity >= 0.85)", mid, dup_id)
+                            logging.info(
+                                "Dedup: %s -> merged into %s (similarity >= 0.85)", mid, dup_id
+                            )
                             continue  # skip store
                     except Exception as e:
-                        logging.warning("Dedup check failed for %s: %s -- proceeding with store", mid, e)
+                        logging.warning(
+                            "Dedup check failed for %s: %s -- proceeding with store", mid, e
+                        )
 
                 # ---- Step 4b: QualityGate scoring ----
                 extracted = record.get("extracted", {})
@@ -474,8 +540,12 @@ class MemoryPipeline:
 
                 if decision == "discard":
                     del self._buffer[mid]
-                    logging.info("QualityGate: %s discarded (score=%.3f < %.2f)",
-                                 mid, gate_score, QualityGate.THRESHOLD_LOW)
+                    logging.info(
+                        "QualityGate: %s discarded (score=%.3f < %.2f)",
+                        mid,
+                        gate_score,
+                        QualityGate.THRESHOLD_LOW,
+                    )
                     continue
 
                 # ---- Step 4c: Store ----
@@ -508,33 +578,45 @@ class MemoryPipeline:
 
                 # Attach quality metadata
                 if decision == "low_quality":
-                    if hasattr(self.rec_mem, '_records') and stored.memory_id in self.rec_mem._records:
+                    if (
+                        hasattr(self.rec_mem, "_records")
+                        and stored.memory_id in self.rec_mem._records
+                    ):
                         py_rec = self.rec_mem._records[stored.memory_id]
                         py_rec.metadata["quality"] = "low_quality"
                         py_rec.metadata["gate_score"] = round(gate_score, 4)
-                    logging.info("QualityGate: %s stored with low_quality tag (score=%.3f)",
-                                 stored.memory_id, gate_score)
+                    logging.info(
+                        "QualityGate: %s stored with low_quality tag (score=%.3f)",
+                        stored.memory_id,
+                        gate_score,
+                    )
 
                 # ---- Gap 3: Initialize decay_multiplier + effective_half_life on store ----
                 try:
                     from plastic_promise.core.decay_engine import WeibullDecayCalculator
                     from plastic_promise.core.constants import DECAY_CONFIG
+
                     wdc = WeibullDecayCalculator()
                     dm = wdc.compute_decay(tier, created_at or datetime.datetime.now().isoformat())
                     tier_cfg = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])
                     base_hl = tier_cfg["half_life_days"]
                     # New memory: effective_half_life starts at base (no access history yet)
-                    if hasattr(self.rec_mem, '_records') and stored.memory_id in self.rec_mem._records:
+                    if (
+                        hasattr(self.rec_mem, "_records")
+                        and stored.memory_id in self.rec_mem._records
+                    ):
                         py_rec = self.rec_mem._records[stored.memory_id]
                         py_rec.decay_multiplier = dm
                         py_rec.effective_half_life = base_hl
                     if engine is not None:
-                        engine.update_memory_fields(stored.memory_id, decay_multiplier=dm, effective_half_life=base_hl)
-                    sqlite = getattr(engine, '_sqlite', None)
+                        engine.update_memory_fields(
+                            stored.memory_id, decay_multiplier=dm, effective_half_life=base_hl
+                        )
+                    sqlite = getattr(engine, "_sqlite", None)
                     if sqlite is not None:
                         sqlite._conn.execute(
                             "UPDATE memories SET decay_multiplier = ?, effective_half_life = ? WHERE id = ?",
-                            (dm, base_hl, stored.memory_id)
+                            (dm, base_hl, stored.memory_id),
                         )
                         sqlite._conn.commit()
                 except Exception:
@@ -544,7 +626,7 @@ class MemoryPipeline:
                 if engine is not None:
                     if vec:
                         engine.update_memory_fields(stored.memory_id, _vector=vec)
-                        ldb = getattr(engine, '_ldb', None)
+                        ldb = getattr(engine, "_ldb", None)
                         if ldb is not None:
                             try:
                                 ldb.insert(
@@ -556,14 +638,17 @@ class MemoryPipeline:
                                     scope=record.get("scope", "global"),
                                 )
                             except Exception as e:
-                                logging.warning("LanceDB dual-write failed for %s: %s", stored.memory_id, e)
+                                logging.warning(
+                                    "LanceDB dual-write failed for %s: %s", stored.memory_id, e
+                                )
                     engine.update_memory_fields(stored.memory_id, tags=tags, domain=domain_hint)
-                    sqlite = getattr(engine, '_sqlite', None)
+                    sqlite = getattr(engine, "_sqlite", None)
                     if sqlite is not None:
                         import json
+
                         sqlite._conn.execute(
                             "UPDATE memories SET tags = ?, domain = ? WHERE id = ?",
-                            (json.dumps(tags), domain_hint, stored.memory_id)
+                            (json.dumps(tags), domain_hint, stored.memory_id),
                         )
                         sqlite._conn.commit()
 
@@ -571,9 +656,13 @@ class MemoryPipeline:
                 entity_ids = record.get("entity_ids", [])
                 if entity_ids and engine is not None:
                     for eid in entity_ids:
-                        edge = {"from": stored.memory_id, "to": eid,
-                                "relation": "references", "weight": 0.5}
-                        graph_edges = getattr(engine, '_graph_edges', [])
+                        edge = {
+                            "from": stored.memory_id,
+                            "to": eid,
+                            "relation": "references",
+                            "weight": 0.5,
+                        }
+                        graph_edges = getattr(engine, "_graph_edges", [])
                         if edge not in graph_edges:
                             graph_edges.append(edge)
 

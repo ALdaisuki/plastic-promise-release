@@ -158,13 +158,9 @@ class ProprioceptionManager:
 
         suggestions: List[str] = []
         if variety_score < 0.5:
-            suggestions.append(
-                "任务词汇多样性较低，建议尝试不同领域的任务以保持探索活力"
-            )
+            suggestions.append("任务词汇多样性较低，建议尝试不同领域的任务以保持探索活力")
         if len(self.recent_tasks) >= self.window_size:
-            suggestions.append(
-                f"已达到窗口上限（{self.window_size}），旧任务将被自动淘汰"
-            )
+            suggestions.append(f"已达到窗口上限（{self.window_size}），旧任务将被自动淘汰")
 
         return {
             "dominant_patterns": dominant_patterns,

@@ -14,9 +14,7 @@ def check_bootstrap(db_path: str) -> tuple[bool, str]:
 
     try:
         conn = sqlite3.connect(db_path)
-        cursor = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE tags LIKE '%seed:true%'"
-        )
+        cursor = conn.execute("SELECT COUNT(*) FROM memories WHERE tags LIKE '%seed:true%'")
         count = cursor.fetchone()[0]
         conn.close()
 

@@ -88,15 +88,15 @@ CREATE INDEX IF NOT EXISTS idx_metric_name_time ON metric_history(metric_name, c
 """
 
 DEFAULT_SUBSCRIPTIONS = [
-    ("pi_fixer",    "fix_*",       3, '["fix","memory","orphan","stale","gc","decay"]'),
-    ("pi_fixer",    "gc_*",        3, '["cleanup","decay","zombie"]'),
-    ("pi_builder",  "build_*",     3, '["build","implement","scaffold","refactor"]'),
-    ("pi_builder",  "refactor_*",  3, '["decouple","module","optimize"]'),
-    ("pi_reviewer", "review_*",    3, '["review","audit","quality","trend"]'),
+    ("pi_fixer", "fix_*", 3, '["fix","memory","orphan","stale","gc","decay"]'),
+    ("pi_fixer", "gc_*", 3, '["cleanup","decay","zombie"]'),
+    ("pi_builder", "build_*", 3, '["build","implement","scaffold","refactor"]'),
+    ("pi_builder", "refactor_*", 3, '["decouple","module","optimize"]'),
+    ("pi_reviewer", "review_*", 3, '["review","audit","quality","trend"]'),
     ("pi_reviewer", "investigate_*", 2, '["recurrence","trust","anomaly"]'),
-    ("claude",      "audit_*",     1, '["architecture","coupling","security"]'),
-    ("claude",      "investigate_*", 1, '["trust","drop","escalation"]'),
-    ("claude",      None,          1, None),
+    ("claude", "audit_*", 1, '["architecture","coupling","security"]'),
+    ("claude", "investigate_*", 1, '["trust","drop","escalation"]'),
+    ("claude", None, 1, None),
 ]
 
 
@@ -111,6 +111,7 @@ def ensure_task_tables(conn):
     # NOTE: SQLite UNIQUE treats NULLs as distinct, so for NULL task_type_filter
     # we must check existence explicitly to avoid duplicates on re-run.
     import json
+
     for agent, filt, prio, keywords in DEFAULT_SUBSCRIPTIONS:
         if filt is None:
             existing = conn.execute(

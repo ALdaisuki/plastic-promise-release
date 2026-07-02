@@ -11,7 +11,9 @@ from plastic_promise.defense.soul_audit import SoulAuditor, AuditReport
 from plastic_promise.defense.trust_store import TrustStore
 
 __all__ = [
-    "SoulEnforcer", "TrustManager",
-    "SoulAuditor", "AuditReport",
+    "SoulEnforcer",
+    "TrustManager",
+    "SoulAuditor",
+    "AuditReport",
     "TrustStore",
 ]

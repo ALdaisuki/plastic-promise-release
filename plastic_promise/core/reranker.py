@@ -41,7 +41,7 @@ def cross_encode_rerank(
 
     # ── Cache check ──
     cache_key = hashlib.sha256(
-        f"{query}|{'|'.join(cid for cid, _, _ in candidates[:top_k * 2])}".encode()
+        f"{query}|{'|'.join(cid for cid, _, _ in candidates[: top_k * 2])}".encode()
     ).hexdigest()
     now = time.time()
     with _rerank_cache_lock:
@@ -52,8 +52,7 @@ def cross_encode_rerank(
             del _rerank_cache[cache_key]
 
     passages = "\n\n".join(
-        f"[{i}] {c[:300]}"
-        for i, (_, c, _) in enumerate(candidates[:top_k * 2])
+        f"[{i}] {c[:300]}" for i, (_, c, _) in enumerate(candidates[: top_k * 2])
     )
     prompt = f"""Rate each passage's relevance to the query on a scale of 0-100.
 Query: {query[:200]}

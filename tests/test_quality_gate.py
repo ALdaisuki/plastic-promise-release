@@ -94,11 +94,13 @@ class TestQualityGate:
         extracted = {"category": "fact", "confidence": 0.8}
 
         # L1: 10 days > 3d half-life → significant decay
-        score_l1 = gate.score(extracted=extracted, tags=[], domain_hint=None,
-                              created_at=old_date, tier="L1")
+        score_l1 = gate.score(
+            extracted=extracted, tags=[], domain_hint=None, created_at=old_date, tier="L1"
+        )
         # L3: 10 days << 90d half-life → mild decay
-        score_l3 = gate.score(extracted=extracted, tags=[], domain_hint=None,
-                              created_at=old_date, tier="L3")
+        score_l3 = gate.score(
+            extracted=extracted, tags=[], domain_hint=None, created_at=old_date, tier="L3"
+        )
         # L3 should score higher (fresher) than L1
         assert score_l3 > score_l1, f"L3({score_l3:.3f}) should be > L1({score_l1:.3f})"
 
@@ -107,9 +109,11 @@ class TestQualityGate:
         gate = QualityGate()
         old_date = "2026-06-20T00:00:00"
         # Both should work without error
-        score_none = gate.score(extracted={"confidence": 0.8}, tags=[],
-                                created_at=old_date, tier=None)
-        score_garbage = gate.score(extracted={"confidence": 0.8}, tags=[],
-                                   created_at=old_date, tier="garbage")
+        score_none = gate.score(
+            extracted={"confidence": 0.8}, tags=[], created_at=old_date, tier=None
+        )
+        score_garbage = gate.score(
+            extracted={"confidence": 0.8}, tags=[], created_at=old_date, tier="garbage"
+        )
         assert 0.0 <= score_none <= 1.0
         assert 0.0 <= score_garbage <= 1.0

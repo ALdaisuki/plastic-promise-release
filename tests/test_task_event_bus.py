@@ -1,4 +1,5 @@
 """Tests for TaskEventBus — SSE broadcasting and subscription matching."""
+
 import pytest
 from plastic_promise.core.task_event_bus import TaskEventBus, get_event_bus
 
@@ -20,9 +21,7 @@ async def test_event_bus_broadcast():
         received.append(payload)
 
     bus.register("pi_fixer", fake_send)
-    notified = await bus.broadcast(
-        "task:new", {"task_id": "t_test"}, ["pi_fixer"]
-    )
+    notified = await bus.broadcast("task:new", {"task_id": "t_test"}, ["pi_fixer"])
     assert notified == 1
     assert len(received) == 1
     assert "task:new" in received[0]
@@ -32,9 +31,7 @@ async def test_event_bus_broadcast():
 async def test_event_bus_offline_agent():
     """Broadcasting to an unregistered agent returns 0, not an error."""
     bus = TaskEventBus()
-    notified = await bus.broadcast(
-        "task:new", {"task_id": "t_test"}, ["offline_agent"]
-    )
+    notified = await bus.broadcast("task:new", {"task_id": "t_test"}, ["offline_agent"])
     assert notified == 0
 
 

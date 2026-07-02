@@ -1,4 +1,5 @@
 """DomainManager 单元测试"""
+
 import pytest
 from plastic_promise.core.domain_manager import DomainManager, DomainInfo, PREDEFINED_DOMAINS
 
@@ -30,6 +31,7 @@ class TestDomainManager:
 
     def test_assign_to_candidate_then_promote(self):
         import time
+
         dm = DomainManager(db_path=":memory:")
         unique = f"ztag_{int(time.time() * 1000) % 100000}"
         # 第一次: 返回 uncategorized, 但候选域已创建
@@ -73,6 +75,7 @@ class TestDomainManager:
 
     def test_thread_safety_assign(self):
         import threading
+
         dm = DomainManager(db_path=":memory:")
         results = []
 

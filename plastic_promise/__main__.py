@@ -7,6 +7,7 @@
     # SSE 多 Agent 共享模式
     python -m plastic_promise --sse 9020
 """
+
 import sys
 import asyncio
 import logging
@@ -26,6 +27,7 @@ def main():
         sys.argv = [sys.argv[0]]
 
     from plastic_promise.mcp.server import main as server_main
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(message)s",

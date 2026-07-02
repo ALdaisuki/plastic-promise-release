@@ -23,9 +23,19 @@ DAYS_BETWEEN_CASES = [
     ("cross year: Jan 1 → Dec 31", datetime.date(2027, 1, 1), datetime.date(2026, 12, 31), 1),
     ("cross year: full year span", datetime.date(2026, 1, 1), datetime.date(2027, 2, 1), 396),
     # --- leap year: 2024 (leap), 2025 (non-leap) ---
-    ("leap year: Feb 28 → Feb 29 (2024)", datetime.date(2024, 2, 28), datetime.date(2024, 2, 29), 1),
+    (
+        "leap year: Feb 28 → Feb 29 (2024)",
+        datetime.date(2024, 2, 28),
+        datetime.date(2024, 2, 29),
+        1,
+    ),
     ("leap year: Feb 28 → Mar 1 (2024)", datetime.date(2024, 2, 28), datetime.date(2024, 3, 1), 2),
-    ("non-leap year: Feb 28 → Mar 1 (2025)", datetime.date(2025, 2, 28), datetime.date(2025, 3, 1), 1),
+    (
+        "non-leap year: Feb 28 → Mar 1 (2025)",
+        datetime.date(2025, 2, 28),
+        datetime.date(2025, 3, 1),
+        1,
+    ),
     ("leap year: full leap span", datetime.date(2024, 1, 1), datetime.date(2025, 1, 1), 366),
     ("non-leap year: full span", datetime.date(2025, 1, 1), datetime.date(2026, 1, 1), 365),
     # --- edge: date bounds ---
@@ -85,11 +95,19 @@ NEXT_BIZ_DAY_CASES = [
     ("Saturday → Monday", datetime.date(2026, 6, 27), datetime.date(2026, 6, 29)),
     ("Sunday → Monday", datetime.date(2026, 6, 28), datetime.date(2026, 6, 29)),
     # --- cross-year weekend ---
-    ("Saturday Dec 31 2022 → Mon Jan 2 2023", datetime.date(2022, 12, 31), datetime.date(2023, 1, 2)),
+    (
+        "Saturday Dec 31 2022 → Mon Jan 2 2023",
+        datetime.date(2022, 12, 31),
+        datetime.date(2023, 1, 2),
+    ),
     ("Sunday Jan 1 2023 → Mon Jan 2 2023", datetime.date(2023, 1, 1), datetime.date(2023, 1, 2)),
     ("Friday Dec 30 2022 → Mon Jan 2 2023", datetime.date(2022, 12, 30), datetime.date(2023, 1, 2)),
     # --- leap year weekend ---
-    ("Saturday Feb 29 2020 → Mon Mar 2 2020", datetime.date(2020, 2, 29), datetime.date(2020, 3, 2)),
+    (
+        "Saturday Feb 29 2020 → Mon Mar 2 2020",
+        datetime.date(2020, 2, 29),
+        datetime.date(2020, 3, 2),
+    ),
     ("Friday Feb 28 2020 → Mon Mar 2 2020", datetime.date(2020, 2, 28), datetime.date(2020, 3, 2)),
 ]
 
@@ -145,6 +163,7 @@ def test_get_next_business_day_rejects_bad_input(bad_input):
 # ---------------------------------------------------------------------------
 # Smoketest: no false positives for valid inputs
 # ---------------------------------------------------------------------------
+
 
 def test_all_functions_accept_date_instances():
     """Ensure none of the guards block legitimate datetime.date objects."""

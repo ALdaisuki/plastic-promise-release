@@ -93,10 +93,7 @@ class CuriosityExplorer:
                 - rationale: 建议理由
                 - expected_value: 探索的预期价值
         """
-        unexplored = [
-            cat for cat in _ALL_TOPIC_CATEGORIES
-            if cat not in self.explored_topics
-        ]
+        unexplored = [cat for cat in _ALL_TOPIC_CATEGORIES if cat not in self.explored_topics]
 
         if unexplored:
             suggested_topic = random.choice(unexplored)
@@ -108,10 +105,7 @@ class CuriosityExplorer:
         else:
             # 所有类别均已探索过，随机建议一个深入探索
             suggested_topic = random.choice(_ALL_TOPIC_CATEGORIES)
-            rationale = (
-                f"已覆盖所有类别，建议深入探索 {suggested_topic} "
-                "以巩固或发掘更深层次的洞察"
-            )
+            rationale = f"已覆盖所有类别，建议深入探索 {suggested_topic} 以巩固或发掘更深层次的洞察"
             expected_value = "在已知领域进行更深层次的挖掘"
 
         return {
@@ -135,10 +129,12 @@ class CuriosityExplorer:
             result: 探索结果详情，包含收获、发现、评估等信息。
         """
         self.explored_topics.add(topic)
-        self._exploration_history.append({
-            "topic": topic,
-            "result": result,
-        })
+        self._exploration_history.append(
+            {
+                "topic": topic,
+                "result": result,
+            }
+        )
         self._explore_count += 1
 
     def get_exploration_stats(self) -> Dict[str, Any]:
@@ -154,14 +150,9 @@ class CuriosityExplorer:
                 - blind_spots: 尚未探索的主题盲区
                 - explore_ratio: 已探索主题占比（0.0 ~ 1.0）
         """
-        blind_spots = [
-            cat for cat in _ALL_TOPIC_CATEGORIES
-            if cat not in self.explored_topics
-        ]
+        blind_spots = [cat for cat in _ALL_TOPIC_CATEGORIES if cat not in self.explored_topics]
         explore_ratio = (
-            len(self.explored_topics) / len(_ALL_TOPIC_CATEGORIES)
-            if _ALL_TOPIC_CATEGORIES
-            else 0.0
+            len(self.explored_topics) / len(_ALL_TOPIC_CATEGORIES) if _ALL_TOPIC_CATEGORIES else 0.0
         )
         return {
             "total_explorations": self._explore_count,
@@ -200,11 +191,13 @@ def curiosity_act(suggestion_id: str, outcome: str) -> Dict[str, Any]:
         outcome: "adopted" | "ignored" | "failed"
     """
     global _explore_rate, _exploration_log
-    _exploration_log.append({
-        "suggestion_id": suggestion_id,
-        "outcome": outcome,
-        "timestamp": __import__('datetime').datetime.now().isoformat(),
-    })
+    _exploration_log.append(
+        {
+            "suggestion_id": suggestion_id,
+            "outcome": outcome,
+            "timestamp": __import__("datetime").datetime.now().isoformat(),
+        }
+    )
     # Adaptive explore rate
     adopted = sum(1 for e in _exploration_log if e["outcome"] == "adopted")
     total = len(_exploration_log)

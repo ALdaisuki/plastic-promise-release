@@ -7,9 +7,17 @@ from plastic_promise.skills.engine import SkillDef, SkillResult, SkillRegistrati
 class TestSkillDef:
     def test_minimal_definition(self):
         """Minimum viable SkillDef has name, domain, description, tier."""
+
         async def noop(ctx, params, atoms):
-            return SkillResult(skill_name="test", success=True, data={},
-                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+            return SkillResult(
+                skill_name="test",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
 
         sd = SkillDef(
             name="test-skill",
@@ -29,9 +37,17 @@ class TestSkillDef:
 
     def test_cross_agent_skill(self):
         """Cross-agent skills set cross_agent=True and require trust."""
+
         async def noop(ctx, params, atoms):
-            return SkillResult(skill_name="test", success=True, data={},
-                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+            return SkillResult(
+                skill_name="test",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
 
         sd = SkillDef(
             name="delegate-to-pi",
@@ -50,9 +66,17 @@ class TestSkillDef:
 
     def test_p2_skill(self):
         """P2 skills must have daemon or admin callers."""
+
         async def noop(ctx, params, atoms):
-            return SkillResult(skill_name="test", success=True, data={},
-                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+            return SkillResult(
+                skill_name="test",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
 
         sd = SkillDef(
             name="scheduled-gc",
@@ -123,11 +147,22 @@ class TestAtomRegistry:
         from plastic_promise.skills.engine import AtomRegistry
 
         engine = MagicMock()
-        mock_tools = [_make_mock_tool(n) for n in [
-            "principle_activate", "context_supply", "memory_store",
-            "memory_recall", "memory_stats", "defense", "domain",
-            "system", "skill_session_start", "skill_session_complete", "memory_gc",
-        ]]
+        mock_tools = [
+            _make_mock_tool(n)
+            for n in [
+                "principle_activate",
+                "context_supply",
+                "memory_store",
+                "memory_recall",
+                "memory_stats",
+                "defense",
+                "domain",
+                "system",
+                "skill_session_start",
+                "skill_session_complete",
+                "memory_gc",
+            ]
+        ]
         engine.list_tools = MagicMock(return_value=mock_tools)
 
         registry = AtomRegistry.build(engine)
@@ -142,9 +177,15 @@ class TestAtomRegistry:
         from plastic_promise.skills.engine import AtomRegistry
 
         engine = MagicMock()
-        mock_tools = [_make_mock_tool(n) for n in [
-            "audit_run", "pack_export", "skill_session_trace", "memory_gc",
-        ]]
+        mock_tools = [
+            _make_mock_tool(n)
+            for n in [
+                "audit_run",
+                "pack_export",
+                "skill_session_trace",
+                "memory_gc",
+            ]
+        ]
         engine.list_tools = MagicMock(return_value=mock_tools)
 
         registry = AtomRegistry.build(engine)
@@ -158,9 +199,13 @@ class TestAtomRegistry:
         from plastic_promise.skills.engine import AtomRegistry
 
         engine = MagicMock()
-        mock_tools = [_make_mock_tool(n) for n in [
-            "principle_activate", "memory_store",
-        ]]
+        mock_tools = [
+            _make_mock_tool(n)
+            for n in [
+                "principle_activate",
+                "memory_store",
+            ]
+        ]
         engine.list_tools = MagicMock(return_value=mock_tools)
 
         registry = AtomRegistry.build(engine)
@@ -186,27 +231,49 @@ class TestSkillEngineRegister:
     def mock_engine(self):
         engine = MagicMock()
         # Mock list_tools to return a tool set that includes the atoms we test with
-        mock_tools = [_make_mock_tool(n) for n in [
-            "memory_store", "memory_recall", "principle_activate",
-            "context_supply", "domain", "system", "defense", "memory_gc",
-            "skill_session_start", "skill_session_complete", "issue_create",
-        ]]
+        mock_tools = [
+            _make_mock_tool(n)
+            for n in [
+                "memory_store",
+                "memory_recall",
+                "principle_activate",
+                "context_supply",
+                "domain",
+                "system",
+                "defense",
+                "memory_gc",
+                "skill_session_start",
+                "skill_session_complete",
+                "issue_create",
+            ]
+        ]
         engine.list_tools = MagicMock(return_value=mock_tools)
         return engine
 
     def _noop_handler(self):
         async def h(ctx, params, atoms):
-            return SkillResult(skill_name="test", success=True, data={},
-                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+            return SkillResult(
+                skill_name="test",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
+
         return h
 
     def test_register_valid_skill(self, mock_engine):
         """A valid P0 skill should register without error."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
         sd = SkillDef(
-            name="session-init", domain="session_lifecycle",
-            description="Test", tier="P0",
+            name="session-init",
+            domain="session_lifecycle",
+            description="Test",
+            tier="P0",
             atoms=["principle_activate", "context_supply", "memory_store"],
             degrade_map={"domain": "skip"},
             handler=self._noop_handler(),
@@ -218,10 +285,13 @@ class TestSkillEngineRegister:
     def test_register_duplicate_raises(self, mock_engine):
         """Registering the same skill name twice must raise SkillRegistrationError."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
         sd = SkillDef(
-            name="session-init", domain="session_lifecycle",
-            description="Test", tier="P0",
+            name="session-init",
+            domain="session_lifecycle",
+            description="Test",
+            tier="P0",
             atoms=["principle_activate"],
             degrade_map={},
             handler=self._noop_handler(),
@@ -234,10 +304,13 @@ class TestSkillEngineRegister:
     def test_register_missing_atom_raises(self, mock_engine):
         """A skill declaring an atom not in MCP tools must raise."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
         sd = SkillDef(
-            name="bad-skill", domain="session_lifecycle",
-            description="Test", tier="P0",
+            name="bad-skill",
+            domain="session_lifecycle",
+            description="Test",
+            tier="P0",
             atoms=["nonexistent_atom"],
             degrade_map={},
             handler=self._noop_handler(),
@@ -249,10 +322,13 @@ class TestSkillEngineRegister:
     def test_register_p2_with_non_daemon_caller_raises(self, mock_engine):
         """P2 skills must only allow daemon or admin callers."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
         sd = SkillDef(
-            name="scheduled-gc", domain="system_health",
-            description="GC", tier="P2",
+            name="scheduled-gc",
+            domain="system_health",
+            description="GC",
+            tier="P2",
             atoms=["memory_gc"],
             degrade_map={"memory_gc": "abort"},
             handler=self._noop_handler(),
@@ -264,10 +340,13 @@ class TestSkillEngineRegister:
     def test_register_p2_with_daemon_succeeds(self, mock_engine):
         """P2 skills with daemon caller must succeed."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
         sd = SkillDef(
-            name="scheduled-gc", domain="system_health",
-            description="GC", tier="P2",
+            name="scheduled-gc",
+            domain="system_health",
+            description="GC",
+            tier="P2",
             atoms=["memory_gc"],
             degrade_map={"memory_gc": "abort"},
             handler=self._noop_handler(),
@@ -288,11 +367,21 @@ class TestSkillEngineExec:
     @pytest.fixture
     def mock_engine(self):
         engine = MagicMock()
-        mock_tools = [_make_mock_tool(n) for n in [
-            "principle_activate", "context_supply", "memory_store",
-            "memory_recall", "domain", "system", "defense", "memory_gc",
-            "skill_session_start", "skill_session_complete",
-        ]]
+        mock_tools = [
+            _make_mock_tool(n)
+            for n in [
+                "principle_activate",
+                "context_supply",
+                "memory_store",
+                "memory_recall",
+                "domain",
+                "system",
+                "defense",
+                "memory_gc",
+                "skill_session_start",
+                "skill_session_complete",
+            ]
+        ]
         engine.list_tools = MagicMock(return_value=mock_tools)
         return engine
 
@@ -300,40 +389,59 @@ class TestSkillEngineExec:
     async def test_exec_successful_skill(self, mock_engine):
         """A simple skill with one atom must execute and return success."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
 
         # Override atom with a mock that succeeds
         async def mock_principle_activate(engine, args):
-            return [TextContent(type="text", text=json.dumps(
-                {"task_type": "general", "activated": [{"id": 1, "name": "test-principle"}]}
-            ))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"task_type": "general", "activated": [{"id": 1, "name": "test-principle"}]}
+                    ),
+                )
+            ]
 
         se._atoms["principle_activate"] = mock_principle_activate
 
         # Mock skill_session_start/complete to record calls
         session_calls = []
+
         async def mock_session_start(engine, args):
             session_calls.append(("start", args))
-            return [TextContent(type="text", text=json.dumps(
-                {"entity_id": "skill:test:2026-01-01T00:00:00", "status": "active"}
-            ))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"entity_id": "skill:test:2026-01-01T00:00:00", "status": "active"}
+                    ),
+                )
+            ]
+
         async def mock_session_complete(engine, args):
             session_calls.append(("complete", args))
             return [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
         se._atoms["skill_session_start"] = mock_session_start
         se._atoms["skill_session_complete"] = mock_session_complete
 
         async def handler(ctx, params, atom_results):
             return SkillResult(
-                skill_name="test-skill", success=True,
+                skill_name="test-skill",
+                success=True,
                 data={"activated": json.loads(atom_results["principle_activate"][0].text)},
                 atom_results={k: v[0].text for k, v in atom_results.items()},
-                degrade_log=[], audit_trail={}, errors=[],
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
             )
 
         sd = SkillDef(
-            name="test-skill", domain="session_lifecycle",
-            description="Test", tier="P0",
+            name="test-skill",
+            domain="session_lifecycle",
+            description="Test",
+            tier="P0",
             atoms=["principle_activate"],
             degrade_map={},
             handler=handler,
@@ -352,14 +460,25 @@ class TestSkillEngineExec:
     async def test_exec_unauthorized_caller_blocked(self, mock_engine):
         """Caller not in allowed_callers must be rejected before any atom call."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
+
         async def handler(ctx, params, atoms):
-            return SkillResult(skill_name="test", success=True, data={},
-                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+            return SkillResult(
+                skill_name="test",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
 
         sd = SkillDef(
-            name="daemon-only", domain="system_health",
-            description="Test", tier="P2",
+            name="daemon-only",
+            domain="system_health",
+            description="Test",
+            tier="P2",
             atoms=["memory_gc"],
             degrade_map={},
             handler=handler,
@@ -375,6 +494,7 @@ class TestSkillEngineExec:
     async def test_exec_unknown_skill_returns_error(self, mock_engine):
         """Calling a non-existent skill must return a failure result."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
         result = await se.exec("nonexistent", params={}, caller="claude")
         assert result.success is False
@@ -384,9 +504,11 @@ class TestSkillEngineExec:
     async def test_exec_atom_degraded_skip(self, mock_engine):
         """When an atom fails with degrade_map='skip', execution continues."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
 
         call_order = []
+
         async def mock_failing_atom(engine, args):
             call_order.append("failing")
             raise RuntimeError("simulated failure")
@@ -397,6 +519,7 @@ class TestSkillEngineExec:
 
         async def mock_session_start(engine, args):
             return [TextContent(type="text", text=json.dumps({"entity_id": "skill:test:..."}))]
+
         async def mock_session_complete(engine, args):
             return [TextContent(type="text", text=json.dumps({"status": "done"}))]
 
@@ -407,13 +530,20 @@ class TestSkillEngineExec:
 
         async def handler(ctx, params, atoms):
             return SkillResult(
-                skill_name="test", success=True, data={},
-                atom_results={}, degrade_log=[], audit_trail={}, errors=[],
+                skill_name="test",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
             )
 
         sd = SkillDef(
-            name="degrade-skip-test", domain="session_lifecycle",
-            description="Test", tier="P0",
+            name="degrade-skip-test",
+            domain="session_lifecycle",
+            description="Test",
+            tier="P0",
             atoms=["atom_a", "atom_b"],
             degrade_map={"atom_a": "skip"},
             handler=handler,
@@ -430,9 +560,11 @@ class TestSkillEngineExec:
     async def test_exec_atom_degraded_abort(self, mock_engine):
         """When an atom fails with default degrade='abort', execution stops."""
         from plastic_promise.skills.engine import SkillEngine
+
         se = SkillEngine(mock_engine)
 
         call_order = []
+
         async def mock_failing_atom(engine, args):
             call_order.append("failing")
             raise RuntimeError("simulated failure")
@@ -443,6 +575,7 @@ class TestSkillEngineExec:
 
         async def mock_session_start(engine, args):
             return [TextContent(type="text", text=json.dumps({"entity_id": "skill:test:..."}))]
+
         async def mock_session_complete(engine, args):
             return [TextContent(type="text", text=json.dumps({"status": "done"}))]
 
@@ -452,12 +585,21 @@ class TestSkillEngineExec:
         se._atoms["skill_session_complete"] = mock_session_complete
 
         async def handler(ctx, params, atoms):
-            return SkillResult(skill_name="test", success=True, data={},
-                              atom_results={}, degrade_log=[], audit_trail={}, errors=[])
+            return SkillResult(
+                skill_name="test",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
 
         sd = SkillDef(
-            name="degrade-abort-test", domain="session_lifecycle",
-            description="Test", tier="P0",
+            name="degrade-abort-test",
+            domain="session_lifecycle",
+            description="Test",
+            tier="P0",
             atoms=["atom_a", "atom_b"],
             degrade_map={},  # atom_a defaults to "abort"
             handler=handler,

@@ -1,4 +1,5 @@
 """Test that CEI can be accessed without internal knowledge."""
+
 import pytest
 from plastic_promise.loop.soul_loop import get_cei
 

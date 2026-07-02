@@ -16,6 +16,7 @@ from plastic_promise.launcher.bootstrap_checker import check_bootstrap
 
 # -- service_definition tests -----------------------------------------
 
+
 def test_service_definition_defaults():
     svc = ServiceDefinition(
         name="test-svc",
@@ -50,6 +51,7 @@ def test_service_status_enum():
 
 # -- env_checker tests -----------------------------------------------
 
+
 def test_env_checker_python_version():
     _, msgs = run_env_checks(skip_ollama=True)
     assert any("Python" in m for m in msgs)
@@ -71,6 +73,7 @@ def test_env_checker_port():
 
 
 # -- bootstrap_checker tests -----------------------------------------
+
 
 def test_check_bootstrap_missing_db():
     needs, msg = check_bootstrap("/nonexistent/path/db.sqlite")
@@ -110,6 +113,7 @@ def test_check_bootstrap_empty_db():
 
 
 # -- ServiceManager tests --------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_service_manager_creation():
@@ -174,6 +178,7 @@ def test_pid_alive_nonexistent():
 
 
 # -- ServiceRuntime tests --------------------------------------------
+
 
 def test_service_runtime_backoff():
     from plastic_promise.launcher.service_manager import ServiceRuntime

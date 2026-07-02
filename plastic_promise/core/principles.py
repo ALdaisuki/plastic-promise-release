@@ -302,45 +302,45 @@ class PrincipleManager:
         # Step 2: Pre-defined counterfactual consequence text per principle ID
         consequences: Dict[int, str] = {
             1: "If honesty is not prioritized over perfection: metrics become unreliable, "
-               "trust erodes, and systemic issues go unreported — the violation of truth-telling "
-               "creates a cascade of hidden failures that eventually destroy system integrity.",
+            "trust erodes, and systemic issues go unreported — the violation of truth-telling "
+            "creates a cascade of hidden failures that eventually destroy system integrity.",
             2: "Without conventions over constraints: agents become rule-following automatons "
-               "lacking intrinsic motivation, leading to minimal compliance, creative stagnation, "
-               "and a brittle system that collapses the moment external enforcement is removed.",
+            "lacking intrinsic motivation, leading to minimal compliance, creative stagnation, "
+            "and a brittle system that collapses the moment external enforcement is removed.",
             3: "Without active memory supply: context becomes fragmented across decisions, "
-               "past lessons are repeatedly lost, and the system operates with incomplete "
-               "information — the consequence is perpetual relearning at every turn.",
+            "past lessons are repeatedly lost, and the system operates with incomplete "
+            "information — the consequence is perpetual relearning at every turn.",
             4: "If principles do not emerge naturally: compliance becomes performative, "
-               "agents follow rules they do not understand, and the firewall becomes the only "
-               "enforcement mechanism — a fragile house of cards that crumbles under pressure.",
+            "agents follow rules they do not understand, and the firewall becomes the only "
+            "enforcement mechanism — a fragile house of cards that crumbles under pressure.",
             5: "Confusing existence with effectiveness: teams ship features that pass checks on "
-               "paper but fail in practice, creating a false sense of security. The consequence "
-               "is undetected regression masked by green checkmarks.",
+            "paper but fail in practice, creating a false sense of security. The consequence "
+            "is undetected regression masked by green checkmarks.",
             6: "Without actual data-flow tracking: integration points become black boxes, "
-               "system failures cascade unpredictably, and debugging devolves into guesswork — "
-               "the consequence is invisible coupling that amplifies every small failure.",
+            "system failures cascade unpredictably, and debugging devolves into guesswork — "
+            "the consequence is invisible coupling that amplifies every small failure.",
             7: "Without organs protecting each other: single points of failure proliferate, "
-               "system resilience degrades, and no subsystem catches another's errors — "
-               "the consequence is a domino chain where one failure topples everything.",
+            "system resilience degrades, and no subsystem catches another's errors — "
+            "the consequence is a domino chain where one failure topples everything.",
             8: "Without tools as senses: the LLM is blind and handless, every capability "
-               "constrained to pure text. The consequence is a brilliant mind trapped in a "
-               "soundproof room, unable to observe or affect the real world.",
+            "constrained to pure text. The consequence is a brilliant mind trapped in a "
+            "soundproof room, unable to observe or affect the real world.",
             9: "Without trust-driven dynamic constraints: the system oscillates between "
-               "complete lockdown (stifling all productivity) and total openness (inviting "
-               "disaster) — the consequence is a binary rigidity that cannot adapt to nuance.",
+            "complete lockdown (stifling all productivity) and total openness (inviting "
+            "disaster) — the consequence is a binary rigidity that cannot adapt to nuance.",
             10: "If the self-evolution loop breaks: behavior drifts without correction, "
-                "evaluation decouples from reality, and the system degrades without self-awareness "
-                "— the consequence is silent entropy that goes unnoticed until catastrophic failure.",
+            "evaluation decouples from reality, and the system degrades without self-awareness "
+            "— the consequence is silent entropy that goes unnoticed until catastrophic failure.",
             11: "Without principle inheritance: each new agent instance starts from scratch, "
-                "core values are lost across generations, and the system forgets its foundational "
-                "commitments — the consequence is generational amnesia that erodes the culture.",
+            "core values are lost across generations, and the system forgets its foundational "
+            "commitments — the consequence is generational amnesia that erodes the culture.",
             12: "Without code as documentation: maintenance costs grow exponentially, "
-                "onboarding becomes impossible, and the gap between documentation and reality "
-                "widens until the codebase becomes unmaintainable.",
+            "onboarding becomes impossible, and the gap between documentation and reality "
+            "widens until the codebase becomes unmaintainable.",
             13: "If the system guesses reflections instead of waiting for explicit post-hoc input: "
-                "the memory pool fills with template garbage, the system makes decisions based on "
-                "fabricated 'lessons', and the self-evolution loop feeds on noise instead of signal. "
-                "The consequence is a feedback loop where bad guesses reinforce bad behavior.",
+            "the memory pool fills with template garbage, the system makes decisions based on "
+            "fabricated 'lessons', and the self-evolution loop feeds on noise instead of signal. "
+            "The consequence is a feedback loop where bad guesses reinforce bad behavior.",
         }
 
         consequence = consequences.get(
@@ -387,6 +387,7 @@ class PrincipleManager:
             以及运行时状态。
         """
         from plastic_promise.core.constants import CORE_PRINCIPLES
+
         return [dict(p) for p in CORE_PRINCIPLES]
 
     def get_by_domain(self, domain: str) -> List[Dict[str, Any]]:
@@ -405,11 +406,9 @@ class PrincipleManager:
             CORE_PRINCIPLES,
             PRINCIPLE_DOMAINS,
         )
+
         if domain not in PRINCIPLE_DOMAINS:
-            raise ValueError(
-                f"Unknown domain '{domain}'. "
-                f"Valid: {', '.join(PRINCIPLE_DOMAINS)}"
-            )
+            raise ValueError(f"Unknown domain '{domain}'. Valid: {', '.join(PRINCIPLE_DOMAINS)}")
         return [dict(p) for p in CORE_PRINCIPLES if p["domain"] == domain]
 
 
@@ -425,17 +424,21 @@ class PrincipleTracker:
     def record(self, principle_id: int, adhered: bool, context: str = ""):
         """Record one adherence event for a principle."""
         import datetime
+
         if principle_id not in self._records:
             self._records[principle_id] = []
-        self._records[principle_id].append({
-            "adhered": adhered,
-            "context": context[:200],
-            "timestamp": datetime.datetime.now().isoformat(),
-        })
+        self._records[principle_id].append(
+            {
+                "adhered": adhered,
+                "context": context[:200],
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
 
     def stats(self) -> dict:
         """Return per-principle adherence statistics."""
         from plastic_promise.core.constants import CORE_PRINCIPLES
+
         result = {}
         for p in CORE_PRINCIPLES:
             pid = p["id"]
@@ -483,7 +486,7 @@ class PrincipleTracker:
         stats = self.stats()
         ranked = sorted(
             [(pid, s) for pid, s in stats.items() if s["rate"] is not None],
-            key=lambda x: x[1]["rate"]
+            key=lambda x: x[1]["rate"],
         )
         return [{"id": pid, "name": s["name"], "rate": s["rate"]} for pid, s in ranked[:n]]
 
@@ -491,6 +494,7 @@ class PrincipleTracker:
 # ================================================================
 # 模块级便捷函数 (pass-through stubs)
 # ================================================================
+
 
 def principle_activate(
     task_type: str,

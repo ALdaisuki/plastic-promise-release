@@ -14,7 +14,10 @@ from plastic_promise.reflection.soul_proprioception import (
 from plastic_promise.reflection.soul_curiosity import CuriosityExplorer, curiosity_explore
 
 __all__ = [
-    "SCARFReflector", "scarf_reflect",
-    "ProprioceptionManager", "inertia_check",
-    "CuriosityExplorer", "curiosity_explore",
+    "SCARFReflector",
+    "scarf_reflect",
+    "ProprioceptionManager",
+    "inertia_check",
+    "CuriosityExplorer",
+    "curiosity_explore",
 ]

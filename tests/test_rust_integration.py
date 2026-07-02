@@ -1,4 +1,5 @@
 """Integration tests for Rust engine degradation and health check."""
+
 import os
 import time
 import pytest
@@ -10,16 +11,19 @@ os.environ["AGENT_USE_SQLITE"] = "0"
 def test_python_fallback_works_without_rust():
     """Python supply() works when Rust .pyd is unavailable."""
     from plastic_promise.core.context_engine import ContextEngine
+
     engine = ContextEngine(use_sqlite=False)
 
     # Register a few test memories
     for i in range(5):
-        engine.register_memory({
-            "id": f"test_{i:04d}",
-            "content": f"Test memory {i} for integration testing",
-            "memory_type": "task",
-            "source": "test",
-        })
+        engine.register_memory(
+            {
+                "id": f"test_{i:04d}",
+                "content": f"Test memory {i} for integration testing",
+                "memory_type": "task",
+                "source": "test",
+            }
+        )
 
     # supply() should work — Rust path or Python fallback, doesn't matter
     pack = engine.supply("integration test task", task_type="general", scope="global")
@@ -32,6 +36,7 @@ def test_python_fallback_works_without_rust():
 def test_rust_health_check_initial_state():
     """Health check initializes correctly."""
     from plastic_promise.core.context_engine import ContextEngine
+
     engine = ContextEngine(use_sqlite=False)
 
     # Initial state
@@ -53,6 +58,7 @@ def test_rust_health_cache_ttl():
     This test validates the function doesn't crash and returns consistent values.
     """
     from plastic_promise.core.context_engine import ContextEngine
+
     engine = ContextEngine(use_sqlite=False)
 
     # First call — probes
@@ -75,6 +81,7 @@ def test_rust_health_cache_ttl():
 def test_reset_rust_health():
     """reset_rust_health() clears cache and forces re-probe."""
     from plastic_promise.core.context_engine import ContextEngine
+
     engine = ContextEngine(use_sqlite=False)
 
     # Call once to attempt probe
@@ -91,6 +98,7 @@ def test_reset_rust_health():
 def test_empty_memories_supply():
     """supply() with empty memory pool doesn't crash."""
     from plastic_promise.core.context_engine import ContextEngine
+
     engine = ContextEngine(use_sqlite=False)
 
     pack = engine.supply("test with empty pool", task_type="general", scope="global")
@@ -105,12 +113,14 @@ def test_concurrent_supply_does_not_crash():
 
     engine = ContextEngine(use_sqlite=False)
     for i in range(20):
-        engine.register_memory({
-            "id": f"conc_{i:04d}",
-            "content": f"Concurrent test memory {i}",
-            "memory_type": "task",
-            "source": "test",
-        })
+        engine.register_memory(
+            {
+                "id": f"conc_{i:04d}",
+                "content": f"Concurrent test memory {i}",
+                "memory_type": "task",
+                "source": "test",
+            }
+        )
 
     errors = []
     results = []

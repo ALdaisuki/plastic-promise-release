@@ -44,8 +44,9 @@ class TestLanceDBStore:
     def test_insert_with_tier_and_scope(self):
         """Insert with custom tier, category, and scope."""
         vec = [0.1] * EMB_DIM
-        self.store.insert("mem_002", vec, "scoped memory",
-                          tier="L3", category="test", scope="private")
+        self.store.insert(
+            "mem_002", vec, "scoped memory", tier="L3", category="test", scope="private"
+        )
         assert self.store.count_rows() == 1
 
     def test_search_returns_results(self):
@@ -155,11 +156,36 @@ class TestLanceDBStore:
         class MockEngine:
             memory_count = 5
             _memories = {
-                "mem_000": {"content": "existing 0", "tier": "L1", "category": "other", "scope": "global"},
-                "mem_001": {"content": "existing 1", "tier": "L1", "category": "other", "scope": "global"},
-                "mem_002": {"content": "new memory 2", "tier": "L1", "category": "other", "scope": "global"},
-                "mem_003": {"content": "new memory 3", "tier": "L3", "category": "other", "scope": "private"},
-                "mem_004": {"content": "new memory 4", "tier": "L1", "category": "other", "scope": "global"},
+                "mem_000": {
+                    "content": "existing 0",
+                    "tier": "L1",
+                    "category": "other",
+                    "scope": "global",
+                },
+                "mem_001": {
+                    "content": "existing 1",
+                    "tier": "L1",
+                    "category": "other",
+                    "scope": "global",
+                },
+                "mem_002": {
+                    "content": "new memory 2",
+                    "tier": "L1",
+                    "category": "other",
+                    "scope": "global",
+                },
+                "mem_003": {
+                    "content": "new memory 3",
+                    "tier": "L3",
+                    "category": "other",
+                    "scope": "private",
+                },
+                "mem_004": {
+                    "content": "new memory 4",
+                    "tier": "L1",
+                    "category": "other",
+                    "scope": "global",
+                },
             }
 
         count = self.store.backfill(MockEngine())
@@ -183,6 +209,7 @@ class TestLanceDBStore:
     def test_search_similar_returns_top_k(self):
         """search_similar returns top-k matches sorted by similarity descending."""
         import random
+
         # Insert 5 memories with known vectors
         base = [0.5] * EMB_DIM
         for i in range(5):

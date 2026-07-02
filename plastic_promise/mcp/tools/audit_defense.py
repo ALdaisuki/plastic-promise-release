@@ -21,6 +21,7 @@ from mcp.types import TextContent
 # audit_run (stub)
 # ---------------------------------------------------------------------------
 
+
 async def handle_audit_run(engine: Any, args: dict) -> list[TextContent]:
     """Execute seven-dimension audit or retrieve report.
 
@@ -39,24 +40,39 @@ async def handle_audit_run(engine: Any, args: dict) -> list[TextContent]:
     # full audit
     try:
         from plastic_promise.defense.soul_audit import SoulAuditor
+
         scope = args.get("scope", "global")
         time_range_hours = args.get("time_range_hours", 24)
         auditor = SoulAuditor()
         report = await auditor.run_audit()
-        return [TextContent(type="text", text=json.dumps({
-            "tool": "audit_run",
-            "scope": scope,
-            "time_range_hours": time_range_hours,
-            "report": report.to_dict() if hasattr(report, 'to_dict') else str(report),
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "tool": "audit_run",
+                        "scope": scope,
+                        "time_range_hours": time_range_hours,
+                        "report": report.to_dict() if hasattr(report, "to_dict") else str(report),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "audit_run"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "audit_run"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
 # audit_pre_check
 # ---------------------------------------------------------------------------
+
 
 async def handle_audit_pre_check(engine: Any, args: dict) -> list[TextContent]:
     """Pre-execution compliance check against L0/L1/L2 defense layers.
@@ -76,18 +92,26 @@ async def handle_audit_pre_check(engine: Any, args: dict) -> list[TextContent]:
         action_type: str = args.get("action_type", "exec")
 
         from plastic_promise.defense.soul_audit import SoulAuditor
+
         auditor = SoulAuditor()
         check_result = auditor.pre_check(action_description=action, action_type=action_type)
 
-        return [TextContent(type="text", text=json.dumps(check_result, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(type="text", text=json.dumps(check_result, ensure_ascii=False, indent=2))
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "audit_pre_check"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "audit_pre_check"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
 # audit_report (stub)
 # ---------------------------------------------------------------------------
+
 
 async def handle_audit_report(engine: Any, args: dict) -> list[TextContent]:
     """Retrieve the most recent audit report or a specific dimension (stub).
@@ -101,20 +125,34 @@ async def handle_audit_report(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.defense.soul_audit import SoulAuditor
+
         dimension = args.get("dimension")
         auditor = SoulAuditor()
         report = auditor.get_report()
         fmt = args.get("format", "json")
-        if fmt == "markdown" and hasattr(report, 'to_markdown'):
+        if fmt == "markdown" and hasattr(report, "to_markdown"):
             return [TextContent(type="text", text=report.to_markdown())]
-        return [TextContent(type="text", text=json.dumps({
-            "tool": "audit_report",
-            "dimension": dimension,
-            "report": report.to_dict() if hasattr(report, 'to_dict') else str(report),
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "tool": "audit_report",
+                        "dimension": dimension,
+                        "report": report.to_dict() if hasattr(report, "to_dict") else str(report),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "audit_report"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "audit_report"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +168,7 @@ def _get_trust_manager() -> "TrustManager":
     if _trust_manager is None:
         from plastic_promise.defense.trust_store import TrustStore
         from plastic_promise.defense.soul_enforcer import TrustManager
+
         _trust_manager = TrustManager(trust_store=TrustStore())
     return _trust_manager
 
@@ -149,17 +188,37 @@ async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
         target = args.get("target", "")  # 空串=当前Agent，多Agent时传角色名
         tm = _get_trust_manager()
         if action == "get":
-            return [TextContent(type="text", text=json.dumps({
-                "trust": tm.get(target), "target": target or "default",
-                "tier": tm.tier(target),
-                "autonomy_level": tm.autonomy_level(target),
-            }, ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "trust": tm.get(target),
+                            "target": target or "default",
+                            "tier": tm.tier(target),
+                            "autonomy_level": tm.autonomy_level(target),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
         elif action == "history":
-            return [TextContent(type="text", text=json.dumps({
-                "trust": tm.get(target), "target": target or "default",
-                "tier": tm.tier(target),
-                "history": tm.history(target, 20),
-            }, ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "trust": tm.get(target),
+                            "target": target or "default",
+                            "tier": tm.tier(target),
+                            "history": tm.history(target, 20),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
         elif action == "adjust":
             delta = args.get("delta", 0.0)
             reason = args.get("reason", "manual adjustment")
@@ -167,22 +226,45 @@ async def handle_defense_trust(engine: Any, args: dict) -> list[TextContent]:
                 new_trust = tm.boost(abs(delta) if delta == 0 else delta, reason, target=target)
             else:
                 new_trust = tm.decay(abs(delta), reason, target=target)
-            return [TextContent(type="text", text=json.dumps({
-                "action": "adjust", "delta": delta, "target": target or "default",
-                "new_trust": new_trust, "tier": tm.tier(target),
-            }, ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "action": "adjust",
+                            "delta": delta,
+                            "target": target or "default",
+                            "new_trust": new_trust,
+                            "tier": tm.tier(target),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
         else:
-            return [TextContent(type="text", text=json.dumps({
-                "error": f"Unknown action '{action}'. Valid: get, history, adjust"
-            }, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"error": f"Unknown action '{action}'. Valid: get, history, adjust"},
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "defense_trust"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "defense_trust"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
 # defense_status
 # ---------------------------------------------------------------------------
+
 
 async def handle_defense_status(engine: Any, args: dict) -> list[TextContent]:
     """Return current three-layer defense status.
@@ -201,34 +283,52 @@ async def handle_defense_status(engine: Any, args: dict) -> list[TextContent]:
     try:
         from plastic_promise.core.constants import DEFENSE_LAYERS
 
-        return [TextContent(type="text", text=json.dumps({
-            "L0": {
-                "status": "active",
-                "name": DEFENSE_LAYERS["L0"]["name"],
-                "enforcement": DEFENSE_LAYERS["L0"]["enforcement"],
-            },
-            "L1": {
-                "status": "active",
-                "name": DEFENSE_LAYERS["L1"]["name"],
-                "enforcement": DEFENSE_LAYERS["L1"]["enforcement"],
-                "trust_threshold_loosen": DEFENSE_LAYERS["L1"]["trust_threshold_loosen"],
-                "trust_threshold_tighten": DEFENSE_LAYERS["L1"]["trust_threshold_tighten"],
-            },
-            "L2": {
-                "status": "active",
-                "name": DEFENSE_LAYERS["L2"]["name"],
-                "enforcement": DEFENSE_LAYERS["L2"]["enforcement"],
-                "scan_interval_hours": DEFENSE_LAYERS["L2"]["scan_interval_hours"],
-            },
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "L0": {
+                            "status": "active",
+                            "name": DEFENSE_LAYERS["L0"]["name"],
+                            "enforcement": DEFENSE_LAYERS["L0"]["enforcement"],
+                        },
+                        "L1": {
+                            "status": "active",
+                            "name": DEFENSE_LAYERS["L1"]["name"],
+                            "enforcement": DEFENSE_LAYERS["L1"]["enforcement"],
+                            "trust_threshold_loosen": DEFENSE_LAYERS["L1"][
+                                "trust_threshold_loosen"
+                            ],
+                            "trust_threshold_tighten": DEFENSE_LAYERS["L1"][
+                                "trust_threshold_tighten"
+                            ],
+                        },
+                        "L2": {
+                            "status": "active",
+                            "name": DEFENSE_LAYERS["L2"]["name"],
+                            "enforcement": DEFENSE_LAYERS["L2"]["enforcement"],
+                            "scan_interval_hours": DEFENSE_LAYERS["L2"]["scan_interval_hours"],
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "defense_status"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "defense_status"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
 # defense — 统一入口 (replaces defense_trust + defense_status as MCP tools)
 # ---------------------------------------------------------------------------
+
 
 async def handle_defense(engine: Any, args: dict) -> list[TextContent]:
     """防线统一入口。action: get|history|adjust|status"""

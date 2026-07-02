@@ -12,8 +12,10 @@ from datetime import datetime, timedelta
 # Helpers
 # ═══════════════════════════════════════════════════════════════
 
+
 class MockEngine:
     """Minimal mock engine for scanner tests."""
+
     pass
 
 
@@ -143,6 +145,7 @@ def create_test_db(db_path: str):
 # Test: scan_memory_decay
 # ═══════════════════════════════════════════════════════════════
 
+
 @pytest.mark.asyncio
 async def test_scan_memory_decay_detects_zombies(monkeypatch):
     """scan_memory_decay should detect L3 memories inactive >30 days."""
@@ -160,7 +163,7 @@ async def test_scan_memory_decay_detects_zombies(monkeypatch):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, last_accessed, created_at, domain) "
                 "VALUES (?, ?, 'L3', ?, ?, 'building')",
-                (f"zombie_{i}", f"old memory {i}", ancient_date, ancient_date)
+                (f"zombie_{i}", f"old memory {i}", ancient_date, ancient_date),
             )
         conn.commit()
         conn.close()
@@ -170,14 +173,20 @@ async def test_scan_memory_decay_detects_zombies(monkeypatch):
 
         # Mock handle_task_enqueue to prevent actual TCP/MCP calls
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+
         result = await scan_memory_decay(MockEngine())
 
         assert result is not None
@@ -202,14 +211,20 @@ async def test_scan_memory_decay_no_zombies_empty_db(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+
         result = await scan_memory_decay(MockEngine())
 
         assert result is not None
@@ -236,13 +251,13 @@ async def test_scan_memory_decay_domain_imbalance(monkeypatch):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, domain, created_at, last_accessed) "
                 "VALUES (?, ?, 'L1', 'building', ?, ?)",
-                (f"b_{i}", f"building memory {i}", now, now)
+                (f"b_{i}", f"building memory {i}", now, now),
             )
         for i in range(30):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, domain, created_at, last_accessed) "
                 "VALUES (?, ?, 'L1', 'designing', ?, ?)",
-                (f"d_{i}", f"designing memory {i}", now, now)
+                (f"d_{i}", f"designing memory {i}", now, now),
             )
         conn.commit()
         conn.close()
@@ -250,14 +265,20 @@ async def test_scan_memory_decay_domain_imbalance(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+
         result = await scan_memory_decay(MockEngine())
 
         assert result["findings"] >= 1
@@ -270,6 +291,7 @@ async def test_scan_memory_decay_domain_imbalance(monkeypatch):
 # ═══════════════════════════════════════════════════════════════
 # Test: scan_trust
 # ═══════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_scan_trust_detects_rapid_drops(monkeypatch):
@@ -287,7 +309,7 @@ async def test_scan_trust_detects_rapid_drops(monkeypatch):
         conn.execute(
             "INSERT INTO trust_scores (target, trust, tier, autonomy_level, last_updated, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            ("pi_builder", 0.80, "high", "autonomous", now.isoformat(), now.isoformat())
+            ("pi_builder", 0.80, "high", "autonomous", now.isoformat(), now.isoformat()),
         )
 
         # Insert a rapid trust drop (>0.15 in 24h)
@@ -295,14 +317,28 @@ async def test_scan_trust_detects_rapid_drops(monkeypatch):
         conn.execute(
             "INSERT INTO trust_history (target, delta, old_value, new_value, reason, "
             "direction, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("pi_builder", -0.20, 0.80, 0.60, "L0 violation: dangerous operation blocked",
-             "decay", recent)
+            (
+                "pi_builder",
+                -0.20,
+                0.80,
+                0.60,
+                "L0 violation: dangerous operation blocked",
+                "decay",
+                recent,
+            ),
         )
         conn.execute(
             "INSERT INTO trust_history (target, delta, old_value, new_value, reason, "
             "direction, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("pi_builder", -0.05, 0.85, 0.80, "SCARF < 0.40",
-             "decay", (now - timedelta(hours=1)).isoformat())
+            (
+                "pi_builder",
+                -0.05,
+                0.85,
+                0.80,
+                "SCARF < 0.40",
+                "decay",
+                (now - timedelta(hours=1)).isoformat(),
+            ),
         )
         conn.commit()
         conn.close()
@@ -310,14 +346,20 @@ async def test_scan_trust_detects_rapid_drops(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_trust import scan_trust
+
         result = await scan_trust(MockEngine())
 
         assert result is not None
@@ -344,14 +386,14 @@ async def test_scan_trust_no_drops_normal_state(monkeypatch):
         conn.execute(
             "INSERT INTO trust_scores (target, trust, tier, autonomy_level, last_updated, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            ("pi_builder", 0.75, "high", "autonomous", now.isoformat(), now.isoformat())
+            ("pi_builder", 0.75, "high", "autonomous", now.isoformat(), now.isoformat()),
         )
 
         # Only small fluctuations
         conn.execute(
             "INSERT INTO trust_history (target, delta, old_value, new_value, reason, "
             "direction, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("pi_builder", 0.02, 0.73, 0.75, "SCARF >= 0.80", "boost", now.isoformat())
+            ("pi_builder", 0.02, 0.73, 0.75, "SCARF >= 0.80", "boost", now.isoformat()),
         )
         conn.commit()
         conn.close()
@@ -359,14 +401,20 @@ async def test_scan_trust_no_drops_normal_state(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_trust import scan_trust
+
         result = await scan_trust(MockEngine())
 
         assert result is not None
@@ -395,7 +443,7 @@ async def test_scan_trust_detects_stagnant(monkeypatch):
         conn.execute(
             "INSERT INTO trust_scores (target, trust, tier, autonomy_level, last_updated, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            ("pi_fixer", 0.60, "medium", "standard", ancient.isoformat(), ancient.isoformat())
+            ("pi_fixer", 0.60, "medium", "standard", ancient.isoformat(), ancient.isoformat()),
         )
         conn.commit()
         conn.close()
@@ -403,14 +451,20 @@ async def test_scan_trust_detects_stagnant(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_trust import scan_trust
+
         result = await scan_trust(MockEngine())
 
         assert result is not None
@@ -424,6 +478,7 @@ async def test_scan_trust_detects_stagnant(monkeypatch):
 # ═══════════════════════════════════════════════════════════════
 # Test: scan_architecture
 # ═══════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_scan_architecture_detects_god_module(monkeypatch):
@@ -444,19 +499,19 @@ async def test_scan_architecture_detects_god_module(monkeypatch):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, domain, created_at, last_accessed) "
                 "VALUES (?, ?, 'L1', 'domain_A', ?, ?)",
-                (f"a_{i}", f"A content {i}", now, now)
+                (f"a_{i}", f"A content {i}", now, now),
             )
         for i in range(2):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, domain, created_at, last_accessed) "
                 "VALUES (?, ?, 'L1', 'domain_B', ?, ?)",
-                (f"b_{i}", f"B content {i}", now, now)
+                (f"b_{i}", f"B content {i}", now, now),
             )
         for i in range(1):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, domain, created_at, last_accessed) "
                 "VALUES (?, ?, 'L1', 'domain_C', ?, ?)",
-                (f"c_{i}", f"C content {i}", now, now)
+                (f"c_{i}", f"C content {i}", now, now),
             )
         conn.commit()
         conn.close()
@@ -464,14 +519,20 @@ async def test_scan_architecture_detects_god_module(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_architecture import scan_architecture
+
         result = await scan_architecture(MockEngine())
 
         assert result is not None
@@ -485,6 +546,7 @@ async def test_scan_architecture_detects_god_module(monkeypatch):
 # ═══════════════════════════════════════════════════════════════
 # Test: scan_quality_trends
 # ═══════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_scan_quality_detects_recurrence(monkeypatch):
@@ -505,7 +567,7 @@ async def test_scan_quality_detects_recurrence(monkeypatch):
                 "INSERT INTO hunter_failure_log "
                 "(agent_name, task_id, task_type, failure_type, trust_before, trust_after, penalty_applied, occurred_at) "
                 "VALUES (?, ?, ?, 'rejected', ?, ?, ?, ?)",
-                ("pi_builder", f"t_{i}", "build_module", 0.70, 0.67, -0.03, occurred)
+                ("pi_builder", f"t_{i}", "build_module", 0.70, 0.67, -0.03, occurred),
             )
         conn.commit()
         conn.close()
@@ -513,14 +575,20 @@ async def test_scan_quality_detects_recurrence(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_quality_trends import scan_quality_trends
+
         result = await scan_quality_trends(MockEngine())
 
         assert result is not None
@@ -534,6 +602,7 @@ async def test_scan_quality_detects_recurrence(monkeypatch):
 # Test: scan_coupling
 # ═══════════════════════════════════════════════════════════════
 
+
 @pytest.mark.asyncio
 async def test_scan_coupling_handles_empty_db(monkeypatch):
     """scan_coupling should handle empty database gracefully returning 0 findings."""
@@ -545,14 +614,20 @@ async def test_scan_coupling_handles_empty_db(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_coupling import scan_coupling
+
         result = await scan_coupling(MockEngine())
 
         assert result is not None
@@ -581,19 +656,19 @@ async def test_scan_coupling_detects_tag_anomalies(monkeypatch):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, domain, tags, created_at, last_accessed) "
                 "VALUES (?, ?, 'L1', 'building', ?, ?, ?)",
-                (f"ab_{i}", f"AB memory {i}", json.dumps(["tag_A", "tag_B"]), now, now)
+                (f"ab_{i}", f"AB memory {i}", json.dumps(["tag_A", "tag_B"]), now, now),
             )
         for i in range(5):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, domain, tags, created_at, last_accessed) "
                 "VALUES (?, ?, 'L1', 'building', ?, ?, ?)",
-                (f"aonly_{i}", f"A only {i}", json.dumps(["tag_A"]), now, now)
+                (f"aonly_{i}", f"A only {i}", json.dumps(["tag_A"]), now, now),
             )
         for i in range(5):
             conn.execute(
                 "INSERT INTO memories (id, content, tier, domain, tags, created_at, last_accessed) "
                 "VALUES (?, ?, 'L1', 'building', ?, ?, ?)",
-                (f"bonly_{i}", f"B only {i}", json.dumps(["tag_B"]), now, now)
+                (f"bonly_{i}", f"B only {i}", json.dumps(["tag_B"]), now, now),
             )
         conn.commit()
         conn.close()
@@ -601,14 +676,20 @@ async def test_scan_coupling_detects_tag_anomalies(monkeypatch):
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
 
         async def mock_enqueue(*args, **kwargs):
-            return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+            return [
+                type(
+                    "obj",
+                    (object,),
+                    {"text": json.dumps({"task_id": "t_test", "status": "pending"})},
+                )()
+            ]
 
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", mock_enqueue
         )
 
         from plastic_promise.cron.scan_coupling import scan_coupling
+
         result = await scan_coupling(MockEngine())
 
         assert result is not None

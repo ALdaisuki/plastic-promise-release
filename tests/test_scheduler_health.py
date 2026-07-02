@@ -12,8 +12,10 @@ from datetime import datetime, timedelta
 # Helpers
 # ═══════════════════════════════════════════════════════════════
 
+
 class MockEngine:
     """Minimal mock engine for scanner tests."""
+
     pass
 
 
@@ -141,12 +143,15 @@ def create_test_db(db_path: str):
 
 async def _mock_enqueue(*args, **kwargs):
     """Shared mock for handle_task_enqueue to avoid actual MCP calls."""
-    return [type('obj', (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()]
+    return [
+        type("obj", (object,), {"text": json.dumps({"task_id": "t_test", "status": "pending"})})()
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════
 # Test 1: Scanner SNR detects noisy scanner
 # ═══════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_scanner_snr_detects_noisy_scanner(monkeypatch):
@@ -167,8 +172,18 @@ async def test_scanner_snr_detects_noisy_scanner(monkeypatch):
                 "(id, task_type, title, to_agent, priority, status, source_scan, "
                 "verify_verdict, verified_at, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"rej_{i}", "fix_memory", f"Fix {i}", "pi_fixer", 3,
-                 "verified", "scan_architecture", "rejected", now, now)
+                (
+                    f"rej_{i}",
+                    "fix_memory",
+                    f"Fix {i}",
+                    "pi_fixer",
+                    3,
+                    "verified",
+                    "scan_architecture",
+                    "rejected",
+                    now,
+                    now,
+                ),
             )
         # 5 accepted tasks from scan_architecture
         for i in range(5):
@@ -177,19 +192,29 @@ async def test_scanner_snr_detects_noisy_scanner(monkeypatch):
                 "(id, task_type, title, to_agent, priority, status, source_scan, "
                 "verify_verdict, verified_at, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"acc_{i}", "fix_memory", f"Fix {i}", "pi_fixer", 3,
-                 "verified", "scan_architecture", "accepted", now, now)
+                (
+                    f"acc_{i}",
+                    "fix_memory",
+                    f"Fix {i}",
+                    "pi_fixer",
+                    3,
+                    "verified",
+                    "scan_architecture",
+                    "accepted",
+                    now,
+                    now,
+                ),
             )
         conn.commit()
         conn.close()
 
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            _mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", _mock_enqueue
         )
 
         from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
+
         result = await scan_scheduler_health(MockEngine())
 
         assert result is not None
@@ -206,6 +231,7 @@ async def test_scanner_snr_detects_noisy_scanner(monkeypatch):
 # Test 2: Empty DB first audit
 # ═══════════════════════════════════════════════════════════════
 
+
 @pytest.mark.asyncio
 async def test_scheduler_health_empty_db_first_audit(monkeypatch):
     """Empty DB returns 0 findings but still dispatches the audit report."""
@@ -216,11 +242,11 @@ async def test_scheduler_health_empty_db_first_audit(monkeypatch):
         create_test_db(db_path)
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            _mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", _mock_enqueue
         )
 
         from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
+
         result = await scan_scheduler_health(MockEngine())
 
         assert result is not None
@@ -235,6 +261,7 @@ async def test_scheduler_health_empty_db_first_audit(monkeypatch):
 # ═══════════════════════════════════════════════════════════════
 # Test 3: Agent timeout detection
 # ═══════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_scheduler_health_detects_agent_timeout(monkeypatch):
@@ -256,14 +283,14 @@ async def test_scheduler_health_detects_agent_timeout(monkeypatch):
                 "(id, task_type, title, to_agent, priority, status, escalation_count, "
                 "created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, "fix_memory", f"Fix {i}", "pi_fixer", 3, "pending", 2, now)
+                (task_id, "fix_memory", f"Fix {i}", "pi_fixer", 3, "pending", 2, now),
             )
             conn.execute(
                 "INSERT INTO hunter_failure_log "
                 "(agent_name, task_id, task_type, failure_type, trust_before, trust_after, "
                 "penalty_applied, occurred_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                ("pi_fixer", task_id, "fix_memory", "timeout", 0.60, 0.59, -0.01, now)
+                ("pi_fixer", task_id, "fix_memory", "timeout", 0.60, 0.59, -0.01, now),
             )
 
         conn.commit()
@@ -271,11 +298,11 @@ async def test_scheduler_health_detects_agent_timeout(monkeypatch):
 
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            _mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", _mock_enqueue
         )
 
         from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
+
         result = await scan_scheduler_health(MockEngine())
 
         assert result is not None
@@ -288,6 +315,7 @@ async def test_scheduler_health_detects_agent_timeout(monkeypatch):
 # ═══════════════════════════════════════════════════════════════
 # Test 4: Priority inflation detection
 # ═══════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_scheduler_health_detects_priority_inflation(monkeypatch):
@@ -307,7 +335,7 @@ async def test_scheduler_health_detects_priority_inflation(monkeypatch):
                 "INSERT INTO task_queue "
                 "(id, task_type, title, to_agent, priority, status, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (f"p1_{i}", "fix_memory", f"P1 Fix {i}", "pi_builder", 1, "pending", now)
+                (f"p1_{i}", "fix_memory", f"P1 Fix {i}", "pi_builder", 1, "pending", now),
             )
         # 40 Priority 3 tasks
         for i in range(40):
@@ -315,7 +343,7 @@ async def test_scheduler_health_detects_priority_inflation(monkeypatch):
                 "INSERT INTO task_queue "
                 "(id, task_type, title, to_agent, priority, status, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (f"p3_{i}", "fix_memory", f"P3 Fix {i}", "pi_fixer", 3, "pending", now)
+                (f"p3_{i}", "fix_memory", f"P3 Fix {i}", "pi_fixer", 3, "pending", now),
             )
 
         conn.commit()
@@ -323,11 +351,11 @@ async def test_scheduler_health_detects_priority_inflation(monkeypatch):
 
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            _mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", _mock_enqueue
         )
 
         from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
+
         result = await scan_scheduler_health(MockEngine())
 
         assert result is not None
@@ -340,6 +368,7 @@ async def test_scheduler_health_detects_priority_inflation(monkeypatch):
 # ═══════════════════════════════════════════════════════════════
 # Test 5: High dispatch latency detection
 # ═══════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_scheduler_health_detects_high_latency(monkeypatch):
@@ -360,7 +389,7 @@ async def test_scheduler_health_detects_high_latency(monkeypatch):
                 "claimed_at, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, "
                 "datetime('now'), datetime('now', '-2 hours'))",
-                (f"slow_{i}", "build_module", f"Build {i}", "pi_builder", 3, "claimed")
+                (f"slow_{i}", "build_module", f"Build {i}", "pi_builder", 3, "claimed"),
             )
 
         conn.commit()
@@ -368,11 +397,11 @@ async def test_scheduler_health_detects_high_latency(monkeypatch):
 
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            _mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", _mock_enqueue
         )
 
         from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
+
         result = await scan_scheduler_health(MockEngine())
 
         assert result is not None
@@ -385,6 +414,7 @@ async def test_scheduler_health_detects_high_latency(monkeypatch):
 # ═══════════════════════════════════════════════════════════════
 # Test 6: Small sample — no false positive auto-throttle
 # ═══════════════════════════════════════════════════════════════
+
 
 @pytest.mark.asyncio
 async def test_scheduler_health_small_sample_no_false_positive(monkeypatch):
@@ -405,8 +435,18 @@ async def test_scheduler_health_small_sample_no_false_positive(monkeypatch):
                 "(id, task_type, title, to_agent, priority, status, source_scan, "
                 "verify_verdict, verified_at, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"small_{i}", "fix_memory", f"Fix {i}", "pi_fixer", 3,
-                 "verified", "scan_test", "rejected", now, now)
+                (
+                    f"small_{i}",
+                    "fix_memory",
+                    f"Fix {i}",
+                    "pi_fixer",
+                    3,
+                    "verified",
+                    "scan_test",
+                    "rejected",
+                    now,
+                    now,
+                ),
             )
 
         conn.commit()
@@ -414,11 +454,11 @@ async def test_scheduler_health_small_sample_no_false_positive(monkeypatch):
 
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
         monkeypatch.setattr(
-            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
-            _mock_enqueue
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", _mock_enqueue
         )
 
         from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
+
         result = await scan_scheduler_health(MockEngine())
 
         assert result is not None

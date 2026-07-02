@@ -33,9 +33,7 @@ def test_no_underscore_access():
 
     violations = []
 
-    for py_file in glob.glob(
-        os.path.join(plastic_promise_dir, "**", "*.py"), recursive=True
-    ):
+    for py_file in glob.glob(os.path.join(plastic_promise_dir, "**", "*.py"), recursive=True):
         rel_path = os.path.relpath(py_file, project_root)
 
         # The engine itself is allowed to access its own internals
@@ -62,9 +60,7 @@ def test_no_underscore_access():
                     and isinstance(node.value, ast.Name)
                     and node.value.id == "engine"
                 ):
-                    violations.append(
-                        f"{rel_path}:{node.lineno}: engine.{node.attr}"
-                    )
+                    violations.append(f"{rel_path}:{node.lineno}: engine.{node.attr}")
 
     if violations:
         msg = (

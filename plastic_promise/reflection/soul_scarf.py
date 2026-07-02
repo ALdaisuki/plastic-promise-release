@@ -29,78 +29,233 @@ from plastic_promise.core.constants import SCARF_DIMENSIONS
 _DIMENSION_KEYWORDS: Dict[str, Dict[str, List[str]]] = {
     "Status": {
         "positive": [
-            "成功", "完成", "正常", "通过", "良好", "稳定", "健康",
-            "success", "pass", "ok", "done", "fine", "good", "stable",
-            "healthy", "working", "correct", "valid", "ready",
+            "成功",
+            "完成",
+            "正常",
+            "通过",
+            "良好",
+            "稳定",
+            "健康",
+            "success",
+            "pass",
+            "ok",
+            "done",
+            "fine",
+            "good",
+            "stable",
+            "healthy",
+            "working",
+            "correct",
+            "valid",
+            "ready",
         ],
         "negative": [
-            "错误", "失败", "异常", "崩溃", "故障", "损坏", "中断",
-            "error", "fail", "crash", "bug", "broken", "issue",
-            "problem", "invalid", "wrong", "down", "dead", "halt",
+            "错误",
+            "失败",
+            "异常",
+            "崩溃",
+            "故障",
+            "损坏",
+            "中断",
+            "error",
+            "fail",
+            "crash",
+            "bug",
+            "broken",
+            "issue",
+            "problem",
+            "invalid",
+            "wrong",
+            "down",
+            "dead",
+            "halt",
         ],
     },
     "Certainty": {
         "positive": [
-            "确定", "明确", "确认", "依据", "证据", "数据", "可靠",
-            "验证", "证实", "事实",
-            "certain", "sure", "confirmed", "evidence", "data", "verified",
-            "reliable", "proven", "fact", "known", "clear",
+            "确定",
+            "明确",
+            "确认",
+            "依据",
+            "证据",
+            "数据",
+            "可靠",
+            "验证",
+            "证实",
+            "事实",
+            "certain",
+            "sure",
+            "confirmed",
+            "evidence",
+            "data",
+            "verified",
+            "reliable",
+            "proven",
+            "fact",
+            "known",
+            "clear",
         ],
         "negative": [
-            "可能", "猜测", "也许", "不确定", "大概", "假设", "推测",
-            "模糊", "未知", "怀疑", "疑惑",
-            "maybe", "guess", "uncertain", "possibly", "assumption",
-            "hypothetical", "vague", "unknown", "doubt", "unclear",
+            "可能",
+            "猜测",
+            "也许",
+            "不确定",
+            "大概",
+            "假设",
+            "推测",
+            "模糊",
+            "未知",
+            "怀疑",
+            "疑惑",
+            "maybe",
+            "guess",
+            "uncertain",
+            "possibly",
+            "assumption",
+            "hypothetical",
+            "vague",
+            "unknown",
+            "doubt",
+            "unclear",
         ],
     },
     "Autonomy": {
         "positive": [
-            "选择", "决定", "自主", "自由", "授权", "主动权", "自愿",
-            "自行", "主动",
-            "choose", "decide", "autonomous", "free", "authorized",
-            "empowered", "voluntary", "opt", "initiative",
+            "选择",
+            "决定",
+            "自主",
+            "自由",
+            "授权",
+            "主动权",
+            "自愿",
+            "自行",
+            "主动",
+            "choose",
+            "decide",
+            "autonomous",
+            "free",
+            "authorized",
+            "empowered",
+            "voluntary",
+            "opt",
+            "initiative",
         ],
         "negative": [
-            "强制", "必须", "被迫", "限制", "禁止", "命令", "服从",
-            "不得不", "强迫",
-            "must", "forced", "restricted", "banned", "prohibited",
-            "mandatory", "compelled", "obligated", "constrained",
+            "强制",
+            "必须",
+            "被迫",
+            "限制",
+            "禁止",
+            "命令",
+            "服从",
+            "不得不",
+            "强迫",
+            "must",
+            "forced",
+            "restricted",
+            "banned",
+            "prohibited",
+            "mandatory",
+            "compelled",
+            "obligated",
+            "constrained",
         ],
     },
     "Relatedness": {
         "positive": [
-            "约定", "原则", "信任", "协作", "对齐", "一致", "共享",
-            "关联", "连接", "同步", "承诺", "守护",
-            "principle", "trust", "align", "collaborate", "shared",
-            "commitment", "connect", "synchronize", "together", "joint",
+            "约定",
+            "原则",
+            "信任",
+            "协作",
+            "对齐",
+            "一致",
+            "共享",
+            "关联",
+            "连接",
+            "同步",
+            "承诺",
+            "守护",
+            "principle",
+            "trust",
+            "align",
+            "collaborate",
+            "shared",
+            "commitment",
+            "connect",
+            "synchronize",
+            "together",
+            "joint",
         ],
         "negative": [
-            "偏离", "孤立", "矛盾", "冲突", "违背", "断裂", "脱节",
-            "分离", "对立",
-            "deviate", "isolated", "contradict", "conflict", "violate",
-            "broken", "disconnect", "separated", "opposed", "drift",
+            "偏离",
+            "孤立",
+            "矛盾",
+            "冲突",
+            "违背",
+            "断裂",
+            "脱节",
+            "分离",
+            "对立",
+            "deviate",
+            "isolated",
+            "contradict",
+            "conflict",
+            "violate",
+            "broken",
+            "disconnect",
+            "separated",
+            "opposed",
+            "drift",
         ],
     },
     "Fairness": {
         "positive": [
-            "公平", "一致", "平衡", "公正", "平等", "均衡", "均匀",
-            "客观", "中立",
-            "fair", "consistent", "balanced", "just", "equal",
-            "impartial", "objective", "neutral", "even",
+            "公平",
+            "一致",
+            "平衡",
+            "公正",
+            "平等",
+            "均衡",
+            "均匀",
+            "客观",
+            "中立",
+            "fair",
+            "consistent",
+            "balanced",
+            "just",
+            "equal",
+            "impartial",
+            "objective",
+            "neutral",
+            "even",
         ],
         "negative": [
-            "偏差", "偏袒", "不公", "倾斜", "不一致", "歧视", "片面",
-            "失衡", "主观",
-            "bias", "unfair", "inconsistent", "skewed", "unequal",
-            "partial", "imbalanced", "discriminatory", "subjective",
+            "偏差",
+            "偏袒",
+            "不公",
+            "倾斜",
+            "不一致",
+            "歧视",
+            "片面",
+            "失衡",
+            "主观",
+            "bias",
+            "unfair",
+            "inconsistent",
+            "skewed",
+            "unequal",
+            "partial",
+            "imbalanced",
+            "discriminatory",
+            "subjective",
         ],
     },
 }
 
 _DEFAULT_SCORE = 0.65
 _STRONG_SIGNAL_THRESHOLD = 3  # 匹配 keyword 数达到此值视为强信号
-_SEMANTIC_SIGNAL_MAX = 0.15   # 语义信号最大偏移量
-_SEMANTIC_SIGNAL_FLOOR = 0.03 # 语义相似度低于此值视为噪声，归零
+_SEMANTIC_SIGNAL_MAX = 0.15  # 语义信号最大偏移量
+_SEMANTIC_SIGNAL_FLOOR = 0.03  # 语义相似度低于此值视为噪声，归零
 
 # Pre-built dimension anchor texts (lazily embedded on first use)
 _ANCHOR_TEXTS: Dict[str, Dict[str, str]] = {}
@@ -139,6 +294,7 @@ def _compute_semantic_signal(context: str, dim_key: str) -> float:
         return 0.0
     try:
         from plastic_promise.core.embedder import get_embedder
+
         embedder = get_embedder()
         ctx_vec = embedder.embed(context)
         pos_vec = embedder.embed(anchors["positive"])
@@ -153,8 +309,9 @@ def _compute_semantic_signal(context: str, dim_key: str) -> float:
         return 0.0
 
 
-def _compute_dimension_score(dim_key: str, context_lower: str,
-                             context_original: str = "") -> Dict[str, Any]:
+def _compute_dimension_score(
+    dim_key: str, context_lower: str, context_original: str = ""
+) -> Dict[str, Any]:
     """对单个维度计算评分和评估文本。
 
     Args:
@@ -202,26 +359,17 @@ def _compute_dimension_score(dim_key: str, context_lower: str,
     elif pos_count > neg_count:
         net = pos_count - neg_count
         score = min(1.0, 0.65 + 0.06 * net)
-        assessment = (
-            f"{dim_label}：正面信号占优（+{pos_count}/-{neg_count}），"
-            f"总体倾向积极。"
-        )
+        assessment = f"{dim_label}：正面信号占优（+{pos_count}/-{neg_count}），总体倾向积极。"
         suggestion = f"维持{dim_label}正面趋势，留意残余负面指标。"
     elif neg_count > pos_count:
         net = neg_count - pos_count
         score = max(0.0, 0.65 - 0.07 * net)
-        assessment = (
-            f"{dim_label}：负面信号占优（+{pos_count}/-{neg_count}），"
-            f"存在改进空间。"
-        )
+        assessment = f"{dim_label}：负面信号占优（+{pos_count}/-{neg_count}），存在改进空间。"
         suggestion = f"建议针对性改善{dim_label}：{dim_question}"
     else:
         # equal non-zero counts
         score = _DEFAULT_SCORE
-        assessment = (
-            f"{dim_label}：正负信号持平（+{pos_count}/-{neg_count}），"
-            f"信号矛盾。"
-        )
+        assessment = f"{dim_label}：正负信号持平（+{pos_count}/-{neg_count}），信号矛盾。"
         suggestion = f"信号矛盾，建议进一步收集信息澄清{dim_label}。"
         # Clamp small negative
         score = max(0.0, min(1.0, score))
@@ -297,7 +445,9 @@ class SCARFReflector:
                 round(max(scores), 4) if scores else _DEFAULT_SCORE,
             ),
         }
-        result["timestamp"] = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
+        result["timestamp"] = (
+            datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
+        )
 
         self.history.append(result)
         return result
@@ -329,7 +479,8 @@ class SCARFReflector:
         # Extract dimension entries from flat record (exclude meta keys)
         _META_KEYS = {"summary", "timestamp"}
         dims: Dict[str, Any] = {
-            k: v for k, v in latest.items()
+            k: v
+            for k, v in latest.items()
             if k not in _META_KEYS and isinstance(v, dict) and "score" in v
         }
 
@@ -343,9 +494,7 @@ class SCARFReflector:
                 "note": "最近一次自省无维度数据。",
             }
 
-        scores: Dict[str, float] = {
-            k: v["score"] for k, v in dims.items()
-        }
+        scores: Dict[str, float] = {k: v["score"] for k, v in dims.items()}
         overall = round(sum(scores.values()) / len(scores), 4)
         strongest = max(scores, key=scores.get)
         weakest = min(scores, key=scores.get)
@@ -395,7 +544,8 @@ class SCARFReflector:
         # Extract dimension entries from flat record (exclude meta keys)
         _META_KEYS = {"summary", "timestamp"}
         latest_dims: Dict[str, Any] = {
-            k: v for k, v in latest_record.items()
+            k: v
+            for k, v in latest_record.items()
             if k not in _META_KEYS and isinstance(v, dict) and "score" in v
         }
 

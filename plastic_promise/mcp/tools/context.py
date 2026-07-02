@@ -28,6 +28,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
+
         task_description = args["task_description"]
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
@@ -46,6 +47,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
 
         try:
             from plastic_promise.core.reranker import cross_encode_rerank
+
             if pack.core:
                 candidates = [(i.id, i.content, i.relevance) for i in pack.core]
                 reranked = cross_encode_rerank(task_description, candidates)
@@ -57,8 +59,12 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
 
         return [TextContent(type="text", text=pack.to_prompt())]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "context_supply"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "context_supply"}, ensure_ascii=False),
+            )
+        ]
 
 
 async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
@@ -84,19 +90,38 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
 
         # Validate required fields
         if not entity_type:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": "entity_type is required. Valid: principle, task, memory, code_module"},
-                ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "error": "entity_type is required. Valid: principle, task, memory, code_module"
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
         if not entity_id:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": "entity_id is required"},
-                ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "entity_id is required"}, ensure_ascii=False),
+                )
+            ]
 
         valid_types = {"principle", "task", "memory", "code_module"}
         if entity_type not in valid_types:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": f"Unknown entity_type '{entity_type}'. Valid: {', '.join(sorted(valid_types))}"},
-                ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "error": f"Unknown entity_type '{entity_type}'. Valid: {', '.join(sorted(valid_types))}"
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
         # Route through existing PrincipleManager for principle type
         if entity_type == "principle":
@@ -108,15 +133,24 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
                 related_entities=related_entities,
             )
 
-            return [TextContent(type="text", text=json.dumps({
-                "injected": {
-                    "node_id": result["node_id"],
-                    "type": entity_type,
-                    "name": entity_name,
-                    "is_new": result["is_new"],
-                    "edges_created": result["edges_created"],
-                }
-            }, ensure_ascii=False, indent=2))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "injected": {
+                                "node_id": result["node_id"],
+                                "type": entity_type,
+                                "name": entity_name,
+                                "is_new": result["is_new"],
+                                "edges_created": result["edges_created"],
+                            }
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
 
         # All other entity types: use engine.register_entity()
         try:
@@ -128,16 +162,30 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
                 related_entities=related_entities,
             )
         except ValueError as ve:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": str(ve)}, ensure_ascii=False))]
+            return [
+                TextContent(type="text", text=json.dumps({"error": str(ve)}, ensure_ascii=False))
+            ]
 
-        return [TextContent(type="text", text=json.dumps({
-            "injected": result,
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "injected": result,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
 
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "context_inject"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "context_inject"}, ensure_ascii=False),
+            )
+        ]
 
 
 async def handle_context_graph(engine: Any, args: dict) -> list[TextContent]:
@@ -161,10 +209,18 @@ async def handle_context_graph(engine: Any, args: dict) -> list[TextContent]:
 
         valid_queries = {"node_info", "traverse", "full_graph", "neighbors"}
         if query_type not in valid_queries:
-            return [TextContent(type="text", text=json.dumps(
-                {"error": f"Unknown query_type '{query_type}'. "
-                          f"Valid: {', '.join(sorted(valid_queries))}"},
-                ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "error": f"Unknown query_type '{query_type}'. "
+                            f"Valid: {', '.join(sorted(valid_queries))}"
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
         result = engine.query_graph(
             query_type=query_type,
@@ -172,17 +228,21 @@ async def handle_context_graph(engine: Any, args: dict) -> list[TextContent]:
             max_hops=max_hops,
         )
 
-        return [TextContent(type="text", text=json.dumps(
-            result, ensure_ascii=False, indent=2))]
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps(
-            {"error": str(e), "tool": "context_graph"}, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "context_graph"}, ensure_ascii=False),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
 # auto_context_inject — 统一自动化上下文注入
 # ---------------------------------------------------------------------------
+
 
 async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextContent]:
     """Unified automated context injection across Pi Agent, Claude Code, and SoulBridge.
@@ -216,11 +276,15 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
     # ── Step 1: skill_session_start ──
     try:
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
-        start_result = await handle_skill_session_start(engine, {
-            "skill_name": skill_name,
-            "task_description": task_description,
-            "parent_entity_id": None,
-        })
+
+        start_result = await handle_skill_session_start(
+            engine,
+            {
+                "skill_name": skill_name,
+                "task_description": task_description,
+                "parent_entity_id": None,
+            },
+        )
         start_data = json.loads(start_result[0].text)
         entity_id = start_data.get("entity_id")
         principles = start_data.get("activated_principles", [])
@@ -230,19 +294,26 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
     # ── Step 2: SoulLoop.pre_task_v2 → ContextEngine.supply() ──
     try:
         from plastic_promise.loop.soul_loop import SoulLoop
+
         loop = SoulLoop(engine=engine)
         pack = loop.pre_task_v2(task_description, task_type)
         context_pack = {
-            "core": [{"id": i.id, "content": i.content[:200], "relevance": i.relevance}
-                     for i in getattr(pack, 'core', [])],
-            "related": [{"id": i.id, "content": i.content[:200], "relevance": i.relevance}
-                        for i in getattr(pack, 'related', [])],
-            "divergent": [{"id": i.id, "content": i.content[:200], "relevance": i.relevance}
-                          for i in getattr(pack, 'divergent', [])],
+            "core": [
+                {"id": i.id, "content": i.content[:200], "relevance": i.relevance}
+                for i in getattr(pack, "core", [])
+            ],
+            "related": [
+                {"id": i.id, "content": i.content[:200], "relevance": i.relevance}
+                for i in getattr(pack, "related", [])
+            ],
+            "divergent": [
+                {"id": i.id, "content": i.content[:200], "relevance": i.relevance}
+                for i in getattr(pack, "divergent", [])
+            ],
         }
         # Extract principles from pack if not already populated
         if not principles:
-            pack_principles = getattr(pack, 'activated_principles', [])
+            pack_principles = getattr(pack, "activated_principles", [])
             if pack_principles:
                 principles = pack_principles
     except Exception as e:
@@ -250,10 +321,14 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
         # Fallback: call principle_activate directly as safety net
         try:
             from plastic_promise.mcp.tools.principles import handle_principle_activate
-            pa_result = await handle_principle_activate(engine, {
-                "task_type": task_type,
-                "task_description": task_description,
-            })
+
+            pa_result = await handle_principle_activate(
+                engine,
+                {
+                    "task_type": task_type,
+                    "task_description": task_description,
+                },
+            )
             pa_data = json.loads(pa_result[0].text)
             principles = pa_data.get("activated", [])
         except Exception:
@@ -262,6 +337,7 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
     # ── Step 3: memory_store — inject record into memory pool ──
     try:
         from plastic_promise.mcp.tools.memory import handle_memory_store
+
         core_count = len(context_pack.get("core", [])) if context_pack else 0
         principle_names = ", ".join(p.get("name", "?") for p in principles[:5])
         content = (
@@ -277,14 +353,17 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
         ]
         if entity_id:
             tags.append(f"entity:{entity_id}")
-        store_result = await handle_memory_store(engine, {
-            "content": content,
-            "memory_type": "experience",
-            "source": "auto_inject",
-            "entity_ids": [entity_id] if entity_id else [],
-            "tags": tags,
-            "max_llm_calls": 0,  # skip LLM classify — auto_inject content is structured already
-        })
+        store_result = await handle_memory_store(
+            engine,
+            {
+                "content": content,
+                "memory_type": "experience",
+                "source": "auto_inject",
+                "entity_ids": [entity_id] if entity_id else [],
+                "tags": tags,
+                "max_llm_calls": 0,  # skip LLM classify — auto_inject content is structured already
+            },
+        )
         if store_result and len(store_result) > 0:
             store_data = json.loads(store_result[0].text)
             inject_memory_id = store_data.get("memory_id") if isinstance(store_data, dict) else None
@@ -297,11 +376,15 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
     if entity_id:
         try:
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
-            await handle_skill_session_complete(engine, {
-                "entity_id": entity_id,
-                "outcome": "注入完成",
-                "artifacts": [],
-            })
+
+            await handle_skill_session_complete(
+                engine,
+                {
+                    "entity_id": entity_id,
+                    "outcome": "注入完成",
+                    "artifacts": [],
+                },
+            )
         except Exception as e:
             errors.append(f"skill_session_complete: {e}")
 

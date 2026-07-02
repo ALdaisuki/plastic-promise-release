@@ -43,7 +43,7 @@ def get_current_stage() -> str | None:
 
 def get_current_entity_id() -> str | None:
     """Return the currently active session entity_id (set by hook via /api/skill-track), or None.
-    
+
     Used by SkillEngine to skip duplicate skill_session_start when hook already created one.
     """
     with _skill_state_lock:
@@ -53,6 +53,7 @@ def get_current_entity_id() -> str | None:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_entity_id(skill_name: str) -> str:
     """Generate a unique entity_id for a skill session.
@@ -75,9 +76,12 @@ def _get_current_branch() -> str:
     """Detect current git branch name, or return empty string."""
     try:
         import subprocess
+
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -86,9 +90,7 @@ def _get_current_branch() -> str:
     return ""
 
 
-def _validate_parent(
-    skill_name: str, parent_entity_id: str | None, engine: Any
-) -> str | None:
+def _validate_parent(skill_name: str, parent_entity_id: str | None, engine: Any) -> str | None:
     """Check parent is a legal predecessor. Returns warning string or None.
 
     Never blocks -- always returns None (allowing creation) plus an optional
@@ -102,10 +104,7 @@ def _validate_parent(
         return None
     parent_skill = _parse_skill_from_entity_id(parent_entity_id)
     if not parent_skill:
-        return (
-            f"Parent entity_id '{parent_entity_id}' does not parse "
-            f"as a skill_session"
-        )
+        return f"Parent entity_id '{parent_entity_id}' does not parse as a skill_session"
     legal_predecessors = SKILL_CHAIN_MAP.get(skill_name, {}).get("predecessors", [])
     if parent_skill not in legal_predecessors:
         expected = ", ".join(legal_predecessors) if legal_predecessors else "none"
@@ -126,32 +125,38 @@ async def _activate_skill_principles(
     """
     try:
         from plastic_promise.mcp.tools.principles import handle_principle_activate
+
         domain = SKILL_DOMAIN_MAP.get(skill_name, "all")
         task_type = DOMAIN_TO_TASK_TYPE.get(domain, "general")
-        result = await handle_principle_activate(engine, {
-            "task_type": task_type,
-            "task_description": task_description,
-            "domain_hint": domain,
-        })
+        result = await handle_principle_activate(
+            engine,
+            {
+                "task_type": task_type,
+                "task_description": task_description,
+                "domain_hint": domain,
+            },
+        )
         data = json.loads(result[0].text)
         return data.get("activated", [])
     except Exception:
         return []
 
 
-async def _recall_skill_memories(
-    engine: Any, task_description: str
-) -> list[str]:
+async def _recall_skill_memories(engine: Any, task_description: str) -> list[str]:
     """Internally recall relevant memories for the skill.
 
     Uses a lazy import of handle_memory_recall, matching server.py pattern.
     """
     try:
         from plastic_promise.mcp.tools.memory import handle_memory_recall
-        result = await handle_memory_recall(engine, {
-            "query": task_description,
-            "max_results": 10,
-        })
+
+        result = await handle_memory_recall(
+            engine,
+            {
+                "query": task_description,
+                "max_results": 10,
+            },
+        )
         data = json.loads(result[0].text)
         core = data.get("core", [])
         return [item.get("id", "?") for item in core]
@@ -173,6 +178,7 @@ async def _store_skill_start(
     """
     try:
         from plastic_promise.mcp.tools.memory import handle_memory_store
+
         content = f"[SKILL START] {skill_name}: {task_description}"
         branch = _get_current_branch()
         tags = [
@@ -182,13 +188,16 @@ async def _store_skill_start(
         ]
         if branch:
             tags.append(f"branch:{branch}")
-        result = await handle_memory_store(engine, {
-            "content": content,
-            "memory_type": "experience",
-            "source": "superpowers",
-            "entity_ids": [entity_id],
-            "tags": tags,
-        })
+        result = await handle_memory_store(
+            engine,
+            {
+                "content": content,
+                "memory_type": "experience",
+                "source": "superpowers",
+                "entity_ids": [entity_id],
+                "tags": tags,
+            },
+        )
         data = json.loads(result[0].text)
         return data.get("memory_id", "?")
     except Exception:
@@ -245,9 +254,8 @@ def _inject_skill_entity(
 # skill_session_trace
 # ---------------------------------------------------------------------------
 
-async def handle_skill_session_trace(
-    engine: Any, args: dict
-) -> list[TextContent]:
+
+async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextContent]:
     """Query skill execution chain and detect completeness, gaps, and violations.
 
     Collects all skill_session entities from the context graph, finds their
@@ -298,7 +306,7 @@ async def handle_skill_session_trace(
         # Strip the "skill_session:" prefix to get the raw entity_id
         raw_entity_id: str = node_id
         if raw_entity_id.startswith("skill_session:"):
-            raw_entity_id = raw_entity_id[len("skill_session:"):]
+            raw_entity_id = raw_entity_id[len("skill_session:") :]
         skill_name: str = node.get("name", "unknown")
 
         if skill_filter and skill_name != skill_filter:
@@ -311,10 +319,7 @@ async def handle_skill_session_trace(
             if isinstance(mem, dict):
                 mem_dict = mem
             else:
-                mem_dict = {
-                    k: getattr(mem, k, None)
-                    for k in dir(mem) if not k.startswith("_")
-                }
+                mem_dict = {k: getattr(mem, k, None) for k in dir(mem) if not k.startswith("_")}
             mem_entity_ids: list = mem_dict.get("entity_ids", [])
             if not isinstance(mem_entity_ids, list):
                 mem_entity_ids = []
@@ -354,15 +359,14 @@ async def handle_skill_session_trace(
 
         # -- Timestamps -----------------------------------------------------
         started_at: str = memory.get("created_at", "") if memory else ""
-        last_accessed: str = (
-            memory.get("last_accessed", "") if memory else ""
-        )
+        last_accessed: str = memory.get("last_accessed", "") if memory else ""
         completed_at: str = ""
         duration_ms: int | None = None
 
         # Extract duration from content if a [SKILL COMPLETE] marker exists
         if "[SKILL COMPLETE]" in content:
             import re as _re
+
             dur_match = _re.search(r"duration_ms=(\d+)", content)
             if dur_match:
                 duration_ms = int(dur_match.group(1))
@@ -373,29 +377,29 @@ async def handle_skill_session_trace(
             if not isinstance(edge, dict):
                 continue
             # Edge goes FROM parent TO child with relation "parent_of"
-            if (edge.get("from") == f"skill_session:{raw_entity_id}"
-                    and edge.get("relation") == "parent_of"):
+            if (
+                edge.get("from") == f"skill_session:{raw_entity_id}"
+                and edge.get("relation") == "parent_of"
+            ):
                 child_id = edge.get("to", "")
-                if isinstance(child_id, str) and child_id.startswith(
-                    "skill_session:"
-                ):
-                    child_skills.append(
-                        child_id[len("skill_session:"):]
-                    )
+                if isinstance(child_id, str) and child_id.startswith("skill_session:"):
+                    child_skills.append(child_id[len("skill_session:") :])
 
-        sessions.append({
-            "entity_id": raw_entity_id,
-            "skill_name": skill_name,
-            "status": status,
-            "started_at": started_at,
-            "completed_at": completed_at,
-            "last_accessed": last_accessed,
-            "duration_ms": duration_ms,
-            "description": node.get("description", ""),
-            "outcome": outcome,
-            "parent_skill": None,  # filled below via edge lookup
-            "child_skills": child_skills,
-        })
+        sessions.append(
+            {
+                "entity_id": raw_entity_id,
+                "skill_name": skill_name,
+                "status": status,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "last_accessed": last_accessed,
+                "duration_ms": duration_ms,
+                "description": node.get("description", ""),
+                "outcome": outcome,
+                "parent_skill": None,  # filled below via edge lookup
+                "child_skills": child_skills,
+            }
+        )
 
     # -- Build parent relationships from edges ------------------------------
     for edge in engine.list_graph_edges():
@@ -407,14 +411,11 @@ async def handle_skill_session_trace(
             for s in sessions:
                 if f"skill_session:{s['entity_id']}" == child_full_id:
                     if parent_full_id.startswith("skill_session:"):
-                        s["parent_skill"] = parent_full_id[
-                            len("skill_session:"):
-                        ]
+                        s["parent_skill"] = parent_full_id[len("skill_session:") :]
 
     # -- Exclude auto_inject sessions by default ----------------------------
     if not include_auto_inject:
-        sessions = [s for s in sessions
-                    if not s["skill_name"].startswith("auto_inject:")]
+        sessions = [s for s in sessions if not s["skill_name"].startswith("auto_inject:")]
 
     # -- Gap detection ------------------------------------------------------
     gaps: list[dict] = []
@@ -433,31 +434,31 @@ async def handle_skill_session_trace(
                     la = la.replace(tzinfo=None)
                 idle_minutes = (now - la).total_seconds() / 60.0
                 if idle_minutes > ORPHAN_THRESHOLD_MINUTES:
-                    gaps.append({
-                        "type": "orphan_active",
-                        "entity_id": s["entity_id"],
-                        "skill_name": s["skill_name"],
-                        "idle_minutes": round(idle_minutes, 1),
-                        "suggestion": (
-                            "手動 skill_session_complete(entity_id, outcome)"
-                        ),
-                    })
+                    gaps.append(
+                        {
+                            "type": "orphan_active",
+                            "entity_id": s["entity_id"],
+                            "skill_name": s["skill_name"],
+                            "idle_minutes": round(idle_minutes, 1),
+                            "suggestion": ("手動 skill_session_complete(entity_id, outcome)"),
+                        }
+                    )
             except (ValueError, TypeError):
                 pass
 
         # 2. chain_broken: done but has successors in SKILL_CHAIN_MAP
         #    and no child sessions recorded
         if s["status"] == "done":
-            expected_successors = SKILL_CHAIN_MAP.get(
-                s["skill_name"], {}
-            ).get("successors", [])
+            expected_successors = SKILL_CHAIN_MAP.get(s["skill_name"], {}).get("successors", [])
             if expected_successors and not s["child_skills"]:
-                chain_warnings.append({
-                    "type": "chain_broken",
-                    "entity_id": s["entity_id"],
-                    "skill_name": s["skill_name"],
-                    "expected_next": expected_successors,
-                })
+                chain_warnings.append(
+                    {
+                        "type": "chain_broken",
+                        "entity_id": s["entity_id"],
+                        "skill_name": s["skill_name"],
+                        "expected_next": expected_successors,
+                    }
+                )
 
         # 3. tag_mismatch: content marks completion but task:done tag missing
         if s["status"] == "done":
@@ -467,10 +468,7 @@ async def handle_skill_session_trace(
                 if isinstance(mem, dict):
                     m = mem
                 else:
-                    m = {
-                        k: getattr(mem, k, None)
-                        for k in dir(mem) if not k.startswith("_")
-                    }
+                    m = {k: getattr(mem, k, None) for k in dir(mem) if not k.startswith("_")}
                 eids = m.get("entity_ids", [])
                 if not isinstance(eids, list):
                     eids = []
@@ -484,15 +482,14 @@ async def handle_skill_session_trace(
                 has_done_marker = "[SKILL COMPLETE]" in mem_content
                 has_done_tag = "task:done" in mem_tags
                 if has_done_marker and not has_done_tag:
-                    gaps.append({
-                        "type": "tag_mismatch",
-                        "entity_id": s["entity_id"],
-                        "skill_name": s["skill_name"],
-                        "detail": (
-                            "Content has [SKILL COMPLETE] but "
-                            "task:done tag is missing"
-                        ),
-                    })
+                    gaps.append(
+                        {
+                            "type": "tag_mismatch",
+                            "entity_id": s["entity_id"],
+                            "skill_name": s["skill_name"],
+                            "detail": ("Content has [SKILL COMPLETE] but task:done tag is missing"),
+                        }
+                    )
 
     # -- Chain validation ---------------------------------------------------
     chain_complete: bool = len(gaps) == 0
@@ -507,18 +504,24 @@ async def handle_skill_session_trace(
         "total_count": len(sessions),
     }
 
-    return [TextContent(type="text", text=json.dumps(
-        response, ensure_ascii=False, indent=2,
-    ))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                response,
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
 # skill_session_start
 # ---------------------------------------------------------------------------
 
-async def handle_skill_session_start(
-    engine: Any, args: dict
-) -> list[TextContent]:
+
+async def handle_skill_session_start(engine: Any, args: dict) -> list[TextContent]:
     """Create a skill_session entity and record the start of a skill execution.
 
     Internal steps:
@@ -551,19 +554,26 @@ async def handle_skill_session_start(
     _known_prefixes = ("superpowers:",)
     for prefix in _known_prefixes:
         if skill_name.startswith(prefix):
-            _normalized_name = skill_name[len(prefix):]
+            _normalized_name = skill_name[len(prefix) :]
             break
 
     # Validate skill_name (auto_inject:* is always allowed)
-    if (not _normalized_name.startswith("auto_inject:")
-            and _normalized_name not in SKILL_DOMAIN_MAP):
-        return [TextContent(type="text", text=json.dumps({
-            "error": (
-                f"Unknown skill_name '{_normalized_name}' (raw: '{skill_name}'). "
-                f"Known skills: {list(SKILL_DOMAIN_MAP.keys())}"
-            ),
-            "tool": "skill_session_start",
-        }, ensure_ascii=False))]
+    if not _normalized_name.startswith("auto_inject:") and _normalized_name not in SKILL_DOMAIN_MAP:
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": (
+                            f"Unknown skill_name '{_normalized_name}' (raw: '{skill_name}'). "
+                            f"Known skills: {list(SKILL_DOMAIN_MAP.keys())}"
+                        ),
+                        "tool": "skill_session_start",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     # Derive domain and entity_id (entity_id keeps original full name for traceability)
     # auto_inject:* prefix → "reflecting" domain (context audit snapshot)
@@ -583,12 +593,20 @@ async def handle_skill_session_start(
 
     # 1. Register entity in context graph
     entity_info = _inject_skill_entity(
-        engine, entity_id, skill_name, task_description, parent_entity_id,
+        engine,
+        entity_id,
+        skill_name,
+        task_description,
+        parent_entity_id,
     )
 
     # 2. Persist as memory record (principles + recall handled by sp-stage atoms)
     memory_id = await _store_skill_start(
-        engine, entity_id, skill_name, task_description, domain,
+        engine,
+        entity_id,
+        skill_name,
+        task_description,
+        domain,
     )
 
     tags_applied = ["task:active", f"skill:{skill_name}", f"domain:{domain}"]
@@ -599,24 +617,30 @@ async def handle_skill_session_start(
         "status": "active",
         "domain": domain,
         "activated_principles": [],  # handled by atoms, not duplicated here
-        "related_memories": [],      # handled by session-init context_supply
+        "related_memories": [],  # handled by session-init context_supply
         "tags_applied": tags_applied,
         "chain_warning": chain_warning,
         "memory_id": memory_id,
     }
 
-    return [TextContent(type="text", text=json.dumps(
-        response, ensure_ascii=False, indent=2,
-    ))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                response,
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
 # skill_session_complete
 # ---------------------------------------------------------------------------
 
-async def handle_skill_session_complete(
-    engine: Any, args: dict
-) -> list[TextContent]:
+
+async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextContent]:
     """Mark a skill session as complete, handling tag transitions and worth updates.
 
     Three outcomes based on the ``outcome`` argument:
@@ -673,19 +697,22 @@ async def handle_skill_session_complete(
             if isinstance(mem, dict):
                 mem_data = dict(mem)  # shallow copy so we can mutate safely
             else:
-                mem_data = {
-                    k: getattr(mem, k, None)
-                    for k in dir(mem) if not k.startswith("_")
-                }
+                mem_data = {k: getattr(mem, k, None) for k in dir(mem) if not k.startswith("_")}
             break
 
     if not memory_id:
-        return [TextContent(type="text", text=json.dumps({
-            "error": (
-                f"No skill session memory found for entity_id '{entity_id}'"
-            ),
-            "tool": "skill_session_complete",
-        }, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": (f"No skill session memory found for entity_id '{entity_id}'"),
+                        "tool": "skill_session_complete",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     skill_name = _parse_skill_from_entity_id(entity_id) or "unknown"
     created_at = mem_data.get("created_at", "")
@@ -694,7 +721,7 @@ async def handle_skill_session_complete(
     # Outcome: abandoned
     # ------------------------------------------------------------------
     if outcome and outcome.startswith("abandoned:"):
-        reason = outcome[len("abandoned:"):].strip()
+        reason = outcome[len("abandoned:") :].strip()
         tags: list[str] = list(mem_data.get("tags", []))
 
         if "task:active" in tags:
@@ -702,23 +729,29 @@ async def handle_skill_session_complete(
         if "task:abandoned" not in tags:
             tags.append("task:abandoned")
 
-        new_content = (
-            mem_data.get("content", "")
-            + f"\n[SKILL ABANDONED] {reason}"
-        )
+        new_content = mem_data.get("content", "") + f"\n[SKILL ABANDONED] {reason}"
 
         # Persist via public API
         engine.update_memory_fields(memory_id, tags=tags, content=new_content)
 
-        return [TextContent(type="text", text=json.dumps({
-            "entity_id": entity_id,
-            "skill_name": skill_name,
-            "status": "abandoned",
-            "reason": reason,
-            "next_skills": [],
-            "worth_update": None,
-            "memory_id": memory_id,
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "entity_id": entity_id,
+                        "skill_name": skill_name,
+                        "status": "abandoned",
+                        "reason": reason,
+                        "next_skills": [],
+                        "worth_update": None,
+                        "memory_id": memory_id,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Outcome: still_in_progress
@@ -744,16 +777,25 @@ async def handle_skill_session_complete(
             last_accessed=datetime.datetime.now(datetime.UTC).isoformat(),
         )
 
-        return [TextContent(type="text", text=json.dumps({
-            "entity_id": entity_id,
-            "skill_name": skill_name,
-            "status": "still_active",
-            "next_skills": [],
-            "worth_update": None,
-            "memory_id": memory_id,
-            "renewal_count": renewal_count + 1,
-            "overdue": overdue,
-        }, ensure_ascii=False, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "entity_id": entity_id,
+                        "skill_name": skill_name,
+                        "status": "still_active",
+                        "next_skills": [],
+                        "worth_update": None,
+                        "memory_id": memory_id,
+                        "renewal_count": renewal_count + 1,
+                        "overdue": overdue,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Normal outcome -- transition to done
@@ -795,66 +837,74 @@ async def handle_skill_session_complete(
     worth_update = None
     try:
         from plastic_promise.mcp.tools.reflection import handle_feedback_apply
-        fb_result = await handle_feedback_apply(engine, {
-            "item_id": memory_id,
-            "feedback_type": "adopted",
-        })
-        fb_data = json.loads(fb_result[0].text)
-        worth_update = fb_data.get(
-            "new_worth_score", SKILL_COMPLETE_WORTH_DELTA
+
+        fb_result = await handle_feedback_apply(
+            engine,
+            {
+                "item_id": memory_id,
+                "feedback_type": "adopted",
+            },
         )
+        fb_data = json.loads(fb_result[0].text)
+        worth_update = fb_data.get("new_worth_score", SKILL_COMPLETE_WORTH_DELTA)
     except Exception:
         worth_update = SKILL_COMPLETE_WORTH_DELTA
 
     # -- chain successors --
-    next_skills: list[str] = SKILL_CHAIN_MAP.get(
-        skill_name, {}
-    ).get("successors", [])
+    next_skills: list[str] = SKILL_CHAIN_MAP.get(skill_name, {}).get("successors", [])
 
     # -- register artifacts --
     artifact_results: list[str] = []
     if artifacts:
         try:
             from plastic_promise.mcp.tools.memory import handle_memory_store
+
             for art_path in artifacts:
                 try:
-                    art_result = await handle_memory_store(engine, {
-                        "content": (
-                            f"[SKILL ARTIFACT] {skill_name}: {art_path}"
-                        ),
-                        "memory_type": "code",
-                        "source": "superpowers",
-                        "entity_ids": [entity_id],
-                        "tags": ["task:artifact", f"skill:{skill_name}"],
-                    })
-                    art_data = json.loads(art_result[0].text)
-                    artifact_results.append(
-                        art_data.get("memory_id", "?")
+                    art_result = await handle_memory_store(
+                        engine,
+                        {
+                            "content": (f"[SKILL ARTIFACT] {skill_name}: {art_path}"),
+                            "memory_type": "code",
+                            "source": "superpowers",
+                            "entity_ids": [entity_id],
+                            "tags": ["task:artifact", f"skill:{skill_name}"],
+                        },
                     )
+                    art_data = json.loads(art_result[0].text)
+                    artifact_results.append(art_data.get("memory_id", "?"))
                 except Exception:
                     artifact_results.append("?")
         except ImportError:
             pass
 
-    return [TextContent(type="text", text=json.dumps({
-        "entity_id": entity_id,
-        "skill_name": skill_name,
-        "status": "done",
-        "duration_ms": duration_ms,
-        "next_skills": next_skills,
-        "worth_update": worth_update,
-        "memory_id": memory_id,
-        "artifact_memory_ids": artifact_results,
-    }, ensure_ascii=False, indent=2))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "entity_id": entity_id,
+                    "skill_name": skill_name,
+                    "status": "done",
+                    "duration_ms": duration_ms,
+                    "next_skills": next_skills,
+                    "worth_update": worth_update,
+                    "memory_id": memory_id,
+                    "artifact_memory_ids": artifact_results,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
 # skill_session_audit
 # ---------------------------------------------------------------------------
 
-async def handle_skill_session_audit(
-    engine: Any, args: dict
-) -> list[TextContent]:
+
+async def handle_skill_session_audit(engine: Any, args: dict) -> list[TextContent]:
     """Post-hoc gap scan for skill sessions, with optional auto-remediation.
 
     Scans the context graph for existing skill_session entities, searches
@@ -897,7 +947,7 @@ async def handle_skill_session_audit(
         # Strip the "skill_session:" prefix to get the raw entity_id
         raw_entity_id: str = node_id
         if raw_entity_id.startswith("skill_session:"):
-            raw_entity_id = raw_entity_id[len("skill_session:"):]
+            raw_entity_id = raw_entity_id[len("skill_session:") :]
         skill_name: str = node.get("name", "unknown")
         if skill_name not in existing_sessions:
             existing_sessions[skill_name] = []
@@ -931,11 +981,13 @@ async def handle_skill_session_audit(
     gaps: list[dict] = []
     for skill_name in sorted(mentioned_skills):
         if skill_name not in existing_sessions:
-            gaps.append({
-                "type": "missing_start",
-                "skill_name": skill_name,
-                "domain": SKILL_DOMAIN_MAP.get(skill_name, "unknown"),
-            })
+            gaps.append(
+                {
+                    "type": "missing_start",
+                    "skill_name": skill_name,
+                    "domain": SKILL_DOMAIN_MAP.get(skill_name, "unknown"),
+                }
+            )
 
     # ------------------------------------------------------------------
     # 4. Auto-fix mode
@@ -960,50 +1012,64 @@ async def handle_skill_session_audit(
                     break
 
             if skill_has_any_session:
-                auto_fixed.append({
-                    "skill_name": skill_name,
-                    "status": "skipped",
-                    "reason": "session_already_exists",
-                })
+                auto_fixed.append(
+                    {
+                        "skill_name": skill_name,
+                        "status": "skipped",
+                        "reason": "session_already_exists",
+                    }
+                )
                 continue
 
             try:
                 # Create session with [事后补录] description
-                start_result = await handle_skill_session_start(engine, {
-                    "skill_name": skill_name,
-                    "task_description": f"[事后补录] {skill_name}",
-                    "parent_entity_id": None,
-                })
+                start_result = await handle_skill_session_start(
+                    engine,
+                    {
+                        "skill_name": skill_name,
+                        "task_description": f"[事后补录] {skill_name}",
+                        "parent_entity_id": None,
+                    },
+                )
                 start_data = json.loads(start_result[0].text)
 
                 if "error" in start_data:
-                    auto_fixed.append({
-                        "skill_name": skill_name,
-                        "status": "failed",
-                        "reason": start_data["error"],
-                    })
+                    auto_fixed.append(
+                        {
+                            "skill_name": skill_name,
+                            "status": "failed",
+                            "reason": start_data["error"],
+                        }
+                    )
                     continue
 
                 entity_id: str = start_data["entity_id"]
 
                 # Immediately mark as done
-                complete_result = await handle_skill_session_complete(engine, {
-                    "entity_id": entity_id,
-                })
+                complete_result = await handle_skill_session_complete(
+                    engine,
+                    {
+                        "entity_id": entity_id,
+                    },
+                )
                 complete_data = json.loads(complete_result[0].text)
 
-                auto_fixed.append({
-                    "skill_name": skill_name,
-                    "status": "fixed",
-                    "entity_id": entity_id,
-                    "memory_id": complete_data.get("memory_id", "?"),
-                })
+                auto_fixed.append(
+                    {
+                        "skill_name": skill_name,
+                        "status": "fixed",
+                        "entity_id": entity_id,
+                        "memory_id": complete_data.get("memory_id", "?"),
+                    }
+                )
             except Exception as exc:
-                auto_fixed.append({
-                    "skill_name": skill_name,
-                    "status": "failed",
-                    "reason": str(exc),
-                })
+                auto_fixed.append(
+                    {
+                        "skill_name": skill_name,
+                        "status": "failed",
+                        "reason": str(exc),
+                    }
+                )
 
     response: dict[str, Any] = {
         "scanned_sessions": scanned_sessions,
@@ -1011,14 +1077,22 @@ async def handle_skill_session_audit(
         "auto_fixed": auto_fixed,
     }
 
-    return [TextContent(type="text", text=json.dumps(
-        response, ensure_ascii=False, indent=2,
-    ))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                response,
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
 # skill_auto_track — hook 调用的自动 Skill 追踪
 # ---------------------------------------------------------------------------
+
 
 async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
     """Auto-track Skill calls via Trae/Claude Code PreToolUse/PostToolUse hooks.
@@ -1045,7 +1119,9 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
         with _skill_state_lock:
             # ── Lightweight start: just create entity + activate principles ──
             # Normalize skill_name (strip "sp-" prefix for lookup)
-            lookup_name = skill_name.replace("sp-", "") if skill_name.startswith("sp-") else skill_name
+            lookup_name = (
+                skill_name.replace("sp-", "") if skill_name.startswith("sp-") else skill_name
+            )
             domain = SKILL_DOMAIN_MAP.get(lookup_name, "general")
             entity_id = _make_entity_id(lookup_name)
 
@@ -1053,15 +1129,20 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
             # Use _parent_entity_id to link to the previous skill in the chain
             try:
                 _inject_skill_entity(
-                    engine, entity_id, lookup_name,
-                    f"auto-tracked: {lookup_name}", _parent_entity_id,
+                    engine,
+                    entity_id,
+                    lookup_name,
+                    f"auto-tracked: {lookup_name}",
+                    _parent_entity_id,
                 )
             except Exception:
                 pass
 
             # Activate principles (fast, in-memory)
             try:
-                await _activate_skill_principles(engine, lookup_name, f"auto-tracked: {lookup_name}")
+                await _activate_skill_principles(
+                    engine, lookup_name, f"auto-tracked: {lookup_name}"
+                )
             except Exception:
                 pass
 
@@ -1070,11 +1151,19 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
             # hooks and handle the heavy work. Doing it here would double the cost.
             _current_skill = entity_id
             _current_entity_id = entity_id
-        return [TextContent(type="text", text=json.dumps({
-            "entity_id": entity_id,
-            "status": "tracking",
-            "phase": "start",
-        }, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "entity_id": entity_id,
+                        "status": "tracking",
+                        "phase": "start",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     elif phase == "complete":
         eid = _current_skill
@@ -1082,24 +1171,37 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
             if eid:
                 try:
                     # Lightweight complete: run the session_complete handler
-                    await handle_skill_session_complete(engine, {
-                        "entity_id": eid,
-                        "outcome": "auto-tracked",
-                        "artifacts": [],
-                    })
+                    await handle_skill_session_complete(
+                        engine,
+                        {
+                            "entity_id": eid,
+                            "outcome": "auto-tracked",
+                            "artifacts": [],
+                        },
+                    )
                 except Exception:
                     pass
             _parent_entity_id = eid
             _current_stage = skill_name  # Track last completed stage
             _current_skill = None
             _current_entity_id = None  # Clear hook session marker
-        return [TextContent(type="text", text=json.dumps({
-            "status": "tracked",
-            "phase": "complete",
-            "next_parent": _parent_entity_id,
-            "current_stage": _current_stage,
-        }, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "status": "tracked",
+                        "phase": "complete",
+                        "next_parent": _parent_entity_id,
+                        "current_stage": _current_stage,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
-    return [TextContent(type="text", text=json.dumps(
-        {"error": f"Unknown phase: {phase!r}"}, ensure_ascii=False
-    ))]
+    return [
+        TextContent(
+            type="text", text=json.dumps({"error": f"Unknown phase: {phase!r}"}, ensure_ascii=False)
+        )
+    ]

@@ -18,14 +18,16 @@ logger = logging.getLogger("plastic-promise.lancedb")
 EMB_DIM = int(os.environ.get("PP_EMBEDDING_DIM", "1024"))
 TABLE_NAME = "memory_vectors"
 
-_MEMORY_VECTORS_SCHEMA = pa.schema([
-    pa.field("memory_id", pa.string()),
-    pa.field("vector", pa.list_(pa.float32(), EMB_DIM)),
-    pa.field("text", pa.string()),
-    pa.field("tier", pa.string()),
-    pa.field("category", pa.string()),
-    pa.field("scope", pa.string()),
-])
+_MEMORY_VECTORS_SCHEMA = pa.schema(
+    [
+        pa.field("memory_id", pa.string()),
+        pa.field("vector", pa.list_(pa.float32(), EMB_DIM)),
+        pa.field("text", pa.string()),
+        pa.field("tier", pa.string()),
+        pa.field("category", pa.string()),
+        pa.field("scope", pa.string()),
+    ]
+)
 
 
 class LanceDBStore:
@@ -49,12 +51,13 @@ class LanceDBStore:
         self._db = lancedb.connect(self._path)
         try:
             self._table = self._db.open_table(TABLE_NAME)
-            logger.info("LanceDB: opened existing table '%s' (%d rows)",
-                        TABLE_NAME, self._table.count_rows())
-        except Exception:
-            self._table = self._db.create_table(
-                TABLE_NAME, schema=_MEMORY_VECTORS_SCHEMA, data=[]
+            logger.info(
+                "LanceDB: opened existing table '%s' (%d rows)",
+                TABLE_NAME,
+                self._table.count_rows(),
             )
+        except Exception:
+            self._table = self._db.create_table(TABLE_NAME, schema=_MEMORY_VECTORS_SCHEMA, data=[])
             logger.info("LanceDB: created table '%s'", TABLE_NAME)
         self._ensure_fts()
 
@@ -69,8 +72,8 @@ class LanceDBStore:
             try:
                 indices = self._table.list_indices()
                 for idx in indices:
-                    if getattr(idx, 'name', '') == 'text_idx' or (
-                        hasattr(idx, 'column') and 'text' in str(getattr(idx, 'column', ''))
+                    if getattr(idx, "name", "") == "text_idx" or (
+                        hasattr(idx, "column") and "text" in str(getattr(idx, "column", ""))
                     ):
                         self._fts_ready = True
                         return
@@ -125,10 +128,15 @@ class LanceDBStore:
                     continue
                 if tier and row.get("tier") != tier:
                     continue
-                results.append((mid, max(0.0, min(1.0, sim)),
-                                row.get("text", ""),
-                                row.get("tier", "L1"),
-                                row.get("scope", "global")))
+                results.append(
+                    (
+                        mid,
+                        max(0.0, min(1.0, sim)),
+                        row.get("text", ""),
+                        row.get("tier", "L1"),
+                        row.get("scope", "global"),
+                    )
+                )
             return results
         except Exception as e:
             logger.error("LanceDB vector search failed: %s", e)
@@ -159,9 +167,12 @@ class LanceDBStore:
                 # Fallback: substring match via pyarrow compute
                 safe_query = query.replace("'", "''")  # escape single quotes
                 pattern = f"%{safe_query}%"
-                raw = self._table.search().where(
-                    f"text LIKE '{pattern}'", prefilter=True
-                ).limit(k).to_list()
+                raw = (
+                    self._table.search()
+                    .where(f"text LIKE '{pattern}'", prefilter=True)
+                    .limit(k)
+                    .to_list()
+                )
             results = []
             for row in raw:
                 mid = row["memory_id"]
@@ -172,17 +183,24 @@ class LanceDBStore:
                     score = 0.5
                 if scope and row.get("scope") != scope:
                     continue
-                results.append((mid, max(0.0, min(1.0, score)),
-                                row.get("text", ""),
-                                row.get("tier", "L1"),
-                                row.get("scope", "global")))
+                results.append(
+                    (
+                        mid,
+                        max(0.0, min(1.0, score)),
+                        row.get("text", ""),
+                        row.get("tier", "L1"),
+                        row.get("scope", "global"),
+                    )
+                )
             return results
         except Exception as e:
             logger.warning("LanceDB FTS search failed: %s", e)
             return []
 
     def search_similar(
-        self, vector: list[float], k: int = 5,
+        self,
+        vector: list[float],
+        k: int = 5,
     ) -> list[tuple[str, float]]:
         """Return top-k (memory_id, similarity) sorted by similarity descending.
 
@@ -205,7 +223,9 @@ class LanceDBStore:
             return []
 
     def check_duplicate(
-        self, vector: list[float], threshold: float = 0.85,
+        self,
+        vector: list[float],
+        threshold: float = 0.85,
     ) -> Optional[str]:
         """Return memory_id of the nearest match if similarity >= threshold, else None.
 
@@ -217,32 +237,49 @@ class LanceDBStore:
         return None
 
     def insert(
-        self, memory_id: str, vector: list[float], text: str,
-        tier: str = "L1", category: str = "other", scope: str = "global",
+        self,
+        memory_id: str,
+        vector: list[float],
+        text: str,
+        tier: str = "L1",
+        category: str = "other",
+        scope: str = "global",
     ) -> None:
         """Insert a vector row. No-op if memory_id already exists."""
         if self._table is None:
             return
         try:
-            existing = self._table.search().where(
-                f"memory_id = '{memory_id}'", prefilter=True
-            ).limit(1).to_list()
+            existing = (
+                self._table.search()
+                .where(f"memory_id = '{memory_id}'", prefilter=True)
+                .limit(1)
+                .to_list()
+            )
             if existing:
                 return  # already exists, skip
-            self._table.add([{
-                "memory_id": memory_id,
-                "vector": vector,
-                "text": text,
-                "tier": tier,
-                "category": category,
-                "scope": scope,
-            }])
+            self._table.add(
+                [
+                    {
+                        "memory_id": memory_id,
+                        "vector": vector,
+                        "text": text,
+                        "tier": tier,
+                        "category": category,
+                        "scope": scope,
+                    }
+                ]
+            )
         except Exception as e:
             logger.error("LanceDB insert failed for %s: %s", memory_id, e)
 
     def update(
-        self, memory_id: str, vector: list[float], text: str,
-        tier: str = "L1", category: str = "other", scope: str = "global",
+        self,
+        memory_id: str,
+        vector: list[float],
+        text: str,
+        tier: str = "L1",
+        category: str = "other",
+        scope: str = "global",
     ) -> None:
         """Update or insert a vector row (upsert)."""
         self.delete(memory_id)
@@ -301,12 +338,13 @@ class LanceDBStore:
             Number of memories re-indexed.
         """
         import os as _os
+
         _max_batch = int(_os.environ.get("LDB_REBUILD_MAX_PER_CALL", "200"))
 
         removed = self.clear_all()
         logger.info("LanceDB rebuild: removed %d rows, starting re-index", removed)
 
-        memories = getattr(engine, '_memories', {})
+        memories = getattr(engine, "_memories", {})
         if not memories:
             logger.warning("LanceDB rebuild: engine._memories is empty — nothing to rebuild")
             return 0
@@ -315,8 +353,11 @@ class LanceDBStore:
 
         for mid, mem_data in memories.items():
             if rebuilt >= _max_batch:
-                logger.info("LanceDB rebuild: hit batch limit (%d), %d remaining — deferring",
-                            _max_batch, len(memories) - rebuilt)
+                logger.info(
+                    "LanceDB rebuild: hit batch limit (%d), %d remaining — deferring",
+                    _max_batch,
+                    len(memories) - rebuilt,
+                )
                 break
 
             content = mem_data.get("content", "")
@@ -361,33 +402,43 @@ class LanceDBStore:
             Number of memories backfilled.
         """
         import os as _os
+
         _max_backfill = int(_os.environ.get("LDB_BACKFILL_MAX_PER_CALL", "50"))
 
         ldb_count = self.count_rows()
-        sqlite_count = getattr(engine, 'memory_count', 0)
+        sqlite_count = getattr(engine, "memory_count", 0)
         if ldb_count >= sqlite_count:
-            logger.info("LanceDB backfill: table has %d rows, SQLite has %d — skip",
-                        ldb_count, sqlite_count)
+            logger.info(
+                "LanceDB backfill: table has %d rows, SQLite has %d — skip", ldb_count, sqlite_count
+            )
             return 0
 
-        logger.info("LanceDB backfill: %d in LDB < %d in SQLite — starting (max %d per call)",
-                    ldb_count, sqlite_count, _max_backfill)
+        logger.info(
+            "LanceDB backfill: %d in LDB < %d in SQLite — starting (max %d per call)",
+            ldb_count,
+            sqlite_count,
+            _max_backfill,
+        )
         # Use engine._memories dict directly (already loaded from SQLite) — avoids redundant re-query
-        memories = getattr(engine, '_memories', {})
+        memories = getattr(engine, "_memories", {})
         backfilled = 0
         for mid, mem_data in memories.items():
             if backfilled >= _max_backfill:
-                logger.info("LanceDB backfill: hit per-call limit (%d), deferring remaining",
-                            _max_backfill)
+                logger.info(
+                    "LanceDB backfill: hit per-call limit (%d), deferring remaining", _max_backfill
+                )
                 break
             content = mem_data.get("content", "")
             if not content or not content.strip():
                 continue
             # Check if already in LanceDB
             try:
-                existing = self._table.search().where(
-                    f"memory_id = '{mid}'", prefilter=True
-                ).limit(1).to_list()
+                existing = (
+                    self._table.search()
+                    .where(f"memory_id = '{mid}'", prefilter=True)
+                    .limit(1)
+                    .to_list()
+                )
                 if existing:
                     continue
             except Exception:
@@ -399,9 +450,9 @@ class LanceDBStore:
                     memory_id=mid,
                     vector=vec,
                     text=content,
-                    tier=mem_data.get('tier', 'L1'),
-                    category=mem_data.get('category', 'other'),
-                    scope=mem_data.get('scope', 'global'),
+                    tier=mem_data.get("tier", "L1"),
+                    category=mem_data.get("category", "other"),
+                    scope=mem_data.get("scope", "global"),
                 )
                 backfilled += 1
                 if backfilled % 10 == 0:

@@ -34,7 +34,7 @@ CATEGORY_NAMES: List[str] = [
 ]
 
 _KEYWORD_GROUPS: List[List[str]] = [
-    CLASSIFIER_KEYWORDS[0:11],   # code_generation
+    CLASSIFIER_KEYWORDS[0:11],  # code_generation
     CLASSIFIER_KEYWORDS[11:19],  # modify
     CLASSIFIER_KEYWORDS[19:27],  # query
     CLASSIFIER_KEYWORDS[27:33],  # review
@@ -141,9 +141,7 @@ class TaskClassifier:
             - "claude_print"      score >= CLASSIFIER_THRESHOLD_CLAUDE
             - "local"             否则
         """
-        score = len(
-            [kw for kw in self._keywords if kw in instruction.lower()]
-        )
+        score = len([kw for kw in self._keywords if kw in instruction.lower()])
         return self._compute_route(score)
 
     def batch_classify(self, instructions: List[str]) -> List[Dict[str, Any]]:
@@ -171,9 +169,7 @@ class TaskClassifier:
             "total_classified": self._total_classified,
             "routes": dict(self._route_counts),
             "avg_score": (
-                self._score_sum / self._total_classified
-                if self._total_classified > 0
-                else 0.0
+                self._score_sum / self._total_classified if self._total_classified > 0 else 0.0
             ),
         }
 

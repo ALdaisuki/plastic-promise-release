@@ -36,6 +36,7 @@ from plastic_promise.core.context_engine import ContextEngine, ContextPack
 # MemoryWorthCalculator — 双计数器价值评估
 # ============================================================
 
+
 class MemoryWorthCalculator:
     """基于威尔逊下界的双计数器记忆价值评估器。
 
@@ -99,14 +100,15 @@ class MemoryWorthCalculator:
         """
         try:
             wilson = self.calculate_worth(record.worth_success, record.worth_failure)
-            freshness = 1.0 - getattr(record, 'decay_multiplier', 1.0)
+            freshness = 1.0 - getattr(record, "decay_multiplier", 1.0)
 
             # Compute reinforcement score from half-life fields
-            tier = getattr(record, 'tier', 'L1')
+            tier = getattr(record, "tier", "L1")
             from plastic_promise.core.constants import DECAY_CONFIG, REINFORCEMENT_CONFIG
+
             tier_cfg = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])
             base_hl = tier_cfg["half_life_days"]
-            effective_hl = getattr(record, 'effective_half_life', base_hl)
+            effective_hl = getattr(record, "effective_half_life", base_hl)
             max_hl = base_hl * REINFORCEMENT_CONFIG["max_multiplier"]
             if max_hl > base_hl:
                 reinforcement = (effective_hl - base_hl) / (max_hl - base_hl)
@@ -144,6 +146,7 @@ class MemoryWorthCalculator:
 # ============================================================
 # MemoryRecord — 记忆记录数据模型
 # ============================================================
+
 
 class MemoryRecord:
     """单条记忆记录，包含内容、元数据、健康统计与层位信息。
@@ -288,6 +291,7 @@ class MemoryRecord:
 # MemoryTierManager — L1/L3 分层迁移管理器
 # ============================================================
 
+
 class MemoryTierManager:
     """管理记忆在 L1（工作记忆）和 L3（长期记忆）之间的迁移。
 
@@ -303,6 +307,7 @@ class MemoryTierManager:
             rec_mem: 可选的 RecMem 实例，用于 promote/demote 时检查容量。
         """
         from plastic_promise.core.constants import MEMORY_TIERS
+
         self.l1_config = MEMORY_TIERS.get("L1", {"max_items": 200, "ttl_hours": 24})
         self.l3_config = MEMORY_TIERS.get("L3", {"max_items": 2000, "ttl_hours": None})
         self.rec_mem = rec_mem
@@ -336,7 +341,7 @@ class MemoryTierManager:
         try:
             calc = MemoryWorthCalculator()
             composite = calc.calculate_composite_score(record)
-            dm = getattr(record, 'decay_multiplier', 1.0)
+            dm = getattr(record, "decay_multiplier", 1.0)
             if dm < 0.2:
                 return True
             if composite < 0.15:
@@ -413,6 +418,7 @@ class MemoryTierManager:
 # RecMem — 记忆系统主接口
 # ============================================================
 
+
 class RecMem:
     """记忆系统主接口，提供存储、检索、更新、遗忘等核心操作。
 
@@ -428,6 +434,7 @@ class RecMem:
         """
         try:
             from context_engine_core import ContextEngine as RustContextEngine
+
             self._engine = engine if engine is not None else RustContextEngine()
         except ImportError:
             self._engine = engine if engine is not None else ContextEngine()
@@ -467,6 +474,7 @@ class RecMem:
             memory_id = str(uuid.uuid4())
             try:
                 from context_engine_core import MemoryRecord as RustMemoryRecord
+
                 rust_record = RustMemoryRecord(memory_id, content, memory_type, source)
                 rust_record.tier = "L1"
                 rust_record.scope = "global"
@@ -497,6 +505,7 @@ class RecMem:
             # Try embedding + storing vector
             try:
                 from plastic_promise.core.embedder import get_embedder
+
                 embedder = get_embedder()
                 vec = embedder.embed(content)
                 _ = vec  # Vector stored via engine internals
@@ -556,6 +565,7 @@ class RecMem:
         """
         try:
             from plastic_promise.core.embedder import get_embedder
+
             embedder = get_embedder()
             vec = embedder.embed(query)
             self._engine.enable_principles = include_principles
@@ -586,9 +596,7 @@ class RecMem:
             更新后的 MemoryRecord，若 memory_id 不存在则返回 None。
         """
         try:
-            result = self._engine.update_memory(
-                memory_id, content=content, importance=importance
-            )
+            result = self._engine.update_memory(memory_id, content=content, importance=importance)
             if not result:
                 return None
             # Update Python-side record
@@ -630,7 +638,7 @@ class RecMem:
         """
         try:
             # Sync delete from LanceDB vector store (A+B: dual-write consistency)
-            ldb = getattr(self._engine, '_ldb', None)
+            ldb = getattr(self._engine, "_ldb", None)
             if ldb is not None:
                 try:
                     ldb.delete(memory_id)
@@ -712,6 +720,7 @@ class RecMem:
         """
         try:
             import json
+
             json_str = self._engine.memory_stats_json()
             stats = json.loads(json_str)
             # Map Rust stat keys to expected Python keys
@@ -730,9 +739,13 @@ class RecMem:
             total = len(records)
             if total == 0:
                 return {
-                    "total": 0, "l1_count": 0, "l3_count": 0,
-                    "avg_worth": 0.0, "health_ratio": 1.0,
-                    "by_type": {}, "by_source": {},
+                    "total": 0,
+                    "l1_count": 0,
+                    "l3_count": 0,
+                    "avg_worth": 0.0,
+                    "health_ratio": 1.0,
+                    "by_type": {},
+                    "by_source": {},
                 }
             l1_count = sum(1 for r in records if r.tier == "L1")
             l3_count = sum(1 for r in records if r.tier == "L3")
@@ -866,6 +879,7 @@ class RecMem:
         of records whose decay value changed by more than 0.001.
         """
         from plastic_promise.core.decay_engine import WeibullDecayCalculator
+
         wdc = WeibullDecayCalculator()
         now = datetime.datetime.now().isoformat()
         updated = 0
@@ -874,7 +888,7 @@ class RecMem:
             dm = wdc.compute_decay(
                 tier=r.tier,
                 created_at=r.created_at,
-                effective_half_life=getattr(r, 'effective_half_life', None),
+                effective_half_life=getattr(r, "effective_half_life", None),
                 current_time_str=now,
             )
             if abs(r.decay_multiplier - dm) > 0.001:
@@ -901,6 +915,7 @@ class RecMem:
 # ============================================================
 # EvolveR — 自演化引擎
 # ============================================================
+
 
 class EvolveR:
     """自演化引擎，驱动记忆系统的周期性演化。
@@ -943,13 +958,20 @@ class EvolveR:
             - health_after: 演化后的 health_ratio
         """
         if self.rec_mem is None:
-            return {"promoted": 0, "demoted": 0, "decayed": 0, "evicted": 0,
-                    "health_before": 1.0, "health_after": 1.0}
+            return {
+                "promoted": 0,
+                "demoted": 0,
+                "decayed": 0,
+                "evicted": 0,
+                "health_before": 1.0,
+                "health_after": 1.0,
+            }
         try:
             # Phase A: 批量更新 decay_multiplier
             try:
                 from plastic_promise.core.decay_engine import WeibullDecayCalculator
                 import datetime
+
                 wdc = WeibullDecayCalculator()
                 records_pre = list(self.rec_mem._records.values()) if self.rec_mem else []
                 if records_pre:
@@ -962,8 +984,7 @@ class EvolveR:
                         engine = self.rec_mem._engine if self.rec_mem else None
                         if engine:
                             engine.execute_sql(
-                                "UPDATE memories SET decay_multiplier = ? WHERE id = ?",
-                                (dm, mid)
+                                "UPDATE memories SET decay_multiplier = ? WHERE id = ?", (dm, mid)
                             )
                     if engine:
                         engine.commit_sql()
@@ -976,14 +997,18 @@ class EvolveR:
             demoted = 0
 
             # Demote L3 low-composite records (use should_demote which checks decay + composite)
-            l3_records = [r for r in records if r.tier == "L3" and self.tier_manager.should_demote(r)]
+            l3_records = [
+                r for r in records if r.tier == "L3" and self.tier_manager.should_demote(r)
+            ]
             for r in l3_records:
                 self.tier_manager.demote_to_l1(r)
                 demoted += 1
 
             # Promote L1 high-composite records
             calc = MemoryWorthCalculator()
-            l1_records = [r for r in records if r.tier == "L1" and calc.calculate_composite_score(r) >= 0.6]
+            l1_records = [
+                r for r in records if r.tier == "L1" and calc.calculate_composite_score(r) >= 0.6
+            ]
             for r in l1_records:
                 self.tier_manager.promote_to_l3(r)
                 promoted += 1
@@ -997,13 +1022,22 @@ class EvolveR:
 
             health_after = self.rec_mem.health_ratio
             return {
-                "promoted": promoted, "demoted": demoted,
-                "decayed": decayed, "evicted": evicted,
-                "health_before": health_before, "health_after": health_after,
+                "promoted": promoted,
+                "demoted": demoted,
+                "decayed": decayed,
+                "evicted": evicted,
+                "health_before": health_before,
+                "health_after": health_after,
             }
         except Exception:
-            return {"promoted": 0, "demoted": 0, "decayed": 0, "evicted": 0,
-                    "health_before": 1.0, "health_after": 1.0}
+            return {
+                "promoted": 0,
+                "demoted": 0,
+                "decayed": 0,
+                "evicted": 0,
+                "health_before": 1.0,
+                "health_after": 1.0,
+            }
 
     def decay_stale(self, days_threshold: int = MEMORY_GC_INTERVAL_DAYS) -> int:
         """对长期未激活的 L1 记忆执行价值衰减。
@@ -1042,6 +1076,7 @@ class EvolveR:
 # ============================================================
 # MemoryGC — 垃圾回收器
 # ============================================================
+
 
 class MemoryGC:
     """记忆系统垃圾回收器。
@@ -1095,8 +1130,8 @@ class MemoryGC:
             "candidates_count": len(candidates),
             "candidates": candidates[:50],
             "removed": 0,
-            "health_before": health_before if 'health_before' in dir() else 1.0,
-            "health_after": health_before if 'health_before' in dir() else 1.0,
+            "health_before": health_before if "health_before" in dir() else 1.0,
+            "health_after": health_before if "health_before" in dir() else 1.0,
             "freed_slots": 0,
             "merge": {},  # populated below
         }
@@ -1161,7 +1196,9 @@ class MemoryGC:
             return []
 
     def merge_similar(
-        self, threshold: float = MERGE_SIMILARITY_THRESHOLD, dry_run: bool = True,
+        self,
+        threshold: float = MERGE_SIMILARITY_THRESHOLD,
+        dry_run: bool = True,
     ) -> Dict[str, Any]:
         """Batch-scan the memory pool and merge records with cosine similarity >= threshold.
 
@@ -1195,16 +1232,16 @@ class MemoryGC:
             return result
 
         try:
-            engine = getattr(self.rec_mem, '_engine', None)
+            engine = getattr(self.rec_mem, "_engine", None)
             if engine is None:
                 return result
 
-            ldb = getattr(engine, '_ldb', None)
+            ldb = getattr(engine, "_ldb", None)
             if ldb is None:
                 result["error"] = "lancedb_unavailable"
                 return result
 
-            memories = getattr(engine, '_memories', {})
+            memories = getattr(engine, "_memories", {})
             if not memories:
                 return result
 
@@ -1294,11 +1331,13 @@ class MemoryGC:
                     "worth_score": round(merged_worth, 4),
                 }
 
-                merged_pairs.append({
-                    "survivor": survivor,
-                    "merged": [merged],
-                    "similarity": round(sim, 4),
-                })
+                merged_pairs.append(
+                    {
+                        "survivor": survivor,
+                        "merged": [merged],
+                        "similarity": round(sim, 4),
+                    }
+                )
 
                 if not dry_run:
                     # Append to survivor metadata
@@ -1315,7 +1354,7 @@ class MemoryGC:
                     # Remove from engine._memories (retrieval layer)
                     if merged in memories:
                         # Fix #3: Persist merged_into to SQLite metadata for audit trail
-                        sqlite = getattr(engine, '_sqlite', None)
+                        sqlite = getattr(engine, "_sqlite", None)
                         if sqlite is not None:
                             try:
                                 mem_data = dict(memories[merged])

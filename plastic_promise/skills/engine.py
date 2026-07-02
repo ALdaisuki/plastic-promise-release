@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 class SkillRegistrationError(Exception):
     """Raised when a SkillDef fails validation during registration."""
+
     pass
 
 
@@ -62,49 +63,54 @@ class AtomRegistry:
     # Static mapping: atom name → (module_path, handler_function_name)
     _ATOM_MODULES: dict[str, tuple[str, str]] = {
         # === Memory domain (P0 + P1) ===
-        "memory_recall":    ("plastic_promise.mcp.tools.memory", "handle_memory_recall"),
-        "memory_store":     ("plastic_promise.mcp.tools.memory", "handle_memory_store"),
-        "memory_update":    ("plastic_promise.mcp.tools.memory", "handle_memory_update"),
-        "memory_forget":    ("plastic_promise.mcp.tools.memory", "handle_memory_forget"),
-        "memory_list":      ("plastic_promise.mcp.tools.memory", "handle_memory_list"),
-        "memory_gc":        ("plastic_promise.mcp.tools.memory", "handle_memory_gc"),
-        "memory_correct":   ("plastic_promise.mcp.tools.memory", "handle_memory_correct"),
-
+        "memory_recall": ("plastic_promise.mcp.tools.memory", "handle_memory_recall"),
+        "memory_store": ("plastic_promise.mcp.tools.memory", "handle_memory_store"),
+        "memory_update": ("plastic_promise.mcp.tools.memory", "handle_memory_update"),
+        "memory_forget": ("plastic_promise.mcp.tools.memory", "handle_memory_forget"),
+        "memory_list": ("plastic_promise.mcp.tools.memory", "handle_memory_list"),
+        "memory_gc": ("plastic_promise.mcp.tools.memory", "handle_memory_gc"),
+        "memory_correct": ("plastic_promise.mcp.tools.memory", "handle_memory_correct"),
         # === Principle domain (P0 + P1) ===
-        "principle_activate":  ("plastic_promise.mcp.tools.principles", "handle_principle_activate"),
-        "principle_evaluate":  ("plastic_promise.mcp.tools.principles", "handle_principle_evaluate"),
-
+        "principle_activate": ("plastic_promise.mcp.tools.principles", "handle_principle_activate"),
+        "principle_evaluate": ("plastic_promise.mcp.tools.principles", "handle_principle_evaluate"),
         # === Context domain (P0 + P1) ===
-        "context_supply":       ("plastic_promise.mcp.tools.context", "handle_context_supply"),
-        "context_inject":       ("plastic_promise.mcp.tools.context", "handle_context_inject"),
-        "context_graph":        ("plastic_promise.mcp.tools.context", "handle_context_graph"),
-        "auto_context_inject":  ("plastic_promise.mcp.tools.context", "handle_auto_context_inject"),
-
+        "context_supply": ("plastic_promise.mcp.tools.context", "handle_context_supply"),
+        "context_inject": ("plastic_promise.mcp.tools.context", "handle_context_inject"),
+        "context_graph": ("plastic_promise.mcp.tools.context", "handle_context_graph"),
+        "auto_context_inject": ("plastic_promise.mcp.tools.context", "handle_auto_context_inject"),
         # === Audit & Defense (P0 + P1) ===
-        "audit_run":        ("plastic_promise.mcp.tools.audit_defense", "handle_audit_run"),
-        "audit_pre_check":  ("plastic_promise.mcp.tools.audit_defense", "handle_audit_pre_check"),
-        "defense":          ("plastic_promise.mcp.tools.audit_defense", "handle_defense"),
-
+        "audit_run": ("plastic_promise.mcp.tools.audit_defense", "handle_audit_run"),
+        "audit_pre_check": ("plastic_promise.mcp.tools.audit_defense", "handle_audit_pre_check"),
+        "defense": ("plastic_promise.mcp.tools.audit_defense", "handle_defense"),
         # === Reflection domain (P1) ===
-        "scarf_reflect":    ("plastic_promise.mcp.tools.reflection", "handle_scarf_reflect"),
-        "feedback_apply":   ("plastic_promise.mcp.tools.reflection", "handle_feedback_apply"),
-
+        "scarf_reflect": ("plastic_promise.mcp.tools.reflection", "handle_scarf_reflect"),
+        "feedback_apply": ("plastic_promise.mcp.tools.reflection", "handle_feedback_apply"),
         # === Domain (P1) ===
-        "domain":           ("plastic_promise.mcp.tools.domain", "handle_domain"),
-
+        "domain": ("plastic_promise.mcp.tools.domain", "handle_domain"),
         # === Management (P1) ===
-        "system":           ("plastic_promise.mcp.tools.management", "handle_system"),
-        "issue_create":     ("plastic_promise.mcp.tools.management", "handle_issue_create"),
+        "system": ("plastic_promise.mcp.tools.management", "handle_system"),
+        "issue_create": ("plastic_promise.mcp.tools.management", "handle_issue_create"),
         "issue_transition": ("plastic_promise.mcp.tools.management", "handle_issue_transition"),
-        "issue_list":       ("plastic_promise.mcp.tools.management", "handle_issue_list"),
-        "pack_export":      ("plastic_promise.mcp.tools.management", "handle_pack_export"),
-        "pack_import":      ("plastic_promise.mcp.tools.management", "handle_pack_import"),
-
+        "issue_list": ("plastic_promise.mcp.tools.management", "handle_issue_list"),
+        "pack_export": ("plastic_promise.mcp.tools.management", "handle_pack_export"),
+        "pack_import": ("plastic_promise.mcp.tools.management", "handle_pack_import"),
         # === Skill Tracking (P0 + P1) ===
-        "skill_session_start":     ("plastic_promise.mcp.tools.skill_tracking", "handle_skill_session_start"),
-        "skill_session_complete":  ("plastic_promise.mcp.tools.skill_tracking", "handle_skill_session_complete"),
-        "skill_session_trace":     ("plastic_promise.mcp.tools.skill_tracking", "handle_skill_session_trace"),
-        "skill_session_audit":     ("plastic_promise.mcp.tools.skill_tracking", "handle_skill_session_audit"),
+        "skill_session_start": (
+            "plastic_promise.mcp.tools.skill_tracking",
+            "handle_skill_session_start",
+        ),
+        "skill_session_complete": (
+            "plastic_promise.mcp.tools.skill_tracking",
+            "handle_skill_session_complete",
+        ),
+        "skill_session_trace": (
+            "plastic_promise.mcp.tools.skill_tracking",
+            "handle_skill_session_trace",
+        ),
+        "skill_session_audit": (
+            "plastic_promise.mcp.tools.skill_tracking",
+            "handle_skill_session_audit",
+        ),
     }
 
     @staticmethod
@@ -153,9 +159,7 @@ class SkillEngine:
         """
         # 1. Check for duplicate name
         if skill_def.name in self._registry:
-            raise SkillRegistrationError(
-                f"Skill '{skill_def.name}' already registered"
-            )
+            raise SkillRegistrationError(f"Skill '{skill_def.name}' already registered")
 
         # 2. Validate all declared atoms exist
         for atom in skill_def.atoms:
@@ -179,8 +183,9 @@ class SkillEngine:
 
         self._registry[skill_def.name] = skill_def
 
-    async def exec(self, skill_name: str, params: dict = None,
-                   caller: str = "claude") -> SkillResult:
+    async def exec(
+        self, skill_name: str, params: dict = None, caller: str = "claude"
+    ) -> SkillResult:
         """Execute a registered skill.
 
         Execution flow:
@@ -199,18 +204,27 @@ class SkillEngine:
         skill_def = self._registry.get(skill_name)
         if skill_def is None:
             return SkillResult(
-                skill_name=skill_name, success=False,
-                data={}, atom_results={}, degrade_log=[],
-                audit_trail={}, errors=[f"Unknown skill: {skill_name}"],
+                skill_name=skill_name,
+                success=False,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[f"Unknown skill: {skill_name}"],
             )
 
         # 2. Caller authorization
         if caller not in skill_def.allowed_callers:
             return SkillResult(
-                skill_name=skill_name, success=False,
-                data={}, atom_results={}, degrade_log=[],
+                skill_name=skill_name,
+                success=False,
+                data={},
+                atom_results={},
+                degrade_log=[],
                 audit_trail={},
-                errors=[f"Caller '{caller}' not in allowed_callers {skill_def.allowed_callers} for skill '{skill_name}'"],
+                errors=[
+                    f"Caller '{caller}' not in allowed_callers {skill_def.allowed_callers} for skill '{skill_name}'"
+                ],
             )
 
         atom_results: dict[str, Any] = {}
@@ -224,10 +238,11 @@ class SkillEngine:
         hook_entity_id: str | None = None
         try:
             from plastic_promise.mcp.tools.skill_tracking import get_current_entity_id
+
             hook_entity_id = get_current_entity_id()
         except Exception:
             pass
-        
+
         if hook_entity_id:
             # Hook already created session — reuse it, skip internal start
             entity_id = hook_entity_id
@@ -235,10 +250,13 @@ class SkillEngine:
             start_handler = self._atoms.get("skill_session_start")
             if start_handler:
                 try:
-                    start_result = await start_handler(self._ctx, {
-                        "skill_name": skill_name,
-                        "task_description": task_description,
-                    })
+                    start_result = await start_handler(
+                        self._ctx,
+                        {
+                            "skill_name": skill_name,
+                            "task_description": task_description,
+                        },
+                    )
                     start_data = json.loads(start_result[0].text)
                     entity_id = start_data.get("entity_id", "")
                 except json.JSONDecodeError as e:
@@ -267,19 +285,27 @@ class SkillEngine:
                             try:
                                 complete_handler = self._atoms.get("skill_session_complete")
                                 if complete_handler:
-                                    await complete_handler(self._ctx, {
-                                        "entity_id": entity_id,
-                                        "outcome": f"abandoned: {err}",
-                                    })
+                                    await complete_handler(
+                                        self._ctx,
+                                        {
+                                            "entity_id": entity_id,
+                                            "outcome": f"abandoned: {err}",
+                                        },
+                                    )
                             except Exception as close_err:
                                 degrade_log.append(
                                     f"skill_session_complete also failed during abort: {close_err}"
                                 )
                         return SkillResult(
-                            skill_name=skill_name, success=False,
-                            data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
+                            skill_name=skill_name,
+                            success=False,
+                            data={},
+                            atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
                             degrade_log=degrade_log,
-                            audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
+                            audit_trail={
+                                "entity_id": entity_id,
+                                "tracking_degraded": tracking_degraded,
+                            },
                             errors=errors,
                         )
             else:
@@ -288,10 +314,15 @@ class SkillEngine:
                 )
                 if should_abort:
                     return SkillResult(
-                        skill_name=skill_name, success=False,
-                        data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
+                        skill_name=skill_name,
+                        success=False,
+                        data={},
+                        atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
                         degrade_log=degrade_log,
-                        audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
+                        audit_trail={
+                            "entity_id": entity_id,
+                            "tracking_degraded": tracking_degraded,
+                        },
                         errors=errors,
                     )
 
@@ -303,10 +334,13 @@ class SkillEngine:
                 complete_handler = self._atoms.get("skill_session_complete")
                 if complete_handler and entity_id:
                     try:
-                        await complete_handler(self._ctx, {
-                            "entity_id": entity_id,
-                            "outcome": "",
-                        })
+                        await complete_handler(
+                            self._ctx,
+                            {
+                                "entity_id": entity_id,
+                                "outcome": "",
+                            },
+                        )
                     except Exception as e:
                         degrade_log.append(f"skill_session_complete: {e}")
 
@@ -323,25 +357,35 @@ class SkillEngine:
                 try:
                     complete_handler = self._atoms.get("skill_session_complete")
                     if complete_handler:
-                        await complete_handler(self._ctx, {
-                            "entity_id": entity_id,
-                            "outcome": f"abandoned: handler error -- {e}",
-                        })
+                        await complete_handler(
+                            self._ctx,
+                            {
+                                "entity_id": entity_id,
+                                "outcome": f"abandoned: handler error -- {e}",
+                            },
+                        )
                 except Exception as close_err:
                     degrade_log.append(
                         f"skill_session_complete also failed during handler abort: {close_err}"
                     )
             return SkillResult(
-                skill_name=skill_name, success=False,
-                data={}, atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
+                skill_name=skill_name,
+                success=False,
+                data={},
+                atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
                 degrade_log=degrade_log,
                 audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
                 errors=errors,
             )
 
     async def _exec_atoms_serial(
-        self, skill_def: SkillDef, params: dict,
-        atom_results: dict, degrade_log: list, errors: list, entity_id: str,
+        self,
+        skill_def: SkillDef,
+        params: dict,
+        atom_results: dict,
+        degrade_log: list,
+        errors: list,
+        entity_id: str,
     ) -> tuple:
         """Execute atoms serially with degradation handling. Returns (atom_results, degrade_log, errors, should_abort)."""
         fallback_executed: set[str] = set()
@@ -376,7 +420,7 @@ class SkillEngine:
                     degrade_log.append(f"{atom_name}: warn -- {e}")
                     continue
                 elif action.startswith("fallback:"):
-                    fallback_atom = action[len("fallback:"):]
+                    fallback_atom = action[len("fallback:") :]
                     degrade_log.append(f"{atom_name}: fallback to {fallback_atom} -- {e}")
                     try:
                         fb_handler = self._atoms.get(fallback_atom)
@@ -385,7 +429,9 @@ class SkillEngine:
                             atom_results[atom_name] = fb_result
                             fallback_executed.add(fallback_atom)
                     except Exception as fb_e:
-                        degrade_log.append(f"{atom_name}: fallback {fallback_atom} also failed -- {fb_e}")
+                        degrade_log.append(
+                            f"{atom_name}: fallback {fallback_atom} also failed -- {fb_e}"
+                        )
                         errors.append(f"{atom_name}: {e}")
                     continue
                 else:
@@ -395,20 +441,31 @@ class SkillEngine:
                         try:
                             complete_handler = self._atoms.get("skill_session_complete")
                             if complete_handler:
-                                await complete_handler(self._ctx, {
-                                    "entity_id": entity_id,
-                                    "outcome": f"abandoned: atom {atom_name} failed",
-                                })
+                                await complete_handler(
+                                    self._ctx,
+                                    {
+                                        "entity_id": entity_id,
+                                        "outcome": f"abandoned: atom {atom_name} failed",
+                                    },
+                                )
                         except Exception as close_err:
-                            degrade_log.append(f"skill_session_complete also failed during abort: {close_err}")
+                            degrade_log.append(
+                                f"skill_session_complete also failed during abort: {close_err}"
+                            )
                     return atom_results, degrade_log, errors, True
         return atom_results, degrade_log, errors, False
 
     async def _exec_atoms_concurrent(
-        self, skill_def: SkillDef, params: dict,
-        atom_results: dict, degrade_log: list, errors: list, entity_id: str,
+        self,
+        skill_def: SkillDef,
+        params: dict,
+        atom_results: dict,
+        degrade_log: list,
+        errors: list,
+        entity_id: str,
     ) -> tuple:
         """Execute all atoms concurrently via asyncio.gather with per-atom degrade handling."""
+
         async def _run_one_atom(atom_name: str):
             atom_handler = self._atoms.get(atom_name)
             if atom_handler is None:
@@ -452,6 +509,6 @@ class SkillEngine:
 
 def _text_or_str(result: list) -> str:
     """Extract text from a list of TextContent, or return str representation."""
-    if result and hasattr(result[0], 'text'):
+    if result and hasattr(result[0], "text"):
         return result[0].text
     return str(result)

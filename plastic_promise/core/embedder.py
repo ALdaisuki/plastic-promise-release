@@ -69,14 +69,16 @@ class CachedEmbedder(Embedder):
     event loop (critical for SSE/MCP request handlers).
     """
 
-    def __init__(self, delegate: Embedder,
-                 max_size: int = None,
-                 ttl_seconds: int = None) -> None:
+    def __init__(self, delegate: Embedder, max_size: int = None, ttl_seconds: int = None) -> None:
         self._delegate = delegate
-        self._max_size = max_size if max_size is not None else int(
-            os.environ.get("EMBEDDER_CACHE_SIZE", "256"))
-        self._ttl = ttl_seconds if ttl_seconds is not None else int(
-            os.environ.get("EMBEDDER_CACHE_TTL", "300"))
+        self._max_size = (
+            max_size if max_size is not None else int(os.environ.get("EMBEDDER_CACHE_SIZE", "256"))
+        )
+        self._ttl = (
+            ttl_seconds
+            if ttl_seconds is not None
+            else int(os.environ.get("EMBEDDER_CACHE_TTL", "300"))
+        )
         self._cache: dict[str, tuple[list[float], float]] = {}  # hash -> (vector, timestamp)
         self._lock = threading.Lock()
         self._hits = 0
@@ -107,6 +109,7 @@ class CachedEmbedder(Embedder):
         if vec and not any(v != 0.0 for v in vec):
             if not isinstance(self._delegate, FallbackEmbedder):
                 import logging
+
                 _log = logging.getLogger("plastic-promise.embedder")
                 _log.warning(
                     "CachedEmbedder: delegate %s returned zero vector, "
@@ -123,9 +126,7 @@ class CachedEmbedder(Embedder):
                         self._delegate = OllamaEmbedder()
                         vec = ollama_vec
                 except Exception as e:
-                    _log.warning(
-                        "CachedEmbedder: Ollama runtime fallback also failed: %s", e
-                    )
+                    _log.warning("CachedEmbedder: Ollama runtime fallback also failed: %s", e)
 
         with self._lock:
             if len(self._cache) >= self._max_size:
@@ -142,6 +143,7 @@ class CachedEmbedder(Embedder):
         Only valid when called from inside a running event loop.
         """
         import asyncio as _asyncio
+
         # Fast path: cache hit (no I/O)
         if self._max_size > 0:
             key = self._key(text)
@@ -268,12 +270,14 @@ class OpenAIEmbedder(Embedder):
 
     def embed(self, text: str) -> list[float]:
         from openai import OpenAI
+
         client = OpenAI(api_key=self._key)
         resp = client.embeddings.create(model=self._model, input=text)
         return resp.data[0].embedding
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         from openai import OpenAI
+
         client = OpenAI(api_key=self._key)
         resp = client.embeddings.create(model=self._model, input=texts)
         return [d.embedding for d in resp.data]
@@ -305,14 +309,14 @@ class LocalSentenceEmbedder(Embedder):
     _DIM = 1024
 
     def __init__(self, model_name: str | None = None) -> None:
-        self._model_name = model_name or os.getenv(
-            "EMBEDDER_LOCAL_MODEL", self._DEFAULT_MODEL)
+        self._model_name = model_name or os.getenv("EMBEDDER_LOCAL_MODEL", self._DEFAULT_MODEL)
         self._model = None  # lazy-init
 
     def _lazy_load(self):
         if self._model is not None:
             return
         from sentence_transformers import SentenceTransformer
+
         # Use HF mirror in China if set, with 120s timeout
         download_timeout = int(os.getenv("EMBEDDER_DOWNLOAD_TIMEOUT", "120"))
         self._model = SentenceTransformer(
@@ -327,8 +331,7 @@ class LocalSentenceEmbedder(Embedder):
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         self._lazy_load()
-        vecs = self._model.encode(
-            texts, normalize_embeddings=True, show_progress_bar=False)
+        vecs = self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return vecs.tolist()
 
     @property

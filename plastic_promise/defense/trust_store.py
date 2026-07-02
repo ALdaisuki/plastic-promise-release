@@ -37,8 +37,8 @@ class TrustStore:
             new_trust = max(0.10, current_trust - decay)
     """
 
-    TIME_DECAY_RATE = 0.005       # per day
-    TIME_DECAY_CAP = 0.30         # max total decay from time alone
+    TIME_DECAY_RATE = 0.005  # per day
+    TIME_DECAY_CAP = 0.30  # max total decay from time alone
     TIME_DECAY_THRESHOLD_HOURS = 24
 
     def __init__(self, db_path: Optional[str] = None) -> None:
@@ -78,6 +78,7 @@ class TrustStore:
 
         # Hunter Guild task queue tables
         from plastic_promise.core.task_queue_schema import ensure_task_tables
+
         ensure_task_tables(self._conn)
 
     # ------------------------------------------------------------------

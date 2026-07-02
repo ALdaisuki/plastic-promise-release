@@ -1,4 +1,5 @@
 """Test that MemoryRecord gets tier-appropriate half-life."""
+
 from plastic_promise.memory.soul_memory import MemoryRecord
 
 

@@ -30,8 +30,9 @@ class TestPipelineQuality:
 
     def test_store_urgent_extracts_memories(self):
         """store_urgent calls extract_memories and stores extracted fields."""
-        with patch('plastic_promise.smart_extractor.extract_memories') as mock_extract:
+        with patch("plastic_promise.smart_extractor.extract_memories") as mock_extract:
             from plastic_promise.smart_extractor import ExtractedMemory
+
             mock_extract.return_value = [
                 ExtractedMemory(
                     category="preference",
@@ -57,14 +58,14 @@ class TestPipelineQuality:
 
     def test_store_urgent_no_extraction_returns_none(self):
         """extract_memories returns empty and content is whitespace → returns None."""
-        with patch('plastic_promise.smart_extractor.extract_memories') as mock_extract:
+        with patch("plastic_promise.smart_extractor.extract_memories") as mock_extract:
             mock_extract.return_value = []
             result = self.pipeline.store_urgent("   ")
             assert result is None
 
     def test_store_urgent_extraction_error_fallback(self):
         """extract_memories raises → fall back to raw content, no extracted field."""
-        with patch('plastic_promise.smart_extractor.extract_memories') as mock_extract:
+        with patch("plastic_promise.smart_extractor.extract_memories") as mock_extract:
             mock_extract.side_effect = RuntimeError("Ollama not running")
             mid = self.pipeline.store_urgent("Important memory about deployment")
             assert isinstance(mid, str)
@@ -139,19 +140,28 @@ class TestPipelineQuality:
 
         mid = "fuzzy_testboost"
         self.pipeline._buffer[mid] = {
-            "memory_id": mid, "content": "reinforced duplicate",
-            "memory_type": "experience", "source": "user",
-            "stage": "embedded", "tags": [], "domain": "uncategorized",
-            "vector": [0.5] * 1024, "entity_ids": [],
+            "memory_id": mid,
+            "content": "reinforced duplicate",
+            "memory_type": "experience",
+            "source": "user",
+            "stage": "embedded",
+            "tags": [],
+            "domain": "uncategorized",
+            "vector": [0.5] * 1024,
+            "entity_ids": [],
             "extracted": {"category": "fact", "confidence": 0.8},
             "created_at": "2026-06-30T12:00:00",
         }
 
         # Create a Python-side record with known tier and baseline half-life
         from plastic_promise.memory.soul_memory import MemoryRecord
+
         py_rec = MemoryRecord(
-            content="existing content", memory_type="experience",
-            source="user", memory_id="existing_002", tier="L3",
+            content="existing content",
+            memory_type="experience",
+            source="user",
+            memory_id="existing_002",
+            tier="L3",
         )
         py_rec.access_count = 2
         py_rec.last_accessed = "2026-06-25T00:00:00"
@@ -160,12 +170,16 @@ class TestPipelineQuality:
         self.pipeline.rec_mem._records["existing_002"] = py_rec
         self.pipeline.rec_mem._engine = MagicMock()
         self.pipeline.rec_mem._engine._memories = {
-            "existing_002": {"access_count": 2, "worth_success": 1, "last_accessed": "2026-06-25T00:00:00"}
+            "existing_002": {
+                "access_count": 2,
+                "worth_success": 1,
+                "last_accessed": "2026-06-25T00:00:00",
+            }
         }
         self.pipeline.rec_mem._engine._sqlite = None
 
-        with patch('plastic_promise.memory.pipeline.datetime') as mock_dt:
-            mock_dt.datetime.now.return_value = __import__('datetime').datetime.fromisoformat(
+        with patch("plastic_promise.memory.pipeline.datetime") as mock_dt:
+            mock_dt.datetime.now.return_value = __import__("datetime").datetime.fromisoformat(
                 "2026-06-30T12:00:00"
             )
             mock_dt.datetime.now.isoformat = lambda: "2026-06-30T12:00:00"
@@ -184,15 +198,23 @@ class TestPipelineQuality:
 
         mid = "fuzzy_testdecayinit"
         self.pipeline._buffer[mid] = {
-            "memory_id": mid, "content": "memory that needs decay init",
-            "memory_type": "experience", "source": "user",
-            "stage": "embedded", "tags": ["test"], "domain": "building",
+            "memory_id": mid,
+            "content": "memory that needs decay init",
+            "memory_type": "experience",
+            "source": "user",
+            "stage": "embedded",
+            "tags": ["test"],
+            "domain": "building",
             "tier": "L3",
-            "vector": [0.5] * 1024, "entity_ids": [],
-            "extracted": {"category": "fact", "confidence": 0.85,
-                          "l0_abstract": "Test memory for decay initialization",
-                          "l1_summary": "[fact] Test memory should get decay fields set",
-                          "l2_content": "A sufficiently long content string that provides enough information density to pass the quality gate threshold comfortably."},
+            "vector": [0.5] * 1024,
+            "entity_ids": [],
+            "extracted": {
+                "category": "fact",
+                "confidence": 0.85,
+                "l0_abstract": "Test memory for decay initialization",
+                "l1_summary": "[fact] Test memory should get decay fields set",
+                "l2_content": "A sufficiently long content string that provides enough information density to pass the quality gate threshold comfortably.",
+            },
             "created_at": "2026-06-30T12:00:00",
         }
 
@@ -202,6 +224,7 @@ class TestPipelineQuality:
 
         def mock_store(**kwargs):
             from plastic_promise.memory.soul_memory import MemoryRecord
+
             mr = MemoryRecord(**kwargs)
             mr.memory_id = "stored_decay_init"
             stored_records[mr.memory_id] = mr

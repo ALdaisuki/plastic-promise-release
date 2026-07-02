@@ -1,4 +1,5 @@
 """rebuild_from_memories 恢复测试"""
+
 import pytest
 import json
 from plastic_promise.core.domain_manager import DomainManager
@@ -33,15 +34,23 @@ class TestRebuild:
         dm = DomainManager(db_path=":memory:")
         result = dm.rebuild_from_memories(memories_source=[])
         stats = dm.stats()
-        required = {"building", "fixing", "designing", "reflecting", "governing", "connecting", "all"}
+        required = {
+            "building",
+            "fixing",
+            "designing",
+            "reflecting",
+            "governing",
+            "connecting",
+            "all",
+        }
         assert required.issubset(set(stats.keys()))
 
     def test_rebuild_writes_audit_log(self):
         """重建事件写入审计日志"""
         dm = DomainManager(db_path=":memory:")
         before = dm._count_audit_log()
-        dm.rebuild_from_memories(memories_source=[
-            {"id": "m1", "tags": ["code"], "domain": "building"}
-        ])
+        dm.rebuild_from_memories(
+            memories_source=[{"id": "m1", "tags": ["code"], "domain": "building"}]
+        )
         after = dm._count_audit_log()
         assert after > before

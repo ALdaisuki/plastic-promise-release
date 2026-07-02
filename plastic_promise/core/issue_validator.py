@@ -11,21 +11,21 @@ REQUIRED_CONTEXT = ["files", "interfaces", "acceptance"]
 # 信任 → 自由度映射
 TRUST_TIERS = [
     (0.80, "autonomous", "放手干，结果负责"),
-    (0.60, "standard",   "常规操作，需周知"),
+    (0.60, "standard", "常规操作，需周知"),
     (0.30, "restricted", "关键操作需审批"),
-    (0.00, "readonly",   "只能看，不能动"),
+    (0.00, "readonly", "只能看，不能动"),
 ]
 
 # 自由度 → 工具权限映射 (* 后缀 = 需审批)
 ACTION_PERMISSIONS = {
-    "read":           ["readonly", "restricted", "standard", "autonomous"],
-    "memory_recall":  ["readonly", "restricted", "standard", "autonomous"],
-    "issue_list":     ["readonly", "restricted", "standard", "autonomous"],
-    "write_file":     ["restricted*", "standard", "autonomous"],
-    "run_bash":       ["restricted*", "standard", "autonomous"],
-    "issue_create":   ["standard", "autonomous"],
-    "issue_close":    ["standard*", "autonomous"],
-    "assign_task":    ["autonomous"],
+    "read": ["readonly", "restricted", "standard", "autonomous"],
+    "memory_recall": ["readonly", "restricted", "standard", "autonomous"],
+    "issue_list": ["readonly", "restricted", "standard", "autonomous"],
+    "write_file": ["restricted*", "standard", "autonomous"],
+    "run_bash": ["restricted*", "standard", "autonomous"],
+    "issue_create": ["standard", "autonomous"],
+    "issue_close": ["standard*", "autonomous"],
+    "assign_task": ["autonomous"],
     "modify_principle": ["autonomous*"],
 }
 

@@ -80,6 +80,7 @@ STAGE_DESCRIPTIONS = {
 # 通用 Stage Handler
 # ═══════════════════════════════════════════════════════════════
 
+
 async def _stage_handler(ctx, params, atom_results, stage_name):
     """通用 SuperPowers 阶段处理器。
 
@@ -91,7 +92,7 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
     tags = STAGE_TAGS_MAP.get(stage_name, [f"stage:{stage_name}"])
 
     def parse(result):
-        if result and hasattr(result[0], 'text'):
+        if result and hasattr(result[0], "text"):
             try:
                 return json.loads(result[0].text)
             except (json.JSONDecodeError, TypeError):
@@ -125,16 +126,20 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
 # 按阶段生成 Handler
 # ═══════════════════════════════════════════════════════════════
 
+
 def _make_handler(stage_name):
     """为指定阶段创建闭包 handler。"""
+
     async def handler(ctx, params, atom_results):
         return await _stage_handler(ctx, params, atom_results, stage_name)
+
     return handler
 
 
 # ═══════════════════════════════════════════════════════════════
 # 审查阶段专用 Handlers
 # ═══════════════════════════════════════════════════════════════
+
 
 async def _request_review_handler(ctx, params, atom_results):
     """requesting-code-review 专用 handler — 调用 ReviewEngine.prepare()。
@@ -161,6 +166,7 @@ async def _request_review_handler(ctx, params, atom_results):
         try:
             from plastic_promise.defense.soul_enforcer import TrustManager
             from plastic_promise.defense.trust_store import TrustStore
+
             trust_manager = TrustManager(trust_store=TrustStore())
         except Exception:
             pass
@@ -182,19 +188,22 @@ async def _request_review_handler(ctx, params, atom_results):
 
         # 将审查请求存入记忆池 (供 Pi Reviewer 发现)
         try:
-            ctx.register_memory({
-                "id": f"review_req_{int(time.time())}",
-                "content": prep["structured_prompt"][:500],
-                "memory_type": "task",
-                "source": "claude_code",
-                "tags": [
-                    "task:review", "domain:reflecting",
-                    f"commit:{commit_range}",
-                    "assignee:pi_reviewer",
-                    f"ts:{__import__('datetime').datetime.now().strftime('%Y%m%dT%H%M%S')}",
-                ],
-                "tier": "L1",
-            })
+            ctx.register_memory(
+                {
+                    "id": f"review_req_{int(time.time())}",
+                    "content": prep["structured_prompt"][:500],
+                    "memory_type": "task",
+                    "source": "claude_code",
+                    "tags": [
+                        "task:review",
+                        "domain:reflecting",
+                        f"commit:{commit_range}",
+                        "assignee:pi_reviewer",
+                        f"ts:{__import__('datetime').datetime.now().strftime('%Y%m%dT%H%M%S')}",
+                    ],
+                    "tier": "L1",
+                }
+            )
         except Exception:
             pass  # 记忆存储失败不阻塞审查流程
 
@@ -203,7 +212,7 @@ async def _request_review_handler(ctx, params, atom_results):
 
     # 组装原则激活和记忆存储的原子结果
     def parse(result):
-        if result and hasattr(result[0], 'text'):
+        if result and hasattr(result[0], "text"):
             try:
                 return _json.loads(result[0].text)
             except (_json.JSONDecodeError, TypeError):
@@ -260,6 +269,7 @@ async def _receive_review_handler(ctx, params, atom_results):
             try:
                 from plastic_promise.defense.soul_enforcer import TrustManager
                 from plastic_promise.defense.trust_store import TrustStore
+
                 trust_manager = TrustManager(trust_store=TrustStore())
             except Exception:
                 pass
@@ -285,6 +295,7 @@ async def _receive_review_handler(ctx, params, atom_results):
             # 调用 post_task 六联闭环
             try:
                 from plastic_promise.loop.soul_loop import post_task
+
                 post_task(
                     task_description=f"审查完成: {report.status} — {report.summary[:100]}",
                     git_commit=commit_range,
@@ -299,7 +310,7 @@ async def _receive_review_handler(ctx, params, atom_results):
             review_error = str(e)
 
     def parse(result):
-        if result and hasattr(result[0], 'text'):
+        if result and hasattr(result[0], "text"):
             try:
                 return _json.loads(result[0].text)
             except (_json.JSONDecodeError, TypeError):
@@ -375,6 +386,7 @@ for _stage_name, _atoms in STAGE_ATOMS.items():
         # Use dedicated handler from exemplar_research module
         try:
             from plastic_promise.skills.exemplar_research import _exemplar_research_handler
+
             _handler = _exemplar_research_handler
         except ImportError:
             _handler = _make_handler(_stage_name)

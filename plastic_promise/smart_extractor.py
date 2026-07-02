@@ -20,23 +20,67 @@ from typing import Optional
 @dataclass
 class ExtractedMemory:
     """A structured memory extracted from conversation."""
-    category: str           # preference|fact|decision|entity|event|pattern
-    l0_abstract: str        # one-sentence index (≤80 chars)
-    l1_summary: str         # structured summary (≤300 chars)
-    l2_content: str         # full original text
-    importance: float       # 0.0-1.0
-    confidence: float       # 0.0-1.0 extraction confidence
+
+    category: str  # preference|fact|decision|entity|event|pattern
+    l0_abstract: str  # one-sentence index (≤80 chars)
+    l1_summary: str  # structured summary (≤300 chars)
+    l2_content: str  # full original text
+    importance: float  # 0.0-1.0
+    confidence: float  # 0.0-1.0 extraction confidence
     source_segment: str = ""  # the text segment that triggered extraction
 
 
 # Category → keyword patterns
 CATEGORY_KEYWORDS = {
-    "preference": ["喜欢", "不喜欢", "prefer", "讨厌", "习惯", "偏好", "favorite", "倾向于", "prefer"],
+    "preference": [
+        "喜欢",
+        "不喜欢",
+        "prefer",
+        "讨厌",
+        "习惯",
+        "偏好",
+        "favorite",
+        "倾向于",
+        "prefer",
+    ],
     "fact": ["是", "was", "位于", "has", "知道", "了解", "属于", "包含", "版本", "version"],
     "decision": ["决定", "decided", "选择", "chose", "确定", "定下来", "最终", "敲定", "改为"],
-    "entity": ["项目", "project", "代码", "repo", "文件", "file", "模块", "module", "仓库", "repository"],
-    "event": ["完成了", "finished", "部署了", "deployed", "发布了", "released", "提交了", "committed", "修复了", "fixed"],
-    "pattern": ["总是", "always", "通常", "usually", "每次", "每次", "经常", "often", "从不", "never"],
+    "entity": [
+        "项目",
+        "project",
+        "代码",
+        "repo",
+        "文件",
+        "file",
+        "模块",
+        "module",
+        "仓库",
+        "repository",
+    ],
+    "event": [
+        "完成了",
+        "finished",
+        "部署了",
+        "deployed",
+        "发布了",
+        "released",
+        "提交了",
+        "committed",
+        "修复了",
+        "fixed",
+    ],
+    "pattern": [
+        "总是",
+        "always",
+        "通常",
+        "usually",
+        "每次",
+        "每次",
+        "经常",
+        "often",
+        "从不",
+        "never",
+    ],
 }
 
 
@@ -121,15 +165,17 @@ def extract_memories(
 
         l0, l1 = _generate_l0_l1(sent, cat)
 
-        results.append(ExtractedMemory(
-            category=cat,
-            l0_abstract=l0,
-            l1_summary=l1,
-            l2_content=sent,
-            importance=0.5 + 0.5 * conf,  # scale confidence to importance
-            confidence=conf,
-            source_segment=sent,
-        ))
+        results.append(
+            ExtractedMemory(
+                category=cat,
+                l0_abstract=l0,
+                l1_summary=l1,
+                l2_content=sent,
+                importance=0.5 + 0.5 * conf,  # scale confidence to importance
+                confidence=conf,
+                source_segment=sent,
+            )
+        )
 
     return results
 
