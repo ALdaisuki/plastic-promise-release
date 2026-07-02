@@ -589,7 +589,7 @@ def _apply_mmr(self, items: list, threshold: float = 0.85, penalty: float = 0.70
                 similar = []
         # Fallback: load from _memories — we use cached embedding if available
         mem = self._memories.get(item.id, {})
-        cached_vec = mem.get("_cached_vector")
+        cached_vec = mem.get("_vector")  # stored by _process_embedded_to_migrate
         if cached_vec and len(cached_vec) == 1024:
             vectors[item.id] = cached_vec
     
@@ -1151,18 +1151,28 @@ impl Bm25Index {
 }
 ```
 
-- [ ] **Step 2: Wire version check in `supply()`**
+- [ ] **Step 2: Wire version check in `supply()` — Rust reads version from SQLite**
 
 ```rust
 // In ContextEngine.supply(), at entry:
+// Rust reads memory_version directly from its own SQLite connection.
+// No need for Python to pass version — the Rust engine is self-contained.
 let current_version: u64 = self.storage
     .query_scalar("SELECT version FROM memory_version")
     .unwrap_or(0);
 if self.bm25_index.version() != current_version {
-    let all_docs = self.storage.list_all_ids_and_content()?;
+    let all_docs: Vec<(String, String)> = self.storage.list_all_ids_and_content()?;
     self.bm25_index.rebuild(&all_docs, current_version);
 }
 ```
+
+**Implementation order for Bm25Index:**
+1. Implement `tokenize()` — CJK bigram + English whitespace (same as Python `_tokenize`)
+2. Implement `rebuild()` — build DF table from `Vec<(id, content)>`
+3. Implement `score()` — Okapi BM25 formula (k1=1.2, b=0.75)
+4. Wire into `supply()` with version check
+
+Write each function with a unit test before moving to the next.
 
 - [ ] **Step 3: Create `memory_version` table if not exists**
 
@@ -1201,7 +1211,7 @@ git commit -m "feat(rust): add Bm25Index with version-checked lazy refresh from 
 3. Parallel vector + BM25 search
 4. RRF fusion (K=60)
 5. Min score filter (< 0.3 discard)
-6. Rerank (stub — Phase 2 defers to Python for Ollama calls)
+6. Rerank (no-op in Rust — returns input unchanged. Rerank is always handled by Python `_apply_rerank`. If user needs rerank, use `PP_FORCE_PYTHON_SUPPLY=1` to route through Python path.)
 7. Recency boost (additive: exp(-ageDays/14) * 0.1)
 8. Importance weight (multiplicative: 0.7 + 0.3 * importance)
 9. Length normalization (1/(1+0.5*log2(len/500)))
@@ -1285,18 +1295,16 @@ def _supply_rust(self, task_description, task_vector, task_type, scope):
     from context_engine_core import ContextEngine as RustEngine
     import tempfile, os as _os
 
-    memories = [...existing code...]
     lancedb_tmp = _os.path.join(tempfile.gettempdir(), "pp_rust_lancedb")
     rust = RustEngine.new_with_backends(
         _os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db"),
         lancedb_tmp
     )
     rust.set_current_time(datetime.datetime.now().isoformat())
+    # Version is NOT passed — Rust reads memory_version from its own SQLite connection
     rust_pack = rust.supply(task_description, task_vector, task_type, scope, [])
     return self._convert_rust_pack(rust_pack)
 ```
-
-Note: `memories` parameter is now `[]` (empty) because Rust reads from its own SQLite connection.
 
 - [ ] **Step 4: Verify fallback chain**
 
@@ -1366,7 +1374,103 @@ def _supply_python(self, task_description, task_vector, task_type, scope):
     # ... existing code unchanged ...
 ```
 
-- [ ] **Step 2: Verify fallback still works**
+- [ ] **Step 2: Add Kendall Tau consistency verification**
+
+```python
+# tests/test_rust_python_consistency.py
+"""Verify Rust vs Python supply() ranking consistency using Kendall Tau."""
+import os, sys
+from scipy.stats import kendalltau
+
+TEST_QUERIES = [
+    "code review scanner data quality fix",
+    "pipeline zero vector repair",
+    "memory recall BM25 implementation",
+    "hunter guild task dispatch flow",
+    "SCARF reflection step closure",
+    "trust score defense adjustment",
+    "LanceDB ghost vector cleanup",
+    "git governance branch naming convention",
+    "principle activation context supply",
+    "skill tracking auto context inject",
+    "embedder recovery fallback",
+    "domain manager federation signal",
+    "Weibull decay memory GC",
+    "smart extractor 6 categories",
+    "maintenance daemon heartbeat scanner",
+    "one click launcher start all",
+    "Rust engine pyo3 new with backends",
+    "quality gate four dimension score",
+    "experience pack export import merge",
+    "audit pre check L0 hard boundary",
+]
+
+def test_consistency():
+    from plastic_promise.core.context_engine import ContextEngine
+    from plastic_promise.core.embedder import get_embedder
+
+    engine = ContextEngine()
+    engine._ensure_heavy_init()
+    embedder = get_embedder(fallback_on_error=True)
+
+    tau_values = []
+    failures = []
+
+    for query in TEST_QUERIES:
+        vec = embedder.embed(query)
+
+        # Python path
+        os.environ["PP_FORCE_PYTHON_SUPPLY"] = "1"
+        py_pack = engine.supply(query, vec, "code_generation", "global")
+        py_ids = [item.id for item in py_pack.core + py_pack.related
+                  if not getattr(item, 'is_principle', False)]
+
+        # Rust path (skip if unavailable)
+        os.environ["PP_FORCE_PYTHON_SUPPLY"] = "0"
+        if engine._check_rust_health():
+            rust_pack = engine.supply(query, vec, "code_generation", "global")
+            rust_ids = [item.id for item in rust_pack.core + rust_pack.related
+                       if not getattr(item, 'is_principle', False)]
+        else:
+            print(f"  Rust not available — skipping consistency check")
+            return 0
+
+        # Compute Kendall Tau on overlapping IDs
+        py_ranks = {mid: i for i, mid in enumerate(py_ids)}
+        rust_ranks = {mid: i for i, mid in enumerate(rust_ids)}
+        common = set(py_ranks) & set(rust_ranks)
+        if len(common) < 5:
+            failures.append(f"'{query[:40]}...': only {len(common)} common IDs")
+            continue
+
+        py_order = [py_ranks[mid] for mid in common]
+        rust_order = [rust_ranks[mid] for mid in common]
+        tau, p = kendalltau(py_order, rust_order)
+        tau_values.append(tau)
+
+        status = "PASS" if tau >= 0.90 else "FAIL"
+        print(f"  [{status}] '{query[:50]}...' tau={tau:.3f} (n={len(common)})")
+
+    if tau_values:
+        avg_tau = sum(tau_values) / len(tau_values)
+        print(f"\nAverage Kendall Tau: {avg_tau:.3f} ({len(tau_values)} queries)")
+        if avg_tau < 0.90:
+            failures.append(f"Average tau {avg_tau:.3f} < 0.90")
+
+    if failures:
+        print(f"\n{failures.__len__()} FAILURES:")
+        for f in failures:
+            print(f"  FAIL: {f}")
+        return 1
+    else:
+        print("\nAll consistency checks PASSED")
+        return 0
+
+if __name__ == "__main__":
+    sys.exit(test_consistency())
+```
+
+- [ ] **Step 3: Verify fallback still works**
 
 ```bash
 cd "F:\Agent\Memory system" && PP_FORCE_PYTHON_SUPPLY=1 python tests/test_recall_quality.py
@@ -1395,4 +1499,4 @@ git commit -m "docs: mark _supply_python as deprecated fallback, preserve Phase 
 | 13-stage pipeline | 2.4 | `cargo test --lib retrieval` |
 | Python fallback chain | 2.5 | `PP_FORCE_PYTHON_SUPPLY=1 python tests/test_recall_quality.py` |
 | Domain models active | 2.6 | `cargo test --lib domain` |
-| Kendall Tau ≥ 0.90 | 2.7 | Compare Python vs Rust output on same query |
+| Kendall Tau ≥ 0.90 | 2.7 | `python tests/test_rust_python_consistency.py` — 20 queries, compare Python vs Rust ranking |
