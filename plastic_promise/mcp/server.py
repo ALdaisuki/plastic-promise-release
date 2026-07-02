@@ -2,7 +2,7 @@
 
 启动方式:
     python -m plastic_promise.mcp.server              # stdio 模式 (Claude Code 直接调用)
-    python -m plastic_promise.mcp.server --http 9020  # HTTP 模式 (外部调试)
+    python -m plastic_promise.mcp.server --sse 9020   # SSE 模式 (多 Agent 共享)
 
 架构:
     MCP Server

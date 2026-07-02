@@ -8,7 +8,10 @@
 每次会话开始，依次执行：
 
 0. **server up check** — `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9020/health')"`
-   - 不可用（报错）→ 启动: `python -m plastic_promise.mcp.server --sse 9020` (后台运行: Windows 用 `start /B`, Unix 用 `&`)
+   - 不可用（报错）→ 启动:
+     - 完整模式: `python scripts/init_and_start.py` (需要 Ollama 提供 embedding)
+     - 降级模式: `python scripts/init_and_start.py --skip-ollama-check` (Ollama 不可用时使用 FallbackEmbedder)
+   - 启动器同时拉起 MCP Server (:9020) + Maintenance Daemon + Watchdog 守护
    - 仍不可用 → 告警，本次会话使用文件系统降级（写入 `.md` 需加 `[[pending-sync]]` 标记）
 
 1. `session-init(task_description="<当前任务>")` — **Phase 1 技能：一条调用替代原有 5 步**（原则激活 + SCARF 基线自省 + context_supply + memory_store 注入 + domain stats + system stats + defense + memory_gc preview）。报告 `data.principles`、`data.scarf_baseline`、`data.domain_health`、`data.system_stats`、`data.trust`、`data.gc_preview`。

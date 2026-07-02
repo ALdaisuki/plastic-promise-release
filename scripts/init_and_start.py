@@ -60,6 +60,25 @@ BANNER = """\
 =============================================================="""
 
 
+def _pid_alive(pid: int) -> bool:
+    """Check if a PID is alive (cross-platform)."""
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return str(pid) in result.stdout
+        except Exception:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+
 def do_stop():
     """Stop all running services. Returns True if --stop was handled."""
     if "--stop" not in sys.argv:
@@ -111,6 +130,26 @@ async def main():
     print(BANNER)
 
     args = parse_args()
+
+    # Clean up stale PID files from previous crashed sessions
+    for pid_path in [PID_FILE]:
+        if os.path.exists(pid_path):
+            try:
+                with open(pid_path) as f:
+                    pid = int(f.read().strip())
+                if not _pid_alive(pid):
+                    print(f"[INIT]  Stale PID file cleaned (PID {pid} not alive)")
+                    os.unlink(pid_path)
+            except Exception:
+                try:
+                    os.unlink(pid_path)
+                except OSError:
+                    pass
+
+    # Verify daemon script exists before attempting to start it
+    daemon_path = os.path.join(_project_root, "daemons", "maintenance_daemon.py")
+    if not os.path.exists(daemon_path):
+        print(f"[WARN]  Daemon script not found: {daemon_path}")
 
     # Clear log on new start
     try:
