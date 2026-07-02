@@ -72,7 +72,7 @@ class ContextPack:
     core: List[ContextItem] = field(default_factory=list)
     related: List[ContextItem] = field(default_factory=list)
     divergent: List[ContextItem] = field(default_factory=list)
-    activated_principles: List[dict] = field(default_factory=list)
+    activated_principles: List[str] = field(default_factory=list)
     audit_metadata: Dict[str, str] = field(default_factory=dict)
 
     def to_prompt(self) -> str:
@@ -80,19 +80,15 @@ class ContextPack:
         if self.activated_principles:
             lines.append("## 🧬 核心约定参考（约定优于约束——决策前主动查阅）")
             from plastic_promise.core.constants import CORE_PRINCIPLES
-            for p in self.activated_principles:
-                if isinstance(p, dict):
-                    name = p.get("name", "?")
-                    content = p.get("content", "")
-                    consequence = p.get("consequence", "违反约定可能导致系统退化")
+            for name in self.activated_principles:
+                # Find principle by name and show full reference
+                match = next((p for p in CORE_PRINCIPLES if p["name"] == name), None)
+                if match:
+                    lines.append(f"### {name}")
+                    lines.append(f"> {match['content']}")
+                    lines.append(f"**⚠️ 违反后果**：{match.get('consequence', '未知后果')}")
                 else:
-                    name = p
-                    match = next((cp for cp in CORE_PRINCIPLES if cp["name"] == name), None)
-                    content = match["content"] if match else ""
-                    consequence = match.get("consequence", "违反约定可能导致系统退化") if match else ""
-                lines.append(f"### {name}")
-                lines.append(f"> {content}")
-                lines.append(f"**⚠️ 违反后果**：{consequence}")
+                    lines.append(f"- {name}")
             lines.append("")
         if self.core:
             lines.append("## 🔵 核心上下文（必读）")
@@ -1094,33 +1090,25 @@ class ContextEngine:
         if task_vector is None or len(task_vector) == 0:
             task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
 
-        # Incremental backfill: if LanceDB is missing vectors (e.g. Ollama was down
-        # during init), retry a small batch on each supply() call until all filled.
-        # Rate-limited to once per 120s to avoid hammering Ollama during outage.
-        if (self._ldb and self._ldb.count_rows() < len(self._memories)
-                and (time.time() - getattr(self, '_last_backfill_attempt', 0)) > 120):
-            self._last_backfill_attempt = time.time()
-            try:
-                self._ldb.backfill(self)
-            except Exception:
-                pass
+        # PP_FORCE_PYTHON_SUPPLY=1 bypasses Rust and forces the Python fallback path.
+        # Useful for emergency rollback and A/B testing.
+        if os.environ.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1":
+            return self._supply_python(task_description, task_vector, task_type, scope)
 
-        # Rust accelerator bypassed — placeholder engine returns uniform 0.50 scores.
-        # Python path has real LanceDB vector + BM25 + RRF retrieval.
-        # To re-enable Rust, uncomment the block below when retriever backends are implemented.
-        #
-        # if self._check_rust_health():
-        #     try:
-        #         return self._supply_rust(
-        #             task_description, task_vector, task_type, scope
-        #         )
-        #     except Exception as e:
-        #         logger.warning(
-        #             "Rust supply failed, falling back to Python: %s", e
-        #         )
-        #         with self._rust_lock:
-        #             self._rust_healthy = None
-        #             self._rust_engine_instance = None
+        # Rust accelerator — primary supply path (Phase 2).
+        # Falls back to Python if Rust engine is unavailable or throws.
+        if self._check_rust_health():
+            try:
+                return self._supply_rust(
+                    task_description, task_vector, task_type, scope
+                )
+            except Exception as e:
+                logger.warning(
+                    "Rust supply failed, falling back to Python: %s", e
+                )
+                with self._rust_lock:
+                    self._rust_healthy = None
+                    self._rust_engine_instance = None
 
         return self._supply_python(task_description, task_vector, task_type, scope)
 
@@ -1605,13 +1593,9 @@ class ContextEngine:
         """Public wrapper for _ensure_heavy_init."""
         self._ensure_heavy_init()
 
-    def activate_principles(self, task_type: str, task_description: str) -> list:
+    def activate_principles(self, task_type: str, task_description: str) -> list[str]:
         """Public wrapper for _activate_principles."""
         return self._activate_principles(task_type, task_description)
-
-    def check_rust_health(self) -> bool:
-        """Public wrapper for _check_rust_health."""
-        return self._check_rust_health() is True
 
     def text_retrieval(self, task: str, trust_boost: float = 1.0) -> list[tuple]:
         """Public wrapper for _text_retrieval."""
@@ -1796,31 +1780,19 @@ class ContextEngine:
 
     def _supply_rust(self, task_description: str, task_vector: list,
                      task_type: str, scope: str) -> ContextPack:
-        """Rust-accelerated supply path.
+        """Rust-accelerated supply path (Phase 2 primary).
 
-        Passes memory snapshot via PyO3 native Vec<PyObject> — zero JSON
-        serialization overhead. The snapshot is a shallow copy of the
-        current _memories dict (~0.5-2ms for 1000 records).
+        Rust engine reads from its own read-only SQLite connection to
+        plastic_memory.db. Memories are NOT passed from Python — the
+        Rust engine is self-contained. Passes empty list for backward
+        compatibility with the PyO3 signature.
         """
         from context_engine_core import ContextEngine as RustEngine
-        import tempfile, os as _os
 
-        # Build memory list for PyO3 — pass raw dicts, no JSON serialize
-        # Performance: ~0.5-2ms for 1000 records (list comprehension + dict refs)
-        # Acceptable; if pool grows >5000, add pre-filter by scope/tier here
-        # Acquire _write_lock during iteration — prevents RuntimeError from
-        # concurrent GC or Daemon modifying self._memories during snapshotting
-        with self._write_lock:
-            memories = [
-                self._memories[mid]
-                for mid in self._memories
-            ]
-
-        # Use real domain models (not placeholders)
-        lancedb_tmp = _os.path.join(tempfile.gettempdir(), "pp_rust_lancedb")
-        rust = RustEngine.new_with_backends(":memory:", lancedb_tmp)
+        rust = RustEngine()
         rust.set_current_time(datetime.datetime.now().isoformat())
-        rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
+        # Empty memories — Rust reads from its own SQLite connection
+        rust_pack = rust.supply(task_description, task_vector, task_type, scope, [])
         return self._convert_rust_pack(rust_pack)
 
     # ========== 内部方法 ==========
@@ -1843,15 +1815,9 @@ class ContextEngine:
         """
         from plastic_promise.core.constants import CORE_PRINCIPLES
 
-        # T3 changed _activate_principles() return from List[str] → List[dict]
-        # Extract names so membership checks work correctly
-        activated_names_list = [
-            p["name"] if isinstance(p, dict) else p for p in activated_names
-        ]
-
         edges_created = 0
         for p in CORE_PRINCIPLES:
-            if p["name"] not in activated_names_list:
+            if p["name"] not in activated_names:
                 continue
 
             node_id = f"principle:{p['id']}"
@@ -1877,7 +1843,7 @@ class ContextEngine:
 
         return edges_created
 
-    def _activate_principles(self, task_type: str, task_description: str) -> List[dict]:
+    def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
         """P1: Three-channel principle activation.
 
         Channel 1 — Static task-type mapping: differentiated principle
@@ -1931,17 +1897,11 @@ class ContextEngine:
             except Exception:
                 pass  # Intent matching is best-effort; degrade gracefully
 
-        # Resolve IDs to full principle dicts
+        # Resolve IDs to names
         result = []
         for p in CORE_PRINCIPLES:
             if p["id"] in activated_ids:
-                result.append({
-                    "name": p["name"],
-                    "content": p["content"],
-                    "consequence": p.get("consequence", ""),
-                    "domain": p.get("domain", "all"),
-                    "keywords": p.get("keywords", ""),
-                })
+                result.append(p["name"])
         return result
 
     # ========== BM25 helpers (static methods on ContextEngine) ==========
@@ -2576,6 +2536,13 @@ class _SQLiteStorage:
             )
         except Exception:
             pass  # 列已存在
+        # 迁移: memory_version 表 — Rust 引擎用版本号检测 BM25 索引是否需要刷新
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS memory_version (version INTEGER DEFAULT 0)"
+        )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO memory_version (version) VALUES (0)"
+        )
         self._conn.commit()
 
         # 存量迁移: 对已有记忆一次性计算真实衰减值
@@ -2637,6 +2604,9 @@ class _SQLiteStorage:
         )
         if self._batch_depth <= 0:
             self._conn.commit()
+            # Increment memory_version so Rust engine knows to refresh BM25 index
+            self._conn.execute("UPDATE memory_version SET version = version + 1")
+            self._conn.commit()
 
     def get(self, mid: str) -> dict | None:
         """Retrieve a single memory record."""
@@ -2655,6 +2625,8 @@ class _SQLiteStorage:
         """Delete a memory record."""
         self._conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
         if self._batch_depth <= 0:
+            self._conn.commit()
+            self._conn.execute("UPDATE memory_version SET version = version + 1")
             self._conn.commit()
 
     def iter_all(self):

@@ -3,7 +3,7 @@
 //! Uses `rusqlite` with the `bundled` feature so no system SQLite is required.
 //! WAL mode is enabled on open for concurrent-read safety.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use std::collections::HashMap;
 
 use crate::domain::Tier;
@@ -36,6 +36,20 @@ impl SqliteStorage {
         Ok(storage)
     }
 
+    /// Open a SQLite database in read-only mode without running DDL.
+    ///
+    /// Used by the Rust compute engine to read from `plastic_memory.db`
+    /// while Python writes concurrently. WAL mode on the writer side
+    /// ensures concurrent reads are safe and unblocked.
+    pub fn open_readonly(path: &str) -> Result<Self, String> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(|e| format!("Failed to open SQLite read-only: {}", e))?;
+        Ok(Self { conn })
+    }
+
     /// Execute all DDL statements to create tables and indexes if they do not exist.
     fn create_tables(&mut self) -> Result<(), String> {
         self.conn
@@ -53,27 +67,42 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Map a single SQLite row (14 columns, in CREATE TABLE order) to a [`MemoryRecord`].
+    /// Parse a JSON-encoded tags string from SQLite into Vec<String>.
+    /// Handles NULL, empty string, "[]", and "null" as empty vec.
+    fn parse_tags(raw: &str) -> Vec<String> {
+        if raw.is_empty() || raw == "[]" || raw == "null" {
+            return vec![];
+        }
+        serde_json::from_str(raw).unwrap_or_default()
+    }
+
+    /// Map a single SQLite row (18 columns, in CREATE TABLE order) to a [`MemoryRecord`].
     ///
     /// Column indices: id(0), content(1), memory_type(2), source(3), category(4),
     /// tier(5), importance(6), worth_success(7), worth_failure(8), access_count(9),
-    /// last_accessed_at(10), created_at(11), scope(12), metadata_json(13).
+    /// last_accessed_at(10), created_at(11), scope(12), metadata_json(13),
+    /// tags(14), domain(15), decay_multiplier(16), effective_half_life(17).
     fn row_to_record(row: &rusqlite::Row) -> std::result::Result<MemoryRecord, rusqlite::Error> {
+        let tags_raw: String = row.get::<_, String>(14).unwrap_or_default();
         Ok(MemoryRecord::from_storage(
-            row.get::<_, String>(0)?,  // id
-            row.get::<_, String>(1)?,  // content
-            row.get::<_, String>(2)?,  // memory_type
-            row.get::<_, String>(3)?,  // source
-            row.get::<_, String>(5)?,  // tier
-            row.get::<_, String>(12)?, // scope
-            row.get::<_, String>(4)?,  // category
-            row.get::<_, f64>(6)?,     // importance
-            row.get::<_, u32>(7)?,     // worth_success
-            row.get::<_, u32>(8)?,     // worth_failure
-            row.get::<_, u32>(9)?,     // access_count
-            row.get::<_, String>(10)?, // last_accessed_at
-            row.get::<_, String>(11)?, // created_at
-            row.get::<_, String>(13)?, // metadata_json
+            row.get::<_, String>(0)?,   // id
+            row.get::<_, String>(1)?,   // content
+            row.get::<_, String>(2)?,   // memory_type
+            row.get::<_, String>(3)?,   // source
+            row.get::<_, String>(5)?,   // tier
+            row.get::<_, String>(12)?,  // scope
+            row.get::<_, String>(4)?,   // category
+            row.get::<_, f64>(6)?,      // importance
+            row.get::<_, u32>(7)?,      // worth_success
+            row.get::<_, u32>(8)?,      // worth_failure
+            row.get::<_, u32>(9)?,      // access_count
+            row.get::<_, String>(10)?,  // last_accessed_at
+            row.get::<_, String>(11)?,  // created_at
+            row.get::<_, String>(13)?,  // metadata_json
+            Self::parse_tags(&tags_raw),
+            row.get::<_, String>(15).unwrap_or_else(|_| "uncategorized".to_string()),
+            row.get::<_, f64>(16).unwrap_or(1.0),
+            row.get::<_, f64>(17).unwrap_or(3.0),
         ))
     }
 }
@@ -108,6 +137,10 @@ impl StorageBackend for SqliteStorage {
                     created_at,
                     record.scope,
                     record.metadata_json,
+                    serde_json::to_string(&record.tags).unwrap_or_else(|_| "[]".to_string()),
+                    record.domain,
+                    record.decay_multiplier,
+                    record.effective_half_life,
                 ],
             )
             .map_err(|e| format!("store: {}", e))?;
@@ -373,6 +406,14 @@ impl StorageBackend for SqliteStorage {
             .query_row(SQL_COUNT_ALL, [], |row| row.get::<_, i64>(0))
             .map(|c| c as usize)
             .map_err(|e| format!("total_count: {}", e))
+    }
+
+    /// Execute a scalar SQL query returning a single u64.
+    fn query_scalar(&self, sql: &str) -> Result<u64, String> {
+        self.conn
+            .query_row(sql, [], |row| row.get::<_, i64>(0))
+            .map(|v| v as u64)
+            .map_err(|e| format!("query_scalar '{}': {}", sql, e))
     }
 }
 

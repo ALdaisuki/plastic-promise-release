@@ -219,6 +219,8 @@ pub struct ContextEngine {
     current_time: String,
     /// 上次内存合并时间 (Cell allows mutation through &self)
     last_consolidation: Cell<DateTime<Utc>>,
+    /// BM25 text retrieval index (version-checked lazy refresh)
+    bm25_index: RefCell<crate::retrieval::bm25::Bm25Index>,
 }
 
 /// Python-visible methods for ContextEngine: configuration, supply, and graph management.
@@ -233,18 +235,31 @@ impl ContextEngine {
         // Placeholder retriever and storage — must be configured before use.
         // In practice, a Rust factory function will construct the full engine
         // with real SQLite and LanceDB backends, then return it to Python.
+        // Use the real plastic_memory.db read-only when available,
+        // fall back to :memory: for tests and isolated environments.
+        let db_path = std::env::var("PLASTIC_DB_PATH")
+            .unwrap_or_else(|_| "plastic_memory.db".to_string());
+        let storage = if std::path::Path::new(&db_path).exists() {
+            crate::storage::sqlite_impl::SqliteStorage::open_readonly(&db_path)
+                .unwrap_or_else(|_| {
+                    crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
+                        .expect("Failed to create in-memory SQLite storage")
+                })
+        } else {
+            crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
+                .expect("Failed to create in-memory SQLite storage")
+        };
+
         Self {
             graph: RefCell::new(EntityGraph::new()),
             source_tracker: SourceTracker::new(),
             feedback: AssociationFeedback::new(),
             retriever: HybridRetriever::placeholder(),
-            storage: Box::new(
-                crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
-                    .expect("Failed to create in-memory SQLite storage"),
-            ),
+            storage: Box::new(storage),
             enable_principles: true,
             current_time: String::new(),
             last_consolidation: Cell::new(Utc::now()),
+            bm25_index: RefCell::new(crate::retrieval::bm25::Bm25Index::new()),
         }
     }
 
@@ -501,10 +516,28 @@ impl ContextEngine {
                     metadata_json: String::new(),
                     entity_ids: Vec::new(),
                     attributes: HashMap::new(),
+                    tags: Vec::new(),
+                    domain: "uncategorized".to_string(),
+                    decay_multiplier: 1.0,
+                    effective_half_life: 3.0,
                 });
             }
             Ok((item_lookup, memory_index))
         })?;
+
+        // ============================================================
+        // BM25 version check: rebuild index if memory_version changed
+        // ============================================================
+        let current_version: u64 = self.storage
+            .query_scalar("SELECT version FROM memory_version")
+            .unwrap_or(0);
+        if self.bm25_index.borrow().version() != current_version {
+            let all_docs: Vec<(String, String)> = item_lookup
+                .iter()
+                .map(|(id, (content, _))| (id.clone(), content.clone()))
+                .collect();
+            self.bm25_index.borrow_mut().rebuild(&all_docs, current_version);
+        }
 
         // ============================================================
         // Phase 2: 混合检索 (向量 + BM25 + RRF + 符号规则)
@@ -717,6 +750,7 @@ impl ContextEngine {
             enable_principles: true,
             current_time: String::new(),
             last_consolidation: Cell::new(Utc::now()),
+            bm25_index: RefCell::new(crate::retrieval::bm25::Bm25Index::new()),
         }
     }
 

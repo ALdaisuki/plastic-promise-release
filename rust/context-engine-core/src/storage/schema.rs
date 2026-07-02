@@ -30,8 +30,16 @@ CREATE TABLE IF NOT EXISTS memories (
     last_accessed_at TEXT DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT '',
     scope           TEXT DEFAULT 'global',
-    metadata_json   TEXT DEFAULT '{}'
+    metadata_json   TEXT DEFAULT '{}',
+    tags            TEXT DEFAULT '[]',
+    domain          TEXT DEFAULT 'uncategorized',
+    decay_multiplier REAL DEFAULT 1.0,
+    effective_half_life REAL DEFAULT 3.0
 );
+CREATE TABLE IF NOT EXISTS memory_version (
+    version INTEGER DEFAULT 0
+);
+INSERT OR IGNORE INTO memory_version (version) VALUES (0);
 "#;
 
 /// Composite index covering the most common filter/order columns for list queries.
@@ -69,8 +77,8 @@ pub const SQL_UPSERT_MEMORY: &str = r#"
 INSERT OR REPLACE INTO memories
     (id, content, memory_type, source, category, tier, importance,
      worth_success, worth_failure, access_count, last_accessed_at,
-     created_at, scope, metadata_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+     created_at, scope, metadata_json, tags, domain, decay_multiplier, effective_half_life)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 "#;
 
 /// Fetch a single memory by primary key.
