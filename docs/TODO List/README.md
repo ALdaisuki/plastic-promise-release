@@ -47,6 +47,9 @@ Plastic Promise and CortexReach solve different problems at different scales:
 | 17 | Multi-Provider Embedding with Key Rotation | ⚪ P3 | L | [04-infrastructure-gaps.md](04-infrastructure-gaps.md) |
 | 18 | Rust Engine — Principle Injection | 🟡 P1 | S | [06-rust-engine-gaps.md](06-rust-engine-gaps.md) |
 | 19 | Rust Engine — Graph Traversal | 🟢 P2 | M | [06-rust-engine-gaps.md](06-rust-engine-gaps.md) |
+| 20 | Rust Engine — `new_with_backends` hardcodes `:memory:` | 🔴 P0 | XS | [06-rust-engine-gaps.md](06-rust-engine-gaps.md) |
+| 21 | Rust Engine — `_supply_rust` docstring/code mismatch | 🟡 P1 | S | [06-rust-engine-gaps.md](06-rust-engine-gaps.md) |
+| 22 | Rust Engine — LanceDbStore is HashMap, not real LanceDB | 🟢 P2 | L | [06-rust-engine-gaps.md](06-rust-engine-gaps.md) |
 
 ---
 
