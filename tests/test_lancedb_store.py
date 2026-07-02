@@ -262,6 +262,7 @@ class TestLanceDBStore:
 
     def test_check_duplicate_no_match(self):
         """check_duplicate returns None when no vector is similar enough."""
+        self._require_vectors()
         # Uniform vectors are colinear (cosine sim ~1.0). Use orthogonal vector.
         self.store.insert("far_away", [0.1] * EMB_DIM, "distant text")
         query = [1.0] + [0.0] * (EMB_DIM - 1)  # orthogonal to uniform

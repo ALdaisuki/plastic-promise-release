@@ -229,32 +229,6 @@ class LanceDBStore:
             logger.warning("LanceDB search_similar failed: %s", e)
             return []
 
-    def get_vector(
-        self, memory_id: str,
-    ) -> Optional[list[float]]:
-        """Return the stored vector for a single memory, or None if not found.
-
-        Used by MMR diversity checking — compare candidate vectors against
-        already-selected items without a full ANN search.
-
-        Args:
-            memory_id: The memory ID to look up.
-
-        Returns:
-            List of floats (embedding vector), or None if not found or on error.
-        """
-        if self._table is None:
-            return None
-        try:
-            rows = self._table.search().where(
-                f"memory_id = '{memory_id}'", prefilter=True
-            ).limit(1).to_list()
-            if rows and rows[0].get("vector"):
-                return list(rows[0]["vector"])
-            return None
-        except Exception:
-            return None
-
     def check_duplicate(
         self,
         vector: list[float],
