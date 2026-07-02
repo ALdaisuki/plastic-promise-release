@@ -184,11 +184,9 @@ def detect_gap(query: str, pack: "ContextPack") -> Optional[GapSignal]:
             return None
 
         # Tier 2: related layer has enough high-quality items
-        related_with_relevance = [
-            item for item in pack.related
-            if getattr(item, 'relevance', 0) > 0.45
-        ]
-        if len(related_with_relevance) >= 3:
+        if len(pack.related) >= 3 and all(
+            getattr(item, 'relevance', 0) > 0.45 for item in pack.related
+        ):
             return None
 
         # Tier 3: genuine knowledge gap
