@@ -68,7 +68,7 @@ class ContextPack:
     core: List[ContextItem] = field(default_factory=list)
     related: List[ContextItem] = field(default_factory=list)
     divergent: List[ContextItem] = field(default_factory=list)
-    activated_principles: List[str] = field(default_factory=list)
+    activated_principles: List[dict] = field(default_factory=list)
     audit_metadata: Dict[str, str] = field(default_factory=dict)
 
     def to_prompt(self) -> str:
@@ -1419,9 +1419,13 @@ class ContextEngine:
         """Public wrapper for _ensure_heavy_init."""
         self._ensure_heavy_init()
 
-    def activate_principles(self, task_type: str, task_description: str) -> list[str]:
+    def activate_principles(self, task_type: str, task_description: str) -> list:
         """Public wrapper for _activate_principles."""
         return self._activate_principles(task_type, task_description)
+
+    def check_rust_health(self) -> bool:
+        """Public wrapper for _check_rust_health."""
+        return self._check_rust_health() is True
 
     def text_retrieval(self, task: str, trust_boost: float = 1.0) -> list[tuple]:
         """Public wrapper for _text_retrieval."""
@@ -1653,9 +1657,15 @@ class ContextEngine:
         """
         from plastic_promise.core.constants import CORE_PRINCIPLES
 
+        # T3 changed _activate_principles() return from List[str] → List[dict]
+        # Extract names so membership checks work correctly
+        activated_names_list = [
+            p["name"] if isinstance(p, dict) else p for p in activated_names
+        ]
+
         edges_created = 0
         for p in CORE_PRINCIPLES:
-            if p["name"] not in activated_names:
+            if p["name"] not in activated_names_list:
                 continue
 
             node_id = f"principle:{p['id']}"
@@ -1681,7 +1691,7 @@ class ContextEngine:
 
         return edges_created
 
-    def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
+    def _activate_principles(self, task_type: str, task_description: str) -> List[dict]:
         """P1: Three-channel principle activation.
 
         Channel 1 — Static task-type mapping: differentiated principle

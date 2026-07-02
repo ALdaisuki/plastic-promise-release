@@ -120,7 +120,7 @@ def _check_zero_vectors(engine: Any, findings: List[Dict]):
 def _check_principle_injection(engine: Any, findings: List[Dict]):
     """Check that principle activation returns full content."""
     try:
-        principles = engine._activate_principles("code_generation", "test probe")
+        principles = engine.activate_principles("code_generation", "test probe")
         if not principles:
             findings.append({
                 "dimension": "principle_injection",
@@ -157,7 +157,7 @@ def _check_principle_injection(engine: Any, findings: List[Dict]):
 def _check_rust_health(engine: Any, findings: List[Dict]):
     """Check Rust engine availability."""
     try:
-        healthy = engine._check_rust_health()
+        healthy = engine.check_rust_health()
         if not healthy:
             findings.append({
                 "dimension": "rust_engine_health",

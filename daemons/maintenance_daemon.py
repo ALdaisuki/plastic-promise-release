@@ -1314,7 +1314,7 @@ async def main():
             # Priority E: data quality scanner (throttle-managed via _run_scan style)
             try:
                 dq_throttle = _scanner_throttles["scan_data_quality"]
-                dq_result = await scan_data_quality(engine)
+                dq_result = scan_data_quality(engine)  # sync function — no await
                 if len(dq_result) > 0:
                     dq_throttle.on_hit()
                 else:
