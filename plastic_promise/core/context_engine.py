@@ -9,9 +9,12 @@
 import datetime
 import json
 import logging
+import math
 import os
+import re
 import threading
 import time
+from collections import Counter
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
@@ -1747,75 +1750,186 @@ class ContextEngine:
                 result.append(p["name"])
         return result
 
-    def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> List[tuple]:
-        """粗匹配: CJK bigram / word split + L1 tier boost (大类优先)."""
-        results = []
-        import re
-        has_cjk = bool(re.search(r'[一-鿿]', task))
+    # ========== BM25 helpers (static methods on ContextEngine) ==========
 
+    _EN_STOPWORDS = frozenset({
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought',
+        'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
+        'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
+        'between', 'under', 'again', 'further', 'then', 'once', 'here', 'there',
+        'when', 'where', 'why', 'how', 'all', 'both', 'each', 'few', 'more',
+        'most', 'other', 'some', 'such', 'only', 'own', 'same', 'so', 'than',
+        'too', 'very', 'just', 'because', 'but', 'and', 'or', 'if', 'while',
+        'about', 'not', 'this', 'that', 'these', 'those', 'it', 'its',
+    })
+
+    @staticmethod
+    def _porter_stem(word: str) -> str:
+        """Minimal Porter stemmer for common English suffixes."""
+        w = word.lower()
+        if len(w) <= 3:
+            return w
+        if w.endswith('sses'):
+            w = w[:-2]
+        elif w.endswith('ies'):
+            w = w[:-2]
+        elif w.endswith('ss'):
+            pass
+        elif w.endswith('s'):
+            w = w[:-1]
+        if w.endswith('eed') and len(w) > 4:
+            w = w[:-1]
+        elif w.endswith('ed') and not w.endswith('eed') and len(w) > 3:
+            w = w[:-2]
+        elif w.endswith('ing') and len(w) > 4:
+            w = w[:-3]
+        for suffix in ('ement', 'ment', 'ence', 'ance', 'able', 'ible',
+                       'ment', 'ent', 'ant', 'ism', 'ate', 'iti', 'ous',
+                       'ive', 'ize', 'ion', 'al', 'er', 'ic', 'ou', 'ly'):
+            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                w = w[:-len(suffix)]
+                break
+        return w
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        """Tokenize text for BM25. CJK->bigram, English->split+stem+stopword."""
+        if not text or not text.strip():
+            return []
+        # CJK detection: require >30% CJK chars to avoid false positives
+        # from garbled/mixed-encoding text
+        cjk_chars = sum(1 for c in text if '一' <= c <= '鿿')
+        has_cjk = (cjk_chars / max(len(text), 1)) > 0.3
         if has_cjk:
-            task_bigrams = set()
-            for i in range(len(task) - 1):
-                bigram = task[i:i+2]
-                if not re.search(r'[\s，。！？、；：,.!?;:\s]', bigram):
-                    task_bigrams.add(bigram)
-        else:
-            task_bigrams = set(task.lower().split())
+            chars = [c for c in text if not c.isspace()]
+            return [chars[i] + chars[i + 1] for i in range(len(chars) - 1)]
+        words = text.lower().split()
+        return [
+            ContextEngine._porter_stem(w.strip('.,!?;:()[]{}"\'-'))
+            for w in words
+            if len(w) >= 3 and w.lower() not in ContextEngine._EN_STOPWORDS
+        ]
 
-        if not task_bigrams:
+    @staticmethod
+    def _compute_idf(doc_freq: dict[str, int], total_docs: int) -> dict[str, float]:
+        """IDF = log((N - df + 0.5) / (df + 0.5) + 1)."""
+        return {
+            term: math.log((total_docs - df + 0.5) / (df + 0.5) + 1.0)
+            for term, df in doc_freq.items()
+        }
+
+    @staticmethod
+    def _bm25_score(
+        query_terms: list[str],
+        doc_terms: list[str],
+        idf: dict[str, float],
+        avg_doc_len: float,
+        k1: float = 1.2,
+        b: float = 0.75,
+    ) -> float:
+        """Okapi BM25 score for one document."""
+        doc_len = len(doc_terms)
+        tf_counts = Counter(doc_terms)
+        score = 0.0
+        for term in query_terms:
+            if term not in idf:
+                continue
+            tf = tf_counts.get(term, 0)
+            if tf == 0:
+                continue
+            numerator = tf * (k1 + 1.0)
+            denominator = tf + k1 * (1.0 - b + b * doc_len / avg_doc_len)
+            score += idf[term] * numerator / denominator
+        return score
+
+    def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> List[tuple]:
+        """BM25 text retrieval with IDF weighting (Okapi BM25, k1=1.2, b=0.75).
+
+        Replaces the old word-overlap matching. Builds document frequency table
+        from self._memories on each call — fast enough at 192-doc scale (<5ms).
+        """
+        results = []
+        query_terms = ContextEngine._tokenize(task)
+        if not query_terms:
             return results
 
         current_owner = os.environ.get("AGENT_OWNER", "")
-        # Hoist repeated lookups outside hot loop
         domain_hint = getattr(self, '_domain_hint', None)
         dm = getattr(self, '_dm', None)
         has_dm = dm is not None and domain_hint and domain_hint != "all"
-        hint_dom = dm.domains.get(domain_hint) if has_dm else None
+        hint_dm = dm.domains.get(domain_hint) if has_dm else None
 
-        accessed: list[str] = []  # defer access tracking to post-loop
+        # --- Build DF table and pre-tokenize docs ---
+        doc_terms: dict[str, list[str]] = {}
+        doc_freq: dict[str, int] = {}
+        eligible: list[str] = []
 
         for mid, mem in self._memories.items():
-            # Owner filter: only own memories + shared (owner="shared" or owner="")
             mem_owner = mem.get("owner", "")
             if current_owner and mem_owner not in (current_owner, "shared", ""):
                 continue
+            content = mem.get("content", "")
+            if not content.strip():
+                continue
+            tokens = ContextEngine._tokenize(content)
+            if not tokens:
+                continue
+            doc_terms[mid] = tokens
+            eligible.append(mid)
+            unique_terms = set(tokens)
+            for term in unique_terms:
+                doc_freq[term] = doc_freq.get(term, 0) + 1
+
+        if not eligible:
+            return results
+
+        total_docs = len(eligible)
+        avg_doc_len = sum(len(t) for t in doc_terms.values()) / total_docs if total_docs > 0 else 1.0
+        idf = ContextEngine._compute_idf(doc_freq, total_docs)
+
+        # Score each document
+        for mid in eligible:
+            mem = self._memories[mid]
+            tokens = doc_terms[mid]
+            raw_score = ContextEngine._bm25_score(query_terms, tokens, idf, avg_doc_len)
+
+            if raw_score <= 0:
+                continue
+
+            # Normalize BM25 score to [0, 1] using sigmoid with temperature 3
+            score = 1.0 / (1.0 + math.exp(-raw_score / 3.0))
+
+            # Tier boost
+            tier = mem.get("tier", "L2")
+            if tier == "L1":
+                score = min(score * 1.5 * trust_boost, 1.0)
+            elif tier == "L3":
+                score = score * 0.8 * trust_boost
+
+            # Domain boost
+            if has_dm:
+                mem_domain = mem.get("domain", "uncategorized")
+                if mem_domain == domain_hint:
+                    score = min(score * 1.3, 1.0)
+                elif hint_dm:
+                    mem_tags = set(mem.get("tags", []))
+                    if mem_tags & hint_dm.tags:
+                        score = min(score * 1.1, 1.0)
 
             content = mem["content"]
-            if has_cjk:
-                hits = sum(1.0 for bg in task_bigrams if bg in content)
-                score = hits / len(task_bigrams)
-            else:
-                hits = sum(1.0 for w in task_bigrams if w.lower() in content.lower())
-                score = hits / len(task_bigrams) if task_bigrams else 0
+            results.append((mid, min(score, 1.0), content[:300], mem["source"]))
 
-            if score > 0:
-                # 大类优先: L1 working memory gets 1.5× boost
-                tier = mem.get("tier", "L2")
-                if tier == "L1":
-                    score = min(score * 1.5 * trust_boost, 1.0)
-                elif tier == "L3":
-                    score = score * 0.8 * trust_boost  # long-term slightly de-prioritized
-
-                # 域加权: 同域 ×1.3, 融合域 (同标签) ×1.1
-                if has_dm:
-                    mem_domain = mem.get("domain", "uncategorized")
-                    if mem_domain == domain_hint:
-                        score = min(score * 1.3, 1.0)
-                    elif hint_dom:
-                        mem_tags = set(mem.get("tags", []))
-                        if mem_tags & hint_dom.tags:
-                            score = min(score * 1.1, 1.0)
-
-                results.append((mid, min(score, 1.0), content[:300], mem["source"]))
-                accessed.append(mid)
-
-        # Deferred access tracking — batch update outside hot loop
-        for mid in accessed:
+        # Deferred access tracking
+        for mid, _, _, _ in results:
             mem = self._memories.get(mid)
             if mem:
                 mem["access_count"] = mem.get("access_count", 0) + 1
                 if mem.get("access_count", 0) >= 5:
                     mem["worth_success"] = mem.get("worth_success", 0) + 1
+
+        results.sort(key=lambda x: x[1], reverse=True)
         return results
 
     def _vector_retrieval(self, task_vector: list[float]) -> List[tuple]:
