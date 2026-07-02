@@ -11,7 +11,7 @@
 1. 关键词匹配 — 显式命中时产生强信号（±0.06~0.08/词）
 2. 语义相似度 — 无关键词命中时，用 embedding 余弦相似度
    比较上下文与各维度正/负锚点，产生 ±0.15 以内的微调信号
-3. 默认回退 — 既无关键词又无 embedding 时退回 0.65
+3. 文本启发式回退 — 既无关键词又无 embedding 时用小信号 (±0.05) 微调
 
 提供模块级便捷函数 `scarf_reflect` 以及可实例化的 `SCARFReflector` 类。
 """
@@ -309,6 +309,23 @@ def _compute_semantic_signal(context: str, dim_key: str) -> float:
         return 0.0
 
 
+def _text_heuristic_signal(context: str, dim_key: str) -> float:
+    """Fallback when both keywords and embedding are unavailable.
+
+    Returns a small signal in [-0.05, +0.05] based on text structure alone.
+    Intentional kept narrow — this is a last resort, not a replacement for
+    real signals.
+    """
+    signals = {
+        "Status": 0.01 if len(context) > 50 else 0.0,
+        "Certainty": -0.02 if any(c in context for c in "?？") else 0.0,
+        "Autonomy": 0.02 if any(w in context for w in ["优化", "改进", "自主", "选择"]) else 0.0,
+        "Relatedness": 0.03 if any(w in context for w in ["原则", "约定", "流程", "规范"]) else 0.0,
+        "Fairness": 0.0,  # cannot infer from text alone
+    }
+    return signals.get(dim_key, 0.0)
+
+
 def _compute_dimension_score(
     dim_key: str, context_lower: str, context_original: str = ""
 ) -> Dict[str, Any]:
@@ -345,8 +362,20 @@ def _compute_dimension_score(
             )
             suggestion = f"建议主动检查{dim_label}状态：{dim_question}"
         else:
-            score = _DEFAULT_SCORE
-            assessment = f"{dim_label}：无明显信号，维持默认评估。"
+            # Layer 3: text heuristic fallback
+            heuristic = _text_heuristic_signal(context_original, dim_key)
+            score = _DEFAULT_SCORE + heuristic
+            # Detect degradation cause
+            try:
+                from plastic_promise.core.embedder import get_embedder
+                emb = get_embedder()
+                if getattr(emb, "model_name", "") == "fallback-zero":
+                    degrade_note = "嵌入服务不可用，使用文本启发式评估——可信度降低"
+                else:
+                    degrade_note = "无显式信号，使用文本启发式评估"
+            except Exception:
+                degrade_note = "无显式信号，使用文本启发式评估"
+            assessment = f"{dim_label}：{degrade_note}。"
             suggestion = f"建议主动检查{dim_label}状态：{dim_question}"
     elif pos_count >= _STRONG_SIGNAL_THRESHOLD and neg_count == 0:
         score = min(1.0, 0.65 + 0.07 * pos_count)
