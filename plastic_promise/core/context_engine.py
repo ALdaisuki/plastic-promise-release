@@ -1094,6 +1094,17 @@ class ContextEngine:
         if task_vector is None or len(task_vector) == 0:
             task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
 
+        # Incremental backfill: if LanceDB is missing vectors (e.g. Ollama was down
+        # during init), retry a small batch on each supply() call until all filled.
+        # Rate-limited to once per 120s to avoid hammering Ollama during outage.
+        if (self._ldb and self._ldb.count_rows() < len(self._memories)
+                and (time.time() - getattr(self, '_last_backfill_attempt', 0)) > 120):
+            self._last_backfill_attempt = time.time()
+            try:
+                self._ldb.backfill(self)
+            except Exception:
+                pass
+
         # Rust accelerator bypassed — placeholder engine returns uniform 0.50 scores.
         # Python path has real LanceDB vector + BM25 + RRF retrieval.
         # To re-enable Rust, uncomment the block below when retriever backends are implemented.
