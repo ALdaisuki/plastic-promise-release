@@ -1289,7 +1289,8 @@ class ContextEngine:
 
         # Phase 2: Hybrid fusion (vector + text) then layer with graph
         if vector_results:
-            fused_results = self._hybrid_fuse(vector_results, text_results, vector_weight=0.7)
+            vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
+            fused_results = self._hybrid_fuse(vector_results, text_results, vector_weight=vector_weight)
         else:
             # No vector available (Ollama down / zero vector) — use text only
             fused_results = [(mid, score * 0.8, content, source) for mid, score, content, source in text_results]
