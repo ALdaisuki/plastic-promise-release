@@ -266,24 +266,26 @@ SCARF_DIMENSIONS = {
 # 上下文供应引擎参数
 # ============================================================
 
+import os as _os_env
+
 CONTEXT_LAYERS = {
     "core": {
-        "name": "🔵 核心层",
-        "description": "必读——与当前任务直接关联的最高优先级上下文",
+        "name": "core",
+        "description": "core context layer",
         "max_items": 5,
-        "min_relevance": 0.80,
+        "min_relevance": float(_os_env.environ.get("PP_CORE_MIN_RELEVANCE", "0.70")),
     },
     "related": {
-        "name": "🟡 关联层",
-        "description": "补充——间接关联或可能帮助决策的上下文",
+        "name": "related",
+        "description": "related context layer",
         "max_items": 10,
-        "min_relevance": 0.50,
+        "min_relevance": float(_os_env.environ.get("PP_RELATED_MIN_RELEVANCE", "0.40")),
     },
     "divergent": {
-        "name": "🟢 发散层",
-        "description": "灵感——低关联但有创意价值的联想",
+        "name": "divergent",
+        "description": "divergent context layer",
         "max_items": 5,
-        "min_relevance": 0.20,
+        "min_relevance": float(_os_env.environ.get("PP_DIVERGENT_MIN_RELEVANCE", "0.20")),
     },
 }
 
