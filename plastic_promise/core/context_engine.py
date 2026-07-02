@@ -1272,7 +1272,7 @@ class ContextEngine:
         try:
             from plastic_promise.defense.soul_enforcer import TrustManager
             tm = TrustManager()
-            trust_boost = tm.get_retrieval_boost()
+            trust_boost = max(tm.get_retrieval_boost(), 0.80)
         except Exception:
             trust_boost = 1.0
 
@@ -2145,8 +2145,11 @@ class ContextEngine:
         text_weight = 1.0 - vector_weight
         for mid, score, content, source in text_results:
             w = score * text_weight
-            # BM25 high-score bypass: keyword results >= 0.75 override semantic
-            if score >= 0.75:
+            # BM25 high-score bypass: keyword results >= 0.75 override semantic.
+            # >= 0.90: exact text match → keep full score (no vector dilution)
+            if score >= 0.90:
+                w = score  # pure BM25, no vector dilution
+            elif score >= 0.75:
                 w = max(w, score * 0.9)
             if mid in combined:
                 existing_score, existing_content, existing_source = combined[mid]
@@ -2201,27 +2204,19 @@ class ContextEngine:
         return results
 
     def _layered_fuse(self, graph_results, text_results, vector_results) -> List[tuple]:
-        """分层融合: 细(graph ×1.0) > 类(text+L1 ×0.8) > 粗(vector ×0.6)."""
+        """分层融合: text_results already fused via _hybrid_fuse — use scores as-is."""
         combined = {}
-        # 细: graph results — highest weight
-        for item_id, score, content, source in graph_results:
-            combined[item_id] = (score * 1.0, content, source, "graph")
-
-        # 类: text with L1 tier boost already applied — medium weight
+        # 类: fused text+vector results — keep scores unchanged
         for item_id, score, content, source in text_results:
-            w = score * 0.8
-            if item_id in combined:
-                combined[item_id] = (max(combined[item_id][0], w), combined[item_id][1], combined[item_id][2], combined[item_id][3])
-            else:
-                combined[item_id] = (w, content, source, "text")
+            combined[item_id] = (score, content, source)
 
-        # 粗: vector similarity — lowest weight
-        for item_id, score, content, source in vector_results:
-            w = score * 0.6
+        # 细: graph traversal results — capped at 0.5 to not override retrieval
+        for item_id, score, content, source in graph_results:
+            w = min(score, 0.50)
             if item_id in combined:
-                combined[item_id] = (max(combined[item_id][0], w), combined[item_id][1], combined[item_id][2], combined[item_id][3])
+                pass  # already have higher-quality retrieval result
             else:
-                combined[item_id] = (w, content, source, "vector")
+                combined[item_id] = (w, content, source)
 
         return [(k, v[0], v[1], v[2]) for k, v in
                 sorted(combined.items(), key=lambda x: x[1][0], reverse=True)]
