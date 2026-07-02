@@ -493,8 +493,8 @@ FEEDBACK_EDGE_WEIGHT_MIN = 0.1
 FEEDBACK_EDGE_WEIGHT_MAX = 1.0
 
 # P2: 反馈对检索分数的乘数影响
-FEEDBACK_SCORE_MULTIPLIER_MIN = 0.7  # worth_score=0 时最低乘数
-FEEDBACK_SCORE_MULTIPLIER_RANGE = 0.3 # worth_score=1 时乘数 = MIN+RANGE = 1.0
+FEEDBACK_SCORE_MULTIPLIER_MIN = 0.85  # worth_score=0 时最低乘数 (0.7→0.85)
+FEEDBACK_SCORE_MULTIPLIER_RANGE = 0.15 # worth_score=1 时乘数 = MIN+RANGE = 1.0
 
 # ============================================================
 # P1: 任务意图识别

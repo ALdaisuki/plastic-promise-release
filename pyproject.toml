@@ -54,6 +54,9 @@ dev = [
 rust = [
     "maturin>=1.4",
 ]
+code-memory = [
+    "codebase-memory-mcp>=0.7.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/plastic-promise/plastic-promise"
