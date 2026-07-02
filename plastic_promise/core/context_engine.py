@@ -1146,20 +1146,25 @@ class ContextEngine:
         items_sorted = sorted(items, key=lambda x: x.relevance, reverse=True)
         selected: list = []
         deferred: list = []
-        seen_contents: set[str] = set()  # first 200 chars as content hash
+        seen_contents: set[str] = set()  # first 80 chars
+        seen_prefixes: set[str] = set()  # first 40 chars for template detection
 
         for item in items_sorted:
             if getattr(item, 'is_principle', False):
                 selected.append(item)
                 continue
 
-            # Stage 1: exact content dedup
-            content_key = item.content[:200].strip().lower()
-            if content_key and content_key in seen_contents:
-                item.relevance *= 0.50  # hard penalty for exact dupes
+            # Stage 1: content dedup — full match (80 chars) + prefix match (25 chars for templates)
+            content_key = item.content[:80].strip().lower()
+            prefix_key = item.content[:20].strip().lower()
+            if (content_key and content_key in seen_contents) or \
+               (prefix_key and prefix_key in seen_prefixes):
+                item.relevance *= 0.50  # hard penalty for near-dup patterns
                 deferred.append(item)
                 continue
             seen_contents.add(content_key)
+            if prefix_key:
+                seen_prefixes.add(prefix_key)
 
             # Stage 2: vector-based MMR (if vectors available via LanceDB)
             if self._ldb:
