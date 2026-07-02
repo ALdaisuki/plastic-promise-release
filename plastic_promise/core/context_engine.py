@@ -1064,6 +1064,9 @@ class ContextEngine:
         healthy = 0
         decaying = 0
         worth_sum = 0.0
+        active_count = 0
+        dormant_count = 0
+        active_worth_sum = 0.0
 
         for mid, mem in self._memories.items():
             if scope and mem.get("scope") != scope:
@@ -1079,6 +1082,11 @@ class ContextEngine:
             total_obs = ws + wf
             ws_val = (ws + 1.0) / (total_obs + 2.0) if total_obs > 0 else 0.5
             worth_sum += ws_val
+            if total_obs > 0:
+                active_count += 1
+                active_worth_sum += ws_val
+            else:
+                dormant_count += 1
             if ws_val >= 0.15:
                 healthy += 1
             else:
@@ -1093,6 +1101,11 @@ class ContextEngine:
                 "by_category": by_category,
                 "by_tier": by_tier,
                 "average_worth": round(worth_sum / total, 3) if total > 0 else 0.0,
+                "worth_breakdown": {
+                    "active": active_count,
+                    "dormant": dormant_count,
+                    "active_avg_worth": round(active_worth_sum / active_count, 3) if active_count > 0 else None,
+                },
             },
             ensure_ascii=False,
         )
