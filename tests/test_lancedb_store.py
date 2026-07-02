@@ -23,6 +23,11 @@ class TestLanceDBStore:
         yield
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
+    def _require_vectors(self):
+        """Skip the current test if vector operations are disabled (FallbackEmbedder)."""
+        if self.store._vectors_disabled:
+            pytest.skip("Vector operations disabled (FallbackEmbedder)")
+
     def test_init_creates_table(self):
         """Table should be created automatically."""
         assert self.store._table is not None
@@ -30,12 +35,14 @@ class TestLanceDBStore:
 
     def test_insert_and_count(self):
         """Insert a row and verify count increases."""
+        self._require_vectors()
         vec = [0.1] * EMB_DIM
         self.store.insert("mem_001", vec, "hello world")
         assert self.store.count_rows() == 1
 
     def test_insert_duplicate_noop(self):
         """Inserting the same memory_id twice should be a no-op."""
+        self._require_vectors()
         vec = [0.1] * EMB_DIM
         self.store.insert("mem_001", vec, "hello world")
         self.store.insert("mem_001", [0.2] * EMB_DIM, "duplicate")
@@ -43,6 +50,7 @@ class TestLanceDBStore:
 
     def test_insert_with_tier_and_scope(self):
         """Insert with custom tier, category, and scope."""
+        self._require_vectors()
         vec = [0.1] * EMB_DIM
         self.store.insert(
             "mem_002", vec, "scoped memory", tier="L3", category="test", scope="private"
@@ -51,6 +59,7 @@ class TestLanceDBStore:
 
     def test_search_returns_results(self):
         """Vector search should return inserted rows."""
+        self._require_vectors()
         vec = [0.5] * EMB_DIM
         self.store.insert("mem_001", vec, "test vector")
         results = self.store.search([0.5] * EMB_DIM, k=10)
@@ -67,6 +76,7 @@ class TestLanceDBStore:
 
     def test_search_scope_filter(self):
         """Scope filter should exclude non-matching rows."""
+        self._require_vectors()
         self.store.insert("mem_001", [0.1] * EMB_DIM, "global doc", scope="global")
         self.store.insert("mem_002", [0.1] * EMB_DIM, "private doc", scope="private")
         results = self.store.search([0.1] * EMB_DIM, k=10, scope="private")
@@ -75,6 +85,7 @@ class TestLanceDBStore:
 
     def test_search_tier_filter(self):
         """Tier filter should exclude non-matching rows."""
+        self._require_vectors()
         self.store.insert("mem_001", [0.1] * EMB_DIM, "L1 doc", tier="L1")
         self.store.insert("mem_002", [0.1] * EMB_DIM, "L3 doc", tier="L3")
         results = self.store.search([0.1] * EMB_DIM, k=10, tier="L3")
@@ -83,6 +94,7 @@ class TestLanceDBStore:
 
     def test_search_fts(self):
         """Full-text search should find matching text."""
+        self._require_vectors()
         self.store.insert("mem_001", [0.0] * EMB_DIM, "the quick brown fox")
         self.store.insert("mem_002", [0.0] * EMB_DIM, "lazy dog sleeps")
         results = self.store.search_fts("quick", k=10)
@@ -92,6 +104,7 @@ class TestLanceDBStore:
 
     def test_update_replaces_row(self):
         """Update should replace the row (delete + insert)."""
+        self._require_vectors()
         self.store.insert("mem_001", [0.1] * EMB_DIM, "original")
         self.store.update("mem_001", [0.9] * EMB_DIM, "updated")
         assert self.store.count_rows() == 1
@@ -101,6 +114,7 @@ class TestLanceDBStore:
 
     def test_delete_removes_row(self):
         """Delete should remove the row by memory_id."""
+        self._require_vectors()
         self.store.insert("mem_001", [0.1] * EMB_DIM, "to be deleted")
         assert self.store.count_rows() == 1
         self.store.delete("mem_001")
@@ -116,12 +130,14 @@ class TestLanceDBStore:
 
     def test_count_rows_after_inserts(self):
         """Count should reflect multiple inserts."""
+        self._require_vectors()
         for i in range(5):
             self.store.insert(f"mem_{i:03d}", [float(i) / 10.0] * EMB_DIM, f"text {i}")
         assert self.store.count_rows() == 5
 
     def test_search_k_respected(self):
         """k parameter should limit results."""
+        self._require_vectors()
         for i in range(10):
             self.store.insert(f"mem_{i:03d}", [0.5] * EMB_DIM, f"text {i}")
         results = self.store.search([0.5] * EMB_DIM, k=3)
@@ -129,6 +145,7 @@ class TestLanceDBStore:
 
     def test_backfill_skips_when_full(self):
         """backfill should return 0 when LanceDB already has >= rows than engine."""
+        self._require_vectors()
         # Insert enough rows to match mock engine count
         for i in range(3):
             self.store.insert(f"mem_{i:03d}", [0.0] * EMB_DIM, f"text {i}")
@@ -141,6 +158,7 @@ class TestLanceDBStore:
 
     def test_backfill_inserts_missing(self):
         """backfill should insert memories not yet in LanceDB."""
+        self._require_vectors()
         # LanceDB has 2 rows, SQLite has 5 with 2 overlapping
         for i in range(2):
             self.store.insert(f"mem_{i:03d}", [0.0] * EMB_DIM, f"existing {i}")
@@ -194,6 +212,7 @@ class TestLanceDBStore:
 
     def test_reopen_persists_data(self):
         """Data should persist across LanceDBStore instances on the same path."""
+        self._require_vectors()
         vec = [0.3] * EMB_DIM
         self.store.insert("mem_001", vec, "persistent record")
         assert self.store.count_rows() == 1
@@ -208,6 +227,7 @@ class TestLanceDBStore:
 
     def test_search_similar_returns_top_k(self):
         """search_similar returns top-k matches sorted by similarity descending."""
+        self._require_vectors()
         import random
 
         # Insert 5 memories with known vectors
@@ -232,6 +252,7 @@ class TestLanceDBStore:
 
     def test_check_duplicate_finds_match(self):
         """check_duplicate returns memory_id when similarity >= threshold."""
+        self._require_vectors()
         vec = [0.7] * EMB_DIM
         self.store.insert("dup_target", vec, "target text")
         # Search with near-identical vector
@@ -249,6 +270,7 @@ class TestLanceDBStore:
 
     def test_check_duplicate_skips_self(self):
         """check_duplicate should not match the same memory_id (self-exclusion later in pipeline)."""
+        self._require_vectors()
         # This tests the LanceDB layer only — self-exclusion is pipeline's job
         vec = [0.5] * EMB_DIM
         self.store.insert("self_test", vec, "self")

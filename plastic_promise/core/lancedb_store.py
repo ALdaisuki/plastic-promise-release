@@ -40,6 +40,9 @@ class LanceDBStore:
     def __init__(self, db_path: str, embedder: Embedder) -> None:
         self._path = db_path
         self._embedder = embedder
+        self._vectors_disabled = getattr(embedder, "model_name", "") == "fallback-zero"
+        if self._vectors_disabled:
+            logger.warning("LanceDBStore: FallbackEmbedder detected — vector operations disabled")
         self._db: Optional[lancedb.DBConnection] = None
         self._table: Optional[lancedb.table.Table] = None
         self._fts_ready = False
@@ -112,6 +115,8 @@ class LanceDBStore:
         Returns:
             List of (memory_id, score, text, tier, scope) sorted by similarity descending.
         """
+        if self._vectors_disabled:
+            return []
         if self._table is None:
             return []
         try:
@@ -158,6 +163,8 @@ class LanceDBStore:
         Returns:
             List of (memory_id, score, text, tier, scope).
         """
+        if self._vectors_disabled:
+            return []
         if self._table is None:
             return []
         try:
@@ -222,6 +229,32 @@ class LanceDBStore:
             logger.warning("LanceDB search_similar failed: %s", e)
             return []
 
+    def get_vector(
+        self, memory_id: str,
+    ) -> Optional[list[float]]:
+        """Return the stored vector for a single memory, or None if not found.
+
+        Used by MMR diversity checking — compare candidate vectors against
+        already-selected items without a full ANN search.
+
+        Args:
+            memory_id: The memory ID to look up.
+
+        Returns:
+            List of floats (embedding vector), or None if not found or on error.
+        """
+        if self._table is None:
+            return None
+        try:
+            rows = self._table.search().where(
+                f"memory_id = '{memory_id}'", prefilter=True
+            ).limit(1).to_list()
+            if rows and rows[0].get("vector"):
+                return list(rows[0]["vector"])
+            return None
+        except Exception:
+            return None
+
     def check_duplicate(
         self,
         vector: list[float],
@@ -231,6 +264,8 @@ class LanceDBStore:
 
         Thin wrapper over search_similar(k=1). Used by pipeline dedup (Task 3).
         """
+        if self._vectors_disabled:
+            return None
         results = self.search_similar(vector, k=1)
         if results and results[0][1] >= threshold:
             return results[0][0]
@@ -246,6 +281,9 @@ class LanceDBStore:
         scope: str = "global",
     ) -> None:
         """Insert a vector row. No-op if memory_id already exists."""
+        if self._vectors_disabled:
+            logger.debug("LanceDBStore.insert(%s): vectors disabled, skipping write", memory_id)
+            return
         if self._table is None:
             return
         try:
