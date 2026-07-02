@@ -9,9 +9,13 @@
 import datetime
 import json
 import logging
+import math
 import os
+import re
 import threading
 import time
+import urllib.request
+from collections import Counter
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
@@ -209,6 +213,7 @@ class ContextEngine:
         # Heavy components — lazy-initialized by _ensure_heavy_init()
         self._dm: Any = None
         self._dm_ok: bool = False
+        self._last_rerank_status: str = "skipped_disabled"
         self._domain_hint: Optional[str] = None
         self._embedder: Any = None
         self._ldb: Any = None
@@ -351,6 +356,17 @@ class ContextEngine:
                                                             "plastic_memory.lancedb"))
                     self._ldb = LanceDBStore(ldb_path, self._embedder or get_embedder(fallback_on_error=True))
                     self._ldb.backfill(self)
+                    # Ghost-vector detection: if LanceDB has more rows than SQLite,
+                    # there are stale test/pollution vectors — rebuild from SQLite
+                    ldb_count = self._ldb.count_rows()
+                    sqlite_count = len(self._memories)
+                    if ldb_count > sqlite_count:
+                        logging.warning(
+                            "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
+                            " — rebuilding to remove %d ghost vectors",
+                            ldb_count, sqlite_count, ldb_count - sqlite_count,
+                        )
+                        self._ldb.rebuild_all(self)
                     logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
                 except Exception as e:
                     logging.warning("ContextEngine: LanceDBStore init failed — vector search disabled: %s", e)
@@ -1093,6 +1109,138 @@ class ContextEngine:
 
         return self._supply_python(task_description, task_vector, task_type, scope)
 
+    @staticmethod
+    def _apply_length_norm(score: float, content: str, anchor: int = 500) -> float:
+        """Normalize score by document length to prevent long documents from dominating.
+
+        Formula: score *= 1 / (1 + 0.5 * log2(len / anchor))
+        Floor: score * 0.3 (never reduce below 30% of original).
+        Short documents (<= anchor chars) are not penalized.
+        """
+        char_len = len(content)
+        if char_len <= anchor:
+            return score
+        ratio = char_len / anchor
+        log_ratio = math.log2(ratio)
+        factor = 1.0 / (1.0 + 0.5 * log_ratio)
+        return max(score * factor, score * 0.3)
+
+    def _apply_mmr(self, items: list, threshold: float = 0.85, penalty: float = 0.70) -> list:
+        """Greedy MMR diversity: demote items with cosine similarity > threshold.
+
+        Soft-demotion (not removal): similar items get score *= penalty and
+        are deferred to the end, preserving them for lower layers.
+        """
+        if len(items) <= 1:
+            return items
+        # Collect vectors from _memories
+        vectors: dict[str, list[float]] = {}
+        for item in items:
+            if getattr(item, 'is_principle', False):
+                continue
+            mid = item.id
+            mem = self._memories.get(mid, {})
+            vec = mem.get("_vector")
+            if vec and len(vec) == 1024 and any(v != 0.0 for v in vec):
+                vectors[mid] = vec
+        if len(vectors) < 2:
+            return items  # not enough vectors for MMR
+
+        def _cosine(a: list[float], b: list[float]) -> float:
+            dot = sum(x * y for x, y in zip(a, b))
+            na = math.sqrt(sum(x * x for x in a))
+            nb = math.sqrt(sum(y * y for y in b))
+            if na < 1e-12 or nb < 1e-12:
+                return 0.0
+            return dot / (na * nb)
+
+        items_sorted = sorted(items, key=lambda x: x.relevance, reverse=True)
+        selected: list = []
+        deferred: list = []
+
+        for item in items_sorted:
+            item_vec = vectors.get(item.id)
+            if item_vec is None:
+                selected.append(item)
+                continue
+            too_similar = any(
+                _cosine(item_vec, vectors.get(sel.id, [])) > threshold
+                for sel in selected
+                if vectors.get(sel.id)
+            )
+            if too_similar:
+                item.relevance *= penalty
+                deferred.append(item)
+            else:
+                selected.append(item)
+
+        deferred.sort(key=lambda x: x.relevance, reverse=True)
+        return selected + deferred
+
+    def _apply_rerank(self, items: list, query: str) -> list:
+        """Optional cross-encoder rerank via Ollama (PP_RECALL_RERANK=1).
+
+        Blends: 60% cross-encoder + 40% original score. 5s timeout. Silent fallback.
+        Sets self._last_rerank_status for audit.
+        """
+        if os.environ.get("PP_RECALL_RERANK", "0") != "1":
+            self._last_rerank_status = "skipped_disabled"
+            return items
+        if len(items) <= 1:
+            self._last_rerank_status = "skipped_disabled"
+            return items
+        candidates = sorted(items, key=lambda x: x.relevance, reverse=True)[:30]
+        try:
+            model = os.environ.get("PP_RERANK_MODEL", "")
+            timeout = float(os.environ.get("PP_RERANK_TIMEOUT", "5.0"))
+            ollama_url = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+            docs = [item.content[:500] for item in candidates]
+            payload = json.dumps({
+                "model": model or "mxbai-embed-large",
+                "prompt": (
+                    f"Query: {query}\n\n"
+                    f"Rate each document's relevance to the query on a scale of 0-100.\n\n"
+                    + "\n\n".join(f"[{i}] {doc}" for i, doc in enumerate(docs))
+                    + "\n\nReturn JSON: {\"scores\": [score0, score1, ...]}"
+                ),
+                "stream": False,
+                "options": {"temperature": 0},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{ollama_url}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = urllib.request.urlopen(req, timeout=timeout)
+            result = json.loads(resp.read().decode("utf-8"))
+            response_text = result.get("response", "{}")
+            try:
+                scores_data = json.loads(response_text)
+                rerank_scores = scores_data.get("scores", [])
+            except json.JSONDecodeError:
+                match = re.search(r'\[[\d,\s]+\]', response_text)
+                if match:
+                    rerank_scores = json.loads(match.group())
+                else:
+                    raise ValueError("Cannot parse rerank response")
+            for i, item in enumerate(candidates):
+                if i < len(rerank_scores):
+                    ce_score = float(rerank_scores[i]) / 100.0
+                    orig = item.relevance
+                    item.relevance = min(ce_score * 0.6 + orig * 0.4, 1.0)
+                    item.relevance = max(item.relevance, orig * 0.5)
+            self._last_rerank_status = "completed"
+        except Exception as e:
+            msg = str(e).lower()
+            if "timed out" in msg or "timeout" in msg:
+                self._last_rerank_status = "skipped_timeout"
+            elif "connection" in msg or "refused" in msg:
+                self._last_rerank_status = "skipped_ollama_down"
+            else:
+                self._last_rerank_status = "skipped_no_model"
+            logger.info("Rerank skipped: %s", self._last_rerank_status)
+        return items
+
     def _supply_python(
         self,
         task_description: str,
@@ -1183,6 +1331,9 @@ class ContextEngine:
             multiplier = FEEDBACK_SCORE_MULTIPLIER_MIN + FEEDBACK_SCORE_MULTIPLIER_RANGE * worth
             score = score * multiplier
 
+            # --- Length normalization (Phase 1.5) ---
+            score = ContextEngine._apply_length_norm(score, content)
+
             # --- ContextItem construction (was separate Phase 5 loop) ---
             is_principle = item_id.startswith("principle:")
             worth_score = mem.get("worth_score", 0.0) if mem else 0.0
@@ -1217,12 +1368,34 @@ class ContextEngine:
                     item.layer = "divergent"
                     pack.divergent.append(item)
 
-        # P3a: Compute divergent quality and filter low-inspiration items
-        if pack.divergent:
-            all_retrieved = pack.core + pack.related + pack.divergent
-            pack.divergent = self._compute_divergent_quality(
-                pack.divergent, all_retrieved
-            )
+        # P3a: MMR diversity + optional rerank, then re-layer
+        if pack.core or pack.related or pack.divergent:
+            all_items = pack.core + pack.related + pack.divergent
+            # Rerank (Phase 1.6, optional — PP_RECALL_RERANK=1)
+            all_items = self._apply_rerank(all_items, task_description)
+            # MMR diversity (Phase 1.4)
+            all_items = self._apply_mmr(all_items, threshold=0.85, penalty=0.70)
+            # Re-distribute to layers based on adjusted relevance
+            pack.core.clear()
+            pack.related.clear()
+            pack.divergent.clear()
+            for item in all_items:
+                if not item.is_principle:
+                    if item.relevance >= CONTEXT_LAYERS["core"]["min_relevance"]:
+                        item.layer = "core"
+                        pack.core.append(item)
+                    elif item.relevance >= CONTEXT_LAYERS["related"]["min_relevance"]:
+                        item.layer = "related"
+                        pack.related.append(item)
+                    elif item.relevance >= CONTEXT_LAYERS["divergent"]["min_relevance"]:
+                        item.layer = "divergent"
+                        pack.divergent.append(item)
+            # Compute divergent quality
+            if pack.divergent:
+                all_retrieved = pack.core + pack.related + pack.divergent
+                pack.divergent = self._compute_divergent_quality(
+                    pack.divergent, all_retrieved
+                )
 
         # Phase 6: 审计元数据
         pack.audit_metadata = {
@@ -1234,6 +1407,7 @@ class ContextEngine:
             "memory_pool_size": str(len(self._memories)),
             "vector_search": "active" if vector_results else "fallback_text_only",
             "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
+            "rerank_status": getattr(self, '_last_rerank_status', 'skipped_disabled'),
         }
 
         return pack
@@ -1736,75 +1910,186 @@ class ContextEngine:
                 result.append(p["name"])
         return result
 
-    def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> List[tuple]:
-        """粗匹配: CJK bigram / word split + L1 tier boost (大类优先)."""
-        results = []
-        import re
-        has_cjk = bool(re.search(r'[一-鿿]', task))
+    # ========== BM25 helpers (static methods on ContextEngine) ==========
 
+    _EN_STOPWORDS = frozenset({
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought',
+        'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
+        'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
+        'between', 'under', 'again', 'further', 'then', 'once', 'here', 'there',
+        'when', 'where', 'why', 'how', 'all', 'both', 'each', 'few', 'more',
+        'most', 'other', 'some', 'such', 'only', 'own', 'same', 'so', 'than',
+        'too', 'very', 'just', 'because', 'but', 'and', 'or', 'if', 'while',
+        'about', 'not', 'this', 'that', 'these', 'those', 'it', 'its',
+    })
+
+    @staticmethod
+    def _porter_stem(word: str) -> str:
+        """Minimal Porter stemmer for common English suffixes."""
+        w = word.lower()
+        if len(w) <= 3:
+            return w
+        if w.endswith('sses'):
+            w = w[:-2]
+        elif w.endswith('ies'):
+            w = w[:-2]
+        elif w.endswith('ss'):
+            pass
+        elif w.endswith('s'):
+            w = w[:-1]
+        if w.endswith('eed') and len(w) > 4:
+            w = w[:-1]
+        elif w.endswith('ed') and not w.endswith('eed') and len(w) > 3:
+            w = w[:-2]
+        elif w.endswith('ing') and len(w) > 4:
+            w = w[:-3]
+        for suffix in ('ement', 'ment', 'ence', 'ance', 'able', 'ible',
+                       'ment', 'ent', 'ant', 'ism', 'ate', 'iti', 'ous',
+                       'ive', 'ize', 'ion', 'al', 'er', 'ic', 'ou', 'ly'):
+            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                w = w[:-len(suffix)]
+                break
+        return w
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        """Tokenize text for BM25. CJK->bigram, English->split+stem+stopword."""
+        if not text or not text.strip():
+            return []
+        # CJK detection: require >30% CJK chars to avoid false positives
+        # from garbled/mixed-encoding text
+        cjk_chars = sum(1 for c in text if '一' <= c <= '鿿')
+        has_cjk = (cjk_chars / max(len(text), 1)) > 0.3
         if has_cjk:
-            task_bigrams = set()
-            for i in range(len(task) - 1):
-                bigram = task[i:i+2]
-                if not re.search(r'[\s，。！？、；：,.!?;:\s]', bigram):
-                    task_bigrams.add(bigram)
-        else:
-            task_bigrams = set(task.lower().split())
+            chars = [c for c in text if not c.isspace()]
+            return [chars[i] + chars[i + 1] for i in range(len(chars) - 1)]
+        words = text.lower().split()
+        return [
+            ContextEngine._porter_stem(w.strip('.,!?;:()[]{}"\'-'))
+            for w in words
+            if len(w) >= 3 and w.lower() not in ContextEngine._EN_STOPWORDS
+        ]
 
-        if not task_bigrams:
+    @staticmethod
+    def _compute_idf(doc_freq: dict[str, int], total_docs: int) -> dict[str, float]:
+        """IDF = log((N - df + 0.5) / (df + 0.5) + 1)."""
+        return {
+            term: math.log((total_docs - df + 0.5) / (df + 0.5) + 1.0)
+            for term, df in doc_freq.items()
+        }
+
+    @staticmethod
+    def _bm25_score(
+        query_terms: list[str],
+        doc_terms: list[str],
+        idf: dict[str, float],
+        avg_doc_len: float,
+        k1: float = 1.2,
+        b: float = 0.75,
+    ) -> float:
+        """Okapi BM25 score for one document."""
+        doc_len = len(doc_terms)
+        tf_counts = Counter(doc_terms)
+        score = 0.0
+        for term in query_terms:
+            if term not in idf:
+                continue
+            tf = tf_counts.get(term, 0)
+            if tf == 0:
+                continue
+            numerator = tf * (k1 + 1.0)
+            denominator = tf + k1 * (1.0 - b + b * doc_len / avg_doc_len)
+            score += idf[term] * numerator / denominator
+        return score
+
+    def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> List[tuple]:
+        """BM25 text retrieval with IDF weighting (Okapi BM25, k1=1.2, b=0.75).
+
+        Replaces the old word-overlap matching. Builds document frequency table
+        from self._memories on each call — fast enough at 192-doc scale (<5ms).
+        """
+        results = []
+        query_terms = ContextEngine._tokenize(task)
+        if not query_terms:
             return results
 
         current_owner = os.environ.get("AGENT_OWNER", "")
-        # Hoist repeated lookups outside hot loop
         domain_hint = getattr(self, '_domain_hint', None)
         dm = getattr(self, '_dm', None)
         has_dm = dm is not None and domain_hint and domain_hint != "all"
-        hint_dom = dm.domains.get(domain_hint) if has_dm else None
+        hint_dm = dm.domains.get(domain_hint) if has_dm else None
 
-        accessed: list[str] = []  # defer access tracking to post-loop
+        # --- Build DF table and pre-tokenize docs ---
+        doc_terms: dict[str, list[str]] = {}
+        doc_freq: dict[str, int] = {}
+        eligible: list[str] = []
 
         for mid, mem in self._memories.items():
-            # Owner filter: only own memories + shared (owner="shared" or owner="")
             mem_owner = mem.get("owner", "")
             if current_owner and mem_owner not in (current_owner, "shared", ""):
                 continue
+            content = mem.get("content", "")
+            if not content.strip():
+                continue
+            tokens = ContextEngine._tokenize(content)
+            if not tokens:
+                continue
+            doc_terms[mid] = tokens
+            eligible.append(mid)
+            unique_terms = set(tokens)
+            for term in unique_terms:
+                doc_freq[term] = doc_freq.get(term, 0) + 1
+
+        if not eligible:
+            return results
+
+        total_docs = len(eligible)
+        avg_doc_len = sum(len(t) for t in doc_terms.values()) / total_docs if total_docs > 0 else 1.0
+        idf = ContextEngine._compute_idf(doc_freq, total_docs)
+
+        # Score each document
+        for mid in eligible:
+            mem = self._memories[mid]
+            tokens = doc_terms[mid]
+            raw_score = ContextEngine._bm25_score(query_terms, tokens, idf, avg_doc_len)
+
+            if raw_score <= 0:
+                continue
+
+            # Normalize BM25 score to [0, 1] using sigmoid with temperature 3
+            score = 1.0 / (1.0 + math.exp(-raw_score / 3.0))
+
+            # Tier boost
+            tier = mem.get("tier", "L2")
+            if tier == "L1":
+                score = min(score * 1.5 * trust_boost, 1.0)
+            elif tier == "L3":
+                score = score * 0.8 * trust_boost
+
+            # Domain boost
+            if has_dm:
+                mem_domain = mem.get("domain", "uncategorized")
+                if mem_domain == domain_hint:
+                    score = min(score * 1.3, 1.0)
+                elif hint_dm:
+                    mem_tags = set(mem.get("tags", []))
+                    if mem_tags & hint_dm.tags:
+                        score = min(score * 1.1, 1.0)
 
             content = mem["content"]
-            if has_cjk:
-                hits = sum(1.0 for bg in task_bigrams if bg in content)
-                score = hits / len(task_bigrams)
-            else:
-                hits = sum(1.0 for w in task_bigrams if w.lower() in content.lower())
-                score = hits / len(task_bigrams) if task_bigrams else 0
+            results.append((mid, min(score, 1.0), content[:300], mem["source"]))
 
-            if score > 0:
-                # 大类优先: L1 working memory gets 1.5× boost
-                tier = mem.get("tier", "L2")
-                if tier == "L1":
-                    score = min(score * 1.5 * trust_boost, 1.0)
-                elif tier == "L3":
-                    score = score * 0.8 * trust_boost  # long-term slightly de-prioritized
-
-                # 域加权: 同域 ×1.3, 融合域 (同标签) ×1.1
-                if has_dm:
-                    mem_domain = mem.get("domain", "uncategorized")
-                    if mem_domain == domain_hint:
-                        score = min(score * 1.3, 1.0)
-                    elif hint_dom:
-                        mem_tags = set(mem.get("tags", []))
-                        if mem_tags & hint_dom.tags:
-                            score = min(score * 1.1, 1.0)
-
-                results.append((mid, min(score, 1.0), content[:300], mem["source"]))
-                accessed.append(mid)
-
-        # Deferred access tracking — batch update outside hot loop
-        for mid in accessed:
+        # Deferred access tracking
+        for mid, _, _, _ in results:
             mem = self._memories.get(mid)
             if mem:
                 mem["access_count"] = mem.get("access_count", 0) + 1
                 if mem.get("access_count", 0) >= 5:
                     mem["worth_success"] = mem.get("worth_success", 0) + 1
+
+        results.sort(key=lambda x: x[1], reverse=True)
         return results
 
     def _vector_retrieval(self, task_vector: list[float]) -> List[tuple]:
