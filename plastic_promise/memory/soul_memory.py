@@ -309,29 +309,33 @@ class MemoryTierManager:
         from plastic_promise.core.constants import MEMORY_TIERS
 
         self.l1_config = MEMORY_TIERS.get("L1", {"max_items": 200, "ttl_hours": 24})
+        self.l2_config = MEMORY_TIERS.get("L2", {"max_items": 500, "ttl_hours": 168})
         self.l3_config = MEMORY_TIERS.get("L3", {"max_items": 2000, "ttl_hours": None})
         self.rec_mem = rec_mem
 
     def classify_tier(self, record: MemoryRecord) -> str:
         """判断一条记忆应归属的层位。
 
-        基于 worth_score 和激活历史综合判断。
-        高价值、高频激活的记忆倾向 L3，低价值、低频的倾向 L1。
+        Three-tier classification (L1→L2→L3 stepwise):
+          L3: composite >= 0.7 AND access_count >= 20
+          L2: composite >= 0.4 AND access_count >= 5
+          L1: everything else (working memory default)
 
         Args:
             record: 待分类的记忆记录。
 
         Returns:
-            "L1" 或 "L3"。
+            "L1", "L2", or "L3".
         """
         if record is None:
             return "L1"
         try:
-            # 使用 composite_score 替代 worth_score
             calc = MemoryWorthCalculator()
             composite = calc.calculate_composite_score(record)
-            if composite >= 0.5 and record.access_count >= 3:
+            if composite >= 0.7 and record.access_count >= 20:
                 return "L3"
+            elif composite >= 0.4 and record.access_count >= 5:
+                return "L2"
         except Exception:
             pass
         return "L1"
@@ -350,39 +354,74 @@ class MemoryTierManager:
             pass
         return False
 
-    def promote_to_l3(self, record: MemoryRecord) -> None:
-        """将记忆从 L1 晋升到 L3 长期记忆。
+    def promote(self, record: MemoryRecord) -> str:
+        """Stepwise promotion: L1→L2 or L2→L3. Never skips tiers.
 
-        检查 L3 容量上限（MEMORY_TIERS["L3"]["max_items"]），
-        若 L3 已满则驱逐最低 worth_score 的记录回 L1。
+        Checks capacity at target tier; evicts lowest-worth if full.
 
         Args:
             record: 待晋升的记忆记录。
+
+        Returns:
+            New tier string, or current tier if no promotion occurred.
         """
         if record is None:
-            return
-        l3_max = self.l3_config.get("max_items", 2000)
-        # If RecMem available, check L3 count and evict lowest if full
+            return "L1"
+        current = record.tier
+        if current == "L1":
+            return self._promote_to(record, "L2", self.l2_config)
+        elif current == "L2":
+            return self._promote_to(record, "L3", self.l3_config)
+        return current
+
+    def _promote_to(self, record, target_tier, target_config) -> str:
+        """Internal: promote record to target tier with capacity check."""
+        max_items = target_config.get("max_items", 500)
         if self.rec_mem is not None:
             try:
-                l3_records = [r for r in self.rec_mem._records.values() if r.tier == "L3"]
-                if len(l3_records) >= l3_max:
-                    l3_records.sort(key=lambda r: r.worth_score)
-                    self.demote_to_l1(l3_records[0])
+                target_records = [
+                    r for r in self.rec_mem._records.values()
+                    if r.tier == target_tier
+                ]
+                if len(target_records) >= max_items:
+                    target_records.sort(key=lambda r: r.worth_score)
+                    self.demote(target_records[0])
             except Exception:
                 pass
-        record.tier = "L3"
+        record.tier = target_tier
+        return target_tier
 
-    def demote_to_l1(self, record: MemoryRecord) -> None:
-        """将记忆从 L3 降级到 L1 工作记忆。
-
-        当记忆 worth_score 低于衰减阈值或长期未激活时触发。
+    def demote(self, record: MemoryRecord) -> str:
+        """Stepwise demotion: L3→L2 or L2→L1. Never skips tiers.
 
         Args:
             record: 待降级的记忆记录。
+
+        Returns:
+            New tier string, or current tier if no demotion occurred.
         """
-        if record is not None:
+        if record is None:
+            return "L1"
+        current = record.tier
+        if current == "L3":
+            record.tier = "L2"
+            return "L2"
+        elif current == "L2":
             record.tier = "L1"
+            return "L1"
+        return current
+
+    # Backward-compatible aliases
+    def promote_to_l3(self, record: MemoryRecord) -> None:
+        """Legacy: promote to L3 via stepwise path."""
+        self.promote(record)
+        if record and record.tier == "L2":
+            self.promote(record)  # L1→L2→L3 in two calls
+
+    def demote_to_l1(self, record: MemoryRecord) -> None:
+        """Legacy: demote to L1 via stepwise path."""
+        if record and record.tier != "L1":
+            self.demote(record)  # L3→L2 or L2→L1
 
     def evict_l1_overflow(self, records: List[MemoryRecord]) -> List[str]:
         """处理 L1 工作记忆溢出，驱逐超出容量上限的低价值记忆。

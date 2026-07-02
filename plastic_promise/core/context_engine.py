@@ -227,7 +227,7 @@ class ContextEngine:
         # Heavy components — lazy-initialized by _ensure_heavy_init()
         self._dm: Any = None
         self._dm_ok: bool = False
-        self._last_rerank_status: str = "skipped_disabled"
+        # _last_rerank_status removed — unified reranker handles its own diagnostics
         self._domain_hint: Optional[str] = None
         self._embedder: Any = None
         self._ldb: Any = None
@@ -832,6 +832,30 @@ class ContextEngine:
 
     # ========== Batch Updates with SAVEPOINT atomicity (Task 5) ==========
 
+    def _maybe_adjust_tier(self, mid: str) -> None:
+        """Real-time tier promotion based on access_count thresholds.
+
+        Called during _text_retrieval after access_count increment.
+        Only promotes (L1→L2, L2→L3) — demotion is handled by evolve_cycle.
+        Gated by PP_TIER_AUTO_PROMOTE env var (default on).
+        """
+        if os.environ.get("PP_TIER_AUTO_PROMOTE", "1") != "1":
+            return
+        mem = self._memories.get(mid)
+        if not mem:
+            return
+        access = mem.get("access_count", 0)
+        tier = mem.get("tier", "L1")
+        new_tier = tier
+        if tier == "L1" and access >= 5:
+            new_tier = "L2"
+        elif tier == "L2" and access >= 20:
+            new_tier = "L3"
+        if new_tier != tier:
+            mem["tier"] = new_tier
+            if self._sqlite:
+                self._sqlite.upsert(mid, mem)
+
     def batch_update(self, updates: list[dict]) -> int:
         """Apply multiple memory field updates atomically.
 
@@ -1175,6 +1199,59 @@ class ContextEngine:
         return self._supply_python(task_description, task_vector, task_type, scope)
 
     @staticmethod
+    def _apply_decay_awareness(
+        score: float, mem: dict | None,
+        current_time_str: str, trust_boost: float,
+    ) -> float:
+        """Two-formula decay-aware relevance adjustment with trust modulation.
+
+        Formula A (additive recency): fresh memories get up to +0.1 bonus.
+          boost = exp(-age_days / recency_hl) * 0.1
+          score = clamp01(score + boost, floor=score)
+
+        Formula B (multiplicative time decay): old memories penalized, floor 0.5x.
+          factor = 0.5 + 0.5 * exp(-age_days / effective_half_life)
+          score = clamp01(score * factor, floor=score * 0.5)
+
+        Trust modulation: high-trust agents get wider recency window.
+          trust_mod = 1.0 + (trust_boost - 1.0) * 0.5
+          recency_hl = 14.0 * trust_mod
+
+        Pure computation — reads existing fields, zero I/O.
+        Gated by PP_DECAY_IN_RANKING env var (default on).
+        """
+        if os.environ.get("PP_DECAY_IN_RANKING", "1") != "1":
+            return score
+        if not mem:
+            return score
+        created_at = mem.get("created_at", "")
+        if not created_at:
+            return score
+        try:
+            created = datetime.datetime.fromisoformat(created_at)
+            now = datetime.datetime.fromisoformat(current_time_str or datetime.datetime.now().isoformat())
+            age_days = (now - created).total_seconds() / 86400.0
+            if age_days <= 0:
+                return score
+        except Exception:
+            return score
+
+        # Trust modulation: gentle scaling around CortexReach default (14 days)
+        trust_mod = 1.0 + (trust_boost - 1.0) * 0.5
+
+        # Formula A: additive recency boost
+        recency_hl = 14.0 * trust_mod
+        boost = math.exp(-age_days / recency_hl) * 0.1
+        score = min(1.0, score + boost)
+
+        # Formula B: multiplicative time decay with access-reinforced half-life
+        effective_hl = mem.get("effective_half_life", 60.0)
+        factor = 0.5 + 0.5 * math.exp(-age_days / effective_hl)
+        score = max(score * 0.5, score * factor)
+
+        return score
+
+    @staticmethod
     def _apply_length_norm(score: float, content: str, anchor: int = 500) -> float:
         """Normalize score by document length to prevent long documents from dominating.
 
@@ -1208,6 +1285,7 @@ class ContextEngine:
         deferred: list = []
         seen_contents: set[str] = set()  # first 80 chars
         seen_prefixes: set[str] = set()  # first 40 chars for template detection
+        vec_cache: dict = {}  # cache vectors per supply() call to avoid repeated LanceDB lookups
 
         for item in items_sorted:
             if getattr(item, "is_principle", False):
@@ -1227,87 +1305,33 @@ class ContextEngine:
             if prefix_key:
                 seen_prefixes.add(prefix_key)
 
-            # Stage 2: vector-based MMR (if vectors available via LanceDB)
-            if self._ldb:
+            # Stage 2: vector-based MMR — real cosine diversity checking
+            if self._ldb and os.environ.get("PP_MMR_VECTOR", "1") == "1":
                 try:
-                    # Use LanceDB to get the stored vector for this item
-                    similar = self._ldb.search_similar(
-                        [0.0] * 1024,
-                        k=1,  # dummy — we just need to check if ID exists
-                    )
+                    item_vec = self._ldb.get_vector(item.id)
+                    if item_vec:
+                        max_sim = 0.0
+                        # Compare against last 5 selected items (O(5n) not O(n²))
+                        for sel in selected[-5:]:
+                            sel_vec = (
+                                vec_cache.get(sel.id)
+                                or self._ldb.get_vector(sel.id)
+                            )
+                            if sel_vec:
+                                vec_cache[sel.id] = sel_vec
+                                sim = self._cosine_similarity(item_vec, sel_vec)
+                                max_sim = max(max_sim, sim)
+                        if max_sim > 0.85:
+                            item.relevance *= 0.70  # demote, not remove
+                            deferred.append(item)
+                            continue
                 except Exception:
-                    similar = []
-            # Without vectors, rely on content-based dedup only
+                    pass  # vector MMR failure → fall through to content-only
+            # Without vectors or if MMR disabled, rely on content-based dedup only
             selected.append(item)
 
         deferred.sort(key=lambda x: x.relevance, reverse=True)
         return selected + deferred
-
-    def _apply_rerank(self, items: list, query: str) -> list:
-        """Optional cross-encoder rerank via Ollama (PP_RECALL_RERANK=1).
-
-        Blends: 60% cross-encoder + 40% original score. 5s timeout. Silent fallback.
-        Sets self._last_rerank_status for audit.
-        """
-        if os.environ.get("PP_RECALL_RERANK", "0") != "1":
-            self._last_rerank_status = "skipped_disabled"
-            return items
-        if len(items) <= 1:
-            self._last_rerank_status = "skipped_disabled"
-            return items
-        candidates = sorted(items, key=lambda x: x.relevance, reverse=True)[:30]
-        try:
-            model = os.environ.get("PP_RERANK_MODEL", "")
-            timeout = float(os.environ.get("PP_RERANK_TIMEOUT", "5.0"))
-            ollama_url = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-            docs = [item.content[:500] for item in candidates]
-            payload = json.dumps(
-                {
-                    "model": model or "mxbai-embed-large",
-                    "prompt": (
-                        f"Query: {query}\n\n"
-                        f"Rate each document's relevance to the query on a scale of 0-100.\n\n"
-                        + "\n\n".join(f"[{i}] {doc}" for i, doc in enumerate(docs))
-                        + '\n\nReturn JSON: {"scores": [score0, score1, ...]}'
-                    ),
-                    "stream": False,
-                    "options": {"temperature": 0},
-                }
-            ).encode("utf-8")
-            req = urllib.request.Request(
-                f"{ollama_url}/api/generate",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            resp = urllib.request.urlopen(req, timeout=timeout)
-            result = json.loads(resp.read().decode("utf-8"))
-            response_text = result.get("response", "{}")
-            try:
-                scores_data = json.loads(response_text)
-                rerank_scores = scores_data.get("scores", [])
-            except json.JSONDecodeError:
-                match = re.search(r"\[[\d,\s]+\]", response_text)
-                if match:
-                    rerank_scores = json.loads(match.group())
-                else:
-                    raise ValueError("Cannot parse rerank response")
-            for i, item in enumerate(candidates):
-                if i < len(rerank_scores):
-                    ce_score = float(rerank_scores[i]) / 100.0
-                    orig = item.relevance
-                    item.relevance = min(ce_score * 0.6 + orig * 0.4, 1.0)
-                    item.relevance = max(item.relevance, orig * 0.5)
-            self._last_rerank_status = "completed"
-        except Exception as e:
-            msg = str(e).lower()
-            if "timed out" in msg or "timeout" in msg:
-                self._last_rerank_status = "skipped_timeout"
-            elif "connection" in msg or "refused" in msg:
-                self._last_rerank_status = "skipped_ollama_down"
-            else:
-                self._last_rerank_status = "skipped_no_model"
-            logger.info("Rerank skipped: %s", self._last_rerank_status)
-        return items
 
     def _supply_python(
         self,
@@ -1352,7 +1376,18 @@ class ContextEngine:
 
         # 类 (tier): 文本匹配 + L1 工作记忆优先级提升
         self._domain_hint = scope if scope and scope != "global" else None
-        text_results = self._text_retrieval(task_description, trust_boost)
+
+        # Query expansion: inject domain-relevant synonyms for BM25 text search.
+        # Vector search uses raw query — semantic models handle synonyms natively.
+        expanded_query = task_description
+        if _os_env.environ.get("PP_QUERY_EXPANSION", "1") == "1":
+            try:
+                from plastic_promise.core.query_expander import expand_query
+                expanded_query = expand_query(task_description, self._domain_hint)
+            except Exception:
+                pass  # expansion failure never blocks retrieval
+
+        text_results = self._text_retrieval(expanded_query, trust_boost)
 
         # 粗 (vector): 语义向量相关性 (零向量时跳过)
         vector_results = (
@@ -1382,6 +1417,7 @@ class ContextEngine:
         )
 
         pack = ContextPack(activated_principles=activated)
+        current_time_str = datetime.datetime.now().isoformat()  # single timestamp for decay calc
 
         for item_id, score, content, source in all_results:
             # --- Symbol rule boost (was _apply_symbol_rules) ---
@@ -1409,6 +1445,9 @@ class ContextEngine:
                 worth = 0.5
             multiplier = FEEDBACK_SCORE_MULTIPLIER_MIN + FEEDBACK_SCORE_MULTIPLIER_RANGE * worth
             score = score * multiplier
+
+            # --- Decay-aware ranking (Phase 1.3) ---
+            score = self._apply_decay_awareness(score, mem, current_time_str, trust_boost)
 
             # --- Length normalization (Phase 1.5) ---
             score = ContextEngine._apply_length_norm(score, content)
@@ -1451,7 +1490,9 @@ class ContextEngine:
         if pack.core or pack.related or pack.divergent:
             all_items = pack.core + pack.related + pack.divergent
             # Rerank (Phase 1.6, optional — PP_RECALL_RERANK=1)
-            all_items = self._apply_rerank(all_items, task_description)
+            # Unified reranker (Phase 1.6): multi-provider chain, default ON
+            from plastic_promise.core.reranker import MultiProviderReranker
+            all_items = MultiProviderReranker().rerank(task_description, all_items)
             # MMR diversity (Phase 1.4)
             all_items = self._apply_mmr(all_items, threshold=0.85, penalty=0.70)
             # Re-distribute to layers based on adjusted relevance
@@ -1484,7 +1525,7 @@ class ContextEngine:
             "memory_pool_size": str(len(self._memories)),
             "vector_search": "active" if vector_results else "fallback_text_only",
             "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
-            "rerank_status": getattr(self, "_last_rerank_status", "skipped_disabled"),
+            "rerank_status": "multi-provider",
         }
 
         # ── Exemplar gap detection ─────────────────────────
@@ -2302,6 +2343,8 @@ class ContextEngine:
                 mem["access_count"] = mem.get("access_count", 0) + 1
                 if mem.get("access_count", 0) >= 5:
                     mem["worth_success"] = mem.get("worth_success", 0) + 1
+                # Real-time tier promotion: check after access_count increment
+                self._maybe_adjust_tier(mid)
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results

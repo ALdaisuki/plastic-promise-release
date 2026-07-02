@@ -554,6 +554,7 @@ async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
     Returns:
         list[TextContent]: MCP response with GC results from MemoryGC.
     """
+    engine._ensure_heavy_init()  # ensure LanceDB is initialized before GC access
     try:
         dry_run = args.get("dry_run", True)
         force = args.get("force", False)

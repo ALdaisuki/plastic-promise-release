@@ -92,6 +92,48 @@ async def scan_memory_decay(engine) -> dict:
                             "title": f"记忆分布失衡: {domain} 占比 {ratio:.0%}",
                         }
                     )
+        # 4. Routine maintenance: decay recalculation + lifecycle evolution
+        routine = {}
+        if os.environ.get("PP_PERIODIC_MAINTENANCE", "1") == "1":
+            try:
+                from plastic_promise.memory.soul_memory import RecMem, EvolveR
+                rm = RecMem()
+                updated = rm.update_all_decay()
+                routine["decay_updated"] = updated
+                evolver = EvolveR(rm)
+                evolve_report = evolver.evolve_cycle()
+                routine["evolved"] = True
+                routine["evolve_report"] = {
+                    "promoted": evolve_report.get("promoted", 0),
+                    "demoted": evolve_report.get("demoted", 0),
+                    "decayed": evolve_report.get("decayed", 0),
+                }
+            except Exception as e:
+                routine["error"] = str(e)
+
+        # 5. Decay anomaly detection: frequently accessed but heavily decayed
+        anomalies = conn.execute(
+            "SELECT id, access_count, decay_multiplier, worth_success, worth_failure "
+            "FROM memories "
+            "WHERE decay_multiplier < 0.2 AND access_count > 10 "
+            "AND tier != 'L1' "
+            "LIMIT 20"
+        ).fetchall()
+        for row in anomalies:
+            findings.append({
+                "type": "decay_anomaly",
+                "memory_id": row["id"],
+                "access_count": row["access_count"],
+                "decay_multiplier": round(row["decay_multiplier"], 3),
+                "task_type": "fix_memory",
+                "to_agent": "pi_fixer",
+                "priority": 3,
+                "title": (
+                    f"衰减异常: 记忆{row['id'][:8]} "
+                    f"访问{row['access_count']}次但decay={row['decay_multiplier']:.3f}"
+                ),
+            })
+
     finally:
         conn.close()
 

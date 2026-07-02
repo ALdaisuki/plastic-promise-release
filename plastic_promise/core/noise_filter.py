@@ -1,10 +1,37 @@
 """Noise filter — prevent low-quality content from entering memory.
 
-Filters: agent denials, meta-questions, short boilerplate.
+Filters: agent denials, meta-questions, short boilerplate, emoji-only messages.
 English and Chinese patterns supported.
 """
 
 import re
+
+try:
+    import emoji as _emoji
+
+    def _is_emoji_only(text: str) -> bool:
+        """Return True if text is predominantly emoji characters."""
+        stripped = text.strip()
+        if not stripped:
+            return False
+        total = len(stripped)
+        emoji_count = _emoji.emoji_count(stripped)
+        # Each emoji may be multiple code points; check if >50% are emoji
+        return emoji_count > 0 and (emoji_count * 2) >= total
+except ImportError:
+    # Fallback: broad Unicode emoji range check (no external dependency)
+    import unicodedata as _unicodedata
+
+    def _is_emoji_only(text: str) -> bool:
+        """Return True if text is predominantly emoji-like characters."""
+        stripped = text.strip()
+        if not stripped:
+            return False
+        emoji_chars = sum(
+            1 for c in stripped
+            if _unicodedata.category(c) in ("So", "Sk")
+        )
+        return emoji_chars > 0 and emoji_chars >= len(stripped) * 0.5
 
 DENIAL_PATTERNS = [
     r"i (do ?n[o\']?t|don'?t) have.*(information|data|memory|record)",
@@ -47,7 +74,7 @@ BOILERPLATE_MAX_LENGTH = 10
 def is_noise(text: str) -> bool:
     """Return True if text is low-quality and should not be stored as memory.
 
-    Checks: length < 5 → denial patterns → meta-questions → short boilerplate.
+    Checks: emoji-only → length < 5 → denial patterns → meta-questions → short boilerplate.
 
     Args:
         text: Raw text to evaluate.
@@ -56,6 +83,11 @@ def is_noise(text: str) -> bool:
         True if the text should be filtered out.
     """
     t = text.strip()
+
+    # Emoji-only detection: flag before length check
+    if _is_emoji_only(t):
+        return True
+
     if len(t) < 5:
         return True
 
