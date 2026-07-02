@@ -959,8 +959,8 @@ async def scan_innovation_opportunities():
         # 4. 信任分异常 — 检查 trust_history 趋势
         try:
             trust_row = conn.execute(
-                "SELECT target_id, trust_score FROM trust_scores "
-                "WHERE trust_score < 0.5 ORDER BY updated_at DESC LIMIT 5"
+                "SELECT target, trust FROM trust_scores "
+                "WHERE trust < 0.5 ORDER BY last_updated DESC LIMIT 5"
             ).fetchall()
             if trust_row:
                 low_agents = [f"{r[0]}({r[1]:.2f})" for r in trust_row]
@@ -1271,6 +1271,21 @@ async def main():
                             throttle.on_empty()
                     except Exception:
                         pass
+
+            # Priority B+: scheduler self-audit (hourly)
+            scheduler_throttle = _scanner_throttles.get("scan_scheduler_health")
+            if scheduler_throttle is None:
+                scheduler_throttle = AdaptiveThrottle("scan_scheduler_health", base=3600)
+                _scanner_throttles["scan_scheduler_health"] = scheduler_throttle
+            if tick % max(1, scheduler_throttle.current // 10) == 0:
+                try:
+                    result = await scan_scheduler_health(engine)
+                    if result.get("findings", 0) > 0:
+                        scheduler_throttle.on_hit()
+                    else:
+                        scheduler_throttle.on_empty()
+                except Exception:
+                    pass
 
             # Priority C: task heartbeat monitor
             try:
