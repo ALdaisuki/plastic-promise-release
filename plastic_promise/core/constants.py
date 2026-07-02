@@ -864,6 +864,10 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     "requesting-code-review": {"predecessors": [], "successors": ["receiving-code-review"]},
     "receiving-code-review": {
         "predecessors": ["requesting-code-review"],
+        "successors": ["audit", "finishing-a-development-branch"],
+    },
+    "audit": {
+        "predecessors": ["receiving-code-review"],
         "successors": ["finishing-a-development-branch"],
     },
     "finishing-a-development-branch": {
@@ -871,6 +875,7 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
             "subagent-driven-development",
             "verification-before-completion",
             "receiving-code-review",
+            "audit",
         ],
         "successors": [],
     },
@@ -919,6 +924,10 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     "sp-requesting-code-review": {"predecessors": [], "successors": ["sp-receiving-code-review"]},
     "sp-receiving-code-review": {
         "predecessors": ["sp-requesting-code-review"],
+        "successors": ["sp-audit", "sp-finishing-a-development-branch"],
+    },
+    "sp-audit": {
+        "predecessors": ["sp-receiving-code-review"],
         "successors": ["sp-finishing-a-development-branch"],
     },
     "sp-finishing-a-development-branch": {
@@ -926,6 +935,7 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
             "sp-subagent-driven-development",
             "sp-verification-before-completion",
             "sp-receiving-code-review",
+            "sp-audit",
         ],
         "successors": [],
     },
@@ -946,6 +956,7 @@ SKILL_DOMAIN_MAP: dict[str, str] = {
     "verification-before-completion": "reflecting",
     "requesting-code-review": "reflecting",
     "receiving-code-review": "reflecting",
+    "audit": "governing",
     "systematic-debugging": "fixing",
     "finishing-a-development-branch": "governing",
     "writing-skills": "designing",
@@ -961,6 +972,7 @@ SKILL_DOMAIN_MAP: dict[str, str] = {
     "sp-verification-before-completion": "reflecting",
     "sp-requesting-code-review": "reflecting",
     "sp-receiving-code-review": "reflecting",
+    "sp-audit": "governing",
     "sp-systematic-debugging": "fixing",
     "sp-dispatching-parallel-agents": "building",
     "sp-finishing-a-development-branch": "governing",

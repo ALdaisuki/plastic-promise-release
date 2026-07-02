@@ -28,6 +28,7 @@ from plastic_promise.skills.engine import SkillDef, SkillResult
 # ═══════════════════════════════════════════════════════════════
 
 STAGE_DOMAIN_MAP = {
+    "audit": "governing",
     "brainstorming": "designing",
     "exemplar-research": "designing",
     "writing-plans": "designing",
@@ -44,6 +45,7 @@ STAGE_DOMAIN_MAP = {
 }
 
 STAGE_TAGS_MAP = {
+    "audit": ["stage:audit", "domain:governing", "task:verify"],
     "brainstorming": ["stage:brainstorming", "domain:designing"],
     "exemplar-research": ["stage:exemplar-research", "domain:designing", "task:research"],
     "writing-plans": ["stage:writing-plans", "domain:designing", "task:plan"],
@@ -60,6 +62,7 @@ STAGE_TAGS_MAP = {
 }
 
 STAGE_DESCRIPTIONS = {
+    "audit": "SuperPowers 阶段: 审计 — 高风险PR完整审计 (10项检查 + audit_run)",
     "brainstorming": "SuperPowers 阶段: 头脑风暴 — 需求澄清、方案探索、Socratic 问答",
     "exemplar-research": "SuperPowers 阶段: 典范研究 — 搜索成熟实现、三问法分析、写分析文档、质量审核后入库",
     "writing-plans": "SuperPowers 阶段: 编写计划 — 将需求拆解为可执行的原子任务",
@@ -472,6 +475,10 @@ STAGE_ATOMS = {
     "receiving-code-review": ["defense", "principle_activate", "memory_recall",
                               "audit_run", "memory_store", "step_closure_full"],
     # ── 治理阶段: + defense(adjust) + 审计 + GC + 经验包 ──
+    "audit": [
+        "defense", "principle_activate", "audit_run",
+        "memory_recall", "memory_store", "step_closure_full",
+    ],
     "finishing-a-development-branch": ["defense", "principle_activate", "audit_run",
                                         "memory_gc", "step_closure_full", "pack_export"],
     # ── 修复阶段: 信任检查 + 回忆上下文 + 完整闭环 ──
@@ -484,7 +491,7 @@ STAGE_DEGRADE = {
     "memory_store": "warn",
     "memory_recall": "skip",
     "context_supply": "skip",
-    "audit_run": "skip",
+    "audit_run": "fallback:audit_run_light",
     "memory_gc": "skip",
     "defense": "warn",
     "step_closure_light": "skip",
@@ -507,6 +514,13 @@ for _stage_name, _atoms in STAGE_ATOMS.items():
             from plastic_promise.skills.exemplar_research import _exemplar_research_handler
 
             _handler = _exemplar_research_handler
+        except ImportError:
+            _handler = _make_handler(_stage_name)
+    elif _stage_name == "audit":
+        try:
+            from plastic_promise.skills.audit_handler import _audit_handler
+
+            _handler = _audit_handler
         except ImportError:
             _handler = _make_handler(_stage_name)
     else:
@@ -537,3 +551,4 @@ systematic_debugging = SKILL_DEFS.get("systematic-debugging")
 using_git_worktrees = SKILL_DEFS.get("using-git-worktrees")
 dispatching_parallel_agents = SKILL_DEFS.get("dispatching-parallel-agents")
 exemplar_research = SKILL_DEFS.get("exemplar-research")
+audit = SKILL_DEFS.get("audit")
