@@ -54,6 +54,11 @@ class LanceDBStore:
             return []
         # ... 现有逻辑
 
+    def search_fts(self, query, k=10):
+        if self._vectors_disabled:
+            return []  # insert() 早退 → 表中无数据 → 空结果
+        # ... 现有逻辑
+
     def insert(self, memory_id, vector, text, tier, category, scope=""):
         if self._vectors_disabled:
             logger.debug(f"LanceDBStore.insert({memory_id}): vectors disabled, skipping write")
@@ -75,6 +80,18 @@ class LanceDBStore:
 - 写占位向量 + search() 过滤方案过于复杂
 - 早退是诚实的降级：`"degraded_vectors"` 语义 = LanceDB 层全部不可用
 - 上层 `context_supply._text_retrieval()` 走 SQLite 文本匹配，不依赖 LanceDB FTS
+- `search_fts()` 同步加 `_vectors_disabled` 守卫返回 `[]`，与 `search()` 行为一致，避免无意义查询
+
+### FallbackEmbedder 检测
+
+统一使用字符串检测避免循环导入风险：
+
+```python
+def _is_fallback_embedder(emb) -> bool:
+    return getattr(emb, "model_name", "") == "fallback-zero"
+```
+
+`lancedb_store.py` 和 `soul_scarf.py` 均使用此模式，不执行 `isinstance(emb, FallbackEmbedder)`。
 
 ### merge_similar() 区分
 
@@ -209,3 +226,4 @@ def _compile_component_health(ctx):
 3. 竞态条件不再触发：重复执行 10 次 `session-init`，`domain_manager` 始终 `"healthy"`（假定 DomainManager 初始化无真正错误）
 4. SCARF assessment 包含 "嵌入服务不可用" 或 "文本启发式" 标注
 5. `merge_similar()` 在 `_vectors_disabled` 时返回 `"vectors_disabled"` 而非 `"lancedb_unavailable"`
+6. `component_health` 字段始终存在，且 `domain_manager`、`lancedb`、`embedder`、`scarf` 四个子字段全部存在
