@@ -111,6 +111,19 @@ class AtomRegistry:
             "plastic_promise.mcp.tools.skill_tracking",
             "handle_skill_session_audit",
         ),
+        # === Governance Injection (Plastic Promise native) ===
+        "step_closure_light": (
+            "plastic_promise.skills.superpowers_stages",
+            "_governance_step_closure_light",
+        ),
+        "step_closure_full": (
+            "plastic_promise.skills.superpowers_stages",
+            "_governance_step_closure_full",
+        ),
+        "code_memory": (
+            "plastic_promise.skills.superpowers_stages",
+            "_governance_code_memory",
+        ),
     }
 
     @staticmethod

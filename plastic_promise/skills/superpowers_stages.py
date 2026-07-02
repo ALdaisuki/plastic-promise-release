@@ -77,6 +77,99 @@ STAGE_DESCRIPTIONS = {
 
 
 # ═══════════════════════════════════════════════════════════════
+# Plastic Promise 治理注入: step_closure + code_memory handlers
+# ═══════════════════════════════════════════════════════════════
+
+
+async def _governance_step_closure_light(ctx, params: dict):
+    """轻量闭环 — 原则对齐检查 + 上下文注入（跳过 SCARF/激素/信任联动）。
+
+    用于设计阶段 (brainstorming, exemplar-research, writing-plans)。
+    无实质代码产出时使用，仅做原则对齐验证和上下文记录。
+    """
+    from plastic_promise.mcp.server import TextContent
+
+    task_desc = params.get("task_description", "step-closure-light")
+    try:
+        from plastic_promise.loop.soul_loop import post_task
+
+        post_task(task_description=task_desc, mode="light")
+    except Exception:
+        pass
+    return [TextContent(type="text", text=json.dumps({"closed": True, "mode": "light"}))]
+
+
+async def _governance_step_closure_full(ctx, params: dict):
+    """完整六联闭环 — 原则对齐→SCARF→激素→信任→反思→CEI。
+
+    用于实施/验证/治理阶段 (executing, TDD, verification, finishing)。
+    每次有实质产出 (git commit / 设计决策 / 修复完成) 后必须执行。
+    """
+    from plastic_promise.mcp.server import TextContent
+
+    task_desc = params.get("task_description", "step-closure-full")
+    git_commit = params.get("git_commit", "")
+    lesson = params.get("lesson", "")
+    improvement = params.get("improvement", "")
+    root_cause = params.get("root_cause", "")
+    optimization = params.get("optimization", "")
+
+    try:
+        from plastic_promise.loop.soul_loop import post_task
+
+        post_task(
+            task_description=task_desc,
+            git_commit=git_commit,
+            mode="full",
+            lesson=lesson or f"sp-stage: {task_desc[:100]}",
+            improvement=improvement or "下次遵循 SuperPowers 链约束，不跳步",
+            root_cause=root_cause or "阶段执行完毕，正常闭环",
+            optimization=optimization or "继续执行下一阶段",
+        )
+    except Exception:
+        pass
+    return [TextContent(type="text", text=json.dumps({"closed": True, "mode": "full"}))]
+
+
+async def _governance_code_memory(ctx, params: dict):
+    """Code Memory 注入 — 当 PP_ENABLE_CODE_MEMORY=1 时分析代码影响范围。
+
+    用于子 Agent 派发阶段 (subagent-driven, dispatching-parallel-agents)。
+    在派发前注入代码上下文，识别下游消费者和变更影响范围。
+    """
+    import os as _os
+
+    from plastic_promise.mcp.server import TextContent
+
+    task_desc = params.get("task_description", "")
+    enabled = _os.environ.get("PP_ENABLE_CODE_MEMORY", "0") == "1"
+
+    if not enabled:
+        return [TextContent(type="text", text=json.dumps({"code_memory": "disabled"}))]
+
+    try:
+        from plastic_promise.code_context.bridge import CodebaseMemoryBridge
+
+        bridge = CodebaseMemoryBridge()
+        downstream = bridge.trace_downstream(task_desc)
+        changes = bridge.detect_changes()
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "code_memory": "enabled",
+                        "downstream_consumers": len(downstream),
+                        "changes_detected": len(changes),
+                    }
+                ),
+            )
+        ]
+    except Exception:
+        return [TextContent(type="text", text=json.dumps({"code_memory": "unavailable"}))]
+
+
+# ═══════════════════════════════════════════════════════════════
 # 通用 Stage Handler
 # ═══════════════════════════════════════════════════════════════
 
@@ -103,6 +196,9 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
     # context_supply removed from atoms — its heavy retrieval was pure overhead
     # since the output was already trimmed from sp-stage response
     store_data = parse(atom_results.get("memory_store"))
+    defense_data = parse(atom_results.get("defense"))
+    closure_data = parse(atom_results.get("step_closure_light") or atom_results.get("step_closure_full"))
+    code_data = parse(atom_results.get("code_memory"))
 
     return SkillResult(
         skill_name=f"sp-{stage_name}",
@@ -113,6 +209,9 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
             "tags": tags,
             "principles": principle_data.get("activated", []),
             "memory_id": store_data.get("memory_id", ""),
+            "trust": defense_data if defense_data else "unchecked",
+            "closed": closure_data.get("closed", False) if closure_data else None,
+            "code_memory": code_data if code_data else None,
             "transition": f"→ {stage_name}",
         },
         atom_results={},
@@ -348,30 +447,50 @@ async def _receive_review_handler(ctx, params, atom_results):
 # ═══════════════════════════════════════════════════════════════
 
 STAGE_ATOMS = {
-    # 所有阶段统一: 原则激活 + 记忆存储 (context 已 trim，不再白算)
-    "brainstorming": ["principle_activate", "memory_store"],
-    "exemplar-research": ["principle_activate", "memory_store"],
-    "writing-plans": ["principle_activate", "memory_store"],
-    "executing-plans": ["principle_activate", "memory_store"],
-    "subagent-driven-development": ["principle_activate", "memory_store"],
-    "test-driven-development": ["principle_activate", "memory_store"],
-    "verification-before-completion": ["principle_activate", "memory_store"],
-    "using-git-worktrees": ["principle_activate", "memory_store"],
-    "dispatching-parallel-agents": ["principle_activate", "memory_store"],
-    # 审查阶段: + audit_run + memory_recall (真实审查管线)
-    "requesting-code-review": ["principle_activate", "memory_recall", "audit_run", "memory_store"],
-    "receiving-code-review": ["principle_activate", "memory_recall", "audit_run", "memory_store"],
-    # 治理阶段: + defense
-    "finishing-a-development-branch": ["principle_activate", "defense", "memory_store"],
-    # 修复阶段
-    "systematic-debugging": ["principle_activate", "memory_store"],
+    # ── 设计阶段: 信任检查 + 上下文回忆 + 原则激活 + 轻量闭环 ──
+    "brainstorming": ["defense", "memory_recall", "principle_activate", "memory_store",
+                      "step_closure_light"],
+    "exemplar-research": ["defense", "memory_recall", "principle_activate", "memory_store",
+                          "step_closure_light"],
+    "writing-plans": ["defense", "memory_recall", "principle_activate", "memory_store",
+                      "step_closure_light"],
+    # ── 实施阶段: 信任检查 + 原则激活 + 完整闭环 ──
+    "executing-plans": ["defense", "principle_activate", "memory_store",
+                        "step_closure_full"],
+    "subagent-driven-development": ["defense", "context_supply", "principle_activate",
+                                     "memory_store", "step_closure_full", "code_memory"],
+    "test-driven-development": ["defense", "principle_activate", "memory_store",
+                                "step_closure_full"],
+    "verification-before-completion": ["defense", "principle_activate", "memory_gc",
+                                        "memory_store", "step_closure_full"],
+    "using-git-worktrees": ["defense", "principle_activate", "memory_store"],
+    "dispatching-parallel-agents": ["defense", "context_supply", "principle_activate",
+                                     "memory_store", "code_memory"],
+    # ── 审查阶段: + audit_run + memory_recall ──
+    "requesting-code-review": ["defense", "principle_activate", "memory_recall",
+                               "audit_run", "memory_store", "step_closure_full"],
+    "receiving-code-review": ["defense", "principle_activate", "memory_recall",
+                              "audit_run", "memory_store", "step_closure_full"],
+    # ── 治理阶段: + defense(adjust) + 审计 + GC + 经验包 ──
+    "finishing-a-development-branch": ["defense", "principle_activate", "audit_run",
+                                        "memory_gc", "step_closure_full", "pack_export"],
+    # ── 修复阶段: 信任检查 + 回忆上下文 + 完整闭环 ──
+    "systematic-debugging": ["defense", "memory_recall", "principle_activate",
+                              "memory_store", "step_closure_full"],
 }
 
 STAGE_DEGRADE = {
     "principle_activate": "skip",
     "memory_store": "warn",
+    "memory_recall": "skip",
+    "context_supply": "skip",
     "audit_run": "skip",
+    "memory_gc": "skip",
     "defense": "warn",
+    "step_closure_light": "skip",
+    "step_closure_full": "warn",
+    "code_memory": "skip",
+    "pack_export": "skip",
 }
 
 SKILL_DEFS = {}

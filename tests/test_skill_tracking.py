@@ -287,8 +287,8 @@ class TestSkillSessionComplete:
         assert data["entity_id"] == entity_id
         assert data["memory_id"] == memory_id
 
-        # next_skills from SKILL_CHAIN_MAP (brainstorming → using-git-worktrees)
-        assert "using-git-worktrees" in data["next_skills"]
+        # next_skills from SKILL_CHAIN_MAP (brainstorming → exemplar-research)
+        assert "exemplar-research" in data["next_skills"]
 
         # worth_update should reflect the feedback_apply delta
         assert data["worth_update"] is not None
