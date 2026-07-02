@@ -322,12 +322,21 @@ MEMORY_TIERS = {
         "max_items": 200,
         "ttl_hours": 24,
         "description": "当天任务相关的短期活跃记忆",
+        "promote_threshold": 5,
+    },
+    "L2": {
+        "name": "中期记忆",
+        "max_items": 500,
+        "ttl_hours": 168,  # 7 天
+        "description": "近期频繁访问的中期记忆",
+        "promote_threshold": 20,
     },
     "L3": {
         "name": "长期记忆",
         "max_items": 2000,
         "ttl_hours": None,  # 永久
         "description": "跨会话持久化的核心记忆",
+        "promote_threshold": None,
     },
 }
 
