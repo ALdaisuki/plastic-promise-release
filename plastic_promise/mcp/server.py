@@ -1438,9 +1438,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             current = get_current_stage()
             if current and current != stage:
-                # Strip "sp-" prefix for lookup if needed
-                lookup_current = current.replace("sp-", "")
-                lookup_stage = stage.replace("sp-", "")
+                # Strip "sp-" and "superpowers:" prefixes for lookup
+                lookup_current = current.replace("sp-", "").replace("superpowers:", "")
+                lookup_stage = stage.replace("sp-", "").replace("superpowers:", "")
                 chain = _CHAIN_MAP.get(lookup_current) or _CHAIN_MAP.get(f"sp-{lookup_current}", {})
                 valid_next = chain.get("successors", [])
                 # Normalize: remove sp- prefix for comparison
