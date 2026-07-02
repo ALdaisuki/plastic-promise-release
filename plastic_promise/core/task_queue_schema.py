@@ -40,6 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_task_status ON task_queue(status);
 CREATE INDEX IF NOT EXISTS idx_task_to_agent ON task_queue(to_agent);
 CREATE INDEX IF NOT EXISTS idx_task_priority ON task_queue(priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_task_parent ON task_queue(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_dedup ON task_queue(task_type, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_task_claimed ON task_queue(claimed_by, status);
 """
 

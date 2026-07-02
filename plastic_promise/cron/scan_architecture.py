@@ -20,6 +20,34 @@ def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
     return (median, threshold)
 
 
+# ── Tag blacklist for Shotgun Surgery ──────────────────────
+
+def _get_tag_blacklist() -> set[str]:
+    """Return the set of tags excluded from Shotgun Surgery detection.
+
+    Built-in defaults cover system management tags and metadata
+    classification tags that are expected to appear across domains.
+    Extend via TAG_BLACKLIST_EXTRA env var (comma-separated).
+    """
+    builtin = {
+        # 系统管理标签 — 跨模块出现是正常行为
+        "task:done", "task:pending", "task:active", "task:accepted",
+        "task:review", "task:reviewed",
+        "branch:main", "status:replaced",
+        "llm_pending:true", "llm_classified:true",
+        "audit",
+        # 元数据分类标签 — 跨域共现是预期行为
+        "cat:project", "cat:event", "cat:decision",
+        "cat:preference", "cat:fact", "cat:pattern", "cat:entity",
+        # 系统来源标签 — 跨域分布是管道设计使然
+        "source:file-sync", "source:auto_inject",
+    }
+    extra = os.environ.get("TAG_BLACKLIST_EXTRA", "")
+    if extra:
+        builtin.update(t.strip() for t in extra.split(",") if t.strip())
+    return builtin
+
+
 async def scan_architecture(engine) -> dict:
     """Scan architecture for structural signals:
     1. Domain cycles — domains that reference each other bidirectionally
@@ -142,7 +170,10 @@ async def scan_architecture(engine) -> dict:
             spread_counts = [len(doms) for doms in tag_domains.values()]
             if len(spread_counts) >= 3:
                 median_spread, threshold_spread = _compute_median_and_threshold(spread_counts)
+                blacklist = _get_tag_blacklist()
                 for tag, domains_set in tag_domains.items():
+                    if tag in blacklist:
+                        continue
                     if len(domains_set) > threshold_spread and len(domains_set) >= 3:
                         findings.append(
                             {
