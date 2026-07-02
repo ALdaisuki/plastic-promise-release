@@ -9,7 +9,7 @@
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from plastic_promise.core.constants import CORE_PRINCIPLES
 from plastic_promise.core.context_engine import ContextEngine, ContextPack

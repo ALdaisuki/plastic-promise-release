@@ -14,13 +14,15 @@ def check_bootstrap(db_path: str) -> tuple[bool, str]:
 
     try:
         conn = sqlite3.connect(db_path)
-        cursor = conn.execute("SELECT COUNT(*) FROM memories WHERE tags LIKE '%seed:true%'")
-        count = cursor.fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        seed = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE tags LIKE '%seed:true%'"
+        ).fetchone()[0]
         conn.close()
 
-        if count == 0:
-            return True, "DB exists but no seed memories found -- re-bootstrap needed"
-        return False, f"DB ready ({count} seed memories)"
+        if total > 0:
+            return False, f"DB ready ({total} memories, {seed} seed)"
+        return True, "DB exists but empty -- bootstrap needed"
     except sqlite3.OperationalError as e:
         return True, f"DB exists but memories table missing: {e}"
 

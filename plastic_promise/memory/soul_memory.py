@@ -1246,7 +1246,7 @@ class MemoryGC:
 
         Returns:
             dict with:
-                dry_run, candidates_found, would_merge, would_free, merged_pairs, error
+                dry_run, candidates_found, would_merge, would_free, merged_pairs, skipped
         """
         result: Dict[str, Any] = {
             "dry_run": dry_run,
@@ -1254,7 +1254,7 @@ class MemoryGC:
             "would_merge": 0,
             "would_free": 0,
             "merged_pairs": [],
-            "error": None,
+            "skipped": None,
         }
 
         if self.rec_mem is None:
@@ -1267,14 +1267,14 @@ class MemoryGC:
 
             ldb = getattr(engine, "_ldb", None)
             if ldb is None:
-                result["error"] = "lancedb_unavailable"
+                result["skipped"] = "LanceDB not available (Ollama not running) — vector merge deferred"
                 return result
             if getattr(ldb, "_vectors_disabled", False) is True:
                 result["candidates_found"] = 0
                 result["would_merge"] = 0
                 result["would_free"] = 0
                 result["merged_pairs"] = []
-                result["error"] = "vectors_disabled"
+                result["skipped"] = "vectors disabled (FallbackEmbedder) — vector merge deferred"
                 return result
 
             memories = getattr(engine, "_memories", {})
