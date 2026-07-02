@@ -445,6 +445,7 @@ def post_task(
     root_cause: str = "",
     optimization: str = "",
     trick: str = "",
+    target: str = "claude",
 ) -> dict:
     """模块级便捷函数：执行任务后编排管线（六联闭环）。
 
@@ -468,6 +469,7 @@ def post_task(
         root_cause,
         optimization,
         trick,
+        target,
     )
 
 
