@@ -310,6 +310,7 @@ impl ContextEngine {
             enable_principles: true,
             current_time: String::new(),
             last_consolidation: Cell::new(Utc::now()),
+            bm25_index: RefCell::new(crate::retrieval::bm25::Bm25Index::new()),
         })
     }
 
