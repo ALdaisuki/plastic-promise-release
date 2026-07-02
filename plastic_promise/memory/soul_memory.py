@@ -1240,6 +1240,13 @@ class MemoryGC:
             if ldb is None:
                 result["error"] = "lancedb_unavailable"
                 return result
+            if getattr(ldb, "_vectors_disabled", False):
+                result["candidates_found"] = 0
+                result["would_merge"] = 0
+                result["would_free"] = 0
+                result["merged_pairs"] = []
+                result["error"] = "vectors_disabled"
+                return result
 
             memories = getattr(engine, "_memories", {})
             if not memories:
