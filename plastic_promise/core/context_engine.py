@@ -1090,12 +1090,16 @@ class ContextEngine:
         if task_vector is None or len(task_vector) == 0:
             task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
 
-        # PP_FORCE_PYTHON_SUPPLY=1 bypasses Rust and forces the Python fallback path.
-        # Useful for emergency rollback and A/B testing.
-        if os.environ.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1":
+        # PP_FORCE_PYTHON_SUPPLY=1 bypasses Rust entirely.
+        # PP_PREFER_RUST_SUPPLY=1 enables Rust as primary (off by default
+        # until Rust retriever backends — VectorIndex + FtsIndex — are real).
+        prefer_rust = os.environ.get("PP_PREFER_RUST_SUPPLY", "0") == "1"
+        force_python = os.environ.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1"
+
+        if force_python or not prefer_rust:
             return self._supply_python(task_description, task_vector, task_type, scope)
 
-        # Rust accelerator — primary supply path (Phase 2).
+        # Rust accelerator — enabled via PP_PREFER_RUST_SUPPLY=1.
         # Falls back to Python if Rust engine is unavailable or throws.
         if self._check_rust_health():
             try:
@@ -1103,9 +1107,7 @@ class ContextEngine:
                     task_description, task_vector, task_type, scope
                 )
             except Exception as e:
-                logger.warning(
-                    "Rust supply failed, falling back to Python: %s", e
-                )
+                logger.warning("Rust supply failed, falling back to Python: %s", e)
                 with self._rust_lock:
                     self._rust_healthy = None
                     self._rust_engine_instance = None
@@ -1789,10 +1791,24 @@ class ContextEngine:
         """
         from context_engine_core import ContextEngine as RustEngine
 
+        # Ensure Rust engine finds the real database
+        db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+        if not os.path.isabs(db_path):
+            db_path = os.path.abspath(db_path)
+        os.environ["PLASTIC_DB_PATH"] = db_path
+
         rust = RustEngine()
         rust.set_current_time(datetime.datetime.now().isoformat())
-        # Empty memories — Rust reads from its own SQLite connection
-        rust_pack = rust.supply(task_description, task_vector, task_type, scope, [])
+
+        # Pass memory snapshot from Python — Rust uses these for retrieval
+        # (read-only SQLite is used only for memory_version checks)
+        with self._write_lock:
+            memories = [
+                self._memories[mid]
+                for mid in self._memories
+            ]
+
+        rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
         return self._convert_rust_pack(rust_pack)
 
     # ========== 内部方法 ==========
