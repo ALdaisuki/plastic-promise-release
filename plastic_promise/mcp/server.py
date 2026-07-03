@@ -1535,25 +1535,36 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 # Strip "sp-" and "superpowers:" prefixes for lookup
                 lookup_current = current.replace("sp-", "").replace("superpowers:", "")
                 lookup_stage = stage.replace("sp-", "").replace("superpowers:", "")
-                chain = _CHAIN_MAP.get(lookup_current) or _CHAIN_MAP.get(f"sp-{lookup_current}", {})
-                valid_next = chain.get("successors", [])
-                # Normalize: remove sp- prefix for comparison
-                valid_next_normalized = [s.replace("sp-", "") for s in valid_next]
-                if lookup_stage not in valid_next and lookup_stage not in valid_next_normalized:
-                    return [
-                        TextContent(
-                            type="text",
-                            text=json.dumps(
-                                {
-                                    "error": "chain_violation",
-                                    "message": f"Stage '{stage}' is not a valid successor of '{current}'. Valid next stages: {valid_next}",
-                                    "current_stage": current,
-                                    "valid_next": valid_next,
-                                },
-                                ensure_ascii=False,
-                            ),
-                        )
-                    ]
+                target_chain = _CHAIN_MAP.get(lookup_stage) or _CHAIN_MAP.get(
+                    f"sp-{lookup_stage}", {}
+                )
+                target_is_root = bool(target_chain) and target_chain.get("predecessors", []) == []
+
+                # Root stages intentionally start independent chains. This prevents one
+                # Agent's review/debug flow from blocking another Agent's new flow via the
+                # process-wide fallback current_stage.
+                if not target_is_root:
+                    chain = _CHAIN_MAP.get(lookup_current) or _CHAIN_MAP.get(
+                        f"sp-{lookup_current}", {}
+                    )
+                    valid_next = chain.get("successors", [])
+                    # Normalize: remove sp- prefix for comparison
+                    valid_next_normalized = [s.replace("sp-", "") for s in valid_next]
+                    if lookup_stage not in valid_next and lookup_stage not in valid_next_normalized:
+                        return [
+                            TextContent(
+                                type="text",
+                                text=json.dumps(
+                                    {
+                                        "error": "chain_violation",
+                                        "message": f"Stage '{stage}' is not a valid successor of '{current}'. Valid next stages: {valid_next}",
+                                        "current_stage": current,
+                                        "valid_next": valid_next,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
+                        ]
             # ── End chain validation ──
             se = get_skill_engine()
             skill_name = f"sp-{stage}" if not stage.startswith("sp-") else stage
