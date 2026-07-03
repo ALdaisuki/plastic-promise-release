@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 import requests
 
@@ -102,13 +103,50 @@ def _classify_by_rules(text: str) -> tuple[str | None, float]:
     return (best, scores[best])
 
 
+_PROTECTED_TOKEN_PATTERN = re.compile(
+    r"https?://[^\s\]）)>,，。！？]+"
+    r"|\b[\w-]+(?:\.[\w-]+)+(?:/[\w./?%&=+#:-]*)?"
+    r"|\b[\w-]+/[\w./?%&=+#:-]+"
+)
+
+
+def _protect_sentence_tokens(text: str) -> tuple[str, dict[str, str]]:
+    """Replace URLs and dotted/path identifiers before punctuation splitting."""
+    protected: dict[str, str] = {}
+
+    def repl(match: re.Match) -> str:
+        key = f"__PP_TOKEN_{len(protected)}__"
+        protected[key] = match.group(0)
+        return key
+
+    return _PROTECTED_TOKEN_PATTERN.sub(repl, text), protected
+
+
+def _restore_sentence_tokens(text: str, protected: dict[str, str]) -> str:
+    for key, value in protected.items():
+        text = text.replace(key, value)
+    return text
+
+
+def _split_memory_sentences(text: str) -> list[str]:
+    """Split prose without breaking URLs, dotted identifiers, or paths."""
+    protected_text, protected = _protect_sentence_tokens(text)
+    parts = re.split(r"[。！？!?\n]+|(?<!_)\.(?!_)", protected_text)
+    return [
+        _restore_sentence_tokens(part, protected).strip()
+        for part in parts
+        if len(_restore_sentence_tokens(part, protected).strip()) >= 10
+    ]
+
+
 def _generate_l0_l1(text: str, category: str) -> tuple[str, str]:
     """Generate L0 (one-liner) and L1 (summary) from raw text.
 
     Uses simple heuristics — LLM fallback in future version.
     """
-    # L0: first sentence, truncated
-    first_sentence = re.split(r"[。！？.!?\n]", text)[0].strip()
+    # L0: first sentence, truncated. Preserve URLs and dotted identifiers.
+    sentences = _split_memory_sentences(text)
+    first_sentence = sentences[0] if sentences else text.strip()
     l0 = first_sentence[:80]
 
     # L1: key extraction
@@ -142,8 +180,7 @@ def extract_memories(
     Returns:
         List of ExtractedMemory objects.
     """
-    sentences = re.split(r"[。！？.!?\n]+", conversation)
-    sentences = [s.strip() for s in sentences if len(s.strip()) >= 10]
+    sentences = _split_memory_sentences(conversation)
 
     results: list[ExtractedMemory] = []
     llm_call_count = 0

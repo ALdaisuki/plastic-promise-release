@@ -23,13 +23,30 @@ _QUERY_CACHE_SIZE = int(os.environ.get("PP_QUERY_CACHE_SIZE", "32"))
 _QUERY_CACHE_TTL = float(os.environ.get("PP_QUERY_CACHE_TTL", "30"))  # seconds
 
 
-def _cache_key(query: str, task_type: str, max_results: int, scope: str) -> str:
-    raw = f"{query}|{task_type}|{max_results}|{scope}"
+def _cache_key(
+    query: str,
+    task_type: str,
+    max_results: int,
+    scope: str,
+    debug: bool = False,
+    strict: bool = False,
+) -> str:
+    raw = (
+        f"{query}|{task_type}|{max_results}|{scope}|"
+        f"debug={int(bool(debug))}|strict={int(bool(strict))}"
+    )
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _cache_get(query: str, task_type: str, max_results: int, scope: str) -> str | None:
-    key = _cache_key(query, task_type, max_results, scope)
+def _cache_get(
+    query: str,
+    task_type: str,
+    max_results: int,
+    scope: str,
+    debug: bool = False,
+    strict: bool = False,
+) -> str | None:
+    key = _cache_key(query, task_type, max_results, scope, debug, strict)
     now = time.time()
     with _query_cache_lock:
         if key in _query_cache:
@@ -40,8 +57,16 @@ def _cache_get(query: str, task_type: str, max_results: int, scope: str) -> str 
     return None
 
 
-def _cache_set(query: str, task_type: str, max_results: int, scope: str, result: str):
-    key = _cache_key(query, task_type, max_results, scope)
+def _cache_set(
+    query: str,
+    task_type: str,
+    max_results: int,
+    scope: str,
+    result: str,
+    debug: bool = False,
+    strict: bool = False,
+):
+    key = _cache_key(query, task_type, max_results, scope, debug, strict)
     now = time.time()
     with _query_cache_lock:
         if len(_query_cache) >= _QUERY_CACHE_SIZE:
@@ -110,10 +135,11 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
         strict = args.get("strict", False)
+        debug = bool(args.get("debug", False))
         pack = args.get("pack")
 
         # Check query cache
-        cached = _cache_get(query, task_type, max_results, scope)
+        cached = _cache_get(query, task_type, max_results, scope, debug, strict)
         if cached is not None:
             return [TextContent(type="text", text=cached)]
 
@@ -128,37 +154,42 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         except Exception:
             embedder = FallbackEmbedder()
             vec = await embedder.aembed(query)
-        pack = engine.supply(query, vec, task_type, scope)
+        pack = engine.supply(query, vec, task_type, scope, debug=debug)
+
+        response_payload = {
+            "core": [
+                {
+                    "id": i.id,
+                    "content": i.content[:500],
+                    "relevance": i.relevance,
+                    "source": i.source,
+                    "freshness": i.freshness,
+                    "worth_score": i.worth_score,
+                }
+                for i in pack.core[:max_results]
+            ],
+            "related": [
+                {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
+                for i in pack.related[:max_results]
+            ],
+            "divergent": [
+                {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
+                for i in pack.divergent[:max_results]
+            ],
+            "activated_principles": pack.activated_principles,
+            "domain_hint": domain_hint,
+            "federation_signals": _generate_federation_signals(
+                pack, domain_hint, engine, federation
+            ),
+            "total_items": pack.total_items,
+            "audit": pack.audit_metadata,
+        }
+        if debug:
+            response_payload["pipeline_stats"] = pack.pipeline_stats
+            response_payload["per_item_stats"] = pack.per_item_stats[:max_results]
 
         result_json = json.dumps(
-            {
-                "core": [
-                    {
-                        "id": i.id,
-                        "content": i.content[:500],
-                        "relevance": i.relevance,
-                        "source": i.source,
-                        "freshness": i.freshness,
-                        "worth_score": i.worth_score,
-                    }
-                    for i in pack.core[:max_results]
-                ],
-                "related": [
-                    {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
-                    for i in pack.related[:max_results]
-                ],
-                "divergent": [
-                    {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
-                    for i in pack.divergent[:max_results]
-                ],
-                "activated_principles": pack.activated_principles,
-                "domain_hint": domain_hint,
-                "federation_signals": _generate_federation_signals(
-                    pack, domain_hint, engine, federation
-                ),
-                "total_items": pack.total_items,
-                "audit": pack.audit_metadata,
-            },
+            response_payload,
             ensure_ascii=False,
             indent=2,
         )
@@ -176,7 +207,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             ]
 
         # Cache the result
-        _cache_set(query, task_type, max_results, scope, result_json)
+        _cache_set(query, task_type, max_results, scope, result_json, debug, strict)
 
         return [TextContent(type="text", text=result_json)]
     except Exception as e:
@@ -241,8 +272,6 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         scope = args.get("scope", "global")
         entity_ids = args.get("entity_ids", [])
         custom_tags = args.get("tags", [])  # 用户指定的标签 (task:pending 等)
-
-        owner = args.get("owner", "")
 
         # Auto-extract entity links from content (原则 #6 数据流驱动)
         extracted = _extract_entity_ids(content, engine)
@@ -777,7 +806,6 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
     dm = getattr(engine, "_dm", None)
 
     sqlite = getattr(engine, "_sqlite", None)
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     reclassified = 0
     skipped = 0

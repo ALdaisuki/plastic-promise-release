@@ -182,11 +182,16 @@ class LanceDBStore:
             results = []
             for row in raw:
                 mid = row["memory_id"]
-                score = row.get("_distance", row.get("_score", 0.5))
-                if isinstance(score, (int, float)):
-                    score = 1.0 - min(float(score), 1.0)
+                if "_distance" in row:
+                    raw_score = row.get("_distance", 0.5)
+                    score = (
+                        1.0 - min(float(raw_score), 1.0)
+                        if isinstance(raw_score, (int, float))
+                        else 0.5
+                    )
                 else:
-                    score = 0.5
+                    raw_score = row.get("_score", 0.5)
+                    score = float(raw_score) if isinstance(raw_score, (int, float)) else 0.5
                 if scope and row.get("scope") != scope:
                     continue
                 results.append(
@@ -202,6 +207,15 @@ class LanceDBStore:
         except Exception as e:
             logger.warning("LanceDB FTS search failed: %s", e)
             return []
+
+    def fts_search(
+        self, query: str, k: int = 20, scope: str | None = None
+    ) -> list[tuple[str, float, str, str, str]]:
+        """Convenience wrapper around search_fts returning top-k results.
+
+        Returns list of (memory_id, score, text, tier, scope).
+        """
+        return self.search_fts(query, k, scope)
 
     def search_similar(
         self,

@@ -28,3 +28,12 @@ def test_explicit_half_life_override():
     """Explicit half_life parameter should override tier default."""
     r = MemoryRecord("test4", tier="L1", effective_half_life=42.0)
     assert r.effective_half_life == 42.0, "Explicit override should be respected"
+
+
+def test_category_round_trip_for_pipeline_store():
+    """MemoryRecord accepts category passed by MemoryPipeline and preserves it."""
+    r = MemoryRecord("test5", category="fact")
+
+    assert r.category == "fact"
+    assert r.to_dict()["category"] == "fact"
+    assert MemoryRecord.from_dict(r.to_dict()).category == "fact"

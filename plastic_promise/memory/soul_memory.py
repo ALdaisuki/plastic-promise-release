@@ -165,6 +165,7 @@ class MemoryRecord:
         metadata: dict[str, Any] | None = None,
         tags: list[str] | None = None,
         domain: str = "uncategorized",
+        category: str = "other",
         entity_ids: list[str] | None = None,
         decay_multiplier: float = 1.0,
         effective_half_life: float | None = None,
@@ -183,6 +184,7 @@ class MemoryRecord:
             metadata: 附加元数据字典（如标签、关联实体、创建时间等）。
             tags: 语义标签列表。
             domain: 分配的语义域名称。
+            category: 分类类别（preference/fact/decision/entity/event/pattern/other）。
             entity_ids: 关联实体 ID 列表（如 skill session entity_id）。
             decay_multiplier: 衰减乘数，控制记忆衰退速率。
             effective_half_life: 有效半衰期（天），记忆价值衰减到一半所需天数。
@@ -198,6 +200,7 @@ class MemoryRecord:
         self.metadata = metadata if metadata is not None else {}
         self.tags = tags if tags is not None else []
         self.domain = domain
+        self.category = category
         self.entity_ids = entity_ids if entity_ids is not None else []
         self.created_at = datetime.datetime.now().isoformat()
         self.last_accessed = self.created_at
@@ -243,6 +246,7 @@ class MemoryRecord:
             "metadata": dict(self.metadata),
             "tags": list(self.tags),
             "domain": self.domain,
+            "category": self.category,
             "entity_ids": list(self.entity_ids),
             "created_at": self.created_at,
             "last_accessed": self.last_accessed,
@@ -274,6 +278,7 @@ class MemoryRecord:
             metadata=data.get("metadata", {}),
             tags=data.get("tags", []),
             domain=data.get("domain", "uncategorized"),
+            category=data.get("category", "other"),
             decay_multiplier=data.get("decay_multiplier", 1.0),
             effective_half_life=data.get("effective_half_life"),
         )
@@ -580,6 +585,7 @@ class RecMem:
                 tier="L1",
                 tags=tags or [],
                 domain=domain or "uncategorized",
+                category=category,
                 entity_ids=entity_ids or [],
             )
             self._records[memory_id] = record
@@ -593,6 +599,7 @@ class RecMem:
                 tier="L1",
                 tags=tags or [],
                 domain=domain or "uncategorized",
+                category=category,
                 entity_ids=entity_ids or [],
             )
             self._records[record.memory_id] = record

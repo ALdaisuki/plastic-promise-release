@@ -3,6 +3,8 @@
 服务器崩溃后从对话总结重建。所有魔法数字和阈值集中管理于此。
 """
 
+import os as _os_env
+
 # ============================================================
 # 九大数字身体系统
 # ============================================================
@@ -266,8 +268,6 @@ SCARF_DIMENSIONS = {
 # 上下文供应引擎参数
 # ============================================================
 
-import os as _os_env
-
 CONTEXT_LAYERS = {
     "core": {
         "name": "core",
@@ -292,6 +292,9 @@ CONTEXT_LAYERS = {
 # RRF (Reciprocal Rank Fusion) 参数
 RRF_K = int(_os_env.environ.get("PP_RRF_K", "20"))  # RRF 常数 (60→20: rank更敏感)
 
+HARD_MIN_SCORE = float(_os_env.environ.get("PP_HARD_MIN_SCORE", "0.30"))
+# 0 = disabled; default 0.30 — results below this are dropped before layer assignment
+
 # 符号规则关键词分类（6类）
 SYMBOL_RULE_KEYWORDS = {
     "security": ["安全", "漏洞", "权限", "密钥", "认证", "授权", "加密", "注入"],
@@ -301,6 +304,25 @@ SYMBOL_RULE_KEYWORDS = {
     "collaboration": ["协作", "沟通", "共享", "同步", "对齐", "透明"],
     "innovation": ["创新", "探索", "实验", "尝试", "假设", "新思路"],
 }
+
+# Source/type filtering for recall — downweights maintenance_daemon and superpowers noise.
+# Gate: PP_SOURCE_FILTER=1 (default on). PP_SOURCE_FILTER=0 disables.
+PP_SOURCE_FILTER = _os_env.environ.get("PP_SOURCE_FILTER", "1") == "1"
+SOURCE_DOWNWEIGHT = {
+    "maintenance_daemon": float(_os_env.environ.get("PP_SOURCE_DAEMON_WEIGHT", "0.3")),
+    "superpowers": float(_os_env.environ.get("PP_SOURCE_SUPERPOWERS_WEIGHT", "0.3")),
+    "step-closure": float(_os_env.environ.get("PP_SOURCE_STEP_CLOSURE_WEIGHT", "0.3")),
+    "step_closure": float(_os_env.environ.get("PP_SOURCE_STEP_CLOSURE_WEIGHT", "0.3")),
+    "step_auditor": float(_os_env.environ.get("PP_SOURCE_STEP_AUDITOR_WEIGHT", "0.3")),
+    "skill_session": float(_os_env.environ.get("PP_SOURCE_SKILL_SESSION_WEIGHT", "0.1")),
+    "auto_context_inject": float(_os_env.environ.get("PP_SOURCE_AUTO_INJECT_WEIGHT", "0.3")),
+    "auto_inject": float(_os_env.environ.get("PP_SOURCE_AUTO_INJECT_WEIGHT", "0.3")),
+}
+SOURCE_EXCLUDE = (
+    set(_os_env.environ.get("PP_SOURCE_EXCLUDE", "").split(","))
+    if _os_env.environ.get("PP_SOURCE_EXCLUDE")
+    else set()
+)
 
 # ============================================================
 # 自演化反馈权重

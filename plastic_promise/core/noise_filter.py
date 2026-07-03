@@ -66,6 +66,24 @@ SHORT_BOILERPLATE = [
     "got it",
 ]
 
+LOW_INFORMATION_SNIPPETS = {
+    "no file edits",
+    "no edits",
+    "md files only",
+    "markdown files only",
+    "read-only",
+}
+
+PARTIAL_URL_PATTERNS = [
+    r"^https?://[^\s./]+$",
+    r"^(com|org|net|io|dev|cn|ai)/[\w./-]+$",
+]
+
+TELEMETRY_PATTERNS = [
+    r"^audit\s+trust=",
+    r"^\[?skill (start|complete|abandoned)\]?",
+]
+
 BOILERPLATE_MAX_LENGTH = 10
 
 
@@ -90,6 +108,17 @@ def is_noise(text: str) -> bool:
         return True
 
     t_lower = t.lower()
+
+    if t_lower in LOW_INFORMATION_SNIPPETS:
+        return True
+
+    for pattern in PARTIAL_URL_PATTERNS:
+        if re.search(pattern, t_lower):
+            return True
+
+    for pattern in TELEMETRY_PATTERNS:
+        if re.search(pattern, t_lower):
+            return True
 
     for pattern in DENIAL_PATTERNS:
         if re.search(pattern, t_lower):

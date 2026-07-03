@@ -145,6 +145,10 @@ async def list_tools() -> list[Tool]:
                             "type": "boolean",
                             "description": "严格模式: 无匹配时返回空 (默认 false)",
                         },
+                        "debug": {
+                            "type": "boolean",
+                            "description": "调试模式: 返回 pipeline_stats 与 per_item_stats (默认 false)",
+                        },
                     },
                     "required": ["query"],
                 },

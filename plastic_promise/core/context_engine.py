@@ -17,14 +17,17 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
-
 from plastic_promise.core.constants import (
     CONTEXT_LAYERS,
+    PP_SOURCE_FILTER,
     PRINCIPLE_INHERITANCE_DECAY,
+    SOURCE_DOWNWEIGHT,
+    SOURCE_EXCLUDE,
     SYMBOL_RULE_KEYWORDS,
 )
 from plastic_promise.core.paths import get_db_path
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # 数据模型 (与 Rust 结构体一一对应)
@@ -74,6 +77,8 @@ class ContextPack:
     divergent: list[ContextItem] = field(default_factory=list)
     activated_principles: list[str] = field(default_factory=list)
     audit_metadata: dict[str, str] = field(default_factory=dict)
+    pipeline_stats: dict[str, Any] = field(default_factory=dict)
+    per_item_stats: list[dict[str, Any]] = field(default_factory=list)
     gap_signal: Optional["GapSignal"] = None  # knowledge-gap detection signal
 
     def to_prompt(self) -> str:
@@ -292,7 +297,6 @@ class ContextEngine:
         # Pass 2: ensure skill_session nodes exist for orphan entity_ids
         for mid, mem in self._memories.items():
             entity_ids = mem.get("entity_ids", [])
-            tags = mem.get("tags", [])
             for eid in entity_ids:
                 if not eid.startswith("skill:"):
                     continue
@@ -1153,6 +1157,7 @@ class ContextEngine:
         task_vector: list[float] = None,
         task_type: str = "general",
         scope: str = "global",
+        debug: bool = False,
     ) -> ContextPack:
         """Supply context for a task. Rust-accelerated when available.
 
@@ -1180,12 +1185,16 @@ class ContextEngine:
         force_python = os.environ.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1"
 
         if force_python or not prefer_rust:
-            return self._supply_python(task_description, task_vector, task_type, scope)
+            return self._supply_python(task_description, task_vector, task_type, scope, debug=debug)
 
         # Rust accelerator — enabled via PP_PREFER_RUST_SUPPLY=1.
         # Falls back to Python if Rust engine is unavailable or throws.
         if self._check_rust_health():
             try:
+                if debug:
+                    return self._supply_python(
+                        task_description, task_vector, task_type, scope, debug=True
+                    )
                 return self._supply_rust(task_description, task_vector, task_type, scope)
             except Exception as e:
                 logger.warning("Rust supply failed, falling back to Python: %s", e)
@@ -1193,7 +1202,7 @@ class ContextEngine:
                     self._rust_healthy = None
                     self._rust_engine_instance = None
 
-        return self._supply_python(task_description, task_vector, task_type, scope)
+        return self._supply_python(task_description, task_vector, task_type, scope, debug=debug)
 
     @staticmethod
     def _apply_decay_awareness(
@@ -1337,6 +1346,7 @@ class ContextEngine:
         task_vector: list[float],
         task_type: str = "general",
         scope: str = "global",
+        debug: bool = False,
     ) -> ContextPack:
         """供应上下文
 
@@ -1393,16 +1403,37 @@ class ContextEngine:
             self._vector_retrieval(task_vector) if any(v != 0.0 for v in task_vector) else []
         )
 
-        # Phase 2: Hybrid fusion (vector + text) then layer with graph
+        # FTS: LanceDB full-text search as third retrieval channel
+        fts_results = self._fts_retrieval(task_description, scope)
+
+        # Phase 2: Hybrid fusion (vector + text + fts) then layer with graph
         if vector_results:
             vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
             fused_results = self._hybrid_fuse(
-                vector_results, text_results, vector_weight=vector_weight
+                vector_results,
+                text_results,
+                vector_weight=vector_weight,
+                fts_results=fts_results,
             )
         else:
-            # No vector available (Ollama down / zero vector) — use text only
+            # No vector available (Ollama down / zero vector) — fuse text + fts
+            fused: dict[str, tuple[float, str, str]] = {}
+            for mid, score, content, source in text_results:
+                fused[mid] = (score * 0.8, content, source)
+            for mid, score, content, source in fts_results:
+                w = score * 0.8
+                if score >= 0.85:
+                    w = score
+                if mid in fused:
+                    existing_score, existing_content, existing_source = fused[mid]
+                    fused[mid] = (max(existing_score, w), existing_content, existing_source)
+                else:
+                    fused[mid] = (w, content, source)
             fused_results = [
-                (mid, score * 0.8, content, source) for mid, score, content, source in text_results
+                (mid, score, content, source)
+                for mid, (score, content, source) in sorted(
+                    fused.items(), key=lambda x: x[1][0], reverse=True
+                )
             ]
         all_results = self._layered_fuse(graph_results, fused_results, [])
 
@@ -1413,12 +1444,39 @@ class ContextEngine:
         from plastic_promise.core.constants import (
             FEEDBACK_SCORE_MULTIPLIER_MIN,
             FEEDBACK_SCORE_MULTIPLIER_RANGE,
+            HARD_MIN_SCORE,
         )
+
+        vector_score_map = {mid: score for mid, score, _content, _source in vector_results}
+        text_score_map = {mid: score for mid, score, _content, _source in text_results}
+        fts_score_map = {mid: score for mid, score, _content, _source in fts_results}
+        graph_score_map = {mid: score for mid, score, _content, _source in graph_results}
+        debug_items_by_id: dict[str, dict] = {}
+        after_noise_filter = 0
+        after_source_filter = 0
+        after_hard_score_filter = 0
 
         pack = ContextPack(activated_principles=activated)
         current_time_str = datetime.datetime.now().isoformat()  # single timestamp for decay calc
 
         for item_id, score, content, source in all_results:
+            fused_score = score
+            mem = self._memories.get(item_id, {}) if not item_id.startswith("principle:") else {}
+            memory_source = mem.get("source", source) if mem else source
+            source_penalty = 1.0
+
+            # --- Drop low-information write-side legacy noise during recall too. ---
+            if ContextEngine._is_recall_noise(content):
+                continue
+            after_noise_filter += 1
+
+            # --- Source/type filtering: downweight or exclude noisy memory sources. ---
+            source_penalty = ContextEngine._source_penalty_for(memory_source)
+            if source_penalty is None:
+                continue
+            score *= source_penalty
+            after_source_filter += 1
+
             # --- Symbol rule boost (was _apply_symbol_rules) ---
             boost = 1.0
             for category, keywords in SYMBOL_RULE_KEYWORDS.items():
@@ -1434,33 +1492,59 @@ class ContextEngine:
             score = min(score * boost, 1.0)
 
             # --- Feedback multiplier (was _apply_feedback) ---
-            mem = self._memories.get(item_id, {}) if not item_id.startswith("principle:") else {}
             if mem:
-                ws = mem.get("worth_success", 0)
-                wf = mem.get("worth_failure", 0)
-                total = ws + wf
-                worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+                worth = ContextEngine._calc_worth_score_from_memory(mem)
             else:
                 worth = 0.5
             multiplier = FEEDBACK_SCORE_MULTIPLIER_MIN + FEEDBACK_SCORE_MULTIPLIER_RANGE * worth
             score = score * multiplier
 
             # --- Decay-aware ranking (Phase 1.3) ---
+            before_decay = score
             score = self._apply_decay_awareness(score, mem, current_time_str, trust_boost)
+            decay_multiplier = (score / before_decay) if before_decay else 1.0
 
             # --- Length normalization (Phase 1.5) ---
+            before_length = score
             score = ContextEngine._apply_length_norm(score, content)
+            length_norm_factor = (score / before_length) if before_length else 1.0
+
+            # --- Hard minimum score threshold (Phase Quality Gate) ---
+            hard_min_score = float(os.environ.get("PP_HARD_MIN_SCORE", str(HARD_MIN_SCORE)))
+            if hard_min_score > 0 and score < hard_min_score:
+                continue
+            after_hard_score_filter += 1
 
             # --- ContextItem construction (was separate Phase 5 loop) ---
             is_principle = item_id.startswith("principle:")
-            worth_score = mem.get("worth_score", 0.0) if mem else 0.0
+            worth_score = ContextEngine._calc_worth_score_from_memory(mem) if mem else 0.0
             freshness = self._calc_freshness(item_id)
+
+            debug_items_by_id[item_id] = {
+                "id": item_id,
+                "content": content[:120],
+                "vector_score": vector_score_map.get(item_id),
+                "bm25_score": text_score_map.get(item_id),
+                "fts_score": fts_score_map.get(item_id),
+                "graph_score": graph_score_map.get(item_id),
+                "fused_score": fused_score,
+                "worth": worth,
+                "decay_multiplier": decay_multiplier,
+                "length_norm_factor": length_norm_factor,
+                "source_penalty": source_penalty,
+                "final_score": score,
+                "source": memory_source,
+                "retrieval_source": source,
+                "memory_type": mem.get("memory_type", "") if mem else "",
+                "tier": mem.get("tier", "") if mem else "",
+                "category": mem.get("category", mem.get("domain", "")) if mem else "",
+            }
 
             item = ContextItem(
                 id=item_id,
                 content=content,
                 relevance=score,
-                source=source,
+                source=memory_source,
                 freshness=freshness,
                 is_principle=is_principle,
                 worth_score=worth_score,
@@ -1495,6 +1579,9 @@ class ContextEngine:
             all_items = MultiProviderReranker().rerank(task_description, all_items)
             # MMR diversity (Phase 1.4)
             all_items = self._apply_mmr(all_items, threshold=0.85, penalty=0.70)
+            hard_min_score = float(os.environ.get("PP_HARD_MIN_SCORE", str(HARD_MIN_SCORE)))
+            if hard_min_score > 0:
+                all_items = [item for item in all_items if item.relevance >= hard_min_score]
             # Re-distribute to layers based on adjusted relevance
             pack.core.clear()
             pack.related.clear()
@@ -1515,6 +1602,30 @@ class ContextEngine:
                 all_retrieved = pack.core + pack.related + pack.divergent
                 pack.divergent = self._compute_divergent_quality(pack.divergent, all_retrieved)
 
+        final_items = pack.core + pack.related + pack.divergent
+        if debug:
+            pack.pipeline_stats = {
+                "vector_count": len(vector_results),
+                "bm25_count": len(text_results),
+                "fts_count": len(fts_results),
+                "graph_count": len(graph_results),
+                "fused_count": len(all_results),
+                "after_noise_filter": after_noise_filter,
+                "after_source_filter": after_source_filter,
+                "after_hard_score_filter": after_hard_score_filter,
+                "after_mmr": len(final_items),
+                "core_count": len(pack.core),
+                "related_count": len(pack.related),
+                "divergent_count": len(pack.divergent),
+            }
+            pack.per_item_stats = []
+            for item in final_items:
+                stats = dict(debug_items_by_id.get(item.id, {}))
+                if stats:
+                    stats["final_score"] = item.relevance
+                    stats["layer"] = item.layer
+                    pack.per_item_stats.append(stats)
+
         # Phase 6: 审计元数据
         pack.audit_metadata = {
             "engine_version": "0.1.0-py",
@@ -1524,6 +1635,7 @@ class ContextEngine:
             "graph_edges": str(len(self._graph_edges)),
             "memory_pool_size": str(len(self._memories)),
             "vector_search": "active" if vector_results else "fallback_text_only",
+            "fts_search": "active" if fts_results else "inactive",
             "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
             "rerank_status": "multi-provider",
         }
@@ -1675,7 +1787,6 @@ class ContextEngine:
                 }
             # BFS traversal
             visited = set()
-            queue = [(start_node, 0)]
             traversal_path = []
             all_nodes = {}
             all_edges = []
@@ -2369,21 +2480,49 @@ class ContextEngine:
             logging.warning("_vector_retrieval LanceDB failed, returning empty: %s", e)
             return []
 
+    def _fts_retrieval(self, query: str, scope: str = "global") -> list[tuple]:
+        """LanceDB full-text search retrieval channel.
+
+        Uses the native LanceDB FTS index on the 'text' column.
+        Returns results in the standard 4-element tuple format.
+
+        Gated by PP_FTS_FUSION env var (default on). Skipped entirely
+        when PP_FTS_DISABLED=1 or LanceDB is unavailable.
+        """
+        if os.environ.get("PP_FTS_DISABLED", "") == "1":
+            return []
+        if os.environ.get("PP_FTS_FUSION", "1") != "1":
+            return []
+        if self._ldb is None:
+            return []
+        try:
+            fts_scope = scope if scope and scope != "global" else None
+            raw_results = self._ldb.fts_search(query, k=20, scope=fts_scope)
+            return [
+                (mid, score, text[:300], "fts") for mid, score, text, _tier, _scope in raw_results
+            ]
+        except Exception as e:
+            logging.warning("_fts_retrieval LanceDB failed, returning empty: %s", e)
+            return []
+
     def _hybrid_fuse(
         self,
         vector_results: list[tuple],
         text_results: list[tuple],
         vector_weight: float = 0.7,
+        fts_results: Optional[list[tuple]] = None,
     ) -> list[tuple]:
-        """Fuse vector and text retrieval results with weighted combination.
+        """Fuse vector, text, and optional FTS retrieval results with weighted combination.
 
-        Formula: fusedScore = vectorScore * 0.7 + textScore * 0.3
+        Formula: fusedScore = vectorScore * vector_weight + textScore * (1-vector_weight)
         BM25 high-score bypass: if text score >= 0.75, promote via 0.9 weight.
+        FTS channel shares the text weight with BM25 and gets its own preservation floor.
 
         Args:
             vector_results: [(id, score, content, source), ...] from LanceDB.
             text_results: [(id, score, content, source), ...] from _text_retrieval.
             vector_weight: Weight for vector scores (default 0.7).
+            fts_results: Optional [(id, score, content, source), ...] from _fts_retrieval.
 
         Returns:
             Fused result list sorted by combined score descending.
@@ -2409,6 +2548,19 @@ class ContextEngine:
                 combined[mid] = (max(existing_score, w), existing_content, existing_source)
             else:
                 combined[mid] = (w, content, source)
+
+        # FTS channel: same text_weight as BM25, with preservation floor
+        if fts_results:
+            for mid, score, content, source in fts_results:
+                w = score * text_weight
+                # FTS high-score bypass: >= 0.85 keeps full score (no dilution)
+                if score >= 0.85:
+                    w = score
+                if mid in combined:
+                    existing_score, existing_content, existing_source = combined[mid]
+                    combined[mid] = (max(existing_score, w), existing_content, existing_source)
+                else:
+                    combined[mid] = (w, content, source)
 
         return [
             (mid, score, content, source)
@@ -2495,6 +2647,60 @@ class ContextEngine:
                         boost *= 1.2
             result.append((item_id, min(score * boost, 1.0), content, source))
         return result
+
+    @staticmethod
+    def _source_penalty_for(source: str) -> float | None:
+        """Return source penalty multiplier, or None when source is excluded."""
+        if os.environ.get("PP_SOURCE_FILTER", "1" if PP_SOURCE_FILTER else "0") != "1":
+            return 1.0
+        if not source or source == "unknown":
+            return 1.0
+        excludes = set(SOURCE_EXCLUDE)
+        excludes.update(
+            s.strip() for s in os.environ.get("PP_SOURCE_EXCLUDE", "").split(",") if s.strip()
+        )
+        if source in excludes:
+            return None
+        downweight = dict(SOURCE_DOWNWEIGHT)
+        downweight.update(
+            {
+                "maintenance_daemon": float(os.environ.get("PP_SOURCE_DAEMON_WEIGHT", "0.3")),
+                "superpowers": float(os.environ.get("PP_SOURCE_SUPERPOWERS_WEIGHT", "0.3")),
+                "step-closure": float(os.environ.get("PP_SOURCE_STEP_CLOSURE_WEIGHT", "0.3")),
+                "step_closure": float(os.environ.get("PP_SOURCE_STEP_CLOSURE_WEIGHT", "0.3")),
+                "step_auditor": float(os.environ.get("PP_SOURCE_STEP_AUDITOR_WEIGHT", "0.3")),
+                "skill_session": float(os.environ.get("PP_SOURCE_SKILL_SESSION_WEIGHT", "0.1")),
+                "auto_context_inject": float(os.environ.get("PP_SOURCE_AUTO_INJECT_WEIGHT", "0.3")),
+                "auto_inject": float(os.environ.get("PP_SOURCE_AUTO_INJECT_WEIGHT", "0.3")),
+            }
+        )
+        return downweight.get(source, 1.0)
+
+    @staticmethod
+    def _is_recall_noise(content: str) -> bool:
+        """Return True for low-information memories that should not enter recall."""
+        try:
+            from plastic_promise.core.noise_filter import is_noise
+
+            return is_noise(content)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _calc_worth_score_from_memory(mem: dict | None) -> float:
+        """Return the surfaced worth score from counters when no field exists."""
+        if not mem:
+            return 0.0
+        explicit = mem.get("worth_score", None)
+        if explicit is not None:
+            try:
+                return float(explicit)
+            except (TypeError, ValueError):
+                pass
+        ws = mem.get("worth_success", 0)
+        wf = mem.get("worth_failure", 0)
+        total = ws + wf
+        return (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
 
     def _apply_feedback(self, items: list[tuple]) -> list[tuple]:
         """P2: Apply feedback using MemoryRecord.worth_score as single source of truth.
