@@ -44,6 +44,7 @@ INCLUDE: list[str] = [
     "docs/GOAL.md",
     "docs/SYSTEM_FULL_CHAIN.md",
     "docs/DEVELOPER.md",
+    "docs/README.zh-CN.md",
     "docs/architecture/",
     "docs/TODO List/",
     "data/db/.gitkeep",
@@ -60,6 +61,7 @@ INCLUDE: list[str] = [
     "SECURITY.md",
     "AGENTS.md",
     "CLAUDE.md",
+    "LICENSE",
     ".editorconfig",
     ".pre-commit-config.yaml",
     ".gitignore",
@@ -78,6 +80,8 @@ EXCLUDE_DEV: list[str] = [
     ".trae/",
     "var/memory_files/",
     "docs/disk-space-investigation.md",
+    "rust/context-engine-core/target/",
+    ".interop/",
 ]
 
 EXCLUDE_RUNTIME_GLOB: list[str] = [
@@ -96,6 +100,11 @@ EXCLUDE_RUNTIME_GLOB: list[str] = [
     "var/test-export.json.gz",
     "experience_packs/test_ops.json",
     "nul",
+    ".coverage",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    "__pycache__/",
+    "*.pyc",
 ]
 
 # ── Files needing version/date transformation ───────────
@@ -134,14 +143,30 @@ def build_argparser() -> argparse.ArgumentParser:
     return p
 
 
-def run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
     """Run a command and return the result. Raise on non-zero exit."""
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    kwargs = {"cwd": cwd, "capture_output": True, "text": True}
+    if env is not None:
+        import copy
+        full_env = copy.copy(os.environ)
+        full_env.update(env)
+        kwargs["env"] = full_env
+    result = subprocess.run(cmd, **kwargs)
     if result.returncode != 0:
         print(f"ERROR: {' '.join(cmd)}")
         print(result.stderr)
         sys.exit(2)
     return result
+
+
+_GIT_NO_INTERACTIVE = {
+    "GIT_COMMITTER_NAME": "Plastic Promise Release Bot",
+    "GIT_COMMITTER_EMAIL": "release@plastic-promise.local",
+    "GIT_AUTHOR_NAME": "Plastic Promise Release Bot",
+    "GIT_AUTHOR_EMAIL": "release@plastic-promise.local",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "Never",
+}
 
 
 def is_included(filepath: str) -> bool:
@@ -240,7 +265,14 @@ def apply_to_release(
         dst = release_repo / filepath
 
         if not src.exists():
-            print(f"  SKIP (deleted in dev): {filepath}")
+            # File was deleted in dev — remove from release
+            if dst.exists():
+                if dry_run:
+                    print(f"  [DRY] REMOVE (deleted in dev): {filepath}")
+                else:
+                    dst.unlink()
+                    print(f"  REMOVE (deleted in dev): {filepath}")
+                copied.append(filepath)
             continue
 
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -285,6 +317,31 @@ def validate_release(release_repo: Path) -> bool:
     print("  pytest: OK")
 
     return True
+
+
+def _cleanup_runtime(release_repo: Path) -> None:
+    """Remove runtime artifacts generated during validation to keep the release repo clean."""
+    patterns = [
+        ".coverage",
+        ".pytest_cache",
+        "__pycache__",
+        ".ruff_cache",
+        "*.pyc",
+        "plastic_memory.db",
+        "plastic_memory.db-shm",
+        "plastic_memory.db-wal",
+    ]
+    import glob as _glob
+    for pattern in patterns:
+        for p in _glob.glob(str(release_repo / "**" / pattern), recursive=True):
+            path = Path(p)
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+            except (OSError, PermissionError):
+                pass
 
 
 def main() -> None:
@@ -336,21 +393,31 @@ def main() -> None:
     else:
         print("  DRY RUN — skipping validation")
 
-    # 4. Git add
+    # 4. Git add + cleanup
     print("\n[4/6] Staging changes...")
     if not args.dry_run:
+        # Clean runtime artifacts that may have been generated during validation
+        _cleanup_runtime(release_repo)
         run(["git", "add", "-A"], cwd=release_repo)
 
     # 5. Commit
     message = args.message or f"chore(release): sync {args.version}"
     print(f"\n[5/6] Committing: {message}")
     if not args.dry_run:
-        run(["git", "commit", "-m", message, "--allow-empty"], cwd=release_repo)
+        run(
+            ["git", "commit", "-m", message, "--allow-empty", "--no-gpg-sign"],
+            cwd=release_repo,
+            env=_GIT_NO_INTERACTIVE,
+        )
 
     # 6. Tag
     print(f"\n[6/6] Tagging: {args.version}")
     if not args.dry_run:
-        run(["git", "tag", "-a", args.version, "-m", f"Release {args.version}"], cwd=release_repo)
+        run(
+            ["git", "tag", "-a", args.version, "-m", f"Release {args.version}"],
+            cwd=release_repo,
+            env=_GIT_NO_INTERACTIVE,
+        )
 
     print(f"\n=== {'DRY RUN complete' if args.dry_run else 'Sync complete'} ===")
     if not args.dry_run:
