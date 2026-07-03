@@ -51,8 +51,8 @@ SERVICES = [
     ),
 ]
 
-LOG_FILE = os.path.join(_project_root, "init_and_start.log")
-PID_FILE = os.path.join(_project_root, "maintenance_daemon.pid")
+LOG_FILE = os.path.join(_project_root, "var", "log", "init_and_start.log")
+PID_FILE = os.path.join(_project_root, "var", "run", "maintenance_daemon.pid")
 
 BANNER = """\
 ==============================================================
@@ -115,7 +115,7 @@ def do_stop():
 
     # Cleanup files
     for fname in ["maintenance_daemon.pid", "maintenance_daemon.heartbeat"]:
-        path = os.path.join(_project_root, fname)
+        path = os.path.join(_project_root, "var", "run", fname)
         if os.path.exists(path):
             try:
                 os.unlink(path)
@@ -128,6 +128,12 @@ def do_stop():
 
 async def main():
     print(BANNER)
+
+    # Set default paths for subprocess inheritance (overridable by env vars)
+    if "PLASTIC_DB_PATH" not in os.environ:
+        os.environ["PLASTIC_DB_PATH"] = os.path.join(_project_root, "data", "db", "plastic_memory.db")
+    if "PLASTIC_LANCEDB_PATH" not in os.environ:
+        os.environ["PLASTIC_LANCEDB_PATH"] = os.path.join(_project_root, "data", "lancedb")
 
     args = parse_args()
 
@@ -159,7 +165,9 @@ async def main():
         pass
 
     # Environment checks
-    all_ok, messages = run_env_checks(skip_ollama=args.skip_ollama_check)
+    all_ok, messages, mcp_already_running = run_env_checks(
+        skip_ollama=args.skip_ollama_check
+    )
     for msg in messages:
         print(msg)
 
@@ -174,9 +182,26 @@ async def main():
         print("\nEnvironment checks failed. Fix issues or use --skip-ollama-check.")
         sys.exit(1)
 
+    # --- Adjust services if MCP is already running ---
+    services_to_start = list(SERVICES)
+    if mcp_already_running:
+        print("\n[INFO]  MCP Server already running on port 9020 —"
+              " starting only Maintenance Daemon.")
+        # Keep only non-mcp-server services, strip mcp-server dependency
+        services_to_start = []
+        for svc in SERVICES:
+            if svc.name == "mcp-server":
+                continue
+            # Remove dependency on the already-running MCP
+            new_deps = [d for d in svc.depends_on if d != "mcp-server"]
+            if new_deps != svc.depends_on:
+                svc.depends_on = new_deps
+            services_to_start.append(svc)
+    # ----------------------------------------------------
+
     # Bootstrap
     db_path = os.environ.get("PLASTIC_DB_PATH",
-                              os.path.join(_project_root, "plastic_memory.db"))
+                              os.path.join(_project_root, "data", "db", "plastic_memory.db"))
     needs, bootstrap_msg = check_bootstrap(db_path)
     if needs:
         print(f"\n[INIT]  Bootstrap ..................... {bootstrap_msg}")
@@ -189,21 +214,26 @@ async def main():
         print(f"\n[INIT]  Bootstrap ..................... {bootstrap_msg}")
 
     # Start services
-    manager = ServiceManager(SERVICES, _project_root)
+    manager = ServiceManager(services_to_start, _project_root)
     setup_signal_handlers(manager, LOG_FILE)
 
     await manager.start_all(LOG_FILE)
 
     statuses = manager.get_status()
     healthy = sum(1 for s in statuses.values() if s == ServiceStatus.HEALTHY)
+    total = len(services_to_start)
 
     print(f"\n{'=' * 60}")
-    print(f"  {healthy}/{len(SERVICES)} services running. Dashboard: http://127.0.0.1:9020/dashboard")
+    if mcp_already_running:
+        print(f"  MCP Server (already running) + {healthy}/{total} daemon running.")
+    else:
+        print(f"  {healthy}/{total} services running.")
+    print(f"  Dashboard: http://127.0.0.1:9020/dashboard")
     print(f"  Press Ctrl+C to stop all services.")
     print(f"{'=' * 60}\n")
 
     if healthy == 0:
-        print("No services started successfully. Check init_and_start.log.")
+        print("No services started successfully. Check var/log/init_and_start.log.")
         sys.exit(1)
 
     # Watchdog loop (blocks until shutdown)

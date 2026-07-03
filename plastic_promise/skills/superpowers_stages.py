@@ -134,44 +134,6 @@ async def _governance_step_closure_full(ctx, params: dict):
     return [TextContent(type="text", text=json.dumps({"closed": True, "mode": "full"}))]
 
 
-async def _governance_code_memory(ctx, params: dict):
-    """Code Memory 注入 — 当 PP_ENABLE_CODE_MEMORY=1 时分析代码影响范围。
-
-    用于子 Agent 派发阶段 (subagent-driven, dispatching-parallel-agents)。
-    在派发前注入代码上下文，识别下游消费者和变更影响范围。
-    """
-    import os as _os
-
-    from plastic_promise.mcp.server import TextContent
-
-    task_desc = params.get("task_description", "")
-    enabled = _os.environ.get("PP_ENABLE_CODE_MEMORY", "0") == "1"
-
-    if not enabled:
-        return [TextContent(type="text", text=json.dumps({"code_memory": "disabled"}))]
-
-    try:
-        from plastic_promise.code_context.bridge import CodebaseMemoryBridge
-
-        bridge = CodebaseMemoryBridge()
-        downstream = bridge.trace_downstream(task_desc)
-        changes = bridge.detect_changes()
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(
-                    {
-                        "code_memory": "enabled",
-                        "downstream_consumers": len(downstream),
-                        "changes_detected": len(changes),
-                    }
-                ),
-            )
-        ]
-    except Exception:
-        return [TextContent(type="text", text=json.dumps({"code_memory": "unavailable"}))]
-
-
 # ═══════════════════════════════════════════════════════════════
 # 通用 Stage Handler
 # ═══════════════════════════════════════════════════════════════
@@ -552,3 +514,76 @@ using_git_worktrees = SKILL_DEFS.get("using-git-worktrees")
 dispatching_parallel_agents = SKILL_DEFS.get("dispatching-parallel-agents")
 exemplar_research = SKILL_DEFS.get("exemplar-research")
 audit = SKILL_DEFS.get("audit")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Plugin hook triggering — called by stage handlers
+# ═══════════════════════════════════════════════════════════════
+
+def trigger_plugin_hooks(stage_name: str, params: dict) -> list[dict]:
+    """Trigger plugin hooks for a stage transition.
+
+    Called by sp-stage handlers after chain validation passes
+    and before entering the target stage.
+
+    Args:
+        stage_name: Target stage name (e.g. "executing-plans")
+        params: Stage parameters including task_description
+
+    Returns:
+        List of hook result dicts. Empty list if no hooks registered.
+    """
+    try:
+        from plastic_promise.extensions.loader import PluginLoader
+
+        loader = PluginLoader()
+        loader.discover()
+
+        task_desc = params.get("task_description", "")
+        slot_name = f"on_before_{stage_name.replace('-', '_')}"
+
+        context = {
+            "task_description": task_desc,
+            "to_stage": stage_name,
+        }
+
+        results = loader.trigger_hooks(slot_name, context)
+        return [r for r in results if r]  # filter empty results
+    except Exception:
+        return []  # plugin hooks never block stage execution
+
+
+def transition_plugin_hooks(
+    from_stage: str, to_stage: str, params: dict
+) -> list[dict]:
+    """Trigger plugin hooks for a transition between two stages.
+
+    Args:
+        from_stage: Current stage name
+        to_stage: Target stage name
+        params: Stage parameters including task_description
+
+    Returns:
+        List of hook result dicts. Empty list if no hooks registered.
+    """
+    try:
+        from plastic_promise.extensions.loader import PluginLoader
+
+        loader = PluginLoader()
+        loader.discover()
+
+        from_key = from_stage.replace("-", "_")
+        to_key = to_stage.replace("-", "_")
+        slot_name = f"on_transition_{from_key}_{to_key}"
+        task_desc = params.get("task_description", "")
+
+        context = {
+            "task_description": task_desc,
+            "from_stage": from_stage,
+            "to_stage": to_stage,
+        }
+
+        results = loader.trigger_hooks(slot_name, context)
+        return [r for r in results if r]
+    except Exception:
+        return []

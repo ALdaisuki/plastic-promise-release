@@ -1502,6 +1502,35 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             return await handle_memory_sync_files(engine, arguments)
 
+        # ── Market tools ──
+        elif name == "market_list":
+            from plastic_promise.mcp.tools.market import handle_market_list
+            return await handle_market_list(engine, arguments)
+
+        elif name == "market_install":
+            from plastic_promise.mcp.tools.market import handle_market_install
+            return await handle_market_install(engine, arguments)
+
+        elif name == "market_upgrade":
+            from plastic_promise.mcp.tools.market import handle_market_upgrade
+            return await handle_market_upgrade(engine, arguments)
+
+        elif name == "market_remove":
+            from plastic_promise.mcp.tools.market import handle_market_remove
+            return await handle_market_remove(engine, arguments)
+
+        elif name == "market_enable":
+            from plastic_promise.mcp.tools.market import handle_market_enable
+            return await handle_market_enable(engine, arguments)
+
+        elif name == "market_disable":
+            from plastic_promise.mcp.tools.market import handle_market_disable
+            return await handle_market_disable(engine, arguments)
+
+        elif name == "market_status":
+            from plastic_promise.mcp.tools.market import handle_market_status
+            return await handle_market_status(engine, arguments)
+
         else:
             return [
                 TextContent(

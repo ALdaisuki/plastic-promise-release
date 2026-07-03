@@ -1,0 +1,46 @@
+name: code-memory
+version: 1.0.0
+type: capability
+min_core_version: "0.1.0"
+description: Code graph analysis via MCP — auto-discovers 14 tools for code understanding
+author: plastic-promise
+upstream:
+  repo: https://github.com/DeusData/codebase-memory-mcp
+  maintainer: DeusData
+  license: MIT
+
+hooks:
+  on_before_exemplar_research:
+    method: mcp
+    command: codebase-memory-mcp
+    tool: search_graph
+    timeout: 10
+    description: Search codebase for existing implementation patterns
+
+  on_transition_write_execute:
+    method: mcp
+    command: codebase-memory-mcp
+    tool: trace_path
+    timeout: 30
+    description: Trace downstream consumers before modifying code
+
+  on_after_verify:
+    method: mcp
+    command: codebase-memory-mcp
+    tool: query_graph
+    timeout: 10
+    description: Verify code structure matches design expectations
+
+tools:
+  method: mcp
+  provides:
+    - trace_path
+    - detect_changes
+    - search_graph
+    - semantic_query
+    - query_graph
+    - get_architecture
+
+install:
+  pip:
+    - codebase-memory-mcp>=0.7.0
