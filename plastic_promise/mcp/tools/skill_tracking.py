@@ -1095,7 +1095,7 @@ async def handle_skill_session_audit(engine: Any, args: dict) -> list[TextConten
 
 
 async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
-    """Auto-track Skill calls via Trae/Claude Code PreToolUse/PostToolUse hooks.
+    """Auto-track Skill calls via PreToolUse/PostToolUse hooks.
 
     Called by hook system — no manual invocation needed.
     Manages a linear skill chain via module-level state.

@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [Dev]
   push:
-    branches: [main]
+    branches: [Dev]
 
 jobs:
   # ── Stage 1: P0 — MUST PASS ──────────────────────

@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x (latest main) | Yes |
+| 0.1.x (latest Dev) | Yes |
 | tagged releases | Yes |
 | feature branches | No |
 
@@ -67,4 +67,4 @@ Report via:
 - Run `audit_run(action="full")` regularly to check system health
 - Trust score below 0.30 requires manual approval for Agent operations
 - Use `pack_export` for periodic memory backups
-- `main` branch protected; force push forbidden; all changes via reviewed PR
+- `Dev` branch protected; force push forbidden; all changes via reviewed PR

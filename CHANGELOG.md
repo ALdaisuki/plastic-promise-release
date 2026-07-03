@@ -32,7 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **时间衰减引擎**：Weibull 分布，L1/L3 分层衰减，β 参数可配
 - **N.E.K.O 桥接适配器**：双向事件总线，跨框架记忆共享
 - **Rust 核心引擎**：context-engine-core crate（PyO3 桥接，可选）
-- **Trae IDE 接入**：.trae/mcp.json + .trae/rules（10 条核心约定）
 - **Web Dashboard**：实时监控面板（记忆池、信任分、身体系统、审计报告）
 
 ### Changed

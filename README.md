@@ -10,7 +10,7 @@ og:type: website
 og:url: https://github.com/ALdaisuki/plastic-promise
 og:title: Plastic Promise — AI Behavioral Governance System with Multi-Agent Pipeline
 og:description: An AI behavioral governance system built on Commitment Engineering. 48 MCP tools, multi-agent autonomous pipeline (Claude PM + Pi Builder/Fixer/Reviewer), trust-driven permissions, and Weibull-based memory decay.
-og:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise/main/docs/architecture/social-preview.png
+og:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise/Dev/docs/architecture/social-preview.png
 og:image:alt: Plastic Promise architecture diagram showing MCP server, memory pipeline, and multi-agent team
 og:site_name: Plastic Promise
 og:locale: en_US
@@ -21,7 +21,7 @@ twitter:card: summary_large_image
 twitter:url: https://github.com/ALdaisuki/plastic-promise
 twitter:title: Plastic Promise — AI Behavioral Governance System
 twitter:description: Commitment Engineering replaces constraint enforcement. 48 MCP tools, multi-agent pipeline, trust-driven permissions, memory decay engine.
-twitter:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise/main/docs/architecture/social-preview.png
+twitter:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise/Dev/docs/architecture/social-preview.png
 -->
 
 <!-- GitHub Metadata
@@ -29,8 +29,8 @@ topics: ai-governance, mcp-server, agent-memory, commitment-engineering, multi-a
 languages: python, rust
 homepage: https://github.com/ALdaisuki/plastic-promise
 funding: https://github.com/sponsors/ALdaisuki
-roadmap: https://github.com/ALdaisuki/plastic-promise/blob/main/docs/GOAL.md
-security: https://github.com/ALdaisuki/plastic-promise/blob/main/SECURITY.md
+roadmap: https://github.com/ALdaisuki/plastic-promise/blob/Dev/docs/GOAL.md
+security: https://github.com/ALdaisuki/plastic-promise/blob/Dev/SECURITY.md
 -->
 
 <div align="center">
@@ -91,7 +91,7 @@ security: https://github.com/ALdaisuki/plastic-promise/blob/main/SECURITY.md
 +---------------------------+          +--------------------------------------+
 |    AI Coding Agent        |  MCP     |   Plastic Promise Governance System  |
 |  +---------------------+  |  stdio   |  +--------------------------------+  |
-|  | Claude Code / Trae  |<>+-------->+--+ MCP Server (:9020)             |  |
+|  | Claude Code / MCP   |<>+-------->+--+ MCP Server (:9020)             |  |
 |  +---------------------+  |  SSE    |  | 48 tools / 12 domains           |  |
 +---------------------------+<--------+--+                                 |  |
                                        |  +--------------------------------+  |
@@ -178,7 +178,7 @@ python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1
 # Expected: {"status": "ok", "version": "0.1.0", ...}
 
 # Store a test memory and verify retrieval
-# Via MCP tool (from Claude Code / Trae connected to the server):
+# Via MCP tool (from Claude Code or another client connected to the server):
 #   memory_store(content="test memory", tags=["test"])
 #   memory_recall(query="test memory")
 # Expected: returns the stored memory with similarity score
@@ -190,7 +190,7 @@ python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1
 #   [Pi] builder complete -> waking reviewer -> task:review
 ```
 
-### Connect to Claude Code / Trae
+### Connect to Claude Code
 
 Merge into your MCP configuration:
 
@@ -398,11 +398,11 @@ daemons/                      # Daemon processes & workers
 └── watchdog.ps1              # Process watchdog (auto-restart)
 
 tests/                        # Tests
-docs/                         # Design documentation
+docs/                         # Public documentation
 ├── GOAL.md                   # Architecture overview & roadmap
+├── SYSTEM_FULL_CHAIN.md      # High-level system chain
 ├── BUILD_PLAN.md             # Build plan (historical reference)
-├── architecture/             # Generated architecture documentation
-└── superpowers/              # Design specs (80+ files)
+└── architecture/             # Architecture documentation
 scripts/                      # Helper scripts
 ├── start-all.bat             # One-click start (Windows)
 ├── start-all.sh              # One-click start (Linux/macOS)
@@ -469,7 +469,7 @@ pytest tests/ --cov=plastic_promise --cov-report=html  # Coverage report
 
 ### Conventions
 
-This project follows the [Plastic Promise core conventions](.trae/rules). All contributors should, before committing:
+This project follows the [Plastic Promise core conventions](CLAUDE.md). All contributors should, before committing:
 
 1. Call `memory_recall` + `context_supply` to load relevant context
 2. Ensure each substantive change has a corresponding git commit

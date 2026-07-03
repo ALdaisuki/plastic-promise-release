@@ -7,7 +7,7 @@
 |                           |          |                                      |
 |    AI Coding Agent        |  MCP     |   Plastic Promise Governance System  |
 |  +---------------------+  |  stdio   |  +--------------------------------+  |
-|  | Claude Code / Trae  |<>+-------->+--+ MCP Server (:9020)             |  |
+|  | Claude Code / MCP   |<>+-------->+--+ MCP Server (:9020)             |  |
 |  | (PM + Orchestrator) |  |  SSE    |  | 41 tools / 11 domains           |  |
 |  +---------------------+  |<--------+--+                                 |  |
 |                           |  events  |  +--------------------------------+  |
@@ -34,7 +34,7 @@
 +---------------------------+          +--------------------------------------+
 
 Protocols:
-  MCP/stdio  — Tool calls from Claude Code / Trae to MCP Server
+  MCP/stdio  — Tool calls from Claude Code or MCP clients to MCP Server
   MCP/SSE    — Server-Sent Events for real-time agent notifications
   /notify    — Pi agents signal completion via HTTP POST
   HTTP:9020  — Health check + dashboard + SSE event stream

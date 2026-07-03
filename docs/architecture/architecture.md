@@ -12,7 +12,7 @@
 
 - **Purpose**: Govern AI agent behavior through shared memory, evolving principles, and dynamic trust — not hard-coded rules
 - **Key Capabilities**: 41 MCP tools across 11 domains, multi-agent team (Claude PM + Pi Builder/Fixer/Reviewer), autonomous pipeline with zero-token polling
-- **Target Users**: AI coding agents (Claude Code, Trae, Pi), their human operators, and downstream agent teams
+- **Target Users**: AI coding agents (Claude Code, Pi), their human operators, and downstream agent teams
 - **Success Metrics**: Trust score trajectory, memory pool health (L1/L2/L3 distribution), SCARF trend, CEI composite index
 
 ---
@@ -225,7 +225,7 @@ Daemon operations contribute $0 to LLM costs.
 - Experience pack system
 
 ### Phase 5: Production Hardening (📅 Planned)
-- Staged hardening (see `docs/superpowers/specs/2026-06-30-staged-hardening-design.md`)
+- Staged hardening guided by the public system-chain principles
 - Performance optimization (Rust core expansion)
 - Cross-platform testing matrix
 - Documentation site

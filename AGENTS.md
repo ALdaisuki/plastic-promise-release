@@ -97,7 +97,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 
 > **性能**: 热调用 0.2~0.4s，冷启动 ~3s。`context_supply` 已从原子中移除（session-init 时注入一次）。
 > **链约束**: `SKILL_CHAIN_MAP` 定义前置/后继，跳步返回 `chain_violation` + 正确下一步提示。
-> **追踪**: `sp_hook.py → POST /api/skill-track → skill_auto_track → skill_session_start/complete`（与 Claude Code hook 走同一管道）
+> **追踪**: Claude Code hook 与 MCP `sp-stage` 统一进入 `skill_auto_track → skill_session_start/complete`。
 
 ### 🌐 域联邦域 (1)
 | 工具 | 用途 |
@@ -220,7 +220,7 @@ defense(action="get") → 根据 tier 决定行为
 
 ## 外部 Agent 接入约定
 
-> 适用于 Trae 等独立 IDE Agent，通过 MCP 协议接入 Plastic Promise 作为前线作战部队。
+> 适用于通过 MCP 协议接入 Plastic Promise 的独立 Agent。
 > 核心关系：**Claude Code + Plastic Promise = 战略指挥中心，外部 Agent = 前线作战部队**。
 
 ### 标签命名空间
@@ -233,13 +233,13 @@ project:<agent>:<name>     → 跨会话项目归属（可选）
 source:<agent>             → 身份标识（已有字段）
 ```
 
-**示例（Trae 执行一条 building 任务）**：
+**示例（外部 Agent 执行一条 building 任务）**：
 
 ```
 domain:building           ← 行为域（现有 7 域体系）
-source:trae               ← 身份标识（现有字段）
-session:trae:a1b2c3       ← 会话隔离
-project:trae:feature-x    ← 项目归属（可选）
+source:agent              ← 身份标识（现有字段）
+session:agent:a1b2c3      ← 会话隔离
+project:agent:feature-x   ← 项目归属（可选）
 ```
 
 ### 通用启动流程
@@ -279,12 +279,11 @@ project:trae:feature-x    ← 项目归属（可选）
 - **零代码改动**：纯约定层，DomainManager、SkillEngine、Rust Core 均不动
 - **预留扩展**：后续外部 Agent 直接复用此约定，`<agent>` 替换为对应名称即可
 
-### 已接入 Agent
+### 接入方式
 
-| Agent | 类型 | 接入方式 | 状态 |
-|-------|------|---------|------|
-| Trae | IDE Agent (VS Code) | MCP (run_mcp) | 已接入 |
-| *(预留)* | — | MCP (SSE/stdio) | 待接入 |
+| Agent | 接入方式 | 状态 |
+|-------|----------|------|
+| *(预留)* | MCP (SSE/stdio) | 待接入 |
 
 ---
 

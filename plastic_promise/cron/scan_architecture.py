@@ -39,7 +39,7 @@ def _get_tag_blacklist() -> set[str]:
         "task:accepted",
         "task:review",
         "task:reviewed",
-        "branch:main",
+        "branch:Dev",
         "status:replaced",
         "llm_pending:true",
         "llm_classified:true",

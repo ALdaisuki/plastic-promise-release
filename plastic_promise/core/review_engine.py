@@ -212,7 +212,7 @@ class ReviewEngine:
         """准备审查上下文 — 获取 diff + 运行预检 + 生成审查 prompt。
 
         Args:
-            commit_range: git commit 范围，如 "HEAD~3..HEAD" 或 "main..feature"
+            commit_range: git commit 范围，如 "HEAD~3..HEAD" 或 "Dev..feature"
             spec_path: spec 文件路径 (可选)，用于 spec 合规检查
 
         Returns:

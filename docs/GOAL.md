@@ -23,7 +23,7 @@
   动态信任-自由度矩阵（4档映射到工具权限 + TrustStore 持久化） ✅
   11 维审计（7维基础 + 4维多Agent, 每小时自动 + Tier1 修复） ✅
   Skill 调用链追踪（14 技能映射 + 链完整性检测 + sp-stage 校验） ✅
-  SuperPowers 12 阶段流水线（sp-stage 统一入口 + 链约束 + Trae hook） ✅
+  SuperPowers 12 阶段流水线（sp-stage 统一入口 + 链约束 + hook 追踪） ✅
 
 演化层 — 迭代进步
   worth 反馈闭环（采纳/拒绝/忽略 三态计数器） ✅
@@ -74,7 +74,7 @@
 - 存量回填策略 (LanceDB 空时自动从 SQLite 回填)
 - **Skill Tracking**: SuperPowers 流程可追踪化 — 5 个 MCP 工具 (skill_session_start/complete/trace/audit + skill_auto_track) + SKILL_CHAIN_MAP (14 技能) + skill_session 实体类型 + audit 第八维 skill_trace (权重 0.10) + CLAUDE.md Skill 调用协议
 - **信任分持久化**: TrustStore (SQLite trust_scores + trust_history 表) + 时间衰减 (-0.005/天) + SCARF 联动 boost/decay + L0/L1 违规驱动减分 + MCP 重启后不丢失
-- **SuperPowers Pipeline**: `sp-stage` MCP 工具 (1 工具 12 阶段统一入口) + 链校验 (SKILL_CHAIN_MAP, 跳步自动拒绝) + Trae hook 桥接 (sp_hook.py → /api/skill-track) + context_supply 原子移除优化 (5~60s → 0.2~0.4s)
+- **SuperPowers Pipeline**: `sp-stage` MCP 工具 (1 工具 12 阶段统一入口) + 链校验 (SKILL_CHAIN_MAP, 跳步自动拒绝) + MCP/Claude Code 统一追踪入口 + context_supply 原子移除优化 (5~60s → 0.2~0.4s)
 - **全链路契约校验**: 对照 CLAUDE.md 逐项检查各子系统实现/约定/缺陷状态，修复 step-closure mode 参数丢失 bug
 
 ### 已完成 (2026-07-01)
@@ -164,6 +164,6 @@ memory_store(tags=["task:pending","assignee:pi_builder","domain:building"])
 ```
 
 ### 当前指令
-- 推送到 main 分支
+- 推送到 Dev 分支
 - Daemon 持续运行 (daemons/pi_daemon.py)
 - 审计每小时自动执行

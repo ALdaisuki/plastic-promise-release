@@ -60,11 +60,11 @@ docs: add CI workflow documentation
 
 ## Pull Request Flow
 
-1. **Create branch** from `main`
+1. **Create branch** from `Dev`
 2. **Develop** with frequent commits following the convention above
 3. **Open PR** — CI runs automatically (P0: lint/test/security, P1: style/coverage)
 4. **Code Review** — at least 1 reviewer approve required
-5. **Squash Merge** into `main` — one commit per PR, linear history
+5. **Squash Merge** into `Dev` — one commit per PR, linear history
 
 ## Hunter Guild Delegation System
 
@@ -104,4 +104,4 @@ Tests are required for all new features and bug fixes. Coverage target: >= 80%.
 
 ## Questions?
 
-Open an Issue using one of the templates, or check the [design specs](docs/superpowers/specs/) for architectural decisions.
+Open an Issue using one of the templates, or check [SYSTEM_FULL_CHAIN.md](docs/SYSTEM_FULL_CHAIN.md) and [GOAL.md](docs/GOAL.md) for architectural context.

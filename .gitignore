@@ -8,6 +8,8 @@ build/
 venv/
 *.so
 *.pyd
+*.dll
+*.dylib
 
 # Rust
 rust/context-engine-core/target/
@@ -33,6 +35,11 @@ desktop.ini
 data/
 .data/
 logs/
+*.log
+
+tmp/
+temp/
+*.tmp
 
 # Claude
 .claude/
@@ -70,6 +77,7 @@ htmlcov/
 dist/
 build/
 *.whl
+*.json.gz
 
 # Environment
 .python-version
@@ -90,7 +98,6 @@ init_and_start.log
 
 # Skills (dev-time symlinks, platform caches managed externally)
 .agents/
-.trae/
 .pi/
 
 # Docker

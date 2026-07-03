@@ -400,7 +400,7 @@ def _build_execution_steps(gap_analysis: dict, gap_severity: str = None) -> str:
             '     improvement="<下次搜索可优化的方向>")\n',
             "\n",
             "4. **写分析文档 → git commit**\n"
-            "   路径: docs/superpowers/specs/engineering-patterns/"
+            "   路径: docs/engineering-patterns/"
             "YYYY-MM-DD-<project>.md\n"
             "   frontmatter: status=draft\n"
             '   **【闭环·提交】** step-closure(mode="full", git_commit=<hash>)\n',

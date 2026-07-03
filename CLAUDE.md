@@ -44,7 +44,7 @@
 
 ## SuperPowers 流水线
 
-`sp-stage` 是 SuperPowers 12 阶段的统一 MCP 入口。Claude Code 用 SuperPowers 插件 + `Skill` 工具，Trae 用 `sp-stage` MCP 工具，两者走同一 `skill_auto_track` 追踪管道。
+`sp-stage` 是 SuperPowers 12 阶段的统一 MCP 入口。Claude Code 用 SuperPowers 插件 + `Skill` 工具，MCP 客户端用 `sp-stage` 工具，统一走同一 `skill_auto_track` 追踪管道。
 
 ### 工作流
 
@@ -79,7 +79,7 @@ brainstorming → exemplar-research → using-git-worktrees → writing-plans
 ### 使用方式
 
 ```
-# Trae (sp-stage MCP 工具)
+# MCP 客户端 (sp-stage MCP 工具)
 sp-stage(stage="brainstorming", task_description="澄清需求")
 sp-stage(stage="exemplar-research", task_description="搜索成熟工程实现并分析")
 sp-stage(stage="using-git-worktrees", task_description="创建分支")
@@ -106,12 +106,13 @@ sp-stage(stage="executing-plans", ...)  ← 当前在 brainstorming
 ### 追踪管道
 
 ```
-Trae:  sp-stage → PreToolUse hook → sp_hook.py → POST /api/skill-track → skill_auto_track
 Claude: Skill() → PreToolUse hook → mcp_tool: skill_auto_track → skill_session_start
                                                           ↓
                   SkillEngine.exec: principle_activate + memory_store (无 context_supply)
                                                           ↓
                   PostToolUse hook → skill_session_complete → 更新 _current_stage
+
+MCP:    sp-stage → skill_auto_track → skill_session_start/complete
 ```
 
 > **注**: `context_supply` 已从 sp-stage 原子中移除 — 其 `engine.supply()` 三路检索 + Ollama rerank 耗时 5~60s，且结果已不返回给调用方。context 在 `session-init` 时注入一次。
@@ -354,7 +355,7 @@ defense(action="get") → 根据 tier 决定行为:
 
 ## Git 治理规范 (Enterprise Git Governance)
 
-本项目遵循 Plastic Promise Flow 企业级 Git 治理框架。完整规范见 [Enterprise Git Governance Spec](docs/superpowers/specs/2026-07-02-enterprise-git-governance-design.md)。
+本项目遵循 Plastic Promise Flow 企业级 Git 治理框架。发行版只保留高层原则，完整操作以本文件和 [SYSTEM_FULL_CHAIN.md](docs/SYSTEM_FULL_CHAIN.md) 为准。
 
 ### 分支策略
 
@@ -368,7 +369,7 @@ defense(action="get") → 根据 tier 决定行为:
 | `chore/` | 构建/CI/工具 | `chore_*` |
 | `worktree/<agent>/` | Agent 工作隔离 | — |
 
-- `main` 为唯一长期分支，始终可部署
+- `Dev` 为唯一长期分支，始终可部署
 - 分支名全小写，`-` 分隔
 - Agent 分支由 Daemon 自动生成: `<type>/<task_id>-<slug>`
 - 合并使用 **Squash Merge**，保持线性历史
@@ -423,7 +424,7 @@ defense(action="get") → 根据 tier 决定行为:
 
 ### PR 合并硬规则
 
-**禁止在未经用户明确授权的情况下合并任何 PR。** 创建 PR 是安全的——合并必须等待用户用明确的文字指令确认（如 "merge it"、"合并"、"合入"）。`gh pr merge`、`git merge`、`git push origin main` 等合并操作在无用户明文确认前一律不得执行。这条规则高于所有其他约定。
+**禁止在未经用户明确授权的情况下合并任何 PR。** 创建 PR 是安全的——合并必须等待用户用明确的文字指令确认（如 "merge it"、"合并"、"合入"）。`gh pr merge`、`git merge`、`git push origin Dev` 等合并操作在无用户明文确认前一律不得执行。这条规则高于所有其他约定。
 
 ## 系统架构整合 (2026-07-02)
 

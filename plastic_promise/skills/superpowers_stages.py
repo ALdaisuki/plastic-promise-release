@@ -15,7 +15,7 @@ SuperPowers 标准化流水线 (obra 定义):
     systematic-debugging, using-git-worktrees, dispatching-parallel-agents
 
 每个阶段技能自动获得 SkillEngine 的 session_start/complete 追踪包装。
-通过 Trae hooks (PreToolUse/PostToolUse) 触发 skill_auto_track。
+通过 hook 系统触发 skill_auto_track。
 """
 
 import json

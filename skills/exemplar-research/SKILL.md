@@ -21,7 +21,7 @@ You MUST create a task for each of these items and complete them in order:
 
 1. **Identify 2-4 mature reference implementations** — search GitHub, docs, papers for projects that solve similar problems
 2. **Three-question analysis per reference** — (a) What exactly does it do? (b) How does our context differ? (c) What to adapt vs skip?
-3. **Write analysis document** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-exemplar-research.md`
+3. **Write analysis document** — save to `docs/engineering-patterns/YYYY-MM-DD-<topic>-exemplar-research.md`
 4. **Quality review** — check for concrete patterns, not vague summaries; verify claims against source code
 5. **Store findings in memory** — key patterns enter the memory pool for future retrieval
 6. **Transition to using-git-worktrees** — invoke the git-worktrees skill to create isolated workspace
