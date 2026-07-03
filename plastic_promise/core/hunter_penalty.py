@@ -4,6 +4,8 @@ import logging
 import os
 import sqlite3
 
+from plastic_promise.core.paths import get_db_path
+
 logger = logging.getLogger(__name__)
 
 PENALTY_RULES = {
@@ -44,7 +46,7 @@ class HunterPenaltyEngine:
 
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+            db_path = get_db_path()
         self._db_path = os.path.abspath(db_path)
 
     def compute_penalty(

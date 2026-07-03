@@ -77,18 +77,20 @@ async def _session_init_handler(ctx, params, atom_results):
 
     # ── Chain state: report current SKILL_CHAIN_MAP position ──
     try:
-        from plastic_promise.core.constants import SKILL_CHAIN_MAP as _CHAIN_MAP
+        from plastic_promise.core.constants import (
+            SKILL_CHAIN_MAP as _CHAIN_MAP,
+            normalize_stage_name,
+        )
         from plastic_promise.mcp.tools.skill_tracking import get_current_stage
 
-        current_stage = get_current_stage()
+        current_stage = normalize_stage_name(get_current_stage())
         chain_state = None
         if current_stage:
-            lookup = current_stage.replace("sp-", "")
-            chain = _CHAIN_MAP.get(lookup) or _CHAIN_MAP.get(f"sp-{lookup}", {})
+            chain = _CHAIN_MAP.get(current_stage) or _CHAIN_MAP.get(f"sp-{current_stage}", {})
             chain_state = {
                 "current_stage": current_stage,
-                "valid_next": chain.get("successors", []),
-                "predecessors": chain.get("predecessors", []),
+                "valid_next": [normalize_stage_name(s) for s in chain.get("successors", [])],
+                "predecessors": [normalize_stage_name(s) for s in chain.get("predecessors", [])],
             }
     except Exception:
         chain_state = None

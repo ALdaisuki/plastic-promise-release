@@ -6,7 +6,6 @@ Tools: task_enqueue, task_claim, task_complete, task_verify,
 
 import hashlib
 import json
-import os
 import sqlite3
 import uuid
 from datetime import datetime
@@ -15,10 +14,11 @@ from typing import Any
 from mcp.types import TextContent
 
 from plastic_promise.core.hunter_rank import can_claim, trust_to_rank
+from plastic_promise.core.paths import get_db_path
 
 
 def _get_db_path() -> str:
-    return os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    return get_db_path()
 
 
 def _generate_task_id() -> str:

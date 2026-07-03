@@ -5,6 +5,8 @@ import os
 import sqlite3
 from collections import defaultdict
 
+from plastic_promise.core.paths import get_db_path
+
 
 def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
     """Compute median and dynamic threshold (median + 2*std)."""
@@ -66,7 +68,7 @@ async def scan_architecture(engine) -> dict:
     2. God modules — domains with disproportionate memory count (dynamic threshold)
     3. Shotgun surgery — tag clusters that appear in many domains simultaneously
     """
-    db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     findings = []

@@ -1,68 +1,82 @@
-"""Tests for sp-stage chain validation behavior."""
-
+import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
 
-import pytest
+import plastic_promise.mcp.server as mcp_server
+import plastic_promise.mcp.tools.skill_tracking as skill_tracking
+from plastic_promise.core.constants import normalize_stage_name
 
 
 class _FakeSkillEngine:
-    async def exec(self, skill_name, params, caller=None):
-        return SimpleNamespace(
-            success=True,
-            data={
-                "skill_name": skill_name,
-                "params": params,
-                "caller": caller,
-            },
-            errors=[],
+    def __init__(self):
+        self.calls = []
+
+    async def exec(self, skill_name, params, caller="claude"):
+        self.calls.append((skill_name, params, caller))
+        return SimpleNamespace(success=True, data={"skill_name": skill_name}, errors=[])
+
+
+def _set_current_stage(stage):
+    with skill_tracking._skill_state_lock:
+        skill_tracking._current_stage = stage
+        skill_tracking._current_skill = None
+        skill_tracking._current_entity_id = None
+
+
+def _run_sp_stage(monkeypatch, stage, current="review"):
+    fake = _FakeSkillEngine()
+    _set_current_stage(current)
+    monkeypatch.setattr(mcp_server, "get_engine", lambda: object())
+    monkeypatch.setattr(mcp_server, "get_skill_engine", lambda: fake)
+    result = asyncio.run(
+        mcp_server.call_tool(
+            "sp-stage",
+            {"stage": stage, "task_description": "chain validation regression"},
         )
+    )
+    return json.loads(result[0].text), fake
 
 
-@pytest.mark.asyncio
-async def test_sp_stage_allows_root_stage_to_start_new_chain():
-    """A review flow must not block another Agent from starting debugging."""
-    from plastic_promise.mcp.server import call_tool
+def test_normalize_review_alias_to_receiving_code_review():
+    assert normalize_stage_name("review") == "receiving-code-review"
+    assert normalize_stage_name("sp-review") == "receiving-code-review"
+    assert normalize_stage_name("superpowers:receive-review") == "receiving-code-review"
 
-    with patch(
-        "plastic_promise.mcp.tools.skill_tracking.get_current_stage",
-        return_value="requesting-code-review",
-    ):
-        with patch("plastic_promise.mcp.server.get_skill_engine", return_value=_FakeSkillEngine()):
-            result = await call_tool(
-                "sp-stage",
-                {
-                    "stage": "systematic-debugging",
-                    "task_description": "debug a separate Agent failure",
-                },
-            )
 
-    data = json.loads(result[0].text)
+def test_sp_stage_allows_audit_after_review_alias(monkeypatch):
+    data, fake = _run_sp_stage(monkeypatch, "audit", current="review")
+
+    assert data["success"] is True
+    assert fake.calls[0][0] == "sp-audit"
+
+
+def test_sp_stage_allows_root_stage_from_stale_review(monkeypatch):
+    data, fake = _run_sp_stage(monkeypatch, "systematic-debugging", current="review")
+
+    assert data["success"] is True
+    assert fake.calls[0][0] == "sp-systematic-debugging"
+
+
+def test_sp_stage_allows_root_stage_to_start_new_chain(monkeypatch):
+    data, fake = _run_sp_stage(
+        monkeypatch,
+        "systematic-debugging",
+        current="requesting-code-review",
+    )
+
     assert data["success"] is True
     assert data["stage"] == "systematic-debugging"
-    assert data["data"]["skill_name"] == "sp-systematic-debugging"
+    assert fake.calls[0][0] == "sp-systematic-debugging"
 
 
-@pytest.mark.asyncio
-async def test_sp_stage_still_rejects_invalid_non_root_transition():
-    """Only root stages may bypass the current chain; non-root stages stay guarded."""
-    from plastic_promise.mcp.server import call_tool
+def test_sp_stage_rejects_invalid_non_root_transition(monkeypatch):
+    data, fake = _run_sp_stage(
+        monkeypatch,
+        "test-driven-development",
+        current="requesting-code-review",
+    )
 
-    with patch(
-        "plastic_promise.mcp.tools.skill_tracking.get_current_stage",
-        return_value="requesting-code-review",
-    ):
-        with patch("plastic_promise.mcp.server.get_skill_engine", return_value=_FakeSkillEngine()):
-            result = await call_tool(
-                "sp-stage",
-                {
-                    "stage": "test-driven-development",
-                    "task_description": "attempt an invalid non-root transition",
-                },
-            )
-
-    data = json.loads(result[0].text)
     assert data["error"] == "chain_violation"
     assert data["current_stage"] == "requesting-code-review"
     assert data["valid_next"] == ["receiving-code-review"]
+    assert fake.calls == []

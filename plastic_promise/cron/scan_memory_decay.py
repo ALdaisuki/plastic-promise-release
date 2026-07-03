@@ -4,6 +4,8 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 
+from plastic_promise.core.paths import get_db_path
+
 
 async def scan_memory_decay(engine) -> dict:
     """Scan memory pool for decay signals:
@@ -11,7 +13,7 @@ async def scan_memory_decay(engine) -> dict:
     2. Memory influx (24h spike, dynamic threshold median+2σ)
     3. Domain imbalance (>60%, queried from memories table directly)
     """
-    db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     findings = []

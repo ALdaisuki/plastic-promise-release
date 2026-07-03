@@ -7,6 +7,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from itertools import combinations
 
+from plastic_promise.core.paths import get_db_path
+
 
 def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
     """Compute median and dynamic threshold (median + 2*std)."""
@@ -27,7 +29,7 @@ async def scan_coupling(engine) -> dict:
     2. Bridge node growth — entities connecting many otherwise-separate clusters
     3. Implicit dependencies — domains that grow together without explicit links
     """
-    db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     findings = []

@@ -132,7 +132,7 @@ def test_task_claim_success(test_db_path, monkeypatch):
     )
     data = json.loads(r2[0].text)
     assert data["success"] is True
-    assert "✅" in data["match"]
+    assert "[OK]" in data["match"]
     assert data["rank"]["rank"] == "B"
 
 
@@ -169,7 +169,7 @@ def test_task_claim_rank_mismatch(test_db_path, monkeypatch):
     )
     data = json.loads(r2[0].text)
     assert data["success"] is False
-    assert "⚠️" in data["match"]
+    assert "!!!" in data["match"]
 
 
 def test_task_claim_double_prevented(test_db_path, monkeypatch):
@@ -517,7 +517,7 @@ def test_task_inbox_rank_match_display(test_db_path, monkeypatch):
     data = json.loads(r2[0].text)
     task = next(t for t in data["tasks"] if t["id"] == task_id)
     assert task["can_claim"] is False
-    assert "⚠️" in task["match"]
+    assert "!!!" in task["match"]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -617,3 +617,19 @@ def test_task_abandon(test_db_path, monkeypatch):
     data = json.loads(r2[0].text)
     assert data["success"] is True
     assert data["penalty"]["type"] == "abandoned"
+
+
+def test_task_board_tools_are_exposed_by_mcp_server():
+    from plastic_promise.mcp.server import list_tools
+
+    tools = asyncio.run(list_tools())
+    names = {t.name for t in tools}
+    assert {
+        "task_enqueue",
+        "task_claim",
+        "task_complete",
+        "task_verify",
+        "task_inbox",
+        "task_heartbeat",
+        "task_abandon",
+    }.issubset(names)

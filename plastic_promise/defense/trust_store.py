@@ -14,6 +14,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
+from plastic_promise.core.paths import get_db_path
 from plastic_promise.core.constants import (
     TRUST_INITIAL,
     TRUST_MAX,
@@ -42,7 +43,7 @@ class TrustStore:
 
     def __init__(self, db_path: str | None = None) -> None:
         if db_path is None:
-            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+            db_path = get_db_path()
         # Resolve to absolute path to prevent split-brain when CWD differs
         db_path = os.path.abspath(db_path)
         self._conn = sqlite3.connect(db_path)

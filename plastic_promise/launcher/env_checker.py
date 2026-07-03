@@ -16,6 +16,8 @@ import urllib.error
 import urllib.request
 from typing import overload
 
+from plastic_promise.core.paths import get_db_path
+
 
 @overload
 def run_env_checks(skip_ollama: bool = False) -> tuple[bool, list[str]]: ...
@@ -94,7 +96,7 @@ def run_env_checks(
             all_ok = False
 
     # 5. plastic_memory.db
-    db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    db_path = get_db_path()
     if os.path.exists(db_path):
         messages.append(f"[ENV]   {db_path} ................. [OK] found")
     else:

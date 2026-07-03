@@ -24,6 +24,7 @@ from plastic_promise.core.constants import (
     PRINCIPLE_INHERITANCE_DECAY,
     SYMBOL_RULE_KEYWORDS,
 )
+from plastic_promise.core.paths import get_db_path
 
 # ============================================================
 # 数据模型 (与 Rust 结构体一一对应)
@@ -337,7 +338,7 @@ class ContextEngine:
                 return
 
             # DB path — used by both DomainManager and LanceDBStore
-            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+            db_path = get_db_path()
 
             # DomainManager for domain-weighted retrieval
             try:
@@ -1924,7 +1925,7 @@ class ContextEngine:
         from context_engine_core import ContextEngine as RustEngine
 
         # Ensure Rust engine finds the real database
-        db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+        db_path = get_db_path()
         if not os.path.isabs(db_path):
             db_path = os.path.abspath(db_path)
         os.environ["PLASTIC_DB_PATH"] = db_path
@@ -2762,7 +2763,7 @@ class _SQLiteStorage:
         import sqlite3
 
         if db_path is None:
-            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+            db_path = get_db_path()
         self._conn = sqlite3.connect(db_path)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(

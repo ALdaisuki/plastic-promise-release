@@ -10,9 +10,10 @@ Dimensions:
 """
 
 import json
-import os
 import sqlite3
 from datetime import datetime
+
+from plastic_promise.core.paths import get_db_path
 
 
 async def scan_scheduler_health(engine) -> dict:
@@ -24,7 +25,7 @@ async def scan_scheduler_health(engine) -> dict:
       - dispatched: number of tasks enqueued
       - auto_actions: list of auto-throttle actions taken
     """
-    db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     audit_id = f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

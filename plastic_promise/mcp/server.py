@@ -724,6 +724,48 @@ async def list_tools() -> list[Tool]:
                     "required": ["task_id", "verdict"],
                 },
             ),
+            Tool(
+                name="task_inbox",
+                description="Hunter Guild 委托板查看 — 显示可接委托、我的进行中任务和等级匹配度。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_name": {"type": "string", "description": "查看委托板的猎人名称"},
+                        "trust_score": {"type": "number", "description": "猎人当前信任分"},
+                        "filter_status": {
+                            "type": "string",
+                            "description": "pending | my_active | pending_review | all (默认 pending)",
+                        },
+                        "limit": {"type": "integer", "description": "返回数量上限 (默认 20)"},
+                    },
+                    "required": ["agent_name", "trust_score"],
+                },
+            ),
+            Tool(
+                name="task_heartbeat",
+                description="Hunter Guild 委托心跳 — 猎人汇报任务仍在执行，避免超时释放。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "委托 ID"},
+                        "agent_name": {"type": "string", "description": "揭榜猎人名称"},
+                    },
+                    "required": ["task_id", "agent_name"],
+                },
+            ),
+            Tool(
+                name="task_abandon",
+                description="Hunter Guild 主动弃单 — 放弃已揭榜委托并记录信任分惩罚。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "委托 ID"},
+                        "agent_name": {"type": "string", "description": "揭榜猎人名称"},
+                        "reason": {"type": "string", "description": "弃单原因"},
+                    },
+                    "required": ["task_id", "agent_name"],
+                },
+            ),
         ]
     )
 
@@ -1320,6 +1362,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             from plastic_promise.mcp.tools.task_queue import handle_task_verify
 
             return await handle_task_verify(engine, arguments)
+        elif name == "task_inbox":
+            from plastic_promise.mcp.tools.task_queue import handle_task_inbox
+
+            return await handle_task_inbox(engine, arguments)
+        elif name == "task_heartbeat":
+            from plastic_promise.mcp.tools.task_queue import handle_task_heartbeat
+
+            return await handle_task_heartbeat(engine, arguments)
+        elif name == "task_abandon":
+            from plastic_promise.mcp.tools.task_queue import handle_task_abandon
+
+            return await handle_task_abandon(engine, arguments)
 
         # Skill tracking
         elif name == "skill_session_start":
@@ -1526,15 +1580,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "sp-stage":
             stage = arguments.get("stage", "")
             task_desc = arguments.get("task_description", "")
-            # ── Chain validation: reject invalid stage transitions ──
-            from plastic_promise.core.constants import SKILL_CHAIN_MAP as _CHAIN_MAP
+            # ── Chain validation: reject invalid non-root stage transitions ──
+            from plastic_promise.core.constants import (
+                SKILL_CHAIN_MAP as _CHAIN_MAP,
+                normalize_stage_name,
+            )
             from plastic_promise.mcp.tools.skill_tracking import get_current_stage
 
+            lookup_stage = normalize_stage_name(stage)
             current = get_current_stage()
-            if current and current != stage:
-                # Strip "sp-" and "superpowers:" prefixes for lookup
-                lookup_current = current.replace("sp-", "").replace("superpowers:", "")
-                lookup_stage = stage.replace("sp-", "").replace("superpowers:", "")
+            lookup_current = normalize_stage_name(current)
+            if lookup_current and lookup_current != lookup_stage:
                 target_chain = _CHAIN_MAP.get(lookup_stage) or _CHAIN_MAP.get(
                     f"sp-{lookup_stage}", {}
                 )
@@ -1548,18 +1604,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         f"sp-{lookup_current}", {}
                     )
                     valid_next = chain.get("successors", [])
-                    # Normalize: remove sp- prefix for comparison
-                    valid_next_normalized = [s.replace("sp-", "") for s in valid_next]
-                    if lookup_stage not in valid_next and lookup_stage not in valid_next_normalized:
+                    valid_next_normalized = [normalize_stage_name(s) for s in valid_next]
+                    if lookup_stage not in valid_next_normalized:
                         return [
                             TextContent(
                                 type="text",
                                 text=json.dumps(
                                     {
                                         "error": "chain_violation",
-                                        "message": f"Stage '{stage}' is not a valid successor of '{current}'. Valid next stages: {valid_next}",
-                                        "current_stage": current,
-                                        "valid_next": valid_next,
+                                        "message": f"Stage '{stage}' is not a valid successor of '{lookup_current}'. Valid next stages: {valid_next_normalized}",
+                                        "current_stage": lookup_current,
+                                        "valid_next": valid_next_normalized,
                                     },
                                     ensure_ascii=False,
                                 ),
@@ -1567,7 +1622,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         ]
             # ── End chain validation ──
             se = get_skill_engine()
-            skill_name = f"sp-{stage}" if not stage.startswith("sp-") else stage
+            skill_name = f"sp-{lookup_stage}"
             result = await se.exec(skill_name, {"task_description": task_desc}, caller="trae")
             if not result.success:
                 return [

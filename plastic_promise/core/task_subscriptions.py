@@ -11,6 +11,8 @@ import logging
 import os
 import sqlite3
 
+from plastic_promise.core.paths import get_db_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,7 +31,7 @@ def match_subscribers(task: dict) -> list[str]:
     Returns:
         List of matching agent_name strings.
     """
-    db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    db_path = get_db_path()
     if not os.path.exists(db_path):
         logger.debug("Database not found at %s, no subscribers", db_path)
         return []

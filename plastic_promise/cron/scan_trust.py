@@ -1,8 +1,9 @@
 """Trust health scanner — rapid drops, stagnant trust, trust erosion detection."""
 
-import os
 import sqlite3
 from datetime import datetime, timedelta
+
+from plastic_promise.core.paths import get_db_path
 
 
 async def scan_trust(engine) -> dict:
@@ -11,7 +12,7 @@ async def scan_trust(engine) -> dict:
     2. Stagnant trust — trust unchanged (<0.01 movement) for 14+ days
     3. Trust tier demotions — agents falling below rank thresholds
     """
-    db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     findings = []

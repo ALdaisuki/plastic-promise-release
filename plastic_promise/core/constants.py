@@ -836,6 +836,35 @@ MERGE_AUDIT_RETENTION_DAYS = 7  # merged records kept in SQLite before permanent
 # Skill Tracking — SuperPowers 流程可追踪化
 # ============================================================
 
+STAGE_ALIASES: dict[str, str] = {
+    "review": "receiving-code-review",
+    "request-review": "requesting-code-review",
+    "receive-review": "receiving-code-review",
+    "subagent": "subagent-driven-development",
+    "tdd": "test-driven-development",
+    "verify": "verification-before-completion",
+    "finish": "finishing-a-development-branch",
+    "debug": "systematic-debugging",
+    "parallel": "dispatching-parallel-agents",
+    "worktrees": "using-git-worktrees",
+}
+
+
+def normalize_stage_name(name: str | None) -> str:
+    """Return the canonical SuperPowers stage name for hooks and sp-stage.
+
+    Hook payloads can arrive as raw Claude skill names (``review``), tagged
+    stage names (``sp-review``), or SuperPowers namespaced values.  The chain
+    map uses canonical stage keys, so normalize once before validation.
+    """
+    stage = (name or "").strip().lower()
+    for prefix in ("superpowers:", "sp-"):
+        if stage.startswith(prefix):
+            stage = stage[len(prefix) :]
+            break
+    return STAGE_ALIASES.get(stage, stage)
+
+
 SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     # ── SuperPowers 原始 skills (概念层) ──
     "brainstorming": {"predecessors": [], "successors": ["exemplar-research"]},

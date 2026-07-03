@@ -16,6 +16,8 @@ import datetime
 import json
 from dataclasses import dataclass
 
+from plastic_promise.core.paths import get_db_path
+
 
 @dataclass
 class StepAuditResult:
@@ -189,7 +191,7 @@ class StepAuditor:
 
             from plastic_promise.core.domain_manager import DomainManager
 
-            db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+            db_path = get_db_path()
             dm = DomainManager(db_path=db_path)
             decayed = dm.decay(agent_id="")
             if decayed:

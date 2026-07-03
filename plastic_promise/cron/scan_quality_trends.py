@@ -1,8 +1,9 @@
 """Quality trends scanner — fix recurrence, rejection rate, worth velocity."""
 
-import os
 import sqlite3
 from datetime import datetime, timedelta
+
+from plastic_promise.core.paths import get_db_path
 
 
 def _compute_median(values: list[float]) -> float:
@@ -19,7 +20,7 @@ async def scan_quality_trends(engine) -> dict:
     2. Rejection rate trend — rejection ratio increasing week-over-week
     3. Worth velocity — worth_score declining trend (uses metric_history)
     """
-    db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
+    db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     findings = []

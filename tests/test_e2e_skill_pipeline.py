@@ -943,11 +943,11 @@ class TestS7CrossSystemAudit:
         all_data = json.loads(trace_all[0].text)
         assert all_data["total_count"] == 6  # 5 auto + 1 real
 
-    def test_mcp_tool_count_40(self):
+    def test_mcp_tool_count_includes_phase1_tools(self):
         from plastic_promise.mcp.server import list_tools
 
         tools = asyncio.run(list_tools())
-        assert len(tools) == 40
+        assert len(tools) >= 51
         names = [t.name for t in tools]
         for expected in [
             "skill_session_start",

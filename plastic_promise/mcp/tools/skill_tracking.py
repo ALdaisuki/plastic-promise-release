@@ -21,6 +21,7 @@ from plastic_promise.core.constants import (
     SKILL_CHAIN_MAP,
     SKILL_COMPLETE_WORTH_DELTA,
     SKILL_DOMAIN_MAP,
+    normalize_stage_name,
 )
 
 # ---------------------------------------------------------------------------
@@ -1117,10 +1118,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
     if phase == "start":
         with _skill_state_lock:
             # ── Lightweight start: just create entity + activate principles ──
-            # Normalize skill_name (strip "sp-" prefix for lookup)
-            lookup_name = (
-                skill_name.replace("sp-", "") if skill_name.startswith("sp-") else skill_name
-            )
+            lookup_name = normalize_stage_name(skill_name)
             domain = SKILL_DOMAIN_MAP.get(lookup_name, "general")
             entity_id = _make_entity_id(lookup_name)
 
@@ -1180,8 +1178,10 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                     )
                 except Exception:
                     pass
-            _parent_entity_id = eid
-            _current_stage = skill_name  # Track last completed stage
+            completed_stage = normalize_stage_name(skill_name)
+            if completed_stage in SKILL_CHAIN_MAP:
+                _parent_entity_id = eid
+                _current_stage = completed_stage  # Track last completed SuperPowers stage
             _current_skill = None
             _current_entity_id = None  # Clear hook session marker
         return [
