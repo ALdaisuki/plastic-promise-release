@@ -9,12 +9,11 @@ LLM classify cache: SHA-256 content hash → category, LRU 128 / 300s TTL.
 
 import hashlib
 import re
-import json
 import threading
 import time
+from dataclasses import dataclass
+
 import requests
-from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -84,7 +83,7 @@ CATEGORY_KEYWORDS = {
 }
 
 
-def _classify_by_rules(text: str) -> tuple[Optional[str], float]:
+def _classify_by_rules(text: str) -> tuple[str | None, float]:
     """Classify text into a category using keyword matching.
 
     Returns:
@@ -185,7 +184,7 @@ def _llm_classify(
     ollama_host: str,
     ollama_model: str,
     timeout: int = 10,
-) -> Optional[str]:
+) -> str | None:
     """Use Ollama LLM to classify text into one of 6 categories.
 
     Results cached by content hash (LRU 128, TTL 300s) — repeated or
@@ -237,7 +236,7 @@ Category:"""
 
 
 # ── LLM classify cache ──
-_llm_classify_cache: dict[str, tuple[Optional[str], float]] = {}
+_llm_classify_cache: dict[str, tuple[str | None, float]] = {}
 _llm_cache_lock = threading.Lock()
 _LLM_CLASSIFY_CACHE_SIZE = 128
 _LLM_CLASSIFY_CACHE_TTL = 300  # seconds

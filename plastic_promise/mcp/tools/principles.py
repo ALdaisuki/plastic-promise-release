@@ -54,7 +54,7 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
 
         # domain_hint filter — optionally narrow to a behavior domain
         # All-domain principles are always included regardless of hint.
-        domain_hint = args.get("domain_hint", None)
+        domain_hint = args.get("domain_hint")
         if domain_hint and domain_hint != "all":
             principles = [p for p in principles if p["domain"] in (domain_hint, "all")]
 

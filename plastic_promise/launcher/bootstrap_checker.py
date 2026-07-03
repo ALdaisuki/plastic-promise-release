@@ -22,7 +22,7 @@ def check_bootstrap(db_path: str) -> tuple[bool, str]:
 
         if total > 0:
             return False, f"DB ready ({total} memories, {seed} seed)"
-        return True, "DB exists but empty -- bootstrap needed"
+        return True, "DB exists but empty -- bootstrap needed (seed required)"
     except sqlite3.OperationalError as e:
         return True, f"DB exists but memories table missing: {e}"
 

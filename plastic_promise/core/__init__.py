@@ -7,48 +7,47 @@
 """
 
 from plastic_promise.core.constants import (
-    DIGITAL_BODY_SYSTEMS,
-    DEFENSE_LAYERS,
-    TRUST_INITIAL,
-    TRUST_DECAY_RATE,
-    TRUST_BOOST_RATE,
-    TRUST_MIN,
-    TRUST_MAX,
-    AUDIT_DIMENSIONS,
-    SCARF_DIMENSIONS,
-    CONTEXT_LAYERS,
-    RRF_K,
-    SYMBOL_RULE_KEYWORDS,
     ASSOCIATION_WEIGHTS,
-    MEMORY_TIERS,
-    MEMORY_HEALTH_THRESHOLD,
+    AUDIT_DIMENSIONS,
+    CEI_TARGET,
+    CEI_THRESHOLDS,
+    CLASSIFIER_KEYWORDS,
+    CLASSIFIER_THRESHOLD_ACP,
+    CLASSIFIER_THRESHOLD_CLAUDE,
+    CLOSURE_RATE_TARGET,
+    CONTEXT_LAYERS,
+    CORE_PRINCIPLES,
+    CRON_CONFIG,
+    CURIOSITY_EXPLORE_RATE,
+    DEFENSE_LAYERS,
+    DIGITAL_BODY_SYSTEMS,
+    INERTIA_SUPPRESSION_THRESHOLD,
+    INERTIA_SUPPRESSION_WINDOW,
     MEMORY_DECAY_THRESHOLD,
     MEMORY_GC_INTERVAL_DAYS,
-    WORTH_SUCCESS_WEIGHT,
+    MEMORY_HEALTH_THRESHOLD,
+    MEMORY_TIERS,
+    PRE_CHECK_ALERT_THRESHOLD,
+    PRINCIPLE_ACTIVATION_TARGET,
+    PRINCIPLE_DOMAINS,
+    PRINCIPLE_INHERITANCE_DECAY,
+    PRINCIPLE_INHERITANCE_DIRECTIONS,
+    RRF_K,
+    SCARF_DIMENSIONS,
+    SYMBOL_RULE_KEYWORDS,
+    TRUST_BOOST_RATE,
+    TRUST_DECAY_RATE,
+    TRUST_INITIAL,
+    TRUST_MAX,
+    TRUST_MIN,
     WORTH_FAILURE_WEIGHT,
     WORTH_MIN_OBSERVATIONS,
-    CORE_PRINCIPLES,
-    PRINCIPLE_DOMAINS,
-    PRINCIPLE_INHERITANCE_DIRECTIONS,
-    PRINCIPLE_INHERITANCE_DECAY,
-    CRON_CONFIG,
-    CLASSIFIER_KEYWORDS,
-    CLASSIFIER_THRESHOLD_CLAUDE,
-    CLASSIFIER_THRESHOLD_ACP,
-    CEI_THRESHOLDS,
-    CEI_TARGET,
-    PRE_CHECK_ALERT_THRESHOLD,
-    CLOSURE_RATE_TARGET,
-    PRINCIPLE_ACTIVATION_TARGET,
-    INERTIA_SUPPRESSION_WINDOW,
-    INERTIA_SUPPRESSION_THRESHOLD,
-    CURIOSITY_EXPLORE_RATE,
+    WORTH_SUCCESS_WEIGHT,
 )
-
 from plastic_promise.core.context_engine import (
     ContextEngine,
-    ContextPack,
     ContextItem,
+    ContextPack,
 )
 
 # Lazy imports for heavy modules (lancedb + pyarrow = ~1446ms)
@@ -62,9 +61,13 @@ def __getattr__(name):
     if name in ("LanceDBStore", "EMB_DIM", "TABLE_NAME"):
         if _lazy_lancedb is None:
             from plastic_promise.core.lancedb_store import (
-                LanceDBStore as _LanceDBStore,
                 EMB_DIM as _EMB_DIM,
+            )
+            from plastic_promise.core.lancedb_store import (
                 TABLE_NAME as _TABLE_NAME,
+            )
+            from plastic_promise.core.lancedb_store import (
+                LanceDBStore as _LanceDBStore,
             )
 
             _lazy_lancedb = {

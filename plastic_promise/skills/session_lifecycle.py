@@ -24,8 +24,11 @@ def _compile_component_health(ctx) -> dict:
     # embedder
     try:
         from plastic_promise.core.embedder import get_embedder
+
         emb = get_embedder()
-        health["embedder"] = "fallback_zero" if getattr(emb, "model_name", "") == "fallback-zero" else "healthy"
+        health["embedder"] = (
+            "fallback_zero" if getattr(emb, "model_name", "") == "fallback-zero" else "healthy"
+        )
     except Exception:
         health["embedder"] = "fallback_zero"
 
@@ -74,8 +77,8 @@ async def _session_init_handler(ctx, params, atom_results):
 
     # ── Chain state: report current SKILL_CHAIN_MAP position ──
     try:
-        from plastic_promise.mcp.tools.skill_tracking import get_current_stage
         from plastic_promise.core.constants import SKILL_CHAIN_MAP as _CHAIN_MAP
+        from plastic_promise.mcp.tools.skill_tracking import get_current_stage
 
         current_stage = get_current_stage()
         chain_state = None

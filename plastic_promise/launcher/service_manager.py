@@ -6,19 +6,16 @@ dependency ordering, health checks, and crash recovery support.
 
 import asyncio
 import os
-import signal
 import subprocess
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from datetime import datetime
-from typing import Optional
 
 from plastic_promise.launcher.service_definition import (
     ServiceDefinition,
     ServiceStatus,
-    RestartPolicy,
 )
 
 
@@ -28,8 +25,8 @@ class ServiceRuntime:
     def __init__(self, definition: ServiceDefinition):
         self.definition = definition
         self.status = ServiceStatus.PENDING
-        self.process: Optional[subprocess.Popen] = None
-        self.pid: Optional[int] = None
+        self.process: subprocess.Popen | None = None
+        self.pid: int | None = None
         self.restart_timestamps: list[float] = []
         self.consecutive_failures = 0
 
@@ -72,7 +69,7 @@ class ServiceManager:
         Raises ValueError if a dependency cycle is detected.
         """
         WHITE, GRAY, BLACK = 0, 1, 2
-        color = {name: WHITE for name in self._runtimes}
+        color = dict.fromkeys(self._runtimes, WHITE)
         order = []
 
         def visit(name: str, path: list[str]):
@@ -98,7 +95,7 @@ class ServiceManager:
 
         return order  # post-order = dependencies before dependents
 
-    async def start_all(self, log_file: Optional[str] = None):
+    async def start_all(self, log_file: str | None = None):
         """Start all services in dependency order."""
         for rt in self._topological_order():
             await self._start_service(rt, log_file)
@@ -114,7 +111,7 @@ class ServiceManager:
                                 log_file,
                             )
 
-    async def _start_service(self, rt: ServiceRuntime, log_file: Optional[str] = None):
+    async def _start_service(self, rt: ServiceRuntime, log_file: str | None = None):
         """Start a single service and wait for health check."""
         svc = rt.definition
         rt.status = ServiceStatus.STARTING
@@ -202,7 +199,9 @@ class ServiceManager:
 
         # 2. Heartbeat file check (for daemon)
         if svc.name == "maintenance-daemon":
-            heartbeat_path = os.path.join(self._project_root, "maintenance_daemon.heartbeat")
+            heartbeat_path = os.path.join(
+                self._project_root, "var", "run", "maintenance_daemon.heartbeat"
+            )
             if os.path.exists(heartbeat_path):
                 try:
                     mtime = os.path.getmtime(heartbeat_path)
@@ -281,7 +280,7 @@ class ServiceManager:
         rt.status = ServiceStatus.STOPPED
         rt.pid = None
 
-    async def stop_all(self, log_file: Optional[str] = None):
+    async def stop_all(self, log_file: str | None = None):
         """Stop all services in reverse dependency order."""
         for rt in reversed(self._topological_order()):
             if rt.status in (ServiceStatus.HEALTHY, ServiceStatus.STARTING, ServiceStatus.FAILED):
@@ -291,7 +290,7 @@ class ServiceManager:
                 self._stop_service(rt)
                 self._log(f"[STOP]  {rt.definition.name} .................... stopped", log_file)
 
-    def reset_service(self, name: str, log_file: Optional[str] = None):
+    def reset_service(self, name: str, log_file: str | None = None):
         """Reset a service from UNRECOVERABLE back to STOPPED, clearing restart history."""
         rt = self._runtimes.get(name)
         if rt is None:
@@ -309,7 +308,7 @@ class ServiceManager:
                 )
 
     @staticmethod
-    def _log(message: str, log_file: Optional[str] = None):
+    def _log(message: str, log_file: str | None = None):
         timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         full_msg = f"[{timestamp}] {message}"
         print(full_msg)

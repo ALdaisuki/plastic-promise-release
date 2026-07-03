@@ -27,11 +27,9 @@ except ImportError:
         stripped = text.strip()
         if not stripped:
             return False
-        emoji_chars = sum(
-            1 for c in stripped
-            if _unicodedata.category(c) in ("So", "Sk")
-        )
+        emoji_chars = sum(1 for c in stripped if _unicodedata.category(c) in ("So", "Sk"))
         return emoji_chars > 0 and emoji_chars >= len(stripped) * 0.5
+
 
 DENIAL_PATTERNS = [
     r"i (do ?n[o\']?t|don'?t) have.*(information|data|memory|record)",

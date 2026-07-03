@@ -4,10 +4,9 @@
 """
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from plastic_promise.core.constants import (
-    ASSOCIATION_WEIGHTS,
     TRUST_BOOST_RATE,
     TRUST_DECAY_RATE,
 )
@@ -23,7 +22,7 @@ class EmotionAccount:
     def __init__(self) -> None:
         """初始化情感账户，余额从零开始。"""
         self.balance: float = 0.0
-        self._transactions: List[Dict[str, Any]] = list()
+        self._transactions: list[dict[str, Any]] = list()
 
     def deposit(self, amount: float, reason: str = "") -> float:
         """存入正反馈激素。
@@ -81,7 +80,7 @@ class EmotionAccount:
         """获取历史交易笔数。"""
         return len(self._transactions)
 
-    def get_recent_transactions(self, n: int = 10) -> List[Dict[str, Any]]:
+    def get_recent_transactions(self, n: int = 10) -> list[dict[str, Any]]:
         """获取最近 n 笔交易记录。"""
         return self._transactions[-n:] if self._transactions else []
 
@@ -96,7 +95,7 @@ class HormoneEngine:
     - 基于 TRUST_BOOST_RATE / TRUST_DECAY_RATE 计算信任分增量
     """
 
-    def __init__(self, trust_manager: Optional[Any] = None, target: str = "claude") -> None:
+    def __init__(self, trust_manager: Any | None = None, target: str = "claude") -> None:
         """初始化激素引擎。
 
         Args:
@@ -115,7 +114,7 @@ class HormoneEngine:
         feedback_type: str,
         intensity: float = 1.0,
         context: str = "",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """应用一条反馈，返回本次反馈的完整影响报告。
 
         Args:
@@ -199,7 +198,7 @@ class HormoneEngine:
 
         return delta
 
-    def get_hormone_status(self) -> Dict[str, Any]:
+    def get_hormone_status(self) -> dict[str, Any]:
         """获取当前激素系统状态快照。
 
         Returns:

@@ -7,22 +7,21 @@ Public tools:
 - skill_session_audit     : Post-hoc gap scan, auto-remediate
 """
 
-import json
 import datetime
+import json
 import threading
 from typing import Any
 
 from mcp.types import TextContent
 
 from plastic_promise.core.constants import (
-    SKILL_CHAIN_MAP,
-    SKILL_DOMAIN_MAP,
     DOMAIN_TO_TASK_TYPE,
-    ORPHAN_THRESHOLD_MINUTES,
     MAX_STILL_IN_PROGRESS_RENEWALS,
+    ORPHAN_THRESHOLD_MINUTES,
+    SKILL_CHAIN_MAP,
     SKILL_COMPLETE_WORTH_DELTA,
+    SKILL_DOMAIN_MAP,
 )
-
 
 # ---------------------------------------------------------------------------
 # Module-level state — hook 调用间保持调用链
@@ -280,8 +279,8 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
         chain_valid, gaps[], chain_warnings[], total_count.
     """
     session_scope: str = args.get("session_scope", "all")
-    skill_filter: str | None = args.get("skill_name", None)
-    status_filter: str | None = args.get("status", None)
+    skill_filter: str | None = args.get("skill_name")
+    status_filter: str | None = args.get("status")
     include_auto_inject: bool = args.get("include_auto_inject", False)
 
     # -- Resolve branch name for session_scope "branch" ----------------------
@@ -547,7 +546,7 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
     """
     skill_name = args.get("skill_name", "")
     task_description = args.get("task_description", "")
-    parent_entity_id = args.get("parent_entity_id", None)
+    parent_entity_id = args.get("parent_entity_id")
 
     # Normalize: strip plugin namespace prefix (e.g. "superpowers:brainstorming" → "brainstorming")
     _normalized_name = skill_name
@@ -672,7 +671,7 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
         memory_id, and optionally artifact_memory_ids.
     """
     entity_id = args.get("entity_id", "")
-    outcome = args.get("outcome", None)
+    outcome = args.get("outcome")
     artifacts = args.get("artifacts", [])
 
     # ------------------------------------------------------------------
@@ -930,7 +929,7 @@ async def handle_skill_session_audit(engine: Any, args: dict) -> list[TextConten
         ``gaps_found[]``, and ``auto_fixed[]``.
     """
     auto_fix: bool = args.get("auto_fix", False)
-    skill_filter: str | None = args.get("skill_name", None)
+    skill_filter: str | None = args.get("skill_name")
 
     known_skill_names: set[str] = set(SKILL_DOMAIN_MAP.keys())
 

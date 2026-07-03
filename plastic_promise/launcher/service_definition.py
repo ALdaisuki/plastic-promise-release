@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 
 class ServiceStatus(Enum):
@@ -27,7 +26,7 @@ class RestartPolicy:
 class ServiceDefinition:
     name: str
     command: list[str]
-    health_url: Optional[str] = None
+    health_url: str | None = None
     startup_timeout: float = 30.0
     health_check_interval: float = 5.0
     depends_on: list[str] = field(default_factory=list)

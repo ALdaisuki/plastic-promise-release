@@ -6,12 +6,12 @@
 - 好奇心探索引擎
 """
 
-from plastic_promise.reflection.soul_scarf import SCARFReflector, scarf_reflect
+from plastic_promise.reflection.soul_curiosity import CuriosityExplorer, curiosity_explore
 from plastic_promise.reflection.soul_proprioception import (
     ProprioceptionManager,
     inertia_check,
 )
-from plastic_promise.reflection.soul_curiosity import CuriosityExplorer, curiosity_explore
+from plastic_promise.reflection.soul_scarf import SCARFReflector, scarf_reflect
 
 __all__ = [
     "SCARFReflector",

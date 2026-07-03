@@ -50,10 +50,7 @@ def _is_high_risk(pr_meta: dict) -> bool:
         return True
     # Size-based: count code files only (exclude docs, config, lockfiles)
     files = pr_meta.get("files", [])
-    code_files = sum(
-        1 for f in files
-        if not any(f.endswith(ext) for ext in NON_CODE_EXTENSIONS)
-    )
+    code_files = sum(1 for f in files if not any(f.endswith(ext) for ext in NON_CODE_EXTENSIONS))
     if code_files >= HIGH_RISK_CODE_FILES:
         return True
     if pr_meta.get("lines_changed", 0) >= HIGH_RISK_LINES:
@@ -127,19 +124,21 @@ async def _audit_handler(ctx, params: dict, atom_results: dict):
         "trust_delta": trust_delta,
     }
     try:
-        ctx.register_memory({
-            "id": f"audit_pr{pr_number}_{int(_time.time())}",
-            "content": _json.dumps(report, ensure_ascii=False),
-            "memory_type": "audit",
-            "source": "audit",
-            "tags": [
-                f"pr:{pr_number}",
-                "audit:completed" if passed else "audit:blocked",
-                "risk:high",
-            ],
-            "domain": "audit",
-            "tier": "L2",
-        })
+        ctx.register_memory(
+            {
+                "id": f"audit_pr{pr_number}_{int(_time.time())}",
+                "content": _json.dumps(report, ensure_ascii=False),
+                "memory_type": "audit",
+                "source": "audit",
+                "tags": [
+                    f"pr:{pr_number}",
+                    "audit:completed" if passed else "audit:blocked",
+                    "risk:high",
+                ],
+                "domain": "audit",
+                "tier": "L2",
+            }
+        )
     except Exception:
         pass  # audit report storage failure never blocks the audit
 

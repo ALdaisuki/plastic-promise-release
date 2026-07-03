@@ -6,8 +6,8 @@
 - TrustStore (信任分 SQLite 持久化 + 时间衰减)
 """
 
+from plastic_promise.defense.soul_audit import AuditReport, SoulAuditor
 from plastic_promise.defense.soul_enforcer import SoulEnforcer, TrustManager
-from plastic_promise.defense.soul_audit import SoulAuditor, AuditReport
 from plastic_promise.defense.trust_store import TrustStore
 
 __all__ = [

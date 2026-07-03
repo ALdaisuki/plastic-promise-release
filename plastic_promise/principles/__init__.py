@@ -10,9 +10,9 @@ work->all / life->all 单向扩散 + 同步衰减。
 from plastic_promise.core.principles import (
     PrincipleManager,
     principle_activate,
-    principle_inherit,
     principle_diffuse,
     principle_evaluate,
+    principle_inherit,
 )
 
 __all__ = [

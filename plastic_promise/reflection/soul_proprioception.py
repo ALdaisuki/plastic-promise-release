@@ -10,11 +10,11 @@
 """
 
 from collections import Counter, deque
-from typing import Any, Dict, List
+from typing import Any
 
 from plastic_promise.core.constants import (
-    INERTIA_SUPPRESSION_WINDOW,
     INERTIA_SUPPRESSION_THRESHOLD,
+    INERTIA_SUPPRESSION_WINDOW,
 )
 
 
@@ -68,7 +68,7 @@ class ProprioceptionManager:
         union = words1 | words2
         return len(intersection) / len(union)
 
-    def check_inertia(self, recent_tasks: List[str]) -> Dict[str, Any]:
+    def check_inertia(self, recent_tasks: list[str]) -> dict[str, Any]:
         """检查近期任务列表是否存在惯性僵化。
 
         对给定的任务列表计算两两相似度，
@@ -88,7 +88,7 @@ class ProprioceptionManager:
             return {"inertia_detected": False}
 
         # 计算两两 Jaccard 相似度
-        similarities: List[float] = []
+        similarities: list[float] = []
         for i in range(len(recent_tasks)):
             for j in range(i + 1, len(recent_tasks)):
                 sim = self._jaccard_similarity(recent_tasks[i], recent_tasks[j])
@@ -98,7 +98,7 @@ class ProprioceptionManager:
         max_similarity = max(similarities)
         inertia_detected = avg_similarity > self.threshold
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "inertia_detected": inertia_detected,
             "similarity_score": avg_similarity,
             "avg_similarity": avg_similarity,
@@ -108,11 +108,11 @@ class ProprioceptionManager:
         if inertia_detected:
             self.suppressed_count += 1
             result["suggestion"] = (
-                "检测到任务模式惯性僵化（相似度 {:.2%}）。"
+                f"检测到任务模式惯性僵化（相似度 {avg_similarity:.2%}）。"
                 "建议：1) 切换到不同领域的任务；"
                 "2) 引入新的方法论或工具；"
                 "3) 暂时休息或切换上下文以打破惯性循环。"
-            ).format(avg_similarity)
+            )
 
         return result
 
@@ -126,7 +126,7 @@ class ProprioceptionManager:
         """
         self.recent_tasks.append(task_description)
 
-    def get_pattern_analysis(self) -> Dict[str, Any]:
+    def get_pattern_analysis(self) -> dict[str, Any]:
         """分析历史任务的行为模式。
 
         基于当前记录的任务历史，识别高频模式、
@@ -140,7 +140,7 @@ class ProprioceptionManager:
                 - total_tasks: 已记录的任务总数
         """
         # 收集所有词汇并统计频率
-        all_words: List[str] = []
+        all_words: list[str] = []
         for task in self.recent_tasks:
             all_words.extend(task.lower().split())
 
@@ -156,7 +156,7 @@ class ProprioceptionManager:
         else:
             variety_score = 0.0
 
-        suggestions: List[str] = []
+        suggestions: list[str] = []
         if variety_score < 0.5:
             suggestions.append("任务词汇多样性较低，建议尝试不同领域的任务以保持探索活力")
         if len(self.recent_tasks) >= self.window_size:
@@ -174,7 +174,7 @@ class ProprioceptionManager:
         }
 
 
-def inertia_check(recent_tasks: List[str]) -> Dict[str, Any]:
+def inertia_check(recent_tasks: list[str]) -> dict[str, Any]:
     """模块级别的便捷惯性检查函数。
 
     创建临时 ProprioceptionManager 对给定任务列表进行一次性惯性检查，

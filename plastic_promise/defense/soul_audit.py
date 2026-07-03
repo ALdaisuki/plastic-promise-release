@@ -15,7 +15,7 @@ import datetime
 import json
 import os
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from plastic_promise.core.constants import (
     AUDIT_DIMENSIONS,
@@ -46,11 +46,11 @@ class AuditReport:
         """
         self.timestamp: datetime.datetime = datetime.datetime.now()
         self.scope: str = "full"
-        self.dimensions: Dict[str, Dict[str, Any]] = {}
-        self.findings: List[Dict[str, Any]] = []
+        self.dimensions: dict[str, dict[str, Any]] = {}
+        self.findings: list[dict[str, Any]] = []
         self.overall_score: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """将审计报告转换为纯字典。
 
         Returns:
@@ -79,7 +79,7 @@ class AuditReport:
         Returns:
             Markdown 格式的完整审计报告
         """
-        lines: List[str] = []
+        lines: list[str] = []
         lines.append("# Soul Audit Report")
         lines.append("")
         lines.append(f"**Timestamp**: {self.timestamp.isoformat()}")
@@ -135,8 +135,8 @@ class SoulAuditor:
             db_path: SQLite 数据库路径，为空则使用环境变量 PLASTIC_DB_PATH
             engine: ContextEngine 实例引用，用于动态查询
         """
-        self._reports: List[AuditReport] = []
-        self._last_audit_time: Optional[datetime.datetime] = None
+        self._reports: list[AuditReport] = []
+        self._last_audit_time: datetime.datetime | None = None
         self._db_path = db_path or os.environ.get(
             "PLASTIC_DB_PATH",
             os.path.join(os.path.dirname(__file__), "..", "..", "plastic_memory.db"),
@@ -145,7 +145,7 @@ class SoulAuditor:
 
     # ── 动态评分：从真实数据源计算每个维度 ────────────────────
 
-    def _score_simplicity(self) -> tuple[float, Dict[str, Any]]:
+    def _score_simplicity(self) -> tuple[float, dict[str, Any]]:
         """动态计算奥卡姆剃刀评分。
 
         数据源：step_audit_log.jsonl 中的 simplicity_score 平均值。
@@ -156,7 +156,7 @@ class SoulAuditor:
         scores = []
         audit_log = os.path.join(os.path.dirname(self._db_path), "step_audit_log.jsonl")
         try:
-            with open(audit_log, "r", encoding="utf-8") as f:
+            with open(audit_log, encoding="utf-8") as f:
                 for line in f:
                     try:
                         entry = _json.loads(line.strip())
@@ -187,7 +187,7 @@ class SoulAuditor:
         except Exception:
             return 0.70, {"source": "default"}
 
-    def _score_transparency(self) -> tuple[float, Dict[str, Any]]:
+    def _score_transparency(self) -> tuple[float, dict[str, Any]]:
         """动态计算透明度评分。
 
         数据源：audit_log 中有 git_commit 的步骤比例 + git log 可用性。
@@ -198,7 +198,7 @@ class SoulAuditor:
         total = 0
         with_commit = 0
         try:
-            with open(audit_log, "r", encoding="utf-8") as f:
+            with open(audit_log, encoding="utf-8") as f:
                 for line in f:
                     try:
                         entry = _json.loads(line.strip())
@@ -228,7 +228,7 @@ class SoulAuditor:
         except Exception:
             return 0.50, {"source": "default"}
 
-    def _score_audit_closure(self) -> tuple[float, Dict[str, Any]]:
+    def _score_audit_closure(self) -> tuple[float, dict[str, Any]]:
         """动态计算自我审计闭环评分。
 
         数据源：audit_log 中 root_cause/improvement/lesson 的填充率。
@@ -241,7 +241,7 @@ class SoulAuditor:
         partial = 0  # 至少一项有
 
         try:
-            with open(audit_log, "r", encoding="utf-8") as f:
+            with open(audit_log, encoding="utf-8") as f:
                 for line in f:
                     try:
                         entry = _json.loads(line.strip())
@@ -270,7 +270,7 @@ class SoulAuditor:
 
         return 0.70, {"source": "default"}
 
-    def _score_principle_activation(self) -> tuple[float, Dict[str, Any]]:
+    def _score_principle_activation(self) -> tuple[float, dict[str, Any]]:
         """动态计算原则激活率。
 
         数据源：原则激活表中的记录数 + 域健康度。
@@ -306,7 +306,7 @@ class SoulAuditor:
 
         return 0.65, {"source": "default"}
 
-    def _score_memory_supply(self) -> tuple[float, Dict[str, Any]]:
+    def _score_memory_supply(self) -> tuple[float, dict[str, Any]]:
         """动态计算记忆供给质量。
 
         数据源：记忆 worth_success/worth_failure 比值。
@@ -339,7 +339,7 @@ class SoulAuditor:
 
         return 0.60, {"source": "default"}
 
-    def _score_constraint_compliance(self) -> tuple[float, Dict[str, Any]]:
+    def _score_constraint_compliance(self) -> tuple[float, dict[str, Any]]:
         """动态计算约束合规度。
 
         数据源：trust_scores 表健康度 + defense 状态。
@@ -368,7 +368,7 @@ class SoulAuditor:
 
         return 0.75, {"source": "default"}
 
-    def _score_feedback_closure(self) -> tuple[float, Dict[str, Any]]:
+    def _score_feedback_closure(self) -> tuple[float, dict[str, Any]]:
         """动态计算反馈闭环率。
 
         数据源：审计日志中 repairs/suggestions 的比例 + 趋势。
@@ -403,16 +403,16 @@ class SoulAuditor:
 
         return 0.50, {"source": "default"}
 
-    async def _score_skill_trace(self) -> tuple[float, Dict[str, Any]]:
+    async def _score_skill_trace(self) -> tuple[float, dict[str, Any]]:
         """动态计算 Skill 可追溯评分。
 
         数据源：skill_session 表完整性。
         """
         try:
+            from plastic_promise.mcp.server import get_engine
             from plastic_promise.mcp.tools.skill_tracking import (
                 handle_skill_session_trace,
             )
-            from plastic_promise.mcp.server import get_engine
 
             engine = get_engine()
             trace_result = await handle_skill_session_trace(
@@ -438,7 +438,7 @@ class SoulAuditor:
     async def run_audit(
         self,
         scope: str = "full",
-        time_range_hours: Optional[int] = None,
+        time_range_hours: int | None = None,
     ) -> AuditReport:
         """执行一次完整审计，覆盖八维度逐项评分。
 
@@ -521,7 +521,7 @@ class SoulAuditor:
 
         return report
 
-    def _suggest_fix(self, dim_key: str, score: float, details: Dict[str, Any]) -> str:
+    def _suggest_fix(self, dim_key: str, score: float, details: dict[str, Any]) -> str:
         """为低分维度生成具体的修复建议。"""
         suggestions = {
             "simplicity": "减少不必要的中间步骤和实体，检查是否有过度抽象",
@@ -539,7 +539,7 @@ class SoulAuditor:
         self,
         action_description: str,
         action_type: str = "exec",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """行动前合规检查 —— 评估行动是否在免疫约束范围内。
 
         快速评估操作合规性，返回通过状态和合规评分。
@@ -563,7 +563,7 @@ class SoulAuditor:
 
     def get_report(
         self,
-        dimension: Optional[str] = None,
+        dimension: str | None = None,
         format: str = "json",
     ) -> Any:
         """获取最近一次审计报告。
@@ -608,7 +608,7 @@ class SoulAuditor:
             return 0.0
         return self._reports[-1].overall_score
 
-    def get_alert_status(self) -> Dict[str, Any]:
+    def get_alert_status(self) -> dict[str, Any]:
         """获取当前告警状态。
 
         当合规率低于 PRE_CHECK_ALERT_THRESHOLD 时触发告警。

@@ -13,12 +13,10 @@ Cache: SHA-256(query + candidate_ids), LRU 64, TTL 60s
 import hashlib
 import json
 import logging
-import math
 import os
 import threading
 import time
 import urllib.request
-from typing import Optional
 
 logger = logging.getLogger("plastic-promise.reranker")
 
@@ -111,14 +109,17 @@ class MultiProviderReranker:
         """Jina AI Reranker API (free tier: 1M tokens/day)."""
         url = "https://api.jina.ai/v1/rerank"
         documents = [c.content[:500] for c in candidates[:30]]
-        payload = json.dumps({
-            "model": "jina-reranker-v2-base-multilingual",
-            "query": query[:500],
-            "documents": documents,
-            "top_n": min(len(candidates), 20),
-        }).encode("utf-8")
+        payload = json.dumps(
+            {
+                "model": "jina-reranker-v2-base-multilingual",
+                "query": query[:500],
+                "documents": documents,
+                "top_n": min(len(candidates), 20),
+            }
+        ).encode("utf-8")
         req = urllib.request.Request(
-            url, data=payload,
+            url,
+            data=payload,
             headers={"Content-Type": "application/json"},
         )
         timeout = max(1.0, min(_PROVIDER_TIMEOUT, deadline - time.time()))
@@ -135,14 +136,17 @@ class MultiProviderReranker:
         """SiliconFlow Reranker API (free tier: 1K calls/day)."""
         url = "https://api.siliconflow.cn/v1/rerank"
         documents = [c.content[:500] for c in candidates[:30]]
-        payload = json.dumps({
-            "model": "BAAI/bge-reranker-v2-m3",
-            "query": query[:500],
-            "documents": documents,
-            "top_n": min(len(candidates), 20),
-        }).encode("utf-8")
+        payload = json.dumps(
+            {
+                "model": "BAAI/bge-reranker-v2-m3",
+                "query": query[:500],
+                "documents": documents,
+                "top_n": min(len(candidates), 20),
+            }
+        ).encode("utf-8")
         req = urllib.request.Request(
-            url, data=payload,
+            url,
+            data=payload,
             headers={"Content-Type": "application/json"},
         )
         timeout = max(1.0, min(_PROVIDER_TIMEOUT, deadline - time.time()))
@@ -159,20 +163,23 @@ class MultiProviderReranker:
         """Local Ollama LLM via /api/generate (zero network, always available locally)."""
         host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
         model = os.environ.get("PP_RERANK_MODEL", "mxbai-embed-large")
-        passages = "\n\n".join(
-            f"[{i}] {c.content[:300]}" for i, c in enumerate(candidates[:30])
-        )
+        passages = "\n\n".join(f"[{i}] {c.content[:300]}" for i, c in enumerate(candidates[:30]))
         prompt = (
             f"Query: {query[:200]}\n\n"
             f"Rate relevance 0-100:\n\n{passages}\n\n"
             f'Return JSON: {{"scores": [0, 50, 80, ...]}}'
         )
-        payload = json.dumps({
-            "model": model, "prompt": prompt, "stream": False,
-        }).encode("utf-8")
+        payload = json.dumps(
+            {
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+            }
+        ).encode("utf-8")
         url = f"{host}/api/generate"
-        req = urllib.request.Request(url, data=payload,
-                                      headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(
+            url, data=payload, headers={"Content-Type": "application/json"}
+        )
         timeout = max(1.0, min(_PROVIDER_TIMEOUT, deadline - time.time()))
         resp = urllib.request.urlopen(req, timeout=timeout)
         raw = json.loads(resp.read().decode("utf-8")).get("response", "")
@@ -184,7 +191,7 @@ class MultiProviderReranker:
                     arr = json.loads(raw).get("scores", [])
                 else:
                     start = raw.index("[")
-                    arr = json.loads(raw[start:raw.rindex("]") + 1])
+                    arr = json.loads(raw[start : raw.rindex("]") + 1])
                 for i, s in enumerate(arr):
                     if i < len(candidates):
                         scores[i] = float(s) / 100.0
@@ -283,10 +290,10 @@ class MultiProviderReranker:
 
 # ── Cache helpers ────────────────────────────────────────────────
 
+
 def _cache_key(query, candidates):
     ids = "|".join(
-        getattr(c, "id", "") or (c[0] if isinstance(c, tuple) else str(c))
-        for c in candidates[:40]
+        getattr(c, "id", "") or (c[0] if isinstance(c, tuple) else str(c)) for c in candidates[:40]
     )
     return hashlib.sha256(f"{query}|{ids}".encode()).hexdigest()
 
@@ -312,6 +319,7 @@ def _cache_set(key, value):
 
 
 # ── Backward-compatible wrapper ──────────────────────────────────
+
 
 def cross_encode_rerank(
     query: str,

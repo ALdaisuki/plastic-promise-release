@@ -14,8 +14,7 @@ from typing import Any
 
 from mcp.types import TextContent
 
-from plastic_promise.core.hunter_rank import trust_to_rank, can_claim
-from plastic_promise.core.constants import RANK_ORDER
+from plastic_promise.core.hunter_rank import can_claim, trust_to_rank
 
 
 def _get_db_path() -> str:
@@ -74,7 +73,7 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
     submission rules.
     """
     from_agent = args.get("from_agent", "daemon")
-    from_trust_score = args.get("from_trust_score", None)
+    from_trust_score = args.get("from_trust_score")
     priority = args.get("priority", 3)
     max_escalations = args.get("max_escalations", 3)
 

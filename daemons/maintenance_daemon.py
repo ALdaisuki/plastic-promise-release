@@ -35,6 +35,10 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+# Path setup — must be before plastic_promise imports
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
+
 # Hunter Guild — 5 discovery scanners (Task 8)
 from plastic_promise.cron.scan_architecture import scan_architecture
 from plastic_promise.cron.scan_quality_trends import scan_quality_trends
@@ -44,11 +48,7 @@ from plastic_promise.cron.scan_memory_decay import scan_memory_decay
 from plastic_promise.cron.scan_data_quality import scan_data_quality
 from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
 
-# Path setup
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _project_root)
-
-DB_PATH = os.environ.get("PLASTIC_DB_PATH", os.path.join(_project_root, "plastic_memory.db"))
+DB_PATH = os.environ.get("PLASTIC_DB_PATH", os.path.join(_project_root, "data", "db", "plastic_memory.db"))
 INTERVAL = int(os.environ.get("AUDIT_INTERVAL_SECONDS", "300"))
 MCP_URL = "http://127.0.0.1:9020"
 
@@ -1162,7 +1162,7 @@ async def scan_task_heartbeats():
 _audit_seq = [0]
 
 async def main():
-    _pid_path = os.path.join(_project_root, "maintenance_daemon.pid")
+    _pid_path = os.path.join(_project_root, "var", "run", "maintenance_daemon.pid")
     with open(_pid_path, "w") as f:
         f.write(str(os.getpid()))
 

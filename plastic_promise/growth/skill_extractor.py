@@ -5,10 +5,8 @@
 
 import re
 import time
-from collections import Counter
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
-
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 # ── 中文动词/名词粗提取 ──────────────────────────────────────────────
 # 常见中文动词后缀与高频技术动词，用于从任务描述中抽关键词。
@@ -123,9 +121,9 @@ def _jaccard(a: str, b: str) -> float:
     return len(intersection) / len(union)
 
 
-def _extract_triggers(description: str, limit: int = 8) -> List[str]:
+def _extract_triggers(description: str, limit: int = 8) -> list[str]:
     """从描述中提取触发关键词（动词 + 名词）。"""
-    triggers: List[str] = []
+    triggers: list[str] = []
     for pat in _CN_VERB_PATTERNS:
         if pat in description and pat not in triggers:
             triggers.append(pat)
@@ -141,7 +139,7 @@ def _extract_triggers(description: str, limit: int = 8) -> List[str]:
     return triggers[:limit]
 
 
-def _derive_category(triggers: List[str]) -> str:
+def _derive_category(triggers: list[str]) -> str:
     """根据触发词推导技能类别。"""
     cat_map = {
         "创建": "build",
@@ -188,14 +186,14 @@ class SkillExtractor:
 
     def __init__(self) -> None:
         """初始化技能提取器，加载已沉淀的技能库。"""
-        self._skills: Dict[str, Dict[str, Any]] = {}
-        self._patterns: Dict[str, Any] = {}
+        self._skills: dict[str, dict[str, Any]] = {}
+        self._patterns: dict[str, Any] = {}
 
     def extract(
         self,
         task_description: str,
-        task_result: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
+        task_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
         """从单个任务中提取技能条目。
 
         如果任务结果不足以形成可复用技能（例如任务失败或描述过于模糊），
@@ -250,7 +248,7 @@ class SkillExtractor:
         success_val = task_result.get("success", task_result.get("status"))
         success_rate = 1.0 if success_val in (True, "success", "ok") else 0.5
 
-        skill: Dict[str, Any] = {
+        skill: dict[str, Any] = {
             "skill_id": skill_id,
             "name": name,
             "description": task_description,
@@ -267,7 +265,7 @@ class SkillExtractor:
         self._skills[skill_id] = skill
         return skill
 
-    def get_all_skills(self) -> List[Dict[str, Any]]:
+    def get_all_skills(self) -> list[dict[str, Any]]:
         """获取所有已沉淀的技能条目。
 
         Returns:
@@ -279,7 +277,7 @@ class SkillExtractor:
             reverse=True,
         )
 
-    def find_duplicates(self) -> List[Tuple[str, str, float]]:
+    def find_duplicates(self) -> list[tuple[str, str, float]]:
         """检测技能库中的重复条目。
 
         基于技能描述的 Jaccard 相似度 (> 0.7) 进行匹配。
@@ -287,7 +285,7 @@ class SkillExtractor:
         Returns:
             重复对列表，每个元素为 (skill_id_a, skill_id_b, similarity)。
         """
-        pairs: List[Tuple[str, str, float]] = []
+        pairs: list[tuple[str, str, float]] = []
         ids = list(self._skills.keys())
         n = len(ids)
         for i in range(n):
@@ -301,7 +299,7 @@ class SkillExtractor:
         pairs.sort(key=lambda x: x[2], reverse=True)
         return pairs
 
-    def merge_skills(self, skill_a_id: str, skill_b_id: str) -> Dict[str, Any]:
+    def merge_skills(self, skill_a_id: str, skill_b_id: str) -> dict[str, Any]:
         """合并两个重复技能条目。
 
         将 skill_b 的信息合并到 skill_a，移除 skill_b，
@@ -360,7 +358,7 @@ class SkillExtractor:
 
         return a
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """获取技能库统计信息。
 
         Returns:
@@ -378,7 +376,7 @@ class SkillExtractor:
         total = len(skills)
 
         # 按类别统计
-        by_category: Dict[str, int] = {}
+        by_category: dict[str, int] = {}
         for s in skills:
             cat = s.get("category", "general")
             by_category[cat] = by_category.get(cat, 0) + 1
@@ -421,7 +419,7 @@ class SkillExtractor:
         duplicate_pairs = len(self.find_duplicates())
 
         # 最近提取时间
-        last_extraction: Optional[str] = None
+        last_extraction: str | None = None
         if skills:
             last_extraction = max(s.get("extracted_at", "") for s in skills) or None
 
@@ -439,7 +437,7 @@ class SkillExtractor:
 
 # ── 模块级便捷函数 ──────────────────────────────────────────────────
 
-_module_extractor: Optional[SkillExtractor] = None
+_module_extractor: SkillExtractor | None = None
 
 
 def _get_extractor() -> SkillExtractor:
@@ -452,8 +450,8 @@ def _get_extractor() -> SkillExtractor:
 
 def extract_skill(
     task_description: str,
-    task_result: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+    task_result: dict[str, Any],
+) -> dict[str, Any] | None:
     """模块级便捷函数 — 使用默认提取器实例从任务中提取技能。
 
     Args:

@@ -9,12 +9,12 @@
 """
 
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from plastic_promise.core.constants import CURIOSITY_EXPLORE_RATE
 
 # 好奇心探索覆盖的八个主题类别
-_ALL_TOPIC_CATEGORIES: List[str] = [
+_ALL_TOPIC_CATEGORIES: list[str] = [
     "code_patterns",
     "architecture",
     "testing",
@@ -25,7 +25,7 @@ _ALL_TOPIC_CATEGORIES: List[str] = [
     "learning",
 ]
 
-_RATIONALE_TEMPLATES: Dict[str, str] = {
+_RATIONALE_TEMPLATES: dict[str, str] = {
     "code_patterns": "发现新的设计模式或编码实践，提高代码可维护性",
     "architecture": "探索系统架构的改进点或模式，增强模块间协同",
     "testing": "寻找未被覆盖的测试场景或新的测试策略",
@@ -78,7 +78,7 @@ class CuriosityExplorer:
     def get_exploration_suggestion(
         self,
         current_context: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """根据当前上下文生成探索建议。
 
         基于当前情境和已有的探索历史，
@@ -117,7 +117,7 @@ class CuriosityExplorer:
     def record_exploration(
         self,
         topic: str,
-        result: Dict[str, Any],
+        result: dict[str, Any],
     ) -> None:
         """记录一次探索的结果。
 
@@ -137,7 +137,7 @@ class CuriosityExplorer:
         )
         self._explore_count += 1
 
-    def get_exploration_stats(self) -> Dict[str, Any]:
+    def get_exploration_stats(self) -> dict[str, Any]:
         """获取探索统计信息。
 
         汇总历次探索的统计数据，包括探索次数、
@@ -162,7 +162,7 @@ class CuriosityExplorer:
         }
 
 
-def curiosity_explore(current_context: str) -> Dict[str, Any]:
+def curiosity_explore(current_context: str) -> dict[str, Any]:
     """模块级别的便捷探索函数。
 
     创建临时 CuriosityExplorer 对当前上下文进行一次性探索判断和建议，
@@ -179,11 +179,11 @@ def curiosity_explore(current_context: str) -> Dict[str, Any]:
     return explorer.get_exploration_suggestion(current_context)
 
 
-_exploration_log: List[Dict[str, Any]] = []
+_exploration_log: list[dict[str, Any]] = []
 _explore_rate = 0.15
 
 
-def curiosity_act(suggestion_id: str, outcome: str) -> Dict[str, Any]:
+def curiosity_act(suggestion_id: str, outcome: str) -> dict[str, Any]:
     """Record exploration outcome and adapt explore rate.
 
     Args:
@@ -209,7 +209,7 @@ def curiosity_act(suggestion_id: str, outcome: str) -> Dict[str, Any]:
     return {"explore_rate": _explore_rate, "adopted_rate": adopted_rate, "total": total}
 
 
-def curiosity_stats() -> Dict[str, Any]:
+def curiosity_stats() -> dict[str, Any]:
     """Return curiosity exploration statistics."""
     adopted = sum(1 for e in _exploration_log if e["outcome"] == "adopted")
     total = len(_exploration_log)

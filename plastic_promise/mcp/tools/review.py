@@ -39,7 +39,7 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
     review_output = args.get("review_output", "")
     author_target = args.get("author_target", "pi_builder")
     reviewer_target = args.get("reviewer_target", "pi_reviewer")
-    spec_path = args.get("spec_path", None)
+    spec_path = args.get("spec_path")
 
     # Lazy import ReviewEngine
     from plastic_promise.core.review_engine import ReviewEngine

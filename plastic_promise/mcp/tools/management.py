@@ -5,7 +5,6 @@ from typing import Any
 
 from mcp.types import TextContent
 
-
 # ---------------------------------------------------------------------------
 # system_stats
 # ---------------------------------------------------------------------------
@@ -85,9 +84,9 @@ def _get_fuzzy_buffer(engine: Any):
     """Get or create FuzzyBuffer / MemoryPipeline attached to the engine."""
     fb = engine.get_fuzzy_buffer()
     if fb is None:
+        from plastic_promise.core.embedder import get_embedder
         from plastic_promise.memory.pipeline import MemoryPipeline
         from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
-        from plastic_promise.core.embedder import get_embedder
 
         rec_mem = engine.get_rec_mem() or RecMem(engine)
         try:
@@ -111,9 +110,7 @@ async def handle_system(engine: Any, args: dict) -> list[TextContent]:
         return [
             TextContent(
                 type="text",
-                text=json.dumps(
-                    {"error": str(e), "tool": "system"}, ensure_ascii=False
-                ),
+                text=json.dumps({"error": str(e), "tool": "system"}, ensure_ascii=False),
             )
         ]
     action = args.get("action", "stats")
@@ -248,7 +245,7 @@ async def handle_system_migrate(engine: Any, args: dict) -> list[TextContent]:
                 )
             ]
 
-        with open(source_path, "r", encoding="utf-8") as f:
+        with open(source_path, encoding="utf-8") as f:
             source_data = json.load(f)
 
         memories = source_data.get("memories", [])
@@ -304,8 +301,6 @@ async def handle_system_migrate(engine: Any, args: dict) -> list[TextContent]:
 async def handle_issue_create(engine: Any, args: dict) -> list[TextContent]:
     """Create a new Issue with optional principle and dependency links."""
     try:
-        from plastic_promise.issue import IssueManager
-
         im = engine.get_issue_manager()
         iid = im.create(
             title=args.get("title", "Untitled"),
@@ -334,8 +329,6 @@ async def handle_issue_create(engine: Any, args: dict) -> list[TextContent]:
 async def handle_issue_transition(engine: Any, args: dict) -> list[TextContent]:
     """Transition an Issue to a new state."""
     try:
-        from plastic_promise.issue import IssueManager
-
         im = engine.get_issue_manager()
         result = im.transition(
             iid=args["issue_id"],
@@ -356,8 +349,6 @@ async def handle_issue_transition(engine: Any, args: dict) -> list[TextContent]:
 async def handle_issue_list(engine: Any, args: dict) -> list[TextContent]:
     """List Issues, optionally filtered by state or owner."""
     try:
-        from plastic_promise.issue import IssueManager
-
         im = engine.get_issue_manager()
         issues = im.list(
             state=args.get("state"),

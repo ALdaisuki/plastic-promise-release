@@ -25,18 +25,14 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from plastic_promise.core.constants import (
-    REVIEW_DIMENSIONS,
-    REVIEW_DIMENSION_WEIGHTS,
-    REVIEW_SEVERITY_ORDER,
     TRUST_REVIEW_BLOCKER_PENALTY,
     TRUST_REVIEW_FAIL_DECAY,
     TRUST_REVIEW_PASS_BOOST,
     TRUST_REVIEW_REVIEWER_BOOST,
 )
-
 
 # ═══════════════════════════════════════════════════════════════
 # 数据结构
@@ -80,7 +76,7 @@ class ReviewFinding:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ReviewFinding":
+    def from_dict(cls, d: dict) -> ReviewFinding:
         return cls(
             severity=d.get("severity", "minor"),
             category=d.get("category", "code_quality"),
@@ -109,7 +105,7 @@ class ReviewReport:
 
     status: str = "pass"
     principle_observations: dict = field(default_factory=dict)
-    findings: List[ReviewFinding] = field(default_factory=list)
+    findings: list[ReviewFinding] = field(default_factory=list)
     recommendation: str = "approve"
     summary: str = ""
     trust_delta: float = 0.0
@@ -127,7 +123,7 @@ class ReviewReport:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ReviewReport":
+    def from_dict(cls, d: dict) -> ReviewReport:
         findings = [ReviewFinding.from_dict(f) for f in d.get("findings", [])]
         return cls(
             status=d.get("status", "pass"),
@@ -192,7 +188,7 @@ class ReviewEngine:
         self,
         trust_manager: Any = None,
         context_engine: Any = None,
-        project_root: Optional[str] = None,
+        project_root: str | None = None,
     ) -> None:
         """初始化审查引擎。
 
@@ -206,13 +202,13 @@ class ReviewEngine:
         self._trust = trust_manager
         self._engine = context_engine
         self._project_root = project_root or os.getcwd()
-        self._review_history: List[ReviewReport] = []
+        self._review_history: list[ReviewReport] = []
 
     # ═══════════════════════════════════════════════════════════
     # Phase 1: Prepare
     # ═══════════════════════════════════════════════════════════
 
-    def prepare(self, commit_range: str = "HEAD~1..HEAD", spec_path: Optional[str] = None) -> dict:
+    def prepare(self, commit_range: str = "HEAD~1..HEAD", spec_path: str | None = None) -> dict:
         """准备审查上下文 — 获取 diff + 运行预检 + 生成审查 prompt。
 
         Args:
@@ -595,7 +591,7 @@ class ReviewEngine:
 
         return parsed
 
-    def _calculate_trust_delta(self, status: str, findings: List[ReviewFinding]) -> float:
+    def _calculate_trust_delta(self, status: str, findings: list[ReviewFinding]) -> float:
         """根据审查结果计算信任分 delta。
 
         - pass + 无 blocker → +TRUST_REVIEW_PASS_BOOST
@@ -621,7 +617,7 @@ class ReviewEngine:
             return -min(delta, 0.15)  # 硬上限: 单次审查最多 -0.15
 
     def _generate_summary(
-        self, status: str, findings: List[ReviewFinding], changed_files: list
+        self, status: str, findings: list[ReviewFinding], changed_files: list
     ) -> str:
         """自动生成审查摘要。"""
         parts = []
@@ -875,7 +871,7 @@ class ReviewEngine:
                             "task:pending",
                             f"assignee:{author_target}",
                             "domain:fixing",
-                            f"type:fix_review_finding",
+                            "type:fix_review_finding",
                             f"severity:{finding.severity}",
                             f"ts:{ts}",
                         ],
@@ -928,7 +924,7 @@ class ReviewEngine:
         changed_files: list,
         pre_check: dict,
         context_memories: list,
-        spec_path: Optional[str] = None,
+        spec_path: str | None = None,
     ) -> str:
         """生成结构化审查 prompt。
 
@@ -999,7 +995,7 @@ class ReviewEngine:
                 parts.append(f"- [{','.join(tags[:3])}] {content}")
 
         # ── Git Diff ──
-        parts.append(f"\n## Git Diff\n")
+        parts.append("\n## Git Diff\n")
         parts.append("```diff")
         parts.append(diff_text)
         parts.append("```")

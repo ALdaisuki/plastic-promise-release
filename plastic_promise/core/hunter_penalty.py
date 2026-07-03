@@ -1,9 +1,8 @@
 """Hunter Penalty Engine — failure consequence system."""
 
-import sqlite3
-import os
 import logging
-from datetime import datetime
+import os
+import sqlite3
 
 logger = logging.getLogger(__name__)
 

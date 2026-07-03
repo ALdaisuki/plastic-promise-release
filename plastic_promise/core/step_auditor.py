@@ -14,10 +14,7 @@
 
 import datetime
 import json
-import os
-import sqlite3
-from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -62,7 +59,13 @@ class StepAuditor:
         # 审计记录自动保存
     """
 
-    def __init__(self, trust_manager=None, audit_log_path: Optional[str] = None, engine=None, target: str = "claude"):
+    def __init__(
+        self,
+        trust_manager=None,
+        audit_log_path: str | None = None,
+        engine=None,
+        target: str = "claude",
+    ):
         self._trust = trust_manager
         self._engine = engine  # optional ContextEngine for reflection memory storage
         self._target = target
@@ -182,8 +185,9 @@ class StepAuditor:
 
         # 域联邦自进化: 每次审计后触发衰减检测
         try:
-            from plastic_promise.core.domain_manager import DomainManager
             import os
+
+            from plastic_promise.core.domain_manager import DomainManager
 
             db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
             dm = DomainManager(db_path=db_path)
@@ -344,7 +348,7 @@ class StepAuditor:
 
         return round(max(0.0, min(1.0, score)), 4)
 
-    def _get_historical_benchmark(self, dimension: str) -> Optional[float]:
+    def _get_historical_benchmark(self, dimension: str) -> float | None:
         """从历史审计记录中获取某维度的平均值作为基准线。
 
         Args:
@@ -442,13 +446,21 @@ class StepAuditor:
             return
         try:
             if result.overall_score >= 0.80:
-                self._trust.boost(0.02, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target)
+                self._trust.boost(
+                    0.02, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target
+                )
             elif result.overall_score >= 0.60:
-                self._trust.boost(0.005, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target)
+                self._trust.boost(
+                    0.005, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target
+                )
             elif result.overall_score < 0.20:
-                self._trust.decay(0.05, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target)
+                self._trust.decay(
+                    0.05, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target
+                )
             elif result.overall_score < 0.40:
-                self._trust.decay(0.02, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target)
+                self._trust.decay(
+                    0.02, f"step {result.step_id}: {result.overall_score:.2f}", target=self._target
+                )
         except Exception:
             pass
 
@@ -495,7 +507,7 @@ class StepAuditor:
 
     def _load_history(self):
         try:
-            with open(self._audit_log_path, "r", encoding="utf-8") as f:
+            with open(self._audit_log_path, encoding="utf-8") as f:
                 self._history = []  # lazy — just check file exists
         except FileNotFoundError:
             pass
@@ -523,7 +535,7 @@ class StepAuditor:
                 {
                     "dimension": "transparency",
                     "current_score": result.transparency_score,
-                    "suggestion": f"确保每一步有 git commit，当前任务缺少可追溯痕迹",
+                    "suggestion": "确保每一步有 git commit，当前任务缺少可追溯痕迹",
                 }
             )
         if result.audit_closure_score < 0.60:

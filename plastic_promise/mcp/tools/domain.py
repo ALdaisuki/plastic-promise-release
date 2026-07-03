@@ -13,6 +13,7 @@
 import json
 import os
 from typing import Any
+
 from mcp.types import TextContent
 
 
@@ -173,9 +174,7 @@ async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
         return [
             TextContent(
                 type="text",
-                text=json.dumps(
-                    {"error": str(e), "tool": "domain"}, ensure_ascii=False
-                ),
+                text=json.dumps({"error": str(e), "tool": "domain"}, ensure_ascii=False),
             )
         ]
     dm = getattr(engine, "_dm", None)

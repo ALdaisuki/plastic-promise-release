@@ -1,6 +1,6 @@
 """Hunter Rank System — trust score → rank mapping (derived view, never stored)."""
 
-from plastic_promise.core.constants import RANK_THRESHOLDS, RANK_TITLES, RANK_ICONS, RANK_ORDER
+from plastic_promise.core.constants import RANK_ICONS, RANK_ORDER, RANK_THRESHOLDS, RANK_TITLES
 
 
 def trust_to_rank(trust_score: float) -> dict:

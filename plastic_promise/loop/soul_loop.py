@@ -17,13 +17,8 @@ post_task: 六联闭环 — 每步完成后的约定工程全层连线
 """
 
 import datetime
-from typing import Any, Dict, Optional
 
 from plastic_promise.core.constants import (
-    ASSOCIATION_WEIGHTS,
-    AUDIT_DIMENSIONS,
-    CEI_TARGET,
-    PRE_CHECK_ALERT_THRESHOLD,
     WORTH_MIN_OBSERVATIONS,
 )
 from plastic_promise.core.context_engine import ContextEngine, ContextPack
@@ -41,7 +36,7 @@ class SoulLoop:
         engine: 上下文供应引擎实例，若为 None 则自动创建默认引擎。
     """
 
-    def __init__(self, engine: Optional[ContextEngine] = None) -> None:
+    def __init__(self, engine: ContextEngine | None = None) -> None:
         """初始化编排器。
 
         Args:
@@ -62,7 +57,7 @@ class SoulLoop:
         self,
         task_description: str,
         task_type: str = "general",
-        pre_context: Optional[str] = None,
+        pre_context: str | None = None,
     ) -> ContextPack:
         """执行任务前编排管线 (v2)。
 
@@ -93,7 +88,7 @@ class SoulLoop:
         # Step 2: Embed the task description into a vector
         # Graceful degradation: if Ollama is unreachable / times out,
         # fall back to zero-vector — text retrieval still works via CJK bigrams.
-        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
+        from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
 
         try:
             embedder = get_embedder(fallback_on_error=False)
@@ -154,8 +149,8 @@ class SoulLoop:
         # 0. Lazy-init TrustManager BEFORE HormoneEngine so hormone-driven
         #    trust deltas actually reach the TrustStore (was silently dropped).
         if self._trust_manager is None:
-            from plastic_promise.defense.trust_store import TrustStore
             from plastic_promise.defense.soul_enforcer import TrustManager
+            from plastic_promise.defense.trust_store import TrustStore
 
             self._trust_manager = TrustManager(trust_store=TrustStore())
 
@@ -201,7 +196,9 @@ class SoulLoop:
             if self._hormone_engine is None:
                 from plastic_promise.growth.soul_hormone import HormoneEngine
 
-                self._hormone_engine = HormoneEngine(trust_manager=self._trust_manager, target=target)
+                self._hormone_engine = HormoneEngine(
+                    trust_manager=self._trust_manager, target=target
+                )
             overall = self._cached_cei
             feedback = "adopted" if overall >= 0.6 else "ignored" if overall >= 0.4 else "rejected"
             hormone_result = self._hormone_engine.apply_feedback(
@@ -216,9 +213,13 @@ class SoulLoop:
             if result.get("scarf") and isinstance(result["scarf"], dict):
                 scarf_overall = result["scarf"].get("summary", {}).get("overall_score", 0.6)
                 if scarf_overall >= 0.80:
-                    self._trust_manager.boost(0.02, f"post_task SCARF {scarf_overall:.2f}", target=target)
+                    self._trust_manager.boost(
+                        0.02, f"post_task SCARF {scarf_overall:.2f}", target=target
+                    )
                 elif scarf_overall < 0.40:
-                    self._trust_manager.decay(0.02, f"post_task SCARF {scarf_overall:.2f}", target=target)
+                    self._trust_manager.decay(
+                        0.02, f"post_task SCARF {scarf_overall:.2f}", target=target
+                    )
             result["trust"] = {
                 "score": self._trust_manager.get(target=target),
                 "tier": self._trust_manager.tier(target=target),
@@ -229,7 +230,9 @@ class SoulLoop:
         # 5. 反思记忆存储 — StepAuditor 评分 + 反思任务标记
         try:
             if self._auditor is None:
-                self._auditor = StepAuditor(trust_manager=self._trust_manager, engine=self._engine, target=target)
+                self._auditor = StepAuditor(
+                    trust_manager=self._trust_manager, engine=self._engine, target=target
+                )
             audit_result = self._auditor.audit_step(
                 task_description=task_description,
                 git_commit=git_commit,
@@ -396,7 +399,7 @@ class SoulLoop:
 # 模块级便捷函数
 # ============================================================
 
-_default_loop: Optional[SoulLoop] = None
+_default_loop: SoulLoop | None = None
 
 
 def _get_default_loop() -> SoulLoop:
@@ -417,7 +420,7 @@ def _get_default_loop() -> SoulLoop:
 def pre_task_v2(
     task_description: str,
     task_type: str = "general",
-    pre_context: Optional[str] = None,
+    pre_context: str | None = None,
 ) -> ContextPack:
     """模块级便捷函数：执行任务前编排管线。
 

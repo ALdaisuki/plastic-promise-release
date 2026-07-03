@@ -10,14 +10,14 @@ Dimensions:
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 logger = logging.getLogger("plastic-promise.scan_data_quality")
 
 
-def scan_data_quality(engine: Any) -> List[Dict[str, Any]]:
+def scan_data_quality(engine: Any) -> list[dict[str, Any]]:
     """Run all 6 data quality checks and return actionable findings."""
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
 
     # --- 1. Embedder health ---
     _check_embedder(engine, findings)
@@ -47,7 +47,7 @@ def scan_data_quality(engine: Any) -> List[Dict[str, Any]]:
     return findings
 
 
-def _check_embedder(engine: Any, findings: List[Dict]):
+def _check_embedder(engine: Any, findings: list[dict]):
     """Check if embedder is healthy (not FallbackEmbedder, produces non-zero vectors)."""
     try:
         from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
@@ -85,7 +85,7 @@ def _check_embedder(engine: Any, findings: List[Dict]):
         )
 
 
-def _check_zero_vectors(engine: Any, findings: List[Dict]):
+def _check_zero_vectors(engine: Any, findings: list[dict]):
     """Check LanceDB for zero-vector entries."""
     ldb = getattr(engine, "_ldb", None)
     if ldb is None:
@@ -128,7 +128,7 @@ def _check_zero_vectors(engine: Any, findings: List[Dict]):
         logger.warning("zero_vector check failed: %s", e)
 
 
-def _check_principle_injection(engine: Any, findings: List[Dict]):
+def _check_principle_injection(engine: Any, findings: list[dict]):
     """Check that principle activation returns full content."""
     try:
         principles = engine.activate_principles("code_generation", "test probe")
@@ -173,7 +173,7 @@ def _check_principle_injection(engine: Any, findings: List[Dict]):
         )
 
 
-def _check_rust_health(engine: Any, findings: List[Dict]):
+def _check_rust_health(engine: Any, findings: list[dict]):
     """Check Rust engine availability."""
     try:
         healthy = engine.check_rust_health()
@@ -196,7 +196,7 @@ def _check_rust_health(engine: Any, findings: List[Dict]):
         )
 
 
-def _check_pipeline_buffer(engine: Any, findings: List[Dict]):
+def _check_pipeline_buffer(engine: Any, findings: list[dict]):
     """Check MemoryPipeline buffer for stuck/deferred items."""
     try:
         from plastic_promise.mcp.tools.memory import _get_fuzzy_buffer
@@ -223,7 +223,7 @@ def _check_pipeline_buffer(engine: Any, findings: List[Dict]):
         logger.warning("pipeline buffer check failed: %s", e)
 
 
-def _check_mcp_alive(findings: List[Dict]):
+def _check_mcp_alive(findings: list[dict]):
     """Check MCP server health endpoint."""
     try:
         import urllib.request

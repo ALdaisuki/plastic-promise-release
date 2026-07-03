@@ -9,9 +9,9 @@ Dimensions:
   6. Trend comparison — compare vs previous audit from memory pool
 """
 
-import sqlite3
-import os
 import json
+import os
+import sqlite3
 from datetime import datetime
 
 
@@ -187,9 +187,7 @@ async def scan_scheduler_health(engine) -> dict:
             active_days = verify_rows[0]["active_days"]
 
         vp_level = "green"
-        if avg_per_day > 20:
-            vp_level = "yellow"
-        elif active_days < 2 and verify_rows:
+        if avg_per_day > 20 or active_days < 2 and verify_rows:
             vp_level = "yellow"
 
         dimensions["verification_throughput"] = {

@@ -5,12 +5,12 @@
 """
 
 from plastic_promise.memory.soul_memory import (
-    MemoryRecord,
-    RecMem,
-    MemoryTierManager,
     EvolveR,
     MemoryGC,
+    MemoryRecord,
+    MemoryTierManager,
     MemoryWorthCalculator,
+    RecMem,
 )
 
 __all__ = [

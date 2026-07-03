@@ -13,12 +13,11 @@ from __future__ import annotations
 import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
 
 from plastic_promise.core.constants import (
     TRUST_INITIAL,
-    TRUST_MIN,
     TRUST_MAX,
+    TRUST_MIN,
 )
 
 
@@ -41,7 +40,7 @@ class TrustStore:
     TIME_DECAY_CAP = 0.30  # max total decay from time alone
     TIME_DECAY_THRESHOLD_HOURS = 24
 
-    def __init__(self, db_path: Optional[str] = None) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         if db_path is None:
             db_path = os.environ.get("PLASTIC_DB_PATH", "plastic_memory.db")
         # Resolve to absolute path to prevent split-brain when CWD differs

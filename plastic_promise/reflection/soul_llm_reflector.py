@@ -6,8 +6,6 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-
 
 # ============================================================
 # Data classes
@@ -19,14 +17,14 @@ class ReflectionContext:
     """LLMReflector 输入上下文 — 聚合运行时所有信号。"""
 
     task_description: str = ""
-    scarf_scores: Dict[str, float] = field(default_factory=dict)
-    scarf_assessments: Dict[str, str] = field(default_factory=dict)
+    scarf_scores: dict[str, float] = field(default_factory=dict)
+    scarf_assessments: dict[str, str] = field(default_factory=dict)
     scarf_overall: float = 0.65
     trust_score: float = 0.60
     cei_score: float = 0.50
     cei_tier: str = "forming"
     git_commit: str = ""
-    alignment_principles: List[str] = field(default_factory=list)
+    alignment_principles: list[str] = field(default_factory=list)
     hormone_dopamine: float = 0.5
     hormone_cortisol: float = 0.3
 

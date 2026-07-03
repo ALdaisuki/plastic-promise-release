@@ -8,14 +8,11 @@
   - domain_recall:  域标签精确匹配 + 文本关键词 + 衰减/价值加权 (不需要 embedding)
 """
 
-import asyncio
-import datetime
 import json
 import re
 from typing import Any
 
 from mcp.types import TextContent
-
 
 # 7 个有效行为域 (all 不参与分配)
 VALID_DOMAINS = {"building", "designing", "reflecting", "fixing", "governing", "connecting", "all"}

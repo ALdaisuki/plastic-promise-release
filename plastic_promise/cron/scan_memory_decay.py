@@ -1,7 +1,7 @@
 """Memory pool health scanner — zombie memories, influx, distribution imbalance."""
 
-import sqlite3
 import os
+import sqlite3
 from datetime import datetime, timedelta
 
 
@@ -96,7 +96,8 @@ async def scan_memory_decay(engine) -> dict:
         routine = {}
         if os.environ.get("PP_PERIODIC_MAINTENANCE", "1") == "1":
             try:
-                from plastic_promise.memory.soul_memory import RecMem, EvolveR
+                from plastic_promise.memory.soul_memory import EvolveR, RecMem
+
                 rm = RecMem()
                 updated = rm.update_all_decay()
                 routine["decay_updated"] = updated
@@ -120,19 +121,21 @@ async def scan_memory_decay(engine) -> dict:
             "LIMIT 20"
         ).fetchall()
         for row in anomalies:
-            findings.append({
-                "type": "decay_anomaly",
-                "memory_id": row["id"],
-                "access_count": row["access_count"],
-                "decay_multiplier": round(row["decay_multiplier"], 3),
-                "task_type": "fix_memory",
-                "to_agent": "pi_fixer",
-                "priority": 3,
-                "title": (
-                    f"衰减异常: 记忆{row['id'][:8]} "
-                    f"访问{row['access_count']}次但decay={row['decay_multiplier']:.3f}"
-                ),
-            })
+            findings.append(
+                {
+                    "type": "decay_anomaly",
+                    "memory_id": row["id"],
+                    "access_count": row["access_count"],
+                    "decay_multiplier": round(row["decay_multiplier"], 3),
+                    "task_type": "fix_memory",
+                    "to_agent": "pi_fixer",
+                    "priority": 3,
+                    "title": (
+                        f"衰减异常: 记忆{row['id'][:8]} "
+                        f"访问{row['access_count']}次但decay={row['decay_multiplier']:.3f}"
+                    ),
+                }
+            )
 
     finally:
         conn.close()

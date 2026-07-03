@@ -1,14 +1,17 @@
 """Experience Pack — 随插随用的可分享领域记忆包."""
 
-import json, os, uuid, datetime
-from typing import Any, Dict, List, Optional
+import datetime
+import json
+import os
+import uuid
+from typing import Any
 
 
 def export_pack(
     engine: Any,
     name: str,
-    tags: List[str] = None,
-    memory_ids: List[str] = None,
+    tags: list[str] = None,
+    memory_ids: list[str] = None,
     author: str = "claude",
     description: str = "",
 ) -> str:
@@ -75,7 +78,7 @@ def export_pack(
 
 def import_pack(engine: Any, path: str, owner: str = "") -> dict:
     """Import a JSON pack file into the memory pool."""
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         pack = json.load(f)
 
     imported = 0

@@ -65,8 +65,21 @@ Repository = "https://github.com/plastic-promise/plastic-promise"
 Issues = "https://github.com/plastic-promise/plastic-promise/issues"
 
 [project.scripts]
-plastic-promise = "plastic_promise:main"
+plastic-promise = "plastic_promise.cli:main"
 plastic-promise-sse = "plastic_promise:main_sse"
+
+[tool.setuptools.packages.find]
+include = ["plastic_promise*"]
+exclude = [
+    "data*",
+    "daemons*",
+    "experience_packs*",
+    "plugins*",
+    "rust*",
+    "skills*",
+    "tests*",
+    "var*",
+]
 
 # ============================================================
 # Ruff — 代码规范 & 格式化

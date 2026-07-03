@@ -4,14 +4,13 @@ Table: memory_vectors (memory_id, vector, text, tier, category, scope)
 Vector dim: 1024 (mxbai-embed-large), configurable via PP_EMBEDDING_DIM.
 """
 
-import os
 import logging
-from typing import Optional
+import os
 
-import pyarrow as pa
 import lancedb
+import pyarrow as pa
 
-from plastic_promise.core.embedder import Embedder, get_embedder
+from plastic_promise.core.embedder import Embedder
 
 logger = logging.getLogger("plastic-promise.lancedb")
 
@@ -43,8 +42,8 @@ class LanceDBStore:
         self._vectors_disabled = getattr(embedder, "model_name", "") == "fallback-zero"
         if self._vectors_disabled:
             logger.warning("LanceDBStore: FallbackEmbedder detected — vector operations disabled")
-        self._db: Optional[lancedb.DBConnection] = None
-        self._table: Optional[lancedb.table.Table] = None
+        self._db: lancedb.DBConnection | None = None
+        self._table: lancedb.table.Table | None = None
         self._fts_ready = False
         self._init_db()
 
@@ -101,8 +100,8 @@ class LanceDBStore:
         self,
         vector: list[float],
         k: int = 20,
-        scope: Optional[str] = None,
-        tier: Optional[str] = None,
+        scope: str | None = None,
+        tier: str | None = None,
     ) -> list[tuple[str, float, str, str, str]]:
         """ANN vector search by cosine similarity.
 
@@ -151,7 +150,7 @@ class LanceDBStore:
         self,
         query: str,
         k: int = 20,
-        scope: Optional[str] = None,
+        scope: str | None = None,
     ) -> list[tuple[str, float, str, str, str]]:
         """Full-text search with fallback to LIKE-based filtering.
 
@@ -230,8 +229,9 @@ class LanceDBStore:
             return []
 
     def get_vector(
-        self, memory_id: str,
-    ) -> Optional[list[float]]:
+        self,
+        memory_id: str,
+    ) -> list[float] | None:
         """Return the stored vector for a single memory, or None if not found.
 
         Used by MMR diversity checking — compare candidate vectors against
@@ -246,9 +246,12 @@ class LanceDBStore:
         if self._table is None:
             return None
         try:
-            rows = self._table.search().where(
-                f"memory_id = '{memory_id}'", prefilter=True
-            ).limit(1).to_list()
+            rows = (
+                self._table.search()
+                .where(f"memory_id = '{memory_id}'", prefilter=True)
+                .limit(1)
+                .to_list()
+            )
             if rows and rows[0].get("vector"):
                 return list(rows[0]["vector"])
             return None
@@ -259,7 +262,7 @@ class LanceDBStore:
         self,
         vector: list[float],
         threshold: float = 0.85,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Return memory_id of the nearest match if similarity >= threshold, else None.
 
         Thin wrapper over search_similar(k=1). Used by pipeline dedup (Task 3).

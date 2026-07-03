@@ -9,7 +9,6 @@ It only builds a GapSignal that consumers (sp-stage, Claude) may act on.
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -337,7 +336,7 @@ def _extract_keywords(query: str) -> list[str]:
     return result[:3]
 
 
-def detect_gap(query: str, pack: "ContextPack") -> Optional[GapSignal]:
+def detect_gap(query: str, pack: "ContextPack") -> GapSignal | None:
     """Detect knowledge gaps in context_supply results.
 
     Called as middleware in context_supply's return path.

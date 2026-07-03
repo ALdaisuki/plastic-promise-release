@@ -111,7 +111,6 @@ def ensure_task_tables(conn):
     # Seed default subscriptions
     # NOTE: SQLite UNIQUE treats NULLs as distinct, so for NULL task_type_filter
     # we must check existence explicitly to avoid duplicates on re-run.
-    import json
 
     for agent, filt, prio, keywords in DEFAULT_SUBSCRIPTIONS:
         if filt is None:

@@ -4,12 +4,12 @@ raw → tagged(关键词) → classified(大类L1/L3) → embedded(细分向量)
 同步处理，从不积压。不是缓存区——是标准流程。
 """
 
-import uuid
 import datetime
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any
 
 from plastic_promise.core.constants import DEDUP_SIMILARITY_THRESHOLD
 
@@ -27,13 +27,13 @@ class MemoryPipeline:
     def __init__(
         self, rec_mem=None, embedder=None, tier_manager=None, domain_manager=None, lancedb=None
     ) -> None:
-        self._buffer: Dict[str, Dict[str, Any]] = {}
+        self._buffer: dict[str, dict[str, Any]] = {}
         self.rec_mem = rec_mem
         self.embedder = embedder
         self._tier_manager = tier_manager
         self._dm = domain_manager
         self._lancedb = lancedb  # vector dedup (None → graceful skip)
-        self._last_process: Optional[str] = None
+        self._last_process: str | None = None
         self._batch_size = 10
 
     # ================================================================
@@ -50,7 +50,7 @@ class MemoryPipeline:
         domain_hint: str = None,
         max_llm_calls: int = 3,
         skip_embed: bool = False,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Store a memory with smart extraction, then through pipeline.
 
         Calls extract_memories() for pre-extraction.
@@ -142,7 +142,7 @@ class MemoryPipeline:
 
         return first_mid
 
-    def process_pipeline(self) -> Dict[str, Any]:
+    def process_pipeline(self) -> dict[str, Any]:
         """Run the full 4-stage pipeline on all buffered items.
 
         Returns:
@@ -175,7 +175,7 @@ class MemoryPipeline:
             "timestamp": self._last_process,
         }
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Return buffer statistics.
 
         Returns:
@@ -452,10 +452,10 @@ class MemoryPipeline:
                                     py_rec.entity_ids = list(py_eids | new_eids)
                                 # ---- Gap 1 fix: Recompute effective_half_life via AccessReinforcement ----
                                 try:
+                                    from plastic_promise.core.constants import DECAY_CONFIG
                                     from plastic_promise.core.decay_engine import (
                                         AccessReinforcement,
                                     )
-                                    from plastic_promise.core.constants import DECAY_CONFIG
 
                                     tier = getattr(py_rec, "tier", "L1")
                                     base_hl = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])[
@@ -593,8 +593,8 @@ class MemoryPipeline:
 
                 # ---- Gap 3: Initialize decay_multiplier + effective_half_life on store ----
                 try:
-                    from plastic_promise.core.decay_engine import WeibullDecayCalculator
                     from plastic_promise.core.constants import DECAY_CONFIG
+                    from plastic_promise.core.decay_engine import WeibullDecayCalculator
 
                     wdc = WeibullDecayCalculator()
                     dm = wdc.compute_decay(tier, created_at or datetime.datetime.now().isoformat())

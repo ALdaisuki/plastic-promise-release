@@ -12,12 +12,10 @@ Decision matrix:
   score < 0.3       -> discard
 """
 
-from typing import Optional
-
 from plastic_promise.core.constants import (
-    QUALITY_GATE_WEIGHTS,
-    QUALITY_GATE_THRESHOLD_STORE,
     QUALITY_GATE_THRESHOLD_LOW,
+    QUALITY_GATE_THRESHOLD_STORE,
+    QUALITY_GATE_WEIGHTS,
 )
 
 
@@ -30,11 +28,11 @@ class QualityGate:
 
     def score(
         self,
-        extracted: Optional[dict] = None,
-        tags: Optional[list[str]] = None,
-        domain_hint: Optional[str] = None,
-        created_at: Optional[str] = None,
-        tier: Optional[str] = None,
+        extracted: dict | None = None,
+        tags: list[str] | None = None,
+        domain_hint: str | None = None,
+        created_at: str | None = None,
+        tier: str | None = None,
     ) -> float:
         """Compute composite gate_score from four dimensions.
 
@@ -82,7 +80,7 @@ class QualityGate:
         return extracted.get("confidence", 0.5)
 
     @staticmethod
-    def _compute_relevance(tags: list[str], domain_hint: Optional[str]) -> float:
+    def _compute_relevance(tags: list[str], domain_hint: str | None) -> float:
         """Relevance based on tag-to-domain matching.
 
         With domain_hint: ratio of matched tags x 1.5, capped at 1.0.
@@ -104,7 +102,7 @@ class QualityGate:
             return 0.5
 
     @staticmethod
-    def _compute_freshness(created_at: Optional[str] = None, tier: Optional[str] = None) -> float:
+    def _compute_freshness(created_at: str | None = None, tier: str | None = None) -> float:
         """Time-decay freshness via Direction A Weibull engine.
 
         Delegates to WeibullDecayCalculator for consistency with composite_score.

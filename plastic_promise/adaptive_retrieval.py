@@ -6,7 +6,6 @@ Force-retrieves when memory-related keywords are detected.
 
 import re
 
-
 FORCE_RETRIEVE_PATTERNS = [
     "记得",
     "recall",

@@ -8,9 +8,9 @@
     python -m plastic_promise --sse 9020
 """
 
-import sys
 import asyncio
 import logging
+import sys
 
 
 def main():

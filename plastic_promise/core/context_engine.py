@@ -11,23 +11,19 @@ import json
 import logging
 import math
 import os
-import re
 import threading
 import time
-import urllib.request
 from collections import Counter
-from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 from plastic_promise.core.constants import (
     CONTEXT_LAYERS,
-    SYMBOL_RULE_KEYWORDS,
-    ASSOCIATION_WEIGHTS,
     PRINCIPLE_INHERITANCE_DECAY,
+    SYMBOL_RULE_KEYWORDS,
 )
-
 
 # ============================================================
 # 数据模型 (与 Rust 结构体一一对应)
@@ -72,11 +68,11 @@ class ContextItem:
 class ContextPack:
     """三层上下文包"""
 
-    core: List[ContextItem] = field(default_factory=list)
-    related: List[ContextItem] = field(default_factory=list)
-    divergent: List[ContextItem] = field(default_factory=list)
-    activated_principles: List[str] = field(default_factory=list)
-    audit_metadata: Dict[str, str] = field(default_factory=dict)
+    core: list[ContextItem] = field(default_factory=list)
+    related: list[ContextItem] = field(default_factory=list)
+    divergent: list[ContextItem] = field(default_factory=list)
+    activated_principles: list[str] = field(default_factory=list)
+    audit_metadata: dict[str, str] = field(default_factory=dict)
     gap_signal: Optional["GapSignal"] = None  # knowledge-gap detection signal
 
     def to_prompt(self) -> str:
@@ -214,21 +210,21 @@ class ContextEngine:
     """
 
     def __init__(self, use_sqlite: bool = None):
-        self._graph_nodes: Dict[str, Dict[str, Any]] = {}
-        self._graph_edges: List[Dict[str, Any]] = []
-        self._feedback: Dict[
+        self._graph_nodes: dict[str, dict[str, Any]] = {}
+        self._graph_edges: list[dict[str, Any]] = []
+        self._feedback: dict[
             str, float
         ] = {}  # item_id -> accumulated delta (P2: 替换为 worth_score)
         self.enable_principles: bool = True
         self._current_time: str = ""
-        self._memories: Dict[str, Dict[str, Any]] = {}
-        self._principle_anchors: Dict[int, List[float]] = {}  # P1: 原则锚点向量
+        self._memories: dict[str, dict[str, Any]] = {}
+        self._principle_anchors: dict[int, list[float]] = {}  # P1: 原则锚点向量
 
         # Heavy components — lazy-initialized by _ensure_heavy_init()
         self._dm: Any = None
         self._dm_ok: bool = False
         # _last_rerank_status removed — unified reranker handles its own diagnostics
-        self._domain_hint: Optional[str] = None
+        self._domain_hint: str | None = None
         self._embedder: Any = None
         self._ldb: Any = None
 
@@ -277,9 +273,7 @@ class ContextEngine:
                 # Determine the correct node prefix for this entity
                 if eid.startswith("skill:"):
                     node_id = f"skill_session:{eid}"
-                elif eid.startswith("principle:"):
-                    node_id = eid  # already prefixed
-                elif eid.startswith("task:"):
+                elif eid.startswith("principle:") or eid.startswith("task:"):
                     node_id = eid  # already prefixed
                 else:
                     # Generic entity — store as-is or skip unknown patterns
@@ -413,7 +407,7 @@ class ContextEngine:
 
     # ========== 记忆管理 ==========
 
-    def register_memory(self, record: Dict[str, Any]) -> str:
+    def register_memory(self, record: dict[str, Any]) -> str:
         mid = record.get("id", f"mem_{len(self._memories)}")
         data = {
             "id": mid,
@@ -442,7 +436,7 @@ class ContextEngine:
         self._build_principle_edges_for_memory(mid, data)
         return mid
 
-    def register_memories(self, records: List[Dict[str, Any]]) -> List[str]:
+    def register_memories(self, records: list[dict[str, Any]]) -> list[str]:
         return [self.register_memory(r) for r in records]
 
     @property
@@ -507,8 +501,8 @@ class ContextEngine:
         """
         from plastic_promise.core.constants import (
             CORE_PRINCIPLES,
-            PRINCIPLE_EDGE_MIN_KEYWORD_HITS,
             PRINCIPLE_EDGE_BASE_WEIGHT,
+            PRINCIPLE_EDGE_MIN_KEYWORD_HITS,
             PRINCIPLE_EDGE_SCALE_WEIGHT,
         )
 
@@ -583,7 +577,7 @@ class ContextEngine:
 
         from plastic_promise.core.constants import CORE_PRINCIPLES
 
-        anchors: Dict[int, List[float]] = {}
+        anchors: dict[int, list[float]] = {}
         consecutive_failures = 0
         try:
             for p in CORE_PRINCIPLES:
@@ -620,7 +614,7 @@ class ContextEngine:
         self._principle_anchors = anchors
 
     @staticmethod
-    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
         """Compute cosine similarity between two vectors.
 
         Returns 0.0 if either vector is zero-length.
@@ -636,7 +630,7 @@ class ContextEngine:
 
     # ========== 图管理 ==========
 
-    def load_graph(self, graph_data: Dict[str, Any]):
+    def load_graph(self, graph_data: dict[str, Any]):
         self._graph_nodes = graph_data.get("nodes", {})
         self._graph_edges = graph_data.get("edges", [])
 
@@ -1128,7 +1122,9 @@ class ContextEngine:
                 "worth_breakdown": {
                     "active": active_count,
                     "dormant": dormant_count,
-                    "active_avg_worth": round(active_worth_sum / active_count, 3) if active_count > 0 else None,
+                    "active_avg_worth": round(active_worth_sum / active_count, 3)
+                    if active_count > 0
+                    else None,
                 },
             },
             ensure_ascii=False,
@@ -1200,8 +1196,10 @@ class ContextEngine:
 
     @staticmethod
     def _apply_decay_awareness(
-        score: float, mem: dict | None,
-        current_time_str: str, trust_boost: float,
+        score: float,
+        mem: dict | None,
+        current_time_str: str,
+        trust_boost: float,
     ) -> float:
         """Two-formula decay-aware relevance adjustment with trust modulation.
 
@@ -1229,7 +1227,9 @@ class ContextEngine:
             return score
         try:
             created = datetime.datetime.fromisoformat(created_at)
-            now = datetime.datetime.fromisoformat(current_time_str or datetime.datetime.now().isoformat())
+            now = datetime.datetime.fromisoformat(
+                current_time_str or datetime.datetime.now().isoformat()
+            )
             age_days = (now - created).total_seconds() / 86400.0
             if age_days <= 0:
                 return score
@@ -1313,10 +1313,7 @@ class ContextEngine:
                         max_sim = 0.0
                         # Compare against last 5 selected items (O(5n) not O(n²))
                         for sel in selected[-5:]:
-                            sel_vec = (
-                                vec_cache.get(sel.id)
-                                or self._ldb.get_vector(sel.id)
-                            )
+                            sel_vec = vec_cache.get(sel.id) or self._ldb.get_vector(sel.id)
                             if sel_vec:
                                 vec_cache[sel.id] = sel_vec
                                 sim = self._cosine_similarity(item_vec, sel_vec)
@@ -1380,9 +1377,10 @@ class ContextEngine:
         # Query expansion: inject domain-relevant synonyms for BM25 text search.
         # Vector search uses raw query — semantic models handle synonyms natively.
         expanded_query = task_description
-        if _os_env.environ.get("PP_QUERY_EXPANSION", "1") == "1":
+        if os.environ.get("PP_QUERY_EXPANSION", "1") == "1":
             try:
                 from plastic_promise.core.query_expander import expand_query
+
                 expanded_query = expand_query(task_description, self._domain_hint)
             except Exception:
                 pass  # expansion failure never blocks retrieval
@@ -1492,6 +1490,7 @@ class ContextEngine:
             # Rerank (Phase 1.6, optional — PP_RECALL_RERANK=1)
             # Unified reranker (Phase 1.6): multi-provider chain, default ON
             from plastic_promise.core.reranker import MultiProviderReranker
+
             all_items = MultiProviderReranker().rerank(task_description, all_items)
             # MMR diversity (Phase 1.4)
             all_items = self._apply_mmr(all_items, threshold=0.85, penalty=0.70)
@@ -1778,7 +1777,7 @@ class ContextEngine:
 
     # ---- Rust engine health probe -------------------------------------------
 
-    def _check_rust_health(self) -> Optional[bool]:
+    def _check_rust_health(self) -> bool | None:
         """Probe Rust core availability. Caches result for TTL seconds.
 
         Thread-safe: acquires _rust_lock to protect _rust_engine_instance
@@ -1958,7 +1957,7 @@ class ContextEngine:
 
     # ========== 内部方法 ==========
 
-    def _inject_activated_to_graph(self, activated_names: List[str], task_type: str) -> int:
+    def _inject_activated_to_graph(self, activated_names: list[str], task_type: str) -> int:
         """Write activated principles into the entity graph.
 
         Called automatically during supply() Phase 0. Creates/updates
@@ -2002,7 +2001,7 @@ class ContextEngine:
 
         return edges_created
 
-    def _activate_principles(self, task_type: str, task_description: str) -> List[str]:
+    def _activate_principles(self, task_type: str, task_description: str) -> list[str]:
         """P1: Three-channel principle activation.
 
         Channel 1 — Static task-type mapping: differentiated principle
@@ -2020,8 +2019,8 @@ class ContextEngine:
         """
         from plastic_promise.core.constants import (
             CORE_PRINCIPLES,
-            TASK_TYPE_PRINCIPLE_MAP,
             PRINCIPLE_INTENT_THRESHOLD,
+            TASK_TYPE_PRINCIPLE_MAP,
         )
 
         activated_ids: set[int] = set()
@@ -2164,9 +2163,7 @@ class ContextEngine:
         w = word.lower()
         if len(w) <= 3:
             return w
-        if w.endswith("sses"):
-            w = w[:-2]
-        elif w.endswith("ies"):
+        if w.endswith("sses") or w.endswith("ies"):
             w = w[:-2]
         elif w.endswith("ss"):
             pass
@@ -2257,7 +2254,7 @@ class ContextEngine:
             score += idf[term] * numerator / denominator
         return score
 
-    def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> List[tuple]:
+    def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> list[tuple]:
         """BM25 text retrieval with IDF weighting (Okapi BM25, k1=1.2, b=0.75).
 
         Replaces the old word-overlap matching. Builds document frequency table
@@ -2349,7 +2346,7 @@ class ContextEngine:
         results.sort(key=lambda x: x[1], reverse=True)
         return results
 
-    def _vector_retrieval(self, task_vector: list[float]) -> List[tuple]:
+    def _vector_retrieval(self, task_vector: list[float]) -> list[tuple]:
         """Semantic vector retrieval via LanceDB ANN search.
 
         Falls back to empty list if LanceDB is unavailable.
@@ -2419,7 +2416,7 @@ class ContextEngine:
             )
         ]
 
-    def _graph_traversal(self, task_type: str) -> List[tuple]:
+    def _graph_traversal(self, task_type: str) -> list[tuple]:
         """Fine-grained: principle association + entity link + deep-grammar traversal.
 
         P0 enhancement — follows three edge types, two passes (was three):
@@ -2463,7 +2460,7 @@ class ContextEngine:
 
         return results
 
-    def _layered_fuse(self, graph_results, text_results, vector_results) -> List[tuple]:
+    def _layered_fuse(self, graph_results, text_results, vector_results) -> list[tuple]:
         """分层融合: text_results already fused via _hybrid_fuse — use scores as-is."""
         combined = {}
         # 类: fused text+vector results — keep scores unchanged
@@ -2483,7 +2480,7 @@ class ContextEngine:
             for k, v in sorted(combined.items(), key=lambda x: x[1][0], reverse=True)
         ]
 
-    def _apply_symbol_rules(self, items, task: str) -> List[tuple]:
+    def _apply_symbol_rules(self, items, task: str) -> list[tuple]:
         result = []
         for item_id, score, content, source in items:
             boost = 1.0
@@ -2498,7 +2495,7 @@ class ContextEngine:
             result.append((item_id, min(score * boost, 1.0), content, source))
         return result
 
-    def _apply_feedback(self, items: List[tuple]) -> List[tuple]:
+    def _apply_feedback(self, items: list[tuple]) -> list[tuple]:
         """P2: Apply feedback using MemoryRecord.worth_score as single source of truth.
 
         Old formula: score + self._feedback.get(item_id, 0.0)  — stale dict, never synced.
@@ -2539,8 +2536,8 @@ class ContextEngine:
         """
         from plastic_promise.core.constants import (
             FEEDBACK_EDGE_EMA_ALPHA,
-            FEEDBACK_EDGE_WEIGHT_MIN,
             FEEDBACK_EDGE_WEIGHT_MAX,
+            FEEDBACK_EDGE_WEIGHT_MIN,
         )
 
         memory_relations = {"governs", "embodies", "references"}
@@ -2586,8 +2583,8 @@ class ContextEngine:
         """
         from plastic_promise.core.constants import (
             FEEDBACK_EDGE_EMA_ALPHA,
-            FEEDBACK_EDGE_WEIGHT_MIN,
             FEEDBACK_EDGE_WEIGHT_MAX,
+            FEEDBACK_EDGE_WEIGHT_MIN,
         )
 
         if memory_id not in self._memories:
@@ -2651,7 +2648,7 @@ class ContextEngine:
           decaying: decay >= 0.10
           expired: below 0.10
         """
-        from plastic_promise.core.constants import DECAY_STATUS_THRESHOLDS, DECAY_CONFIG
+        from plastic_promise.core.constants import DECAY_CONFIG, DECAY_STATUS_THRESHOLDS
 
         created = mem.get("created_at", "")
         tier = mem.get("tier", "L1")
@@ -2688,9 +2685,9 @@ class ContextEngine:
 
     def _compute_divergent_quality(
         self,
-        divergent_items: List[ContextItem],
-        all_retrieved: List[ContextItem],
-    ) -> List[ContextItem]:
+        divergent_items: list[ContextItem],
+        all_retrieved: list[ContextItem],
+    ) -> list[ContextItem]:
         """P3a: Score divergent items on novelty + confidence, filter noise.
 
         For each divergent item:

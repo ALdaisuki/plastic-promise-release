@@ -7,19 +7,16 @@ and provides graceful shutdown via signal handlers.
 import asyncio
 import signal
 import sys
-import time
 from datetime import datetime
-from typing import Optional
 
-from plastic_promise.launcher.service_manager import ServiceManager
 from plastic_promise.launcher.service_definition import ServiceStatus
-
+from plastic_promise.launcher.service_manager import ServiceManager
 
 _shutdown_flag = False
 _heartbeat_counter = 0
 
 
-def setup_signal_handlers(manager: ServiceManager, log_file: Optional[str] = None):
+def setup_signal_handlers(manager: ServiceManager, log_file: str | None = None):
     """Register signal handlers for graceful shutdown."""
 
     def _handle_shutdown(signum, frame):
@@ -35,7 +32,7 @@ def setup_signal_handlers(manager: ServiceManager, log_file: Optional[str] = Non
             pass
 
 
-async def watchdog_loop(manager: ServiceManager, log_file: Optional[str] = None):
+async def watchdog_loop(manager: ServiceManager, log_file: str | None = None):
     """Main watchdog loop -- monitor health and recover from crashes."""
     global _shutdown_flag, _heartbeat_counter
 
@@ -71,7 +68,7 @@ async def watchdog_loop(manager: ServiceManager, log_file: Optional[str] = None)
     _log("All services stopped. Goodbye.", log_file)
 
 
-async def _handle_crash(manager: ServiceManager, rt, log_file: Optional[str] = None):
+async def _handle_crash(manager: ServiceManager, rt, log_file: str | None = None):
     """Handle a crashed service -- terminate remnant, backoff, restart."""
     svc = rt.definition
 
@@ -102,7 +99,7 @@ async def _handle_crash(manager: ServiceManager, rt, log_file: Optional[str] = N
     await manager._start_service(rt, log_file)
 
 
-def _log_watchdog_heartbeat(manager: ServiceManager, log_file: Optional[str] = None):
+def _log_watchdog_heartbeat(manager: ServiceManager, log_file: str | None = None):
     """Log a periodic heartbeat line."""
     now = datetime.now().strftime("%H:%M:%S")
     statuses = []
@@ -112,7 +109,7 @@ def _log_watchdog_heartbeat(manager: ServiceManager, log_file: Optional[str] = N
     _log(f"[WATCH] {now}  all healthy | {' '.join(statuses)}", log_file)
 
 
-def _log(message: str, log_file: Optional[str] = None):
+def _log(message: str, log_file: str | None = None):
     timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     full_msg = f"[{timestamp}] {message}"
     print(full_msg)

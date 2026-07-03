@@ -27,7 +27,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
-        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
+        from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
 
         task_description = args["task_description"]
         task_type = args.get("task_type", "general")

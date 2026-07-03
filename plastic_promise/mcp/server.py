@@ -13,38 +13,34 @@
 所有工具共享 ContextEngine 单例，通过依赖注入传递给各工具模块。
 """
 
-import sys
-import os
 import json
 import logging
+import os
+import sys
 from typing import Any
 
 # 确保项目根在 path 中
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+# ---------------------------------------------------------------------------
+# 全局 ContextEngine 代理 (Rust 不可用时回退到 Python mock)
+# ---------------------------------------------------------------------------
+from collections import deque
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    Tool,
-    TextContent,
-    Resource,
+    GetPromptResult,
     Prompt,
     PromptMessage,
-    GetPromptResult,
+    Resource,
+    TextContent,
+    Tool,
 )
 
 from plastic_promise.core.constants import (
     CORE_PRINCIPLES,
-    DEFENSE_LAYERS,
-    AUDIT_DIMENSIONS,
-    SCARF_DIMENSIONS,
 )
-
-# ---------------------------------------------------------------------------
-# 全局 ContextEngine 代理 (Rust 不可用时回退到 Python mock)
-# ---------------------------------------------------------------------------
-
-from collections import deque
 
 _engine = None  # 延迟初始化
 _skill_engine = None  # 延迟初始化 — SkillEngine 单例
@@ -91,8 +87,8 @@ def get_skill_engine():
         return _skill_engine
 
     from plastic_promise.skills.engine import SkillEngine
-    from plastic_promise.skills.session_lifecycle import skill_session_init
     from plastic_promise.skills.memory_operations import skill_smart_remember
+    from plastic_promise.skills.session_lifecycle import skill_session_init
     from plastic_promise.skills.superpowers_stages import SKILL_DEFS as _SP_DEFS
 
     _skill_engine = SkillEngine(get_engine())
@@ -945,6 +941,87 @@ async def list_tools() -> list[Tool]:
                     "required": ["action"],
                 },
             ),
+            # === 插件市场域 (市场管理) ===
+            Tool(
+                name="market_list",
+                description="列出市场中的插件包。支持按类型和可升级状态筛选。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "description": "筛选类型: knowledge/workflow/capability/adapter",
+                        },
+                        "upgradable": {
+                            "type": "boolean",
+                            "description": "仅显示可升级的已安装包",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="market_install",
+                description="从市场安装一个插件包。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "包名"},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="market_upgrade",
+                description="检查或升级插件到远程最新版本。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "包名"},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="market_remove",
+                description="卸载已安装的插件包。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "包名"},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="market_enable",
+                description="启用一个已禁用的插件。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "包名"},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="market_disable",
+                description="禁用一个已启用的插件。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "包名"},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="market_status",
+                description="显示所有已安装插件的状态。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
             # === SuperPowers 流水线阶段技能 (统一入口) ===
             Tool(
                 name="sp-stage",
@@ -1052,9 +1129,11 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
     lines.append("")
     lines.append(f"╔══ Step #{step_n} {'(baseline)' if is_first else ''} ═══════════════════╗")
     lines.append(f"║  SCARF {scarf_overall:.2f}  {bar(scarf_overall)}  ({scarf_trend})")
-    lines.append(f"║  Trust {trust_score:.3f}  {bar(trust_score)}  (adjust: {trust_delta:+.3f}; trend: {trust_trend})")
+    lines.append(
+        f"║  Trust {trust_score:.3f}  {bar(trust_score)}  (adjust: {trust_delta:+.3f}; trend: {trust_trend})"
+    )
     lines.append(f"║  CEI   {cei_score:.2f}  {bar(cei_score)}  ({cei_tier} · {cei_trend})")
-    lines.append(f"║  ──────────────────────────────────────────────")
+    lines.append("║  ──────────────────────────────────────────────")
 
     # Show SCARF dimension bars if available
     dims_shown = 0
@@ -1064,7 +1143,7 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
             lines.append(f"║  {dim_name[:4]:4s} {s:.2f} {bar(s)}")
             dims_shown += 1
 
-    lines.append(f"║  ──────────────────────────────────────────────")
+    lines.append("║  ──────────────────────────────────────────────")
 
     # Show reflection fields (LLM or template generated)
     if lesson:
@@ -1081,7 +1160,7 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
     # Show repair suggestions if any
     repairs = result.get("repairs", [])
     if repairs:
-        lines.append(f"║  ──────────────────────────────────────────────")
+        lines.append("║  ──────────────────────────────────────────────")
         for r in repairs[:3]:
             dim = r.get("dimension", "?")
             sug = r.get("suggestion", "")
@@ -1307,6 +1386,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             ]
         elif name == "step-closure":
             import asyncio
+
             from plastic_promise.loop.soul_loop import post_task
 
             task_desc = arguments.get("task_description", "")
@@ -1389,8 +1469,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 if any_content:
                     try:
                         from plastic_promise.skills.engine import SkillEngine
-                        from plastic_promise.skills.session_lifecycle import skill_session_init
                         from plastic_promise.skills.memory_operations import skill_smart_remember
+                        from plastic_promise.skills.session_lifecycle import skill_session_init
                         from plastic_promise.skills.superpowers_stages import SKILL_DEFS as _SP_DEFS
 
                         sr_engine = SkillEngine(get_engine())
@@ -1447,8 +1527,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             stage = arguments.get("stage", "")
             task_desc = arguments.get("task_description", "")
             # ── Chain validation: reject invalid stage transitions ──
-            from plastic_promise.mcp.tools.skill_tracking import get_current_stage
             from plastic_promise.core.constants import SKILL_CHAIN_MAP as _CHAIN_MAP
+            from plastic_promise.mcp.tools.skill_tracking import get_current_stage
 
             current = get_current_stage()
             if current and current != stage:
@@ -1502,7 +1582,73 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             return await handle_memory_sync_files(engine, arguments)
 
+        # ── Market tools ──
+        elif name == "market_list":
+            from plastic_promise.mcp.tools.market import handle_market_list
+
+            return await handle_market_list(engine, arguments)
+
+        elif name == "market_install":
+            from plastic_promise.mcp.tools.market import handle_market_install
+
+            return await handle_market_install(engine, arguments)
+
+        elif name == "market_upgrade":
+            from plastic_promise.mcp.tools.market import handle_market_upgrade
+
+            return await handle_market_upgrade(engine, arguments)
+
+        elif name == "market_remove":
+            from plastic_promise.mcp.tools.market import handle_market_remove
+
+            return await handle_market_remove(engine, arguments)
+
+        elif name == "market_enable":
+            from plastic_promise.mcp.tools.market import handle_market_enable
+
+            return await handle_market_enable(engine, arguments)
+
+        elif name == "market_disable":
+            from plastic_promise.mcp.tools.market import handle_market_disable
+
+            return await handle_market_disable(engine, arguments)
+
+        elif name == "market_status":
+            from plastic_promise.mcp.tools.market import handle_market_status
+
+            return await handle_market_status(engine, arguments)
+
+        # ── Dynamic plugin tool dispatch ──
         else:
+            # Check if a loaded plugin provides this tool
+            try:
+                from plastic_promise.extensions.loader import PluginLoader as _PluginLoader
+
+                _pl = _PluginLoader()
+                _pl.discover()
+                _pl.activate_all()
+                if name in _pl.get_tools():
+                    plugin_tool = _pl.get_tools()[name]
+                    result = _pl.call_plugin_tool(name, arguments)
+                    if result is not None:
+                        return [
+                            TextContent(
+                                type="text",
+                                text=json.dumps(result, ensure_ascii=False),
+                            )
+                        ]
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {"error": f"Plugin tool '{name}' returned no result"},
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+            except Exception:
+                pass
+
             return [
                 TextContent(
                     type="text",
@@ -1690,10 +1836,9 @@ async def run_sse(port: int = 9020):
     from starlette.applications import Starlette
     from starlette.requests import Request
     from starlette.responses import Response
-    from starlette.routing import Route, Mount
+    from starlette.routing import Route
 
     logger = logging.getLogger("plastic-promise-sse")
-    import signal
     import time as _time
 
     start_time = _time.time()
@@ -1779,6 +1924,7 @@ async def run_sse(port: int = 9020):
     async def handle_notify(request: Request):
         """接收外部推送并广播到 SSE /events。Daemon/Worker 状态变更入口。"""
         import json as _json
+
         from starlette.responses import JSONResponse
 
         try:
@@ -1840,7 +1986,6 @@ async def run_sse(port: int = 9020):
             return JSONResponse({"ok": False, "error": str(e)})
 
     async def health(request):
-        import json as _json
         from starlette.responses import JSONResponse
 
         return JSONResponse(
@@ -1855,6 +2000,7 @@ async def run_sse(port: int = 9020):
     async def api_stats(request):
         """Return memory pool + body system statistics."""
         import json as _json
+
         from starlette.responses import JSONResponse
 
         try:
@@ -1883,6 +2029,7 @@ async def run_sse(port: int = 9020):
     async def api_issues(request):
         """Return active issue list."""
         import json as _json
+
         from starlette.responses import JSONResponse
 
         try:
@@ -1898,11 +2045,12 @@ async def run_sse(port: int = 9020):
     async def api_trust(request):
         """Return trust/defense status."""
         import json as _json
+
         from starlette.responses import JSONResponse
 
         try:
             engine = get_engine()
-            from plastic_promise.mcp.tools.audit_defense import handle_defense, handle_audit_run
+            from plastic_promise.mcp.tools.audit_defense import handle_audit_run, handle_defense
 
             result = await handle_defense(engine, {"action": "get"})
             data = _json.loads(result[0].text) if result else {}
@@ -1920,6 +2068,7 @@ async def run_sse(port: int = 9020):
     async def api_skill_track(request):
         """Lightweight HTTP endpoint for skill_auto_track (used by hook scripts)."""
         import json as _json
+
         from starlette.responses import JSONResponse
 
         try:
@@ -2085,7 +2234,7 @@ setInterval(refresh, 5000);
         on_shutdown=[shutdown],
     )
 
-    logger.info(f"Plastic Promise MCP Server v0.1.0")
+    logger.info("Plastic Promise MCP Server v0.1.0")
     logger.info(f"SSE endpoint: http://127.0.0.1:{port}/sse")
     logger.info(f"Health:      http://127.0.0.1:{port}/health")
     logger.info(f"PID: {os.getpid()}")

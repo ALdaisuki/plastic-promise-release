@@ -1,7 +1,7 @@
 """Trust health scanner — rapid drops, stagnant trust, trust erosion detection."""
 
-import sqlite3
 import os
+import sqlite3
 from datetime import datetime, timedelta
 
 

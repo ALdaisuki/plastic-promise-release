@@ -13,24 +13,21 @@ Classes:
 
 from __future__ import annotations
 
-import uuid
 import datetime
 import logging
-from typing import Optional, List, Dict, Any
+import uuid
+from typing import Any
 
 from plastic_promise.core.constants import (
-    MEMORY_TIERS,
-    MEMORY_HEALTH_THRESHOLD,
     MEMORY_DECAY_THRESHOLD,
     MEMORY_GC_INTERVAL_DAYS,
-    WORTH_SUCCESS_WEIGHT,
-    WORTH_FAILURE_WEIGHT,
-    WORTH_MIN_OBSERVATIONS,
-    MERGE_TOP_K,
+    MEMORY_HEALTH_THRESHOLD,
+    MEMORY_TIERS,
     MERGE_SIMILARITY_THRESHOLD,
+    MERGE_TOP_K,
+    WORTH_MIN_OBSERVATIONS,
 )
 from plastic_promise.core.context_engine import ContextEngine, ContextPack
-
 
 # ============================================================
 # MemoryWorthCalculator — 双计数器价值评估
@@ -56,7 +53,7 @@ class MemoryWorthCalculator:
         self,
         success_count: int,
         failure_count: int,
-        total_observations: Optional[int] = None,
+        total_observations: int | None = None,
     ) -> float:
         """根据成功/失败计数计算记忆价值分数。
 
@@ -85,7 +82,7 @@ class MemoryWorthCalculator:
         except Exception:
             return 0.5
 
-    def calculate_composite_score(self, record: "MemoryRecord") -> float:
+    def calculate_composite_score(self, record: MemoryRecord) -> float:
         """Compute three-factor composite lifecycle score.
 
         Formula:
@@ -120,7 +117,7 @@ class MemoryWorthCalculator:
         except Exception:
             return self.calculate_worth(record.worth_success, record.worth_failure)
 
-    def update_counters(self, record: "MemoryRecord", feedback_type: str) -> None:
+    def update_counters(self, record: MemoryRecord, feedback_type: str) -> None:
         """根据反馈类型更新 MemoryRecord 的成功/失败计数器。
 
         支持的 feedback_type:
@@ -160,17 +157,17 @@ class MemoryRecord:
         content: str,
         memory_type: str = "experience",
         source: str = "user",
-        memory_id: Optional[str] = None,
+        memory_id: str | None = None,
         worth_success: int = 0,
         worth_failure: int = 0,
         activation_weight: float = 0.5,
         tier: str = "L1",
-        metadata: Optional[Dict[str, Any]] = None,
-        tags: Optional[List[str]] = None,
+        metadata: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
         domain: str = "uncategorized",
-        entity_ids: Optional[List[str]] = None,
+        entity_ids: list[str] | None = None,
         decay_multiplier: float = 1.0,
-        effective_half_life: Optional[float] = None,
+        effective_half_life: float | None = None,
     ) -> None:
         """初始化一条记忆记录。
 
@@ -228,7 +225,7 @@ class MemoryRecord:
         except Exception:
             return 0.5
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """将记忆记录序列化为字典。
 
         Returns:
@@ -256,7 +253,7 @@ class MemoryRecord:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "MemoryRecord":
+    def from_dict(cls, data: dict[str, Any]) -> MemoryRecord:
         """从字典反序列化创建 MemoryRecord 实例。
 
         Args:
@@ -298,7 +295,7 @@ class MemoryTierManager:
     根据 worth_score、激活频率和容量上限自动执行晋升/降级/驱逐。
     """
 
-    def __init__(self, rec_mem: Optional[Any] = None) -> None:
+    def __init__(self, rec_mem: Any | None = None) -> None:
         """初始化分层管理器。
 
         加载 MEMORY_TIERS 配置中的 L1/L3 容量上限和 TTL 策略。
@@ -306,7 +303,6 @@ class MemoryTierManager:
         Args:
             rec_mem: 可选的 RecMem 实例，用于 promote/demote 时检查容量。
         """
-        from plastic_promise.core.constants import MEMORY_TIERS
 
         self.l1_config = MEMORY_TIERS.get("L1", {"max_items": 200, "ttl_hours": 24})
         self.l2_config = MEMORY_TIERS.get("L2", {"max_items": 500, "ttl_hours": 168})
@@ -380,8 +376,7 @@ class MemoryTierManager:
         if self.rec_mem is not None:
             try:
                 target_records = [
-                    r for r in self.rec_mem._records.values()
-                    if r.tier == target_tier
+                    r for r in self.rec_mem._records.values() if r.tier == target_tier
                 ]
                 if len(target_records) >= max_items:
                     target_records.sort(key=lambda r: r.worth_score)
@@ -423,7 +418,7 @@ class MemoryTierManager:
         if record and record.tier != "L1":
             self.demote(record)  # L3→L2 or L2→L1
 
-    def evict_l1_overflow(self, records: List[MemoryRecord]) -> List[str]:
+    def evict_l1_overflow(self, records: list[MemoryRecord]) -> list[str]:
         """处理 L1 工作记忆溢出，驱逐超出容量上限的低价值记忆。
 
         按 worth_score 升序排序，移除最低分的记录直到满足容量限制。
@@ -465,7 +460,7 @@ class RecMem:
     支持反馈驱动的 worth_score 演化和自动分层迁移。
     """
 
-    def __init__(self, engine: Optional[ContextEngine] = None) -> None:
+    def __init__(self, engine: ContextEngine | None = None) -> None:
         """初始化记忆系统。
 
         Args:
@@ -488,11 +483,11 @@ class RecMem:
         auto-trigger _ensure_heavy_init() and retry.
         """
         # Defensive: ensure heavy init completed so decay_multiplier is loaded
-        if not hasattr(self._engine, '_memories'):
+        if not hasattr(self._engine, "_memories"):
             return
         try:
             first_mem = next(iter(self._engine._memories.values()), {})
-            if 'decay_multiplier' not in first_mem:
+            if "decay_multiplier" not in first_mem:
                 self._engine.ensure_heavy_init()
         except Exception:
             pass
@@ -510,8 +505,8 @@ class RecMem:
         memory_type: str = "experience",
         source: str = "user",
         importance: float = 0.7,
-        entity_ids: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
+        entity_ids: list[str] | None = None,
+        tags: list[str] | None = None,
         domain: str = "uncategorized",
         category: str = "other",
     ) -> MemoryRecord:
@@ -641,10 +636,10 @@ class RecMem:
     def update(
         self,
         memory_id: str,
-        content: Optional[str] = None,
-        importance: Optional[float] = None,
+        content: str | None = None,
+        importance: float | None = None,
         reset_worth: bool = False,
-    ) -> Optional[MemoryRecord]:
+    ) -> MemoryRecord | None:
         """更新指定记忆的内容或重要性。
 
         支持部分更新：content 和 importance 均为可选，
@@ -720,11 +715,11 @@ class RecMem:
 
     def list_records(
         self,
-        memory_type: Optional[str] = None,
-        source: Optional[str] = None,
-        min_worth: Optional[float] = None,
+        memory_type: str | None = None,
+        source: str | None = None,
+        min_worth: float | None = None,
         limit: int = 50,
-    ) -> List[MemoryRecord]:
+    ) -> list[MemoryRecord]:
         """列出记忆池中的记录，支持多条件筛选。
 
         Args:
@@ -743,7 +738,7 @@ class RecMem:
                 min_worth=min_worth,
                 limit=limit,
             )
-            result: List[MemoryRecord] = []
+            result: list[MemoryRecord] = []
             for r in rust_records:
                 py_record = MemoryRecord(
                     content=r.content,
@@ -769,7 +764,7 @@ class RecMem:
             result.sort(key=lambda r: r.worth_score, reverse=True)
             return result[:limit]
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """获取记忆池的统计信息。
 
         Returns:
@@ -815,8 +810,8 @@ class RecMem:
             l3_count = sum(1 for r in records if r.tier == "L3")
             avg_worth = sum(r.worth_score for r in records) / total
             healthy = sum(1 for r in records if r.worth_score >= MEMORY_DECAY_THRESHOLD)
-            by_type: Dict[str, int] = {}
-            by_source: Dict[str, int] = {}
+            by_type: dict[str, int] = {}
+            by_source: dict[str, int] = {}
             for r in records:
                 by_type[r.memory_type] = by_type.get(r.memory_type, 0) + 1
                 by_source[r.source] = by_source.get(r.source, 0) + 1
@@ -835,7 +830,7 @@ class RecMem:
         memory_id: str,
         feedback_type: str,
         task_context: str = "",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """对指定记忆应用反馈，驱动 worth_score 演化。
 
         将 feedback_type 转发至 MemoryWorthCalculator.update_counters，
@@ -1002,7 +997,7 @@ class EvolveR:
         self.decay_threshold = decay_threshold
         self.tier_manager = MemoryTierManager(rec_mem)
 
-    def evolve_cycle(self) -> Dict[str, Any]:
+    def evolve_cycle(self) -> dict[str, Any]:
         """执行一次完整的演化周期。
 
         流程：
@@ -1033,8 +1028,9 @@ class EvolveR:
         try:
             # Phase A: 批量更新 decay_multiplier
             try:
-                from plastic_promise.core.decay_engine import WeibullDecayCalculator
                 import datetime
+
+                from plastic_promise.core.decay_engine import WeibullDecayCalculator
 
                 wdc = WeibullDecayCalculator()
                 records_pre = list(self.rec_mem._records.values()) if self.rec_mem else []
@@ -1156,9 +1152,9 @@ class MemoryGC:
             rec_mem: 关联的记忆系统实例。
         """
         self.rec_mem = rec_mem
-        self._last_collect: Optional[str] = None
+        self._last_collect: str | None = None
 
-    def collect(self, dry_run: bool = True, force: bool = False) -> Dict[str, Any]:
+    def collect(self, dry_run: bool = True, force: bool = False) -> dict[str, Any]:
         """执行垃圾回收，清理衰退记忆。
 
         默认以 dry_run 模式运行（只报告不删除），安全为主。
@@ -1234,7 +1230,7 @@ class MemoryGC:
 
         return result
 
-    def mark_decaying(self) -> List[str]:
+    def mark_decaying(self) -> list[str]:
         """扫描记忆池，标记 worth_score 低于衰减阈值的记忆。
 
         扫描范围：
@@ -1254,7 +1250,10 @@ class MemoryGC:
                     if r.worth_score < MEMORY_DECAY_THRESHOLD:
                         decaying.append((r.memory_id, r.worth_score))
                     # Criterion 2: Weibull natural decay
-                    elif hasattr(r, 'decay_multiplier') and r.decay_multiplier < MEMORY_DECAY_THRESHOLD:
+                    elif (
+                        hasattr(r, "decay_multiplier")
+                        and r.decay_multiplier < MEMORY_DECAY_THRESHOLD
+                    ):
                         decaying.append((r.memory_id, r.decay_multiplier))
                 except Exception:
                     pass
@@ -1267,7 +1266,7 @@ class MemoryGC:
         self,
         threshold: float = MERGE_SIMILARITY_THRESHOLD,
         dry_run: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Batch-scan the memory pool and merge records with cosine similarity >= threshold.
 
         Algorithm:
@@ -1287,7 +1286,7 @@ class MemoryGC:
             dict with:
                 dry_run, candidates_found, would_merge, would_free, merged_pairs, skipped
         """
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "dry_run": dry_run,
             "candidates_found": 0,
             "would_merge": 0,
@@ -1306,7 +1305,9 @@ class MemoryGC:
 
             ldb = getattr(engine, "_ldb", None)
             if ldb is None:
-                result["skipped"] = "LanceDB not available (Ollama not running) — vector merge deferred"
+                result["skipped"] = (
+                    "LanceDB not available (Ollama not running) — vector merge deferred"
+                )
                 return result
             if getattr(ldb, "_vectors_disabled", False) is True:
                 result["candidates_found"] = 0
@@ -1321,7 +1322,7 @@ class MemoryGC:
                 return result
 
             # Gather all memories with vectors
-            vec_map: Dict[str, list] = {}
+            vec_map: dict[str, list] = {}
             for mid, mem in memories.items():
                 vec = mem.get("_vector")
                 if vec and not any(v != 0.0 for v in vec):

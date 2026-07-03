@@ -4,8 +4,8 @@ Zero API calls. Chinese substring match + English word-boundary regex.
 Domain-aware filtering. Used ONLY for BM25 text search, not vector search.
 """
 
-import re
 import os as _os
+import re
 
 # ── Synonym dictionary ──────────────────────────────────────────
 # Each entry: cn=[Chinese triggers], en=[English triggers],

@@ -795,7 +795,7 @@ export default function interopBridge(pi: ExtensionAPI) {
       try {
         const { execSync } = require("child_process");
         const preResult = execSync(
-          `python bridge/soul_bridge.py pre_task "${task.replace(/"/g, '\\"')}" "general"`,
+          `python plastic_promise/core/soul_bridge.py pre_task "${task.replace(/"/g, '\\"')}" "general"`,
           { cwd, timeout: 10000, encoding: "utf-8" }
         );
         soulPre = JSON.parse(preResult);
@@ -838,7 +838,7 @@ export default function interopBridge(pi: ExtensionAPI) {
           try {
             const { execSync } = require("child_process");
             const postResult = execSync(
-              `python bridge/soul_bridge.py post_task "${reply.message.content.replace(/"/g, '\\"').slice(0, 500)}" "general" --success`,
+              `python plastic_promise/core/soul_bridge.py post_task "${reply.message.content.replace(/"/g, '\\"').slice(0, 500)}" "general" --success`,
               { cwd, timeout: 10000, encoding: "utf-8" }
             );
             soulPost = JSON.parse(postResult);

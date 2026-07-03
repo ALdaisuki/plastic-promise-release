@@ -5,6 +5,7 @@ Runs every 6 hours. Checks SQLite, entity graph, and Ollama connectivity.
 
 import datetime
 from typing import Any
+
 import requests
 
 

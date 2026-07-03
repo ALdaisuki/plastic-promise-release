@@ -18,7 +18,7 @@
 
 import datetime
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from plastic_promise.core.constants import SCARF_DIMENSIONS
 
@@ -26,7 +26,7 @@ from plastic_promise.core.constants import SCARF_DIMENSIONS
 # 五维度关键词语义映射
 # ============================================================
 
-_DIMENSION_KEYWORDS: Dict[str, Dict[str, List[str]]] = {
+_DIMENSION_KEYWORDS: dict[str, dict[str, list[str]]] = {
     "Status": {
         "positive": [
             "成功",
@@ -258,7 +258,7 @@ _SEMANTIC_SIGNAL_MAX = 0.15  # 语义信号最大偏移量
 _SEMANTIC_SIGNAL_FLOOR = 0.03  # 语义相似度低于此值视为噪声，归零
 
 # Pre-built dimension anchor texts (lazily embedded on first use)
-_ANCHOR_TEXTS: Dict[str, Dict[str, str]] = {}
+_ANCHOR_TEXTS: dict[str, dict[str, str]] = {}
 for _dk, _kw in _DIMENSION_KEYWORDS.items():
     _ANCHOR_TEXTS[_dk] = {
         "positive": " ".join(_kw.get("positive", [])),
@@ -266,7 +266,7 @@ for _dk, _kw in _DIMENSION_KEYWORDS.items():
     }
 
 
-def _cosine_similarity(a: List[float], b: List[float]) -> float:
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors (manual, no numpy)."""
     if len(a) != len(b):
         return 0.0
@@ -328,7 +328,7 @@ def _text_heuristic_signal(context: str, dim_key: str) -> float:
 
 def _compute_dimension_score(
     dim_key: str, context_lower: str, context_original: str = ""
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """对单个维度计算评分和评估文本。
 
     Args:
@@ -368,6 +368,7 @@ def _compute_dimension_score(
             # Detect degradation cause
             try:
                 from plastic_promise.core.embedder import get_embedder
+
                 emb = get_embedder()
                 if getattr(emb, "model_name", "") == "fallback-zero":
                     degrade_note = "嵌入服务不可用，使用文本启发式评估——可信度降低"
@@ -428,13 +429,13 @@ class SCARFReflector:
         并初始化空的历史记录列表。
         """
         self.dimensions = dict(SCARF_DIMENSIONS)
-        self.history: List[Dict[str, Any]] = []
+        self.history: list[dict[str, Any]] = []
 
     def reflect(
         self,
         context: str,
-        dimensions: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        dimensions: list[str] | None = None,
+    ) -> dict[str, Any]:
         """在指定维度上对给定上下文进行自省。
 
         Args:
@@ -452,7 +453,7 @@ class SCARFReflector:
             dimensions = list(SCARF_DIMENSIONS.keys())
 
         context_lower = context.lower()
-        dim_results: Dict[str, Any] = {}
+        dim_results: dict[str, Any] = {}
 
         for dim_key in dimensions:
             if dim_key not in SCARF_DIMENSIONS:
@@ -465,7 +466,7 @@ class SCARFReflector:
         scores = [d["score"] for d in dim_results.values()]
         overall = round(sum(scores) / len(scores), 4) if scores else _DEFAULT_SCORE
 
-        result: Dict[str, Any] = dict(dim_results)
+        result: dict[str, Any] = dict(dim_results)
         result["summary"] = {
             "overall_score": overall,
             "dimensions_evaluated": list(dim_results.keys()),
@@ -481,7 +482,7 @@ class SCARFReflector:
         self.history.append(result)
         return result
 
-    def get_status_summary(self) -> Dict[str, Any]:
+    def get_status_summary(self) -> dict[str, Any]:
         """获取当前 SCARF 状态的摘要视图。
 
         返回各维度的最新评分和整体状态快照，用于快速监控。
@@ -504,10 +505,10 @@ class SCARFReflector:
                 "note": "尚无自省记录，请先调用 reflect()。",
             }
 
-        latest: Dict[str, Any] = self.history[-1]
+        latest: dict[str, Any] = self.history[-1]
         # Extract dimension entries from flat record (exclude meta keys)
         _META_KEYS = {"summary", "timestamp"}
-        dims: Dict[str, Any] = {
+        dims: dict[str, Any] = {
             k: v
             for k, v in latest.items()
             if k not in _META_KEYS and isinstance(v, dict) and "score" in v
@@ -523,7 +524,7 @@ class SCARFReflector:
                 "note": "最近一次自省无维度数据。",
             }
 
-        scores: Dict[str, float] = {k: v["score"] for k, v in dims.items()}
+        scores: dict[str, float] = {k: v["score"] for k, v in dims.items()}
         overall = round(sum(scores.values()) / len(scores), 4)
         strongest = max(scores, key=scores.get)
         weakest = min(scores, key=scores.get)
@@ -544,7 +545,7 @@ class SCARFReflector:
             "alerts": alerts,
         }
 
-    def compare_with_history(self, window: int = 10) -> Dict[str, Any]:
+    def compare_with_history(self, window: int = 10) -> dict[str, Any]:
         """将最近一次自省结果与历史窗口内的记录进行对比。
 
         Args:
@@ -572,7 +573,7 @@ class SCARFReflector:
 
         # Extract dimension entries from flat record (exclude meta keys)
         _META_KEYS = {"summary", "timestamp"}
-        latest_dims: Dict[str, Any] = {
+        latest_dims: dict[str, Any] = {
             k: v
             for k, v in latest_record.items()
             if k not in _META_KEYS and isinstance(v, dict) and "score" in v
@@ -588,11 +589,11 @@ class SCARFReflector:
             }
 
         # Compute average historical scores per dimension
-        hist_avgs: Dict[str, float] = {}
+        hist_avgs: dict[str, float] = {}
         dim_keys = list(latest_dims.keys())
 
         for dk in dim_keys:
-            hist_scores: List[float] = []
+            hist_scores: list[float] = []
             for rec in recent:
                 dim_val = rec.get(dk)
                 if isinstance(dim_val, dict) and "score" in dim_val:
@@ -602,7 +603,7 @@ class SCARFReflector:
             hist_avgs[dk] = sum(hist_scores) / len(hist_scores) if hist_scores else _DEFAULT_SCORE
 
         # Determine trend per dimension
-        trend: Dict[str, str] = {}
+        trend: dict[str, str] = {}
         change_threshold = 0.05  # minimum absolute change to count as rise/fall
 
         for dk in dim_keys:
@@ -639,8 +640,8 @@ class SCARFReflector:
 
 def scarf_reflect(
     context: str,
-    dimensions: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    dimensions: list[str] | None = None,
+) -> dict[str, Any]:
     """模块级别的便捷自省函数。
 
     创建临时 SCARFReflector 实例对当前上下文进行一次性自省，

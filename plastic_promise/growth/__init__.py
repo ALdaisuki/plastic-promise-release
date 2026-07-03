@@ -6,9 +6,9 @@
 - 技能沉淀提取
 """
 
-from plastic_promise.growth.soul_hormone import HormoneEngine, EmotionAccount
-from plastic_promise.growth.soul_classifier import TaskClassifier, classify_task
 from plastic_promise.growth.skill_extractor import SkillExtractor, extract_skill
+from plastic_promise.growth.soul_classifier import TaskClassifier, classify_task
+from plastic_promise.growth.soul_hormone import EmotionAccount, HormoneEngine
 
 __all__ = [
     "HormoneEngine",

@@ -11,12 +11,11 @@
 原则 #2: 候选域和别名全部 SQLite 持久化，重启不丢失。
 """
 
+import datetime
 import json
 import logging
 import os
-import datetime
 import threading
-from typing import Any, Optional
 from collections import Counter
 
 
@@ -43,13 +42,13 @@ class DomainInfo:
         self,
         name: str,
         score: float = 0.3,
-        tags: Optional[set] = None,
-        aliases: Optional[list] = None,
-        merged_from: Optional[list] = None,
-        parent: Optional[str] = None,
+        tags: set | None = None,
+        aliases: list | None = None,
+        merged_from: list | None = None,
+        parent: str | None = None,
         status: str = "active",
         memory_count: int = 0,
-        principle_ids: Optional[list] = None,
+        principle_ids: list | None = None,
         access_count: int = 0,
         last_accessed: str = "",
         created_at: str = "",
@@ -169,7 +168,7 @@ class DomainManager:
         1: "_migrate_v1_to_v2",
     }
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         self._lock = threading.RLock()
         self.domains: dict[str, DomainInfo] = {}
         self.tag_to_domain: dict[str, set[str]] = {}
@@ -655,7 +654,7 @@ class DomainManager:
             self._conn.commit()
             return decayed
 
-    def _find_most_similar(self, name: str) -> Optional[str]:
+    def _find_most_similar(self, name: str) -> str | None:
         """用 Jaccard 相似度找最相似的兄弟域（exclude all/merged/自身）。"""
         if name not in self.domains:
             return None
@@ -729,7 +728,7 @@ class DomainManager:
                 dom.score,
                 json.dumps(sorted(dom.tags), ensure_ascii=False)
                 if dom.status == "active"
-                else json.dumps({t: 1 for t in dom.tags}, ensure_ascii=False),
+                else json.dumps(dict.fromkeys(dom.tags, 1), ensure_ascii=False),
                 json.dumps(dom.aliases, ensure_ascii=False),
                 json.dumps(dom.merged_from, ensure_ascii=False),
                 dom.parent,

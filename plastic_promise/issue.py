@@ -3,9 +3,9 @@
 Serves 实践层: 每个约定对应可追踪的 Issue，Issue 之间有依赖关系。
 """
 
+import builtins
 import datetime
 import uuid
-from typing import Any, Dict, List, Optional, Set
 
 
 class IssueManager:
@@ -25,7 +25,7 @@ class IssueManager:
     }
 
     def __init__(self):
-        self._issues: Dict[str, dict] = {}
+        self._issues: dict[str, dict] = {}
 
     # ================================================================
     # CRUD
@@ -36,9 +36,9 @@ class IssueManager:
         title: str,
         description: str = "",
         principle_id: int = None,
-        memory_ids: List[str] = None,
-        blocks: List[str] = None,
-        blocked_by: List[str] = None,
+        memory_ids: list[str] = None,
+        blocks: list[str] = None,
+        blocked_by: list[str] = None,
         owner: str = "",
     ) -> str:
         """Create a new Issue and return its ID.
@@ -131,7 +131,7 @@ class IssueManager:
     def get(self, iid: str) -> dict | None:
         return self._issues.get(iid)
 
-    def list(self, state: str = None, owner: str = None) -> List[dict]:
+    def list(self, state: str = None, owner: str = None) -> list[dict]:
         """List issues, optionally filtered by state or owner."""
         result = list(self._issues.values())
         if state:
@@ -142,7 +142,7 @@ class IssueManager:
 
     def stats(self) -> dict:
         """Return issue statistics by state."""
-        by_state = {s: 0 for s in self.VALID_STATES}
+        by_state = dict.fromkeys(self.VALID_STATES, 0)
         for i in self._issues.values():
             by_state[i["state"]] = by_state.get(i["state"], 0) + 1
         return {
@@ -182,8 +182,8 @@ class IssueManager:
 
     def _has_cycle(self, start: str) -> bool:
         """DFS cycle detection in the dependency graph."""
-        visited: Set[str] = set()
-        path: Set[str] = set()
+        visited: set[str] = set()
+        path: set[str] = set()
 
         def dfs(node: str) -> bool:
             visited.add(node)
@@ -199,7 +199,7 @@ class IssueManager:
 
         return dfs(start)
 
-    def get_chain(self, iid: str) -> List[dict]:
+    def get_chain(self, iid: str) -> builtins.list[dict]:
         """Return the full dependency chain (what this blocks and what blocks this)."""
         issue = self._issues.get(iid)
         if not issue:

@@ -16,7 +16,6 @@ from typing import Any
 
 from mcp.types import TextContent
 
-
 # ---------------------------------------------------------------------------
 # audit_run (stub)
 # ---------------------------------------------------------------------------
@@ -166,8 +165,8 @@ def _get_trust_manager() -> "TrustManager":
     """Return a singleton TrustManager backed by TrustStore for persistence."""
     global _trust_manager
     if _trust_manager is None:
-        from plastic_promise.defense.trust_store import TrustStore
         from plastic_promise.defense.soul_enforcer import TrustManager
+        from plastic_promise.defense.trust_store import TrustStore
 
         _trust_manager = TrustManager(trust_store=TrustStore())
     return _trust_manager

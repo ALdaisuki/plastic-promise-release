@@ -6,16 +6,15 @@
 - memory_sync_files, memory_reclassify
 """
 
+import datetime
 import hashlib
 import json
 import os
-import datetime
 import threading
 import time
 from typing import Any
 
 from mcp.types import TextContent
-
 
 # ---- Query result cache for memory_recall ----
 _query_cache: dict[str, tuple[str, float]] = {}  # hash -> (json_result, timestamp)
@@ -111,16 +110,16 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
         strict = args.get("strict", False)
-        pack = args.get("pack", None)
+        pack = args.get("pack")
 
         # Check query cache
         cached = _cache_get(query, task_type, max_results, scope)
         if cached is not None:
             return [TextContent(type="text", text=cached)]
 
-        from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
+        from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
 
-        domain_hint = args.get("domain_hint", None)
+        domain_hint = args.get("domain_hint")
         federation = args.get("federation", True)
 
         try:
@@ -559,10 +558,10 @@ async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
         dry_run = args.get("dry_run", True)
         force = args.get("force", False)
 
-        from plastic_promise.memory.soul_memory import RecMem, MemoryGC
+        from plastic_promise.memory.soul_memory import MemoryGC, RecMem
 
         rm = RecMem(engine)
-        rm.update_all_decay()      # NEW: update Weibull decay values first
+        rm.update_all_decay()  # NEW: update Weibull decay values first
         gc = MemoryGC(rm)
         result = gc.collect(dry_run=dry_run, force=force)
 
@@ -615,9 +614,9 @@ def _get_fuzzy_buffer(engine: Any):
     """Get or create a FuzzyBuffer attached to the engine."""
     eid = id(engine)
     if eid not in _fuzzy_buffers:
+        from plastic_promise.core.embedder import get_embedder
         from plastic_promise.memory.pipeline import MemoryPipeline
         from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
-        from plastic_promise.core.embedder import get_embedder
 
         rec_mem = _rec_mem_cache.get(eid, RecMem(engine))
         try:
@@ -720,7 +719,7 @@ async def handle_memory_correct(engine: Any, args: dict) -> list[TextContent]:
 
         # Trigger EvolveR after correction — 自演化闭环
         try:
-            from plastic_promise.memory.soul_memory import RecMem, EvolveR
+            from plastic_promise.memory.soul_memory import EvolveR, RecMem
 
             rm = RecMem(engine)
             evolver = EvolveR(rm)
@@ -770,9 +769,8 @@ async def handle_memory_reclassify(engine: Any, args: dict) -> list[TextContent]
     dry_run = args.get("dry_run", False)
 
     # Import classification components
+    from plastic_promise.memory.soul_memory import MemoryRecord
     from plastic_promise.smart_extractor import _classify_by_rules
-    from plastic_promise.memory.soul_memory import MemoryRecord, MemoryTierManager
-    from plastic_promise.core.domain_manager import DomainManager
 
     fb = _get_fuzzy_buffer(engine)
     tier_mgr = fb._tier_manager
@@ -960,7 +958,7 @@ async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]
             continue
 
         fpath = os.path.join(source_dir, fname)
-        with open(fpath, "r", encoding="utf-8") as f:
+        with open(fpath, encoding="utf-8") as f:
             content = f.read()
 
         if "[[synced-to-mcp]]" in content or "[[memory-system-primary-channel]]" in content:

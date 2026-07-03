@@ -2,10 +2,9 @@
 用于 pack_recall strict 模式，在 _dm_ok=False 时保底。
 """
 
-import json
 import gzip
-from typing import Any, Optional
-
+import json
+from typing import Any
 
 PACK_VERSION_MAP = {
     "1.0": {"domain": {"work": "governing", "life": "reflecting"}},
@@ -49,7 +48,7 @@ class PackIndex:
 
 
 def pack_export_streaming(
-    name: str, output_path: str, engine: Optional[Any] = None, tags: Optional[list] = None
+    name: str, output_path: str, engine: Any | None = None, tags: list | None = None
 ) -> dict:
     """流式写盘导出。逐条读取记忆，gzip 压缩，内存上限 50MB。
 
@@ -101,7 +100,7 @@ def pack_import_with_strategy(
         with gzip.open(path, "rt", encoding="utf-8") as f:
             pack = json.load(f)
     else:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             pack = json.load(f)
 
     pack_version = pack.get("version", "1.0")

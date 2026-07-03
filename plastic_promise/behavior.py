@@ -4,20 +4,19 @@ Serves 演化层: 追踪 Agent 行为模式，让系统"越用越默契"。
 """
 
 import datetime
-from typing import Any, Dict, List
 
 
 class AgentBehaviorTracker:
     """Tracks Agent behavior patterns across sessions."""
 
     def __init__(self):
-        self._events: List[dict] = []
+        self._events: list[dict] = []
 
     def record(
         self,
         task_type: str,
-        principles: List[str],
-        memory_types: List[str],
+        principles: list[str],
+        memory_types: list[str],
         owner: str = "",
     ):
         self._events.append(
@@ -40,9 +39,9 @@ class AgentBehaviorTracker:
                 "memory_type_distribution": {},
             }
 
-        task_counts: Dict[str, int] = {}
-        principle_counts: Dict[str, int] = {}
-        memory_counts: Dict[str, int] = {}
+        task_counts: dict[str, int] = {}
+        principle_counts: dict[str, int] = {}
+        memory_counts: dict[str, int] = {}
 
         for e in self._events:
             task_counts[e["task_type"]] = task_counts.get(e["task_type"], 0) + 1

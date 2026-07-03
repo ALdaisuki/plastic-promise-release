@@ -7,10 +7,9 @@ Formulas adapted from memory-lancedb-pro's decay-engine.ts and
 access-tracker.ts, reimplemented in Python for Plastic Promise.
 """
 
-import math
 import datetime
 import logging
-from typing import Optional
+import math
 
 logger = logging.getLogger("plastic-promise.decay")
 
@@ -27,7 +26,7 @@ class WeibullDecayCalculator:
       L3 (long-term): beta=0.7, half-life=90d -> sub-exponential, slow fade
     """
 
-    def __init__(self, config: Optional[dict] = None) -> None:
+    def __init__(self, config: dict | None = None) -> None:
         from plastic_promise.core.constants import DECAY_CONFIG
 
         self._config = config or DECAY_CONFIG
@@ -50,8 +49,8 @@ class WeibullDecayCalculator:
         self,
         tier: str,
         created_at: str,
-        effective_half_life: Optional[float] = None,
-        current_time_str: Optional[str] = None,
+        effective_half_life: float | None = None,
+        current_time_str: str | None = None,
     ) -> float:
         """Compute decay_multiplier for a single memory.
 
@@ -80,7 +79,7 @@ class WeibullDecayCalculator:
         return max(0.05, min(1.0, raw))
 
     def evaluate_all(
-        self, records: list, current_time_str: Optional[str] = None
+        self, records: list, current_time_str: str | None = None
     ) -> list[tuple[str, float]]:
         """Batch-evaluate decay for multiple MemoryRecord objects.
 
@@ -122,7 +121,7 @@ class AccessReinforcement:
     Auto-recall from ContextEngine.supply() does NOT reinforce.
     """
 
-    def __init__(self, config: Optional[dict] = None) -> None:
+    def __init__(self, config: dict | None = None) -> None:
         from plastic_promise.core.constants import REINFORCEMENT_CONFIG
 
         cfg = config or REINFORCEMENT_CONFIG
@@ -176,7 +175,7 @@ class AccessReinforcement:
         last_accessed: str,
         base_half_life: float,
         is_auto_recall: bool = False,
-        current_time_str: Optional[str] = None,
+        current_time_str: str | None = None,
     ) -> tuple[float, float]:
         """Compute reinforcement score and new effective half-life.
 

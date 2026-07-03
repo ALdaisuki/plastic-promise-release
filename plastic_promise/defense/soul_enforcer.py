@@ -9,21 +9,16 @@ SoulEnforcer — 三层防线执行引擎（pre_check/defense_status/violation_l
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
 import re
+from datetime import datetime, timezone
+from typing import Any
 
 from plastic_promise.core.constants import (
     DEFENSE_LAYERS,
-    TRUST_BOOST_RATE,
     TRUST_DECAY_RATE,
     TRUST_INITIAL,
     TRUST_MAX,
     TRUST_MIN,
-    TRUST_TIER_CRITICAL,
-    TRUST_TIER_HIGH,
-    TRUST_TIER_LOW,
-    TRUST_TIER_MEDIUM,
 )
 
 
@@ -47,8 +42,8 @@ class TrustManager:
     """
 
     def __init__(self, initial_trust: float = TRUST_INITIAL, trust_store: Any = None) -> None:
-        self._trusts: Dict[str, float] = {}
-        self._history: List[Dict[str, Any]] = []
+        self._trusts: dict[str, float] = {}
+        self._history: list[dict[str, Any]] = []
         self._store = trust_store  # None = in-memory only (legacy)
 
     def _trust(self, target: str = "") -> float:
@@ -113,7 +108,7 @@ class TrustManager:
             return self._store.get(target)["trust"]
         return self._trusts.get(target, TRUST_INITIAL)
 
-    def history(self, target: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+    def history(self, target: str = "", limit: int = 50) -> list[dict[str, Any]]:
         if self._store:
             return self._store.history(target, limit)
         if not self._history:
@@ -169,7 +164,7 @@ class SoulEnforcer:
         _violation_log: 违规记录列表
     """
 
-    def __init__(self, trust_manager: Optional[TrustManager] = None, target: str = "claude") -> None:
+    def __init__(self, trust_manager: TrustManager | None = None, target: str = "claude") -> None:
         """初始化 SoulEnforcer。
 
         Args:
@@ -178,9 +173,9 @@ class SoulEnforcer:
         """
         self.trust_manager: TrustManager = trust_manager or TrustManager()
         self._default_target: str = target
-        self._violation_log: List[Dict[str, Any]] = []
+        self._violation_log: list[dict[str, Any]] = []
 
-    def pre_check(self, action_description: str, action_type: str = "exec") -> Dict[str, Any]:
+    def pre_check(self, action_description: str, action_type: str = "exec") -> dict[str, Any]:
         """行动前三阶预检 —— L0 硬边界 → L1 约束衰减 → L2 免疫巡检。
 
         按优先级顺序执行三层防御检查，返回检查结果和是否允许执行。
@@ -212,12 +207,12 @@ class SoulEnforcer:
         description_lower = action_description.lower()
         trust = self.trust_manager.get(target=self._default_target)
 
-        layer_checks: Dict[str, Any] = {
+        layer_checks: dict[str, Any] = {
             "L0": {"checked": True, "passed": True, "message": "L0 hard-boundary check passed"},
             "L1": {"checked": True, "passed": True, "message": "L1 constraint-decay check passed"},
             "L2": {"checked": False, "passed": True, "message": "L2 immune-scan deferred (cron)"},
         }
-        warnings: List[str] = []
+        warnings: list[str] = []
         passed = True
         risk_score = 0.0
 
@@ -241,7 +236,9 @@ class SoulEnforcer:
                 # Violation-driven decay: L0 violation → -0.05
                 if self.trust_manager:
                     try:
-                        self.trust_manager.decay(0.05, f"L0 violation: {pattern}", target=self._default_target)
+                        self.trust_manager.decay(
+                            0.05, f"L0 violation: {pattern}", target=self._default_target
+                        )
                     except Exception:
                         pass
                 return {
@@ -271,7 +268,9 @@ class SoulEnforcer:
             # Violation-driven decay: L1 critical trust → -0.02
             if self.trust_manager:
                 try:
-                    self.trust_manager.decay(0.02, f"L1 critical trust: {trust:.2f}", target=self._default_target)
+                    self.trust_manager.decay(
+                        0.02, f"L1 critical trust: {trust:.2f}", target=self._default_target
+                    )
                 except Exception:
                     pass
         elif trust < 0.40:
@@ -294,7 +293,7 @@ class SoulEnforcer:
             "trust_used": trust,
         }
 
-    def get_defense_status(self) -> Dict[str, Any]:
+    def get_defense_status(self) -> dict[str, Any]:
         """获取当前三层防线整体状态。
 
         Returns:
@@ -356,7 +355,7 @@ class SoulEnforcer:
             }
         )
 
-    def get_violation_stats(self) -> Dict[str, Any]:
+    def get_violation_stats(self) -> dict[str, Any]:
         """获取违规统计数据。
 
         Returns:
@@ -367,7 +366,7 @@ class SoulEnforcer:
             - recent: List[Dict] — 最近违规记录
         """
         total = len(self._violation_log)
-        by_layer: Dict[str, int] = {}
+        by_layer: dict[str, int] = {}
         today_count = 0
         today_str = datetime.now(timezone.utc).isoformat()[:10]
 

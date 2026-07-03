@@ -4,7 +4,7 @@
 并根据分类得分决定路由目标 (Claude Code 或 ACP)。
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 from plastic_promise.core.constants import (
     CLASSIFIER_KEYWORDS,
@@ -24,7 +24,7 @@ from plastic_promise.core.constants import (
 #   39..44 学习探索 (6 个)
 # ---------------------------------------------------------------------------
 
-CATEGORY_NAMES: List[str] = [
+CATEGORY_NAMES: list[str] = [
     "code_generation",
     "modify",
     "query",
@@ -33,7 +33,7 @@ CATEGORY_NAMES: List[str] = [
     "learning",
 ]
 
-_KEYWORD_GROUPS: List[List[str]] = [
+_KEYWORD_GROUPS: list[list[str]] = [
     CLASSIFIER_KEYWORDS[0:11],  # code_generation
     CLASSIFIER_KEYWORDS[11:19],  # modify
     CLASSIFIER_KEYWORDS[19:27],  # query
@@ -54,15 +54,15 @@ class TaskClassifier:
 
     def __init__(self) -> None:
         """初始化分类器，预加载关键词索引。"""
-        self._keywords: List[str] = CLASSIFIER_KEYWORDS
-        self._keyword_groups: List[List[str]] = _KEYWORD_GROUPS
-        self._category_names: List[str] = CATEGORY_NAMES
+        self._keywords: list[str] = CLASSIFIER_KEYWORDS
+        self._keyword_groups: list[list[str]] = _KEYWORD_GROUPS
+        self._category_names: list[str] = CATEGORY_NAMES
         self._threshold_claude: int = CLASSIFIER_THRESHOLD_CLAUDE
         self._threshold_acp: int = CLASSIFIER_THRESHOLD_ACP
 
         # 统计追踪
         self._total_classified: int = 0
-        self._route_counts: Dict[str, int] = {
+        self._route_counts: dict[str, int] = {
             "acpx_claude_exec": 0,
             "claude_print": 0,
             "local": 0,
@@ -73,7 +73,7 @@ class TaskClassifier:
     # 公共方法
     # ------------------------------------------------------------------
 
-    def classify(self, instruction: str) -> Dict[str, Any]:
+    def classify(self, instruction: str) -> dict[str, Any]:
         """对单条指令进行分类。
 
         Args:
@@ -91,8 +91,8 @@ class TaskClassifier:
         """
         instruction_lower = instruction.lower()
 
-        matched: List[str] = []
-        category_hits: Dict[str, int] = {name: 0 for name in self._category_names}
+        matched: list[str] = []
+        category_hits: dict[str, int] = dict.fromkeys(self._category_names, 0)
 
         for cat_idx, keywords in enumerate(self._keyword_groups):
             cat_name = self._category_names[cat_idx]
@@ -144,7 +144,7 @@ class TaskClassifier:
         score = len([kw for kw in self._keywords if kw in instruction.lower()])
         return self._compute_route(score)
 
-    def batch_classify(self, instructions: List[str]) -> List[Dict[str, Any]]:
+    def batch_classify(self, instructions: list[str]) -> list[dict[str, Any]]:
         """批量分类多条指令。
 
         Args:
@@ -156,7 +156,7 @@ class TaskClassifier:
         return [self.classify(inst) for inst in instructions]
 
     @property
-    def accuracy_stats(self) -> Dict[str, Any]:
+    def accuracy_stats(self) -> dict[str, Any]:
         """分类准确率统计。
 
         Returns:
@@ -193,7 +193,7 @@ class TaskClassifier:
 _DEFAULT_CLASSIFIER: TaskClassifier = TaskClassifier()
 
 
-def classify_task(instruction: str) -> Dict[str, Any]:
+def classify_task(instruction: str) -> dict[str, Any]:
     """模块级便捷函数 — 使用默认分类器实例对单条指令分类。
 
     Args:

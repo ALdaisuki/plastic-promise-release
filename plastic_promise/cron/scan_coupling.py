@@ -1,10 +1,10 @@
 """Coupling health scanner — tag anomalies, bridge nodes, implicit dependencies."""
 
-import sqlite3
-import os
 import json
-from datetime import datetime, timedelta
+import os
+import sqlite3
 from collections import defaultdict
+from datetime import datetime, timedelta
 from itertools import combinations
 
 

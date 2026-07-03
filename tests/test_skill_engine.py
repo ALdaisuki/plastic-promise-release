@@ -355,6 +355,27 @@ class TestSkillEngineRegister:
         se.register(sd)  # should not raise
         assert "scheduled-gc" in se._registry
 
+    def test_register_all_superpowers_stages(self, mock_engine):
+        """Every SuperPowers stage must declare only registered atoms."""
+        from plastic_promise.skills.engine import SkillEngine
+        from plastic_promise.skills.superpowers_stages import SKILL_DEFS
+
+        se = SkillEngine(mock_engine)
+        for skill_def in SKILL_DEFS.values():
+            se.register(skill_def)
+
+        assert set(se._registry) >= {skill_def.name for skill_def in SKILL_DEFS.values()}
+
+    def test_superpowers_stage_atoms_are_registered(self, mock_engine):
+        """Stage atom lists must stay in sync with AtomRegistry."""
+        from plastic_promise.skills.engine import AtomRegistry
+        from plastic_promise.skills.superpowers_stages import STAGE_ATOMS
+
+        registered_atoms = set(AtomRegistry.build(mock_engine))
+        stage_atoms = {atom for atoms in STAGE_ATOMS.values() for atom in atoms}
+
+        assert stage_atoms <= registered_atoms
+
 
 # ──────────────────────────────────────────────
 # SkillEngine.exec tests (Task 4)

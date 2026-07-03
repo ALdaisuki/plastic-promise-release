@@ -9,12 +9,11 @@
 对应九大系统中的「遗传系统」(maturity 0.60)。
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 from plastic_promise.core.constants import (
     CORE_PRINCIPLES,
     PRINCIPLE_DOMAINS,
-    PRINCIPLE_INHERITANCE_DIRECTIONS,
     PRINCIPLE_INHERITANCE_DECAY,
 )
 from plastic_promise.core.context_engine import ContextEngine
@@ -33,7 +32,7 @@ class PrincipleManager:
     也可独立使用以检查原则状态或手动触发扩散。
     """
 
-    def __init__(self, engine: Optional[ContextEngine] = None) -> None:
+    def __init__(self, engine: ContextEngine | None = None) -> None:
         """初始化原则管理器。
 
         Args:
@@ -52,7 +51,7 @@ class PrincipleManager:
         task_type: str,
         task_description: str = "",
         max_principles: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """根据任务类型和描述激活相关原则。
 
         激活逻辑 (由 ContextEngine._activate_principles 驱动):
@@ -94,7 +93,7 @@ class PrincipleManager:
 
         # Step 3: Deduplicate while preserving order, then limit
         seen: set = set()
-        unique_ids: List[int] = []
+        unique_ids: list[int] = []
         for pid in ids:
             if pid not in seen:
                 seen.add(pid)
@@ -102,13 +101,13 @@ class PrincipleManager:
         unique_ids = unique_ids[:max_principles]
 
         # Step 4: Return matching principle dicts from CORE_PRINCIPLES
-        result: List[Dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
         for p in CORE_PRINCIPLES:
             if p["id"] in unique_ids:
                 result.append(dict(p))
         return result
 
-    def inject_to_graph(self, task_type: str) -> List[str]:
+    def inject_to_graph(self, task_type: str) -> list[str]:
         """将当前激活的原则注入到关联的 ContextEngine 图引擎。
 
         为每条激活的原则在图引擎中创建或更新对应节点，
@@ -125,7 +124,7 @@ class PrincipleManager:
 
         # Activate principles for this task_type
         activated = self.activate(task_type)
-        edge_ids: List[str] = []
+        edge_ids: list[str] = []
 
         for i, p in enumerate(activated):
             # Descending relevance: first match = highest relevance
@@ -159,8 +158,8 @@ class PrincipleManager:
         self,
         source_domain: str,
         target_domain: str = "all",
-        principle_ids: Optional[List[int]] = None,
-    ) -> Dict[str, Any]:
+        principle_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
         """单向继承：将原则从源域扩散到目标域。
 
         继承方向遵循 PRINCIPLE_INHERITANCE_DIRECTIONS:
@@ -203,8 +202,8 @@ class PrincipleManager:
 
     def diffuse(
         self,
-        principle_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        principle_id: int | None = None,
+    ) -> dict[str, Any]:
         """执行原则扩散：所有权重乘以 PRINCIPLE_INHERITANCE_DECAY。
 
         扩散用于模拟「传播距离越远，影响力越弱」的自然衰减规律。
@@ -229,7 +228,7 @@ class PrincipleManager:
             principles = list(CORE_PRINCIPLES)
 
         # Build domain status per principle
-        domain_status: Dict[int, Dict[str, Any]] = {}
+        domain_status: dict[int, dict[str, Any]] = {}
         for p in principles:
             pid = p["id"]
             # Determine propagation path based on domain
@@ -265,7 +264,7 @@ class PrincipleManager:
         self,
         principle_id: int,
         scenario: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """评价原则在特定场景下的有效性和适用性。
 
         基于场景文本与原则关键词的重叠度、原则所属域匹配度、
@@ -286,7 +285,7 @@ class PrincipleManager:
             }
         """
         # Step 1: Look up principle by ID
-        principle: Optional[Dict[str, Any]] = None
+        principle: dict[str, Any] | None = None
         for p in CORE_PRINCIPLES:
             if p["id"] == principle_id:
                 principle = p
@@ -300,7 +299,7 @@ class PrincipleManager:
             }
 
         # Step 2: Pre-defined counterfactual consequence text per principle ID
-        consequences: Dict[int, str] = {
+        consequences: dict[int, str] = {
             1: "If honesty is not prioritized over perfection: metrics become unreliable, "
             "trust erodes, and systemic issues go unreported — the violation of truth-telling "
             "creates a cascade of hidden failures that eventually destroy system integrity.",
@@ -359,9 +358,7 @@ class PrincipleManager:
         # Step 4: Recommendation based on consequence severity and keyword match
         if principle_id <= 3 or principle_id == 13:
             recommendation = "strong"
-        elif principle_id <= 7:
-            recommendation = "moderate"
-        elif keyword_match > 0.3:
+        elif principle_id <= 7 or keyword_match > 0.3:
             recommendation = "moderate"
         else:
             recommendation = "weak"
@@ -379,7 +376,7 @@ class PrincipleManager:
     # 查询
     # ================================================================
 
-    def get_all_principles(self) -> List[Dict[str, Any]]:
+    def get_all_principles(self) -> list[dict[str, Any]]:
         """获取所有核心原则的完整信息。
 
         Returns:
@@ -390,7 +387,7 @@ class PrincipleManager:
 
         return [dict(p) for p in CORE_PRINCIPLES]
 
-    def get_by_domain(self, domain: str) -> List[Dict[str, Any]]:
+    def get_by_domain(self, domain: str) -> list[dict[str, Any]]:
         """按域筛选原则。
 
         Args:
@@ -404,7 +401,6 @@ class PrincipleManager:
         """
         from plastic_promise.core.constants import (
             CORE_PRINCIPLES,
-            PRINCIPLE_DOMAINS,
         )
 
         if domain not in PRINCIPLE_DOMAINS:
@@ -419,7 +415,7 @@ class PrincipleTracker:
     """
 
     def __init__(self):
-        self._records: Dict[int, list] = {}  # principle_id -> [{adhered, context, timestamp}]
+        self._records: dict[int, list] = {}  # principle_id -> [{adhered, context, timestamp}]
 
     def record(self, principle_id: int, adhered: bool, context: str = ""):
         """Record one adherence event for a principle."""
@@ -500,7 +496,7 @@ def principle_activate(
     task_type: str,
     task_description: str = "",
     max_principles: int = 5,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """便捷函数：使用默认 PrincipleManager 激活原则。
 
     Args:
@@ -517,8 +513,8 @@ def principle_activate(
 def principle_inherit(
     source_domain: str,
     target_domain: str = "all",
-    principle_ids: Optional[List[int]] = None,
-) -> Dict[str, Any]:
+    principle_ids: list[int] | None = None,
+) -> dict[str, Any]:
     """便捷函数：使用默认 PrincipleManager 执行单向继承。
 
     Args:
@@ -533,8 +529,8 @@ def principle_inherit(
 
 
 def principle_diffuse(
-    principle_id: Optional[int] = None,
-) -> Dict[str, Any]:
+    principle_id: int | None = None,
+) -> dict[str, Any]:
     """便捷函数：使用默认 PrincipleManager 执行原则扩散。
 
     Args:
@@ -549,7 +545,7 @@ def principle_diffuse(
 def principle_evaluate(
     principle_id: int,
     scenario: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """便捷函数：使用默认 PrincipleManager 评价原则有效性。
 
     Args:

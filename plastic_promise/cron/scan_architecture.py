@@ -1,9 +1,8 @@
 """Architecture health scanner — domain cycles, god modules, shotgun surgery."""
 
-import sqlite3
-import os
 import json
-from datetime import datetime, timedelta
+import os
+import sqlite3
 from collections import defaultdict
 
 
@@ -22,6 +21,7 @@ def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
 
 # ── Tag blacklist for Shotgun Surgery ──────────────────────
 
+
 def _get_tag_blacklist() -> set[str]:
     """Return the set of tags excluded from Shotgun Surgery detection.
 
@@ -31,16 +31,28 @@ def _get_tag_blacklist() -> set[str]:
     """
     builtin = {
         # 系统管理标签 — 跨模块出现是正常行为
-        "task:done", "task:pending", "task:active", "task:accepted",
-        "task:review", "task:reviewed",
-        "branch:main", "status:replaced",
-        "llm_pending:true", "llm_classified:true",
+        "task:done",
+        "task:pending",
+        "task:active",
+        "task:accepted",
+        "task:review",
+        "task:reviewed",
+        "branch:main",
+        "status:replaced",
+        "llm_pending:true",
+        "llm_classified:true",
         "audit",
         # 元数据分类标签 — 跨域共现是预期行为
-        "cat:project", "cat:event", "cat:decision",
-        "cat:preference", "cat:fact", "cat:pattern", "cat:entity",
+        "cat:project",
+        "cat:event",
+        "cat:decision",
+        "cat:preference",
+        "cat:fact",
+        "cat:pattern",
+        "cat:entity",
         # 系统来源标签 — 跨域分布是管道设计使然
-        "source:file-sync", "source:auto_inject",
+        "source:file-sync",
+        "source:auto_inject",
     }
     extra = os.environ.get("TAG_BLACKLIST_EXTRA", "")
     if extra:
