@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock
 from mcp.types import TextContent
 
-from plastic_promise.skills.engine import SkillEngine, SkillDef, SkillResult
+from plastic_promise.skills.engine import SkillEngine
 from plastic_promise.skills.session_lifecycle import skill_session_init
 
 
@@ -23,6 +23,7 @@ class TestSessionInit:
             _make_mock_tool(n)
             for n in [
                 "principle_activate",
+                "scarf_reflect",
                 "domain",
                 "system",
                 "defense",
@@ -40,9 +41,12 @@ class TestSessionInit:
         se = SkillEngine(mock_engine)
         call_order = []
 
+        seen_args = {}
+
         async def record_call(name, data):
             async def handler(engine, args):
                 call_order.append(name)
+                seen_args[name] = args
                 return [TextContent(type="text", text=json.dumps(data))]
 
             return handler
@@ -50,6 +54,10 @@ class TestSessionInit:
         se._atoms["principle_activate"] = await record_call(
             "principle_activate",
             {"task_type": "general", "activated": [{"id": 1, "name": "奥卡姆剃刀"}], "count": 1},
+        )
+        se._atoms["scarf_reflect"] = await record_call(
+            "scarf_reflect",
+            {"tool": "scarf_reflect", "reflection": {"summary": {"overall_score": 0.7}}},
         )
         se._atoms["domain"] = await record_call("domain", {"domains": {"building": {"score": 0.8}}})
         se._atoms["system"] = await record_call(
@@ -78,9 +86,11 @@ class TestSessionInit:
 
         assert result.success is True
         assert result.skill_name == "session-init"
+        assert seen_args["scarf_reflect"]["context"] == "test task"
         # Verify bootstrap atoms called in order (index 0 is skill_session_start, called internally by engine)
-        assert call_order[1:6] == [
+        assert call_order[1:7] == [
             "principle_activate",
+            "scarf_reflect",
             "domain",
             "system",
             "defense",
@@ -115,6 +125,10 @@ class TestSessionInit:
             return handler
 
         se._atoms["principle_activate"] = await ok_atom("principle_activate", {"activated": []})
+        se._atoms["scarf_reflect"] = await ok_atom(
+            "scarf_reflect",
+            {"tool": "scarf_reflect", "reflection": {"summary": {"overall_score": 0.65}}},
+        )
         se._atoms["domain"] = await failing_atom("domain")  # This will fail
         se._atoms["system"] = await ok_atom("system", {"memory": {"total": 0}})
         se._atoms["defense"] = await ok_atom("defense", {"trust": 0.5})
@@ -134,7 +148,31 @@ class TestSessionInit:
             },
             caller="claude",
         )
-
         assert result.success is True
         assert "system" in call_order  # continued after domain failure
         assert any("domain" in log and "skip" in log for log in result.degrade_log)
+
+
+@pytest.mark.asyncio
+async def test_scarf_reflect_uses_task_description_fallback(monkeypatch):
+    from plastic_promise.mcp.tools import reflection as reflection_tools
+
+    seen = {}
+
+    class FakeReflector:
+        def reflect(self, context):
+            seen["context"] = context
+            return {"summary": {"overall_score": 0.7}}
+
+    monkeypatch.setattr(
+        "plastic_promise.reflection.soul_scarf.SCARFReflector",
+        FakeReflector,
+    )
+
+    result = await reflection_tools.handle_scarf_reflect(
+        MagicMock(), {"task_description": "fallback task text"}
+    )
+    payload = json.loads(result[0].text)
+
+    assert seen["context"] == "fallback task text"
+    assert payload["reflection"]["summary"]["overall_score"] == 0.7

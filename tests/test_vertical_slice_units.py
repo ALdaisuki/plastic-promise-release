@@ -1,7 +1,5 @@
 """Tests for 7-unit vertical slice — query_expander, decay_ranking, reranker, MMR."""
 
-import pytest
-
 
 class TestQueryExpander:
     def test_chinese_substring_match(self):
@@ -42,14 +40,14 @@ class TestDecayRanking:
 
     def test_no_mem_returns_score_unchanged(self):
         from plastic_promise.core.context_engine import ContextEngine
-        import datetime
 
         result = ContextEngine._apply_decay_awareness(0.8, None, "", 1.0)
         assert result == 0.8
 
     def test_fresh_memory_gets_recency_boost(self):
-        from plastic_promise.core.context_engine import ContextEngine
         import datetime
+
+        from plastic_promise.core.context_engine import ContextEngine
 
         now = datetime.datetime.now()
         fresh = (now - datetime.timedelta(hours=1)).isoformat()
@@ -58,8 +56,9 @@ class TestDecayRanking:
         assert result > 0.7  # boost applied for 1-hour-old memory
 
     def test_old_memory_gets_penalized(self):
-        from plastic_promise.core.context_engine import ContextEngine
         import datetime
+
+        from plastic_promise.core.context_engine import ContextEngine
 
         now = datetime.datetime.now().isoformat()
         old = (datetime.datetime.now() - datetime.timedelta(days=365)).isoformat()
@@ -100,15 +99,18 @@ class TestReranker:
         result = r.rerank("query", items)
         assert result == items  # unchanged
 
-    def test_backward_compat_shim(self):
+    def test_backward_compat_shim(self, monkeypatch):
+        monkeypatch.setenv("PP_RERANK_PROVIDERS", "cosine")
         from plastic_promise.core.reranker import cross_encode_rerank
 
-        result = cross_encode_rerank("test", [("id1", "content a", 0.9), ("id2", "content b", 0.5)])
+        result = cross_encode_rerank(
+            "test tuple shim",
+            [("id1", "content a", 0.9), ("id2", "content b", 0.5)],
+        )
         assert len(result) == 2
 
     def test_cosine_fallback_preserves_order(self):
         from plastic_promise.core.reranker import MultiProviderReranker
-        import os
 
         mp = MultiProviderReranker()
         scores = mp._rerank_cosine("q", [], 999)
@@ -124,6 +126,56 @@ class TestReranker:
         items = [MockItem("a", "first", 0.9), MockItem("b", "second", 0.3)]
         scores = mp._rerank_cosine("q", items, 999)
         assert scores[0] > scores[1]  # first item gets higher score
+
+    def test_jina_auth_header_is_optional(self, monkeypatch):
+        import json
+        import urllib.request
+
+        from plastic_promise.core.reranker import MultiProviderReranker
+
+        seen = {}
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps({"results": [{"index": 0, "relevance_score": 0.9}]}).encode()
+
+        def fake_urlopen(req, timeout):
+            seen["auth"] = req.get_header("Authorization")
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.delenv("JINA_API_KEY", raising=False)
+        MultiProviderReranker()._rerank_jina("q", [("id", "content", 0.5)], 9999999999)
+        assert seen["auth"] is None
+
+        monkeypatch.setenv("JINA_API_KEY", "test-key")
+        MultiProviderReranker()._rerank_jina("q", [("id", "content", 0.5)], 9999999999)
+        assert seen["auth"] == "Bearer test-key"
+
+    def test_siliconflow_auth_header_is_optional(self, monkeypatch):
+        import json
+        import urllib.request
+
+        from plastic_promise.core.reranker import MultiProviderReranker
+
+        seen = {}
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps({"results": [{"index": 0, "relevance_score": 0.9}]}).encode()
+
+        def fake_urlopen(req, timeout):
+            seen["auth"] = req.get_header("Authorization")
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
+        MultiProviderReranker()._rerank_siliconflow("q", [("id", "content", 0.5)], 9999999999)
+        assert seen["auth"] is None
+
+        monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
+        MultiProviderReranker()._rerank_siliconflow("q", [("id", "content", 0.5)], 9999999999)
+        assert seen["auth"] == "Bearer test-key"
 
 
 class TestMMRFix:

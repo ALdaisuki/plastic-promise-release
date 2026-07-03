@@ -1,24 +1,23 @@
 # Plastic Promise — System Chain Overview
 
-> Release-facing overview. This document describes the system shape and operating principles without exposing internal implementation plans.
+> Release-facing overview. This document describes the system shape and operating principles without exposing private planning artifacts.
 
 ## 1. What this system is
 
-Plastic Promise is a memory-centered coordination system for AI-assisted software work. It connects memory, context retrieval, principles, audit, task dispatch, and feedback loops into one operating chain.
+Plastic Promise is a local-first coordination runtime for AI-assisted software work. It connects memory, context retrieval, principles, audit, trust, task dispatch, and feedback loops into one operating chain.
 
 The goal is not to store everything forever. The goal is to keep useful commitments alive, let stale context decay, and make each action traceable enough that future agents can continue work safely.
 
 ## 2. Core chain
 
 ```text
-Session start
-  -> context supply
-  -> principle alignment
-  -> task execution
-  -> verification
-  -> step closure
-  -> memory update
-  -> future context
+session start
+  -> retrieve context and principles
+  -> check trust and audit boundaries
+  -> execute a small reversible step
+  -> verify the result
+  -> close the loop
+  -> store better future context
 ```
 
 Every serious task should pass through this loop:
@@ -33,14 +32,15 @@ Every serious task should pass through this loop:
 
 | Subsystem | Role |
 |---|---|
-| Memory | Stores reusable experience, decisions, preferences, and task knowledge. |
+| MCP Server | Exposes the runtime to Claude Code and other MCP clients over stdio or SSE. |
+| Memory | Stores reusable experience, decisions, preferences, task knowledge, and derived signals. |
 | Context | Retrieves the most relevant memory and graph context for the current task. |
 | Principles | Keeps work aligned with the project’s operating commitments. |
 | Audit | Checks risky actions, code changes, and governance boundaries. |
 | Trust | Adjusts autonomy according to observed reliability and review outcomes. |
 | Skills | Encapsulates repeatable work patterns such as session start, remembering, and closure. |
-| Dispatch | Routes larger or specialized work to agents through the Hunter Guild model. |
-| Packs | Exports reusable experience so knowledge can move between agents or environments. |
+| Dispatch | Routes larger or specialized work through the Hunter Guild task lifecycle. |
+| Packs and extensions | Move reusable experience or optional capabilities between environments. |
 
 ## 4. Memory lifecycle
 
@@ -82,10 +82,10 @@ This model turns distributed AI work into a governed queue instead of an untrack
 
 The release flow favors a clean public history:
 
-- `Dev` is the development line.
+- Public release work targets `main` unless a maintainer explicitly chooses another integration branch.
 - Release repositories should contain only source, public documentation, tests, and reproducible configuration.
 - Runtime files, generated exports, local agent state, private implementation notes, and heavy design drafts should stay out of the public release tree.
-- Pull requests should be reviewable, conventionally named, and merged only after explicit approval.
+- Pull requests should be reviewable, conventionally named, and merged only after explicit maintainer approval.
 
 ## 8. Public release boundary
 
@@ -103,10 +103,14 @@ Exclude:
 - Runtime logs, PID files, caches, and generated archives.
 - Local IDE or agent configuration.
 - Private worktree state.
-- Detailed internal planning/specification archives.
+- Detailed internal planning/specification archives that are not needed for users.
 - Temporary diagnostic scripts not part of the supported workflow.
 
-## 9. Operating principles
+## 9. Degraded-mode boundary
+
+Plastic Promise is local-first by default. Optional external calls depend on configured agents, embedding providers, rerankers, or LLM integrations. If optional services are unavailable, the runtime should explicitly label degraded behavior and continue through safe fallback paths when possible.
+
+## 10. Operating principles
 
 1. **Context before action** — retrieve relevant memory before major decisions.
 2. **Traceability over speed** — leave a path future agents can audit.
@@ -116,7 +120,7 @@ Exclude:
 6. **Verification before completion** — done means checked, not merely edited.
 7. **Reflection after output** — useful lessons should feed the next loop.
 
-## 10. Minimal mental model
+## 11. Minimal mental model
 
 Plastic Promise is a loop:
 

@@ -28,7 +28,7 @@ _TOTAL_TIMEOUT = float(os.environ.get("PP_RERANK_TOTAL_TIMEOUT", "10.0"))
 
 # ── Cache ──────────────────────────────────────────────────────
 
-_rerank_cache: dict[str, tuple[list[tuple[str, float]], float]] = {}
+_rerank_cache: dict[str, tuple[dict[int, float], float]] = {}
 _rerank_cache_lock = threading.Lock()
 _RERANK_CACHE_SIZE = 64
 _RERANK_CACHE_TTL = 60  # seconds
@@ -108,7 +108,7 @@ class MultiProviderReranker:
     def _rerank_jina(self, query, candidates, deadline):
         """Jina AI Reranker API (free tier: 1M tokens/day)."""
         url = "https://api.jina.ai/v1/rerank"
-        documents = [c.content[:500] for c in candidates[:30]]
+        documents = [_candidate_content(c)[:500] for c in candidates[:30]]
         payload = json.dumps(
             {
                 "model": "jina-reranker-v2-base-multilingual",
@@ -117,11 +117,11 @@ class MultiProviderReranker:
                 "top_n": min(len(candidates), 20),
             }
         ).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
+        headers = {"Content-Type": "application/json"}
+        api_key = os.environ.get("JINA_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        req = urllib.request.Request(url, data=payload, headers=headers)
         timeout = max(1.0, min(_PROVIDER_TIMEOUT, deadline - time.time()))
         resp = urllib.request.urlopen(req, timeout=timeout)
         data = json.loads(resp.read().decode("utf-8"))
@@ -135,7 +135,7 @@ class MultiProviderReranker:
     def _rerank_siliconflow(self, query, candidates, deadline):
         """SiliconFlow Reranker API (free tier: 1K calls/day)."""
         url = "https://api.siliconflow.cn/v1/rerank"
-        documents = [c.content[:500] for c in candidates[:30]]
+        documents = [_candidate_content(c)[:500] for c in candidates[:30]]
         payload = json.dumps(
             {
                 "model": "BAAI/bge-reranker-v2-m3",
@@ -144,11 +144,11 @@ class MultiProviderReranker:
                 "top_n": min(len(candidates), 20),
             }
         ).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
+        headers = {"Content-Type": "application/json"}
+        api_key = os.environ.get("SILICONFLOW_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        req = urllib.request.Request(url, data=payload, headers=headers)
         timeout = max(1.0, min(_PROVIDER_TIMEOUT, deadline - time.time()))
         resp = urllib.request.urlopen(req, timeout=timeout)
         data = json.loads(resp.read().decode("utf-8"))
@@ -163,7 +163,9 @@ class MultiProviderReranker:
         """Local Ollama LLM via /api/generate (zero network, always available locally)."""
         host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
         model = os.environ.get("PP_RERANK_MODEL", "mxbai-embed-large")
-        passages = "\n\n".join(f"[{i}] {c.content[:300]}" for i, c in enumerate(candidates[:30]))
+        passages = "\n\n".join(
+            f"[{i}] {_candidate_content(c)[:300]}" for i, c in enumerate(candidates[:30])
+        )
         prompt = (
             f"Query: {query[:200]}\n\n"
             f"Rate relevance 0-100:\n\n{passages}\n\n"
@@ -177,9 +179,7 @@ class MultiProviderReranker:
             }
         ).encode("utf-8")
         url = f"{host}/api/generate"
-        req = urllib.request.Request(
-            url, data=payload, headers={"Content-Type": "application/json"}
-        )
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
         timeout = max(1.0, min(_PROVIDER_TIMEOUT, deadline - time.time()))
         resp = urllib.request.urlopen(req, timeout=timeout)
         raw = json.loads(resp.read().decode("utf-8")).get("response", "")
@@ -207,7 +207,7 @@ class MultiProviderReranker:
         """
         # Cosine fallback: preserve original ordering, slightly boost top items
         scores = {}
-        for i, c in enumerate(candidates):
+        for i, _c in enumerate(candidates):
             # Linear decay: top items get highest cosine proxy scores
             scores[i] = max(0.3, 1.0 - (i / max(len(candidates), 1)) * 0.5)
         return scores
@@ -222,14 +222,18 @@ class MultiProviderReranker:
         Unreturned candidates (BM25 exact hits) penalized 20%.
         """
         for i, item in enumerate(candidates):
-            orig = item.relevance
+            orig = _candidate_relevance(item)
             ce = ce_scores.get(i, orig)
             if i not in ce_scores:
                 # Unreturned by reranker — penalize 20% but preserve
                 ce = orig * 0.8
-            item.relevance = min(1.0, max(orig * 0.5, 0.6 * ce + 0.4 * orig))
+            _set_candidate_relevance(
+                candidates,
+                i,
+                min(1.0, max(orig * 0.5, 0.6 * ce + 0.4 * orig)),
+            )
 
-        candidates.sort(key=lambda x: x.relevance, reverse=True)
+        candidates.sort(key=_candidate_relevance, reverse=True)
         if top_k:
             return candidates[:top_k]
         return candidates
@@ -251,13 +255,7 @@ class MultiProviderReranker:
         cache_key = _cache_key(query, candidates)
         cached = _cache_get(cache_key)
         if cached is not None:
-            result = []
-            for i, (cid, _, orig) in enumerate(candidates):
-                ce = cached.get(i, orig)
-                final = min(1.0, max(orig * 0.5, 0.6 * ce + 0.4 * orig))
-                result.append((cid, final))
-            result.sort(key=lambda x: x[1], reverse=True)
-            return result[:top_k]
+            return _tuple_scores(candidates, cached, top_k)
 
         # ── Provider chain ──
         deadline = time.time() + _TOTAL_TIMEOUT
@@ -272,13 +270,7 @@ class MultiProviderReranker:
                 if ce_scores:
                     self._last_provider = provider_name
                     _cache_set(cache_key, ce_scores)
-                    result = []
-                    for i, (cid, _, orig) in enumerate(candidates):
-                        ce = ce_scores.get(i, orig)
-                        final = min(1.0, max(orig * 0.5, 0.6 * ce + 0.4 * orig))
-                        result.append((cid, final))
-                    result.sort(key=lambda x: x[1], reverse=True)
-                    return result[:top_k]
+                    return _tuple_scores(candidates, ce_scores, top_k)
             except Exception as e:
                 self._last_error = f"{provider_name}: {e}"
                 continue
@@ -288,13 +280,50 @@ class MultiProviderReranker:
         return [(cid, score) for cid, _, score in candidates]
 
 
+# ── Candidate helpers ───────────────────────────────────────────
+
+
+def _candidate_id(candidate) -> str:
+    if isinstance(candidate, tuple):
+        return str(candidate[0])
+    return str(getattr(candidate, "id", candidate))
+
+
+def _candidate_content(candidate) -> str:
+    if isinstance(candidate, tuple):
+        return str(candidate[1]) if len(candidate) > 1 else ""
+    return str(getattr(candidate, "content", ""))
+
+
+def _candidate_relevance(candidate) -> float:
+    if isinstance(candidate, tuple):
+        return float(candidate[2]) if len(candidate) > 2 else 0.0
+    return float(getattr(candidate, "relevance", 0.0))
+
+
+def _set_candidate_relevance(candidates: list, index: int, relevance: float) -> None:
+    candidate = candidates[index]
+    if isinstance(candidate, tuple):
+        candidates[index] = (candidate[0], candidate[1], relevance)
+    else:
+        candidate.relevance = relevance
+
+
+def _tuple_scores(candidates, ce_scores, top_k):
+    result = []
+    for i, (cid, _, orig) in enumerate(candidates):
+        ce = ce_scores.get(i, orig)
+        final = min(1.0, max(orig * 0.5, 0.6 * ce + 0.4 * orig))
+        result.append((cid, final))
+    result.sort(key=lambda x: x[1], reverse=True)
+    return result[:top_k]
+
+
 # ── Cache helpers ────────────────────────────────────────────────
 
 
 def _cache_key(query, candidates):
-    ids = "|".join(
-        getattr(c, "id", "") or (c[0] if isinstance(c, tuple) else str(c)) for c in candidates[:40]
-    )
+    ids = "|".join(_candidate_id(c) for c in candidates[:40])
     return hashlib.sha256(f"{query}|{ids}".encode()).hexdigest()
 
 

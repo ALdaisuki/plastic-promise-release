@@ -1,50 +1,56 @@
-# Plastic Promise Plugin Developer Guide
+# Plastic Promise Plugin and Extension Developer Guide
 
-## Quick Start
+> Practical guide for building optional Plastic Promise packs and extension providers.
 
-1. Create a directory for your plugin:
+## 1. Purpose
+
+Plastic Promise extensions let users add knowledge, workflows, capabilities, or adapters without changing the core runtime. Extension metadata is validated before plugin code is imported, so data-only packs can remain safe and portable.
+
+For the user-facing runtime guide, see [../README.md](../README.md). For architecture, see [architecture/architecture.md](architecture/architecture.md).
+
+## 2. Quick Start
+
+Create a plugin directory:
 
 ```bash
 mkdir plugins/my-plugin
 ```
 
-2. Create `plugins/my-plugin/pack.yml` (see reference below)
-
-3. Test locally:
+Create `plugins/my-plugin/pack.yml`, then test locally:
 
 ```bash
 plastic-promise market install ./plugins/my-plugin
 plastic-promise market status
 ```
 
-## pack.yml Reference
+## 3. pack.yml Reference
 
 | Field | Required | Type | Description |
-|-------|----------|------|-------------|
-| name | yes | string | Unique pack identifier |
-| version | yes | string | Semver version (e.g. "1.0.0") |
-| type | yes | enum | knowledge / workflow / capability / adapter |
-| min_core_version | no | string | Minimum `plastic_promise` version required |
-| description | no | string | One-line summary |
-| author | no | string | Author identifier |
-| hooks | no | dict | Slot name → method config (capability only) |
-| tools | no | dict | MCP tools declaration (capability only) |
-| replaces | no | dict | Core component to replace |
-| install.pip | no | list | pip dependencies (capability only) |
-| skills | no | dict | Skill prompt definitions (workflow only) |
-| chain | no | dict | Stage dependency chain (workflow only) |
-| workflow_mode | no | string | strict / advisory (workflow only) |
+|---|---|---|---|
+| `name` | yes | string | Unique pack identifier. |
+| `version` | yes | string | SemVer version such as `1.0.0`. |
+| `type` | yes | enum | `knowledge`, `workflow`, `capability`, or `adapter`. |
+| `min_core_version` | no | string | Minimum `plastic_promise` version required. |
+| `description` | no | string | One-line summary. |
+| `author` | no | string | Author identifier. |
+| `hooks` | no | dict | Slot name to method config. Capability packs only. |
+| `tools` | no | dict | MCP tools declaration. Capability packs only. |
+| `replaces` | no | dict | Core component to replace. |
+| `install.pip` | no | list | pip dependencies. Capability packs only. |
+| `skills` | no | dict | Skill prompt definitions. Workflow packs only. |
+| `chain` | no | dict | Stage dependency chain. Workflow packs only. |
+| `workflow_mode` | no | string | `strict` or `advisory`. Workflow packs only. |
 
-## Extension Points
+## 4. Extension Points
 
 ### HookProvider — Workflow Hooks
 
-Hook into SuperPowers pipeline stages. Declare in pack.yml:
+Hook into SuperPowers pipeline stages. Declare in `pack.yml`:
 
 ```yaml
 hooks:
   on_before_dispatch:
-    method: mcp          # mcp | cli | python
+    method: mcp
     command: codebase-memory-mcp
     tool: trace_path
     timeout: 30
@@ -54,17 +60,25 @@ hooks:
     timeout: 10
 ```
 
-Valid slots: `on_before_<stage>`, `on_after_<stage>`, `on_transition_<from>_<to>`
-where stages are: brainstorming, exemplar-research, using-git-worktrees, writing-plans,
-executing-plans, subagent-driven-development, test-driven-development,
-verification-before-completion, finishing-a-development-branch
+Valid slots include:
+
+```text
+on_before_<stage>
+on_after_<stage>
+on_transition_<from>_<to>
+```
+
+Common stages include `brainstorming`, `exemplar-research`, `using-git-worktrees`, `writing-plans`, `executing-plans`, `subagent-driven-development`, `test-driven-development`, `verification-before-completion`, and `finishing-a-development-branch`.
 
 ### ToolProvider — MCP Tools
 
 ```yaml
 tools:
   method: mcp
-  provides: [trace_path, detect_changes, search_graph]
+  provides:
+    - trace_path
+    - detect_changes
+    - search_graph
 ```
 
 ### EmbedderProvider — Replace Embedding Backend
@@ -75,6 +89,7 @@ from plastic_promise.extensions import EmbedderProvider
 class MyEmbedder:
     def embed(self, text: str) -> list[float]:
         ...
+
     def batch_embed(self, texts: list[str]) -> list[list[float]]:
         ...
 ```
@@ -87,41 +102,50 @@ from plastic_promise.extensions import StorageProvider
 class MyStorage:
     def store(self, record: dict) -> str:
         ...
+
     def query(self, vec: list[float], top_k: int) -> list[dict]:
         ...
 ```
 
-## Security Model
+## 5. Security Model
 
-- Plugins are validated BEFORE any code execution
-- `_validate_pack()` uses `find_spec` — NEVER imports or instantiates plugin code
-- Three security gates (in order):
-  1. Static validation (Protocol check, no code execution)
-  2. `min_core_version` compatibility check
-  3. Trust score gate: official packs >= 0.35, community >= 0.50
-- `type: knowledge` and `type: workflow` packs are data-only — no code paths exist
-- Disabled plugins (`.disabled` marker file) are skipped entirely
+- Plugins are validated before any code execution.
+- `_validate_pack()` uses discovery checks rather than importing or instantiating plugin code.
+- Validation order:
+  1. Static metadata validation.
+  2. `min_core_version` compatibility check.
+  3. Trust score gate: official packs require lower trust than community packs.
+- `knowledge` and `workflow` packs should remain data-only.
+- Disabled plugins are skipped entirely through the disabled marker mechanism.
 
-## Testing
+## 6. Testing
 
 ```bash
-# Test local pack
 plastic-promise market install ./plugins/my-plugin
-
-# Verify activation
 plastic-promise market status
-
-# Remove cleanly
 plastic-promise market remove my-plugin
 ```
 
-## Publishing
+For core changes around extensions, also run:
 
-1. Push your plugin to a public GitHub repository
-2. Add an entry to the market index:
+```bash
+pytest
+ruff check plastic_promise/
+```
+
+## 7. Publishing
+
+1. Push the plugin to a public repository.
+2. Add an entry to the market index used by the project.
+3. Users install with:
+
+```bash
+plastic-promise market install my-plugin
+```
+
+Example index entry:
 
 ```yaml
-# Submit PR to plastic-promise/market-index
 - name: my-plugin
   version: 1.0.0
   type: capability
@@ -130,14 +154,6 @@ plastic-promise market remove my-plugin
   description: What it does
 ```
 
-3. Users install with: `plastic-promise market install my-plugin`
+## 8. Example
 
-## Example: Code Memory Plugin
-
-See `plugins/code-memory/pack.yml` for a complete `type: capability` example
-using MCP stdio protocol for code graph analysis.
-
-## Community
-
-- GitHub: https://github.com/plastic-promise
-- Plugin index: https://github.com/plastic-promise/market-index
+See `plugins/code-memory/pack.yml` for a capability pack that integrates an external code graph tool through MCP stdio.

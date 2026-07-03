@@ -13,53 +13,49 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 - **审计同步**: 11 维审计结果所有 Agent 可见
 - **自治流水线**: 标签驱动、零 Token Daemon、自动衔接
 
-## MCP 工具目录 (48 工具, 11 域 + SuperPowers)
+## MCP 工具目录 (51 工具, 以源码 `plastic_promise/mcp/server.py` 为准)
 
-### 🧠 记忆域 (10)
+### 记忆域 (9)
 | 工具 | 用途 |
 |------|------|
 | `memory_recall` | 混合检索记忆（文本 + 图遍历双通道），返回三层上下文包 |
 | `memory_store` | 存储记忆 → 自动经过质量管道（提取→去重→门控→衰减→双写） |
 | `memory_update` | 更新已有记忆，可选重置 worth 计数器 |
 | `memory_forget` | 软删除记忆（标记衰退，7天后 GC） |
-| `memory_stats` | 记忆池统计：总量、健康/衰退分布、worth 分布 |
 | `memory_list` | 按条件列出记忆（类型/来源/时间范围/worth） |
 | `memory_gc` | 触发垃圾回收（dry_run 预览 / 实际执行合并+清理） |
 | `memory_correct` | 纠正记忆：编辑内容、标记为错误/废弃/已纠正 |
 | `memory_reclassify` | 强制已有记忆重跑分类管线（tier/domain/category） |
 | `memory_sync_files` | 同步文件系统 .md 记忆到 MCP 管道 |
 
-### 📐 原则域 (4)
+### 原则域 (2)
 | 工具 | 用途 |
 |------|------|
 | `principle_activate` | 根据任务类型激活相关原则，支持 domain_hint 限定域 |
-| `principle_inherit` | 原则单向扩散：work→all / life→all（衰减系数 0.70） |
-| `principle_diffuse` | 查询原则在域间的传播状态 |
 | `principle_evaluate` | 反事实评估：「如果违反会怎样」预演 |
 
-### 🔗 上下文域 (5)
+### 上下文域 (4)
 | 工具 | 用途 |
 |------|------|
 | `context_supply` | **核心工具** — 调用 ContextEngine.supply()，返回三层结构化上下文包 |
 | `context_inject` | 向 EntityGraph 注入原则关联边或注册新实体节点 |
 | `context_graph` | 查询实体关联图谱（遍历/节点信息/边列表/激活原则） |
-| `context_ready` | 返回或刷新上下文预备区缓存 |
 | `auto_context_inject` | 统一自动化上下文注入（SoulBridge/Pi Daemon/Claude Code 三路径） |
 
-### 🛡️ 审计防线域 (3)
+### 审计防线域 (3)
 | 工具 | 用途 |
 |------|------|
 | `audit_run` | 执行七维审计（action=full/report），含时间范围过滤 |
 | `audit_pre_check` | 实时合规检查：L0 硬边界 + L1 约束衰减 |
 | `defense` | 防线管理：get/history/adjust/status — 信任分读写，支持持久化 |
 
-### 🔍 自省演化域 (2)
+### 自省演化域 (2)
 | 工具 | 用途 |
 |------|------|
 | `scarf_reflect` | SCARF 五维自省（地位/确定性/自主/关联/公平），mode=standard/inertia |
 | `feedback_apply` | 向记忆或上下文条目手动应用反馈（adopted/ignored/rejected） |
 
-### ⚙️ 系统管理域 (4)
+### 系统管理域 (4)
 | 工具 | 用途 |
 |------|------|
 | `system` | 系统操作：stats/backup/migrate |
@@ -67,14 +63,13 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | `issue_transition` | 推进 Issue 状态：open→in_progress→resolved→closed |
 | `issue_list` | 列出 Issue，按状态和 owner 筛选 |
 
-### 📦 经验包域 (3)
+### 经验包域 (2)
 | 工具 | 用途 |
 |------|------|
 | `pack_export` | 导出记忆为可分享 JSON 经验包（流式，按 tags/memory_ids 筛选） |
 | `pack_import` | 导入经验包（strategy: skip/replace/merge） |
-| `pack_recall` | 仅从存储记忆中检索（strict 模式：无匹配返回空） |
 
-### 🎯 技能追踪域 (5)
+### 技能追踪域 (5)
 | 工具 | 用途 |
 |------|------|
 | `skill_session_start` | 创建技能执行实例实体，激活关联原则 |
@@ -83,14 +78,14 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | `skill_session_audit` | 事后间隙扫描：检测缺失 session 实体，支持自动补录 |
 | `skill_auto_track` | Hook 自动追踪（PreToolUse/PostToolUse），零摩擦 |
 
-### ⭐ Phase 1 程序化技能 (3)
+### Phase 1 程序化技能 (3)
 | 工具 | 用途 |
 |------|------|
 | `session-init` | 统一会话启动 — 原则激活+上下文注入+SCARF基线+域健康+信任分+GC预览+chain_state |
 | `smart-remember` | 智能记忆存储 — 自动去重（相似度≥0.85则更新）+ 完整质量管道 |
 | `step-closure` | 六联闭环 — 原则对齐→SCARF→激素→信任→反思(执行者提供lesson/improvement/root_cause/optimization)→CEI，结构化记忆入池 |
 
-### 🦸 SuperPowers 流水线 (1)
+### SuperPowers 流水线 (1)
 | 工具 | 用途 |
 |------|------|
 | `sp-stage` | SuperPowers 12 阶段统一入口 — brainstorming→worktrees→plans→execute→TDD→verify→finish。链校验自动拒绝跳步，hook 自动追踪 |
@@ -99,12 +94,12 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 > **链约束**: `SKILL_CHAIN_MAP` 定义前置/后继，跳步返回 `chain_violation` + 正确下一步提示。
 > **追踪**: Claude Code hook 与 MCP `sp-stage` 统一进入 `skill_auto_track → skill_session_start/complete`。
 
-### 🌐 域联邦域 (1)
+### 域联邦域 (1)
 | 工具 | 用途 |
 |------|------|
 | `domain` | 域联邦管理：stats/merge/unmerge/rename/rebuild |
 
-### 🏹 委托调度域 (7)
+### 委托调度域 (7)
 | 工具 | 用途 |
 |------|------|
 | `task_enqueue` | 挂委托 — Daemon/Claude 发现需求，挂上委托板；支持委托人信任分验证 + C级审批队列 |
@@ -114,6 +109,22 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | `task_inbox` | 查看委托板 — 显示可接委托 + 等级匹配度 + 我的活跃任务 |
 | `task_heartbeat` | 心跳保活 — 每60s汇报存活，超时自动释放委托 + 惩罚 |
 | `task_abandon` | 主动弃单 — 放弃委托，信任分-0.02，累计5次降级到D |
+
+### Review 域 (1)
+| 工具 | 用途 |
+|------|------|
+| `review_run` | 结构化代码审查：prepare/evaluate/apply/full 管线 |
+
+### Market 域 (7)
+| 工具 | 用途 |
+|------|------|
+| `market_list` | 列出可用插件包 |
+| `market_install` | 安装插件包 |
+| `market_upgrade` | 检查或升级插件包 |
+| `market_remove` | 卸载插件包 |
+| `market_enable` | 启用插件包 |
+| `market_disable` | 禁用插件包 |
+| `market_status` | 显示已安装插件状态 |
 
 ---
 
@@ -176,10 +187,10 @@ defense(action="get") → 根据 tier 决定行为
 
 | 信任分 | 等级 | 写文件 | 删文件 | 发Issue | 分配任务 | 行为 |
 |--------|------|--------|--------|---------|----------|------|
-| 0.80+ | autonomous | ✅ | ✅ | ✅ | ✅ | 自主执行 |
-| 0.60+ | standard | ✅ | ⚠️确认 | ✅ | ❌ | 正常执行 |
-| 0.30+ | restricted | ⚠️审批 | ❌ | ❌ | ❌ | 每次写前确认 |
-| 0.00+ | readonly | ❌ | ❌ | ❌ | ❌ | 只读，写操作直接拒绝 |
+| 0.80+ | autonomous | 允许 | 允许 | 允许 | 允许 | 自主执行 |
+| 0.60+ | standard | 允许 | 需确认 | 允许 | 不允许 | 正常执行 |
+| 0.30+ | restricted | 需审批 | 不允许 | 不允许 | 不允许 | 每次写前确认 |
+| 0.00+ | readonly | 不允许 | 不允许 | 不允许 | 不允许 | 只读，写操作直接拒绝 |
 
 ### 信任分调整规则
 
@@ -211,7 +222,7 @@ defense(action="get") → 根据 tier 决定行为
 ```
 1. memory_recall(query="<任务关键词>", task_type="<类型>", max_results=5)
 2. context_supply(task_description="<任务描述>", task_type="<类型>")
-3. 将 🔵核心上下文 + 🟡关联上下文 + 🧬激活原则 写入派发 prompt
+3. 将核心上下文、关联上下文、激活原则写入派发 prompt
 ```
 
 **最低要求**: 至少包含激活的原则列表 + 2 条最相关的核心记忆。
@@ -382,14 +393,17 @@ Daemon 扫描器(5个) → 发现问题
 ## 快速开始
 
 ```bash
-# 启动共享记忆服务器
-python -m plastic_promise.mcp.server --sse 9020
+# 推荐：一键启动 MCP Server + Maintenance Daemon + Watchdog
+python scripts/init_and_start.py
 
-# 启动自治流水线
-python daemons/pi_daemon.py
+# 仅启动共享 MCP Server
+python -m plastic_promise --sse 9020
 
-# 发任务 (标签驱动)
-memory_store(tags=["task:pending", "assignee:pi_builder", "domain:building"])
+# 单独启动维护守护进程
+python daemons/maintenance_daemon.py
+
+# 新任务建议使用 Hunter Guild 委托系统
+task_enqueue(task_type="build_feature", title="...", to_agent="pi_builder")
 ```
 
 ## 架构
@@ -399,15 +413,19 @@ Claude Code / Pi Agent / 外部 Agent
         │
         ▼ MCP (stdio | SSE)
 ┌──────────────────────────────────────┐
-│ Plastic Promise MCP Server (48工具)   │
+│ Plastic Promise MCP Server (51工具)   │
 │  ┌────┐┌────┐┌────┐┌────┐┌────┐┌────┐│
-│  │记忆││原则││上下文││审计││技能││SP  ││  11 域 + SuperPowers
-│  │ 10 ││ 4  ││ 5  ││ 3  ││ 5  ││ 1  ││
+│  │记忆││原则││上下文││审计││技能││SP  ││  14 组
+│  │ 9  ││ 2  ││ 4  ││ 3  ││ 5  ││ 1  ││
 │  └────┘└────┘└────┘└────┘└────┘└────┘│
 │  ┌────┐┌────┐┌────┐┌────┐┌────┐    │
 │  │自省││管理││经验包││联邦││委托│    │
-│  │ 2  ││ 4  ││ 3  ││ 1  ││ 7  │    │
+│  │ 2  ││ 4  ││ 2  ││ 1  ││ 7  │    │
 │  └────┘└────┘└────┘└────┘└────┘    │
+│  ┌────┐┌────┐┌────┐                │
+│  │技能3││Review││Market│                │
+│  │ 3  ││ 1  ││ 7  │                │
+│  └────┘└────┘└────┘                │
 │        共享 ContextEngine            │
 │   ├ 实体图谱 EntityGraph             │
 │   ├ 混合检索 (LanceDB向量 + BM25)    │

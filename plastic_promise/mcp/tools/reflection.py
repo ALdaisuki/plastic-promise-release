@@ -37,7 +37,7 @@ async def handle_scarf_reflect(engine: Any, args: dict) -> list[TextContent]:
     try:
         from plastic_promise.reflection.soul_scarf import SCARFReflector
 
-        context = args.get("context", "")
+        context = args.get("context") or args.get("task_description", "")
         dimensions = args.get("dimensions")
         reflector = SCARFReflector()
         # Offload to thread: reflect() does 15 sync embedder.embed() HTTP calls

@@ -821,8 +821,9 @@ class DomainManager:
                         "status": "active",
                     }
 
-            # Phase 4: 写入
+            # Phase 4: 写入。先清理旧 domains 行，避免重建后 stale candidate/merged 行重载复活。
             self.domains.clear()
+            self._conn.execute("DELETE FROM domains")
             for name, cfg in merged_domains.items():
                 self.domains[name] = DomainInfo(
                     name=name,

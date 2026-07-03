@@ -1,179 +1,163 @@
-# Plastic Promise — Implementation Guide
+# Plastic Promise — Implementation Notes
 
-> Companion to [architecture.md](architecture.md). Practical steps for extending and operating the system.
+> Companion to [architecture.md](architecture.md). Practical steps for operating and extending the runtime.
 
----
+## 1. Environment Setup
 
-## Phase 1: Environment Setup
-
-### 1. Prerequisites
+### Prerequisites
 
 - Python 3.10+
 - Git
-- (Optional) Rust toolchain for `rust/context-engine-core`
-- (Optional) Ollama for local reranking
+- Optional Rust toolchain for `rust/context-engine-core`
+- Optional Ollama for local `mxbai-embed-large` embeddings
 
-### 2. Install
+### Install
 
 ```bash
-git clone https://github.com/plastic-promise/plastic-promise.git
-cd plastic-promise
+git clone https://github.com/ALdaisuki/plastic-promise-release.git
+cd plastic-promise-release
 pip install -e ".[dev]"
 
-# Optional: Rust core engine
-cd rust/context-engine-core && pip install maturin && maturin develop && cd ../..
-
-# Optional: Pre-commit hooks
-make pre-commit-install
+# Optional Rust core engine
+cd rust/context-engine-core
+pip install maturin
+maturin develop --release
+cd ../..
 ```
 
-### 3. Verify
+### Verify environment
 
 ```bash
-python -c "import plastic_promise; print('OK')"
-python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9020/health')"
+python scripts/init_and_start.py --check-only
+python scripts/init_and_start.py --skip-ollama-check --check-only
 ```
 
----
+## 2. Starting the System
 
-## Phase 2: Core Development Patterns
+Recommended launcher:
 
-### Adding a New MCP Tool
-
-1. **Define the handler** in `plastic_promise/mcp/tools/<domain>.py`:
-   ```python
-   async def my_new_tool(param1: str, param2: int = 0) -> dict:
-       """Tool description."""
-       # Implementation
-       return {"status": "ok", "result": ...}
-   ```
-
-2. **Register the route** in `plastic_promise/mcp/server.py`:
-   ```python
-   @server.tool()
-   async def my_new_tool(param1: str, param2: int = 0) -> dict:
-       return await tools.my_new_tool(param1, param2)
-   ```
-
-3. **Update CLAUDE.md** tool table with the new tool entry.
-
-### Adding a New Domain
-
-1. Create the handler module in `plastic_promise/mcp/tools/`
-2. Add domain constants to `plastic_promise/core/constants.py`
-3. Register the domain in `domain_manager.py`
-4. Run `domain(action="rebuild")` to update the federation graph
-
-### Memory Pipeline Touch Points
-
-Every `memory_store` call flows through:
-```
-store_urgent() → smart_extractor (6 categories)
-  → vector_dedup (cos≥0.85 → update existing)
-  → QualityGate.score (4-dim × 0.25)
-  → RecMem.store (decay_init + LanceDB write)
+```bash
+python scripts/init_and_start.py
 ```
 
-To add a new quality dimension, modify `QualityGate.score()` in `quality_gate.py`.
+Fallback when Ollama is unavailable:
 
----
+```bash
+python scripts/init_and_start.py --skip-ollama-check
+```
 
-## Phase 3: Agent Operations
-
-### Starting the System
+Manual mode:
 
 ```bash
 # Terminal 1: MCP Server
-python -m plastic_promise.mcp.server --sse 9020
+python -m plastic_promise --sse 9020
 
-# Terminal 2: Daemon
-python daemons/pi_daemon.py
-
-# Or one-click (Windows):
-scripts/start-all.bat
+# Terminal 2: Maintenance daemon
+python daemons/maintenance_daemon.py
 ```
 
-### Dispatching Tasks
+Health check:
 
-Tasks are dispatched via tags on memory entries:
-```python
-memory_store(
-    content="Implement feature X",
-    tags=["task:pending", "assignee:pi_builder", "domain:building"]
-)
-```
-
-The daemon detects `task:pending` tags and routes to the appropriate Pi agent.
-
-### Monitoring Trust Scores
-
-```python
-defense(action="get")        # Current trust score + tier
-defense(action="history")    # Trust score change history
-defense(action="adjust", delta=+0.02)  # Manual adjustment
-```
-
----
-
-## Potential Challenges
-
-1. **Challenge**: LanceDB index grows large (>1M vectors)
-   - **Mitigation**: Weekly `memory_gc` prunes decayed memories; L3 cold storage compresses older vectors
-   - **Pattern**: Monitor `memory_stats()` weekly for pool size trends
-
-2. **Challenge**: Trust score stagnation (never moves from 0.6)
-   - **Mitigation**: Ensure `step-closure` runs after every substantive step; SCARF < 0.40 triggers -0.02 decay
-   - **Pattern**: Check `defense(action="history")` for flat lines
-
-3. **Challenge**: Daemon CPU usage on large memory pools
-   - **Mitigation**: Zero-token polling uses SQLite indexes; scanners use LIMIT + OFFSET batching
-   - **Pattern**: Set `PP_SCAN_BATCH_SIZE=100` for large pools
-
-4. **Challenge**: Cross-platform path issues (Windows vs Unix)
-   - **Mitigation**: Use `pathlib.Path` everywhere; test on both platforms
-   - **Pattern**: `scripts/start-all.bat` (Windows) + `scripts/start-all.sh` (Unix)
-
----
-
-## Testing Strategy
-
-### Unit Tests
 ```bash
-make test                    # Full suite
-pytest tests/ -k "memory"   # Memory domain only
-pytest tests/ -k "decay"    # Decay engine tests
+python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:9020/health').read())"
 ```
 
-### Integration Tests
-- MCP server startup + health check
-- memory_store → memory_recall round-trip
-- session-init full pipeline
-- step-closure 6-link execution
+## 3. Development Patterns
 
-### Performance Benchmarks
-- `memory_store`: <50ms (p95, including embedding)
-- `memory_recall`: <100ms (p95, ANN + RRF)
-- `context_supply`: <1s (p95, including rerank)
-- Daemon poll cycle: <10ms (SQLite only)
+### Adding a New MCP Tool
 
----
+1. Define or extend a handler module in `plastic_promise/mcp/tools/`.
+2. Register the `Tool(...)` schema in `plastic_promise/mcp/server.py`.
+3. Add dispatch logic in the server call handler.
+4. Add tests that exercise validation and handler behavior.
+5. Update README or architecture docs if the public tool surface changes.
 
-## Deployment Checklist
+### Adding a New Domain
 
-- [ ] `.env` configured with correct paths
-- [ ] LanceDB directory exists and is writable
-- [ ] SQLite database created (auto on first run)
-- [ ] MCP server reachable at `http://127.0.0.1:9020/health`
-- [ ] Daemon running and polling
-- [ ] Trust scores initialized (default: 0.6)
-- [ ] Pre-commit hooks installed
+1. Create or extend a handler module in `plastic_promise/mcp/tools/`.
+2. Add domain constants and routing rules where needed.
+3. Update domain federation or context graph behavior if the domain participates in retrieval.
+4. Run `domain(action="rebuild")` when graph/domain metadata needs rebuilding.
 
----
+### Memory Pipeline Touch Points
 
-## Cost Optimization Tips
+```text
+memory_store
+  -> smart extraction
+  -> category/tier classification
+  -> vector deduplication
+  -> QualityGate score
+  -> RecMem.store
+  -> SQLite + LanceDB write
+```
 
-1. **Use light mode** for read-only operations: `step-closure(mode="light")`
-2. **Batch memory stores** when possible (single embedding batch)
-3. **Cache principle activations** — they change rarely
-4. **Use zero-token daemon** — no LLM calls for task routing
-5. **Leverage smart_extractor** — handles 90% of extractions without LLM fallback
+To add a new quality dimension, modify `QualityGate` and update the tests that assert admission, low-quality, and discard behavior.
+
+## 4. Agent Operations
+
+### Task lifecycle
+
+```text
+task_enqueue -> task_claim -> task_heartbeat -> task_complete -> task_verify
+```
+
+Use `task_inbox` to inspect pending or active work. Use `task_abandon` only when work is intentionally given up and should affect trust.
+
+### Trust checks
+
+```text
+defense(action="get")
+defense(action="history")
+defense(action="adjust", delta=+0.02, reason="verified delivery")
+```
+
+Write operations should check trust first when following the full Plastic Promise workflow.
+
+## 5. Testing Strategy
+
+```bash
+pytest
+pytest tests/ -k "memory"
+pytest tests/ --cov=plastic_promise --cov-report=term
+ruff check plastic_promise/
+mypy plastic_promise/ --ignore-missing-imports
+```
+
+Make shortcuts:
+
+```bash
+make dev-install
+make test-fast
+make lint
+make check
+```
+
+## 6. Operational Challenges
+
+| Challenge | Mitigation |
+|---|---|
+| Ollama unavailable | Start with `--skip-ollama-check` and label fallback embedding behavior. |
+| Large memory pool | Run `memory_gc(dry_run=True)` and monitor memory stats before destructive cleanup. |
+| Trust score stagnates | Ensure `step-closure` runs after substantive work and review outcomes are recorded. |
+| Daemon process drift | Use `scripts/init_and_start.py` so ServiceManager and watchdog own lifecycle. |
+| Optional Rust mismatch | Treat Python context supply as canonical until Rust parity is verified for the specific path. |
+
+## 7. Deployment Checklist
+
+- `.env` or environment variables point to the intended SQLite and LanceDB paths.
+- `python scripts/init_and_start.py --check-only` passes or known degradations are accepted.
+- MCP health endpoint responds on `http://127.0.0.1:9020/health` when SSE mode is used.
+- Maintenance daemon is running if task lifecycle scans are required.
+- Runtime directories `var/log/` and `var/run/` are writable.
+- Trust scores initialize as expected.
+- Documentation reflects any public behavior changes.
+
+## 8. Documentation Update Checklist
+
+When implementation changes public behavior, update:
+
+- [../../README.md](../../README.md) for installation, launch, architecture, or public feature changes.
+- [../README.zh-CN.md](../README.zh-CN.md) for Chinese quickstart changes.
+- [architecture.md](architecture.md) for subsystem or data-flow changes.
+- [../TODO List/README.md](../TODO%20List/README.md) when roadmap status changes.
+- [../../CHANGELOG.md](../../CHANGELOG.md) before a release.

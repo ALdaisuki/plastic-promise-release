@@ -207,6 +207,18 @@ class SkillEngine:
             raise WorkflowViolation(f"workflow_mode=strict: {missing} required before '{action}'")
         return True
 
+    @staticmethod
+    def _build_atom_params(atom_name: str, params: dict) -> dict:
+        """Build per-atom params for adapters that need canonical fields."""
+        atom_params = dict(params)
+        if atom_name == "memory_store" and "content" not in atom_params:
+            task_desc = params.get("task_description", "")
+            stage = params.get("stage", "")
+            atom_params["content"] = f"[{stage}] {task_desc}" if stage else task_desc
+        if atom_name == "scarf_reflect" and not atom_params.get("context"):
+            atom_params["context"] = params.get("task_description", "")
+        return atom_params
+
     def register(self, skill_def: SkillDef) -> None:
         """Register a skill definition. Validates dependencies and permissions.
 
@@ -506,12 +518,7 @@ class SkillEngine:
                 errors.append(msg)
                 continue
 
-            # Build atom-specific params: inject content for memory_store
-            atom_params = dict(params)
-            if atom_name == "memory_store" and "content" not in atom_params:
-                task_desc = params.get("task_description", "")
-                stage = params.get("stage", "")
-                atom_params["content"] = f"[{stage}] {task_desc}" if stage else task_desc
+            atom_params = self._build_atom_params(atom_name, params)
 
             try:
                 result = await atom_handler(self._ctx, atom_params)
@@ -575,12 +582,7 @@ class SkillEngine:
             atom_handler = self._atoms.get(atom_name)
             if atom_handler is None:
                 return atom_name, None, f"Atom '{atom_name}' not in registry"
-            # Build atom-specific params: inject content for memory_store
-            atom_params = dict(params)
-            if atom_name == "memory_store" and "content" not in atom_params:
-                task_desc = params.get("task_description", "")
-                stage = params.get("stage", "")
-                atom_params["content"] = f"[{stage}] {task_desc}" if stage else task_desc
+            atom_params = self._build_atom_params(atom_name, params)
             try:
                 result = await atom_handler(self._ctx, atom_params)
                 return atom_name, result, None

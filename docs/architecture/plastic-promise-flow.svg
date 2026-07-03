@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-labelledby="title desc">
+  <title id="title">Plastic Promise governance runtime flow</title>
+  <desc id="desc">An information graphic showing MCP agents entering the Plastic Promise local runtime, passing through MCP, context, memory, trust, skills, daemon, and storage layers.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <style>
+      .title{font:700 26px system-ui,-apple-system,Segoe UI,sans-serif;fill:#f8fafc}
+      .subtitle{font:400 14px system-ui,-apple-system,Segoe UI,sans-serif;fill:#cbd5e1}
+      .box{fill:#111827;stroke:#38bdf8;stroke-width:1.5;rx:12}
+      .box2{fill:#172554;stroke:#818cf8;stroke-width:1.5;rx:12}
+      .box3{fill:#052e16;stroke:#22c55e;stroke-width:1.5;rx:12}
+      .label{font:700 15px system-ui,-apple-system,Segoe UI,sans-serif;fill:#f8fafc}
+      .small{font:400 12px system-ui,-apple-system,Segoe UI,sans-serif;fill:#cbd5e1}
+      .arrow{stroke:#94a3b8;stroke-width:2;fill:none;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+  <rect width="960" height="360" rx="24" fill="url(#bg)"/>
+  <text x="48" y="48" class="title">Plastic Promise</text>
+  <text x="48" y="74" class="subtitle">Local-first MCP runtime for memory, context, audit, trust, skills, and governed task dispatch</text>
+
+  <rect x="48" y="120" width="150" height="76" class="box"/>
+  <text x="72" y="150" class="label">MCP Agents</text>
+  <text x="72" y="174" class="small">Claude Code</text>
+  <text x="72" y="190" class="small">MCP clients</text>
+
+  <rect x="250" y="106" width="160" height="104" class="box2"/>
+  <text x="278" y="138" class="label">MCP Server</text>
+  <text x="278" y="162" class="small">stdio / SSE</text>
+  <text x="278" y="180" class="small">tool schemas</text>
+  <text x="278" y="198" class="small">health + events</text>
+
+  <rect x="462" y="92" width="174" height="72" class="box"/>
+  <text x="492" y="123" class="label">Context Engine</text>
+  <text x="492" y="146" class="small">recall + supply</text>
+
+  <rect x="462" y="196" width="174" height="72" class="box"/>
+  <text x="492" y="227" class="label">Memory Pipeline</text>
+  <text x="492" y="250" class="small">extract / dedup / decay</text>
+
+  <rect x="688" y="82" width="204" height="64" class="box3"/>
+  <text x="724" y="110" class="label">SQLite + LanceDB</text>
+  <text x="724" y="132" class="small">state, vectors, graph signals</text>
+
+  <rect x="688" y="168" width="204" height="64" class="box2"/>
+  <text x="724" y="196" class="label">Trust + Defense</text>
+  <text x="724" y="218" class="small">audit, tiers, pre-checks</text>
+
+  <rect x="688" y="254" width="204" height="64" class="box"/>
+  <text x="724" y="282" class="label">Skills + Guild</text>
+  <text x="724" y="304" class="small">workflow, scans, verification</text>
+
+  <path class="arrow" d="M198 158 H250"/>
+  <path class="arrow" d="M410 142 H462"/>
+  <path class="arrow" d="M410 176 C430 176 438 220 462 228"/>
+  <path class="arrow" d="M636 128 H688"/>
+  <path class="arrow" d="M636 232 C655 232 661 198 688 198"/>
+  <path class="arrow" d="M636 246 C660 246 664 286 688 286"/>
+  <path class="arrow" d="M790 254 V232"/>
+  <path class="arrow" d="M790 168 V146"/>
+
+  <text x="48" y="318" class="small">Principle: retrieve context before action, verify before completion, reflect after output.</text>
+</svg>

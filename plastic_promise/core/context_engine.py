@@ -1388,7 +1388,7 @@ class ContextEngine:
         # Query expansion: inject domain-relevant synonyms for BM25 text search.
         # Vector search uses raw query — semantic models handle synonyms natively.
         expanded_query = task_description
-        if _os_env.environ.get("PP_QUERY_EXPANSION", "1") == "1":
+        if os.environ.get("PP_QUERY_EXPANSION", "1") == "1":
             try:
                 from plastic_promise.core.query_expander import expand_query
 
@@ -1572,8 +1572,8 @@ class ContextEngine:
         # P3a: MMR diversity + optional rerank, then re-layer
         if pack.core or pack.related or pack.divergent:
             all_items = pack.core + pack.related + pack.divergent
-            # Rerank (Phase 1.6, optional — PP_RECALL_RERANK=1)
-            # Unified reranker (Phase 1.6): multi-provider chain, default ON
+            # Unified reranker (Phase 1.6): multi-provider chain, default ON;
+            # disable with PP_RERANK_DISABLED=1.
             from plastic_promise.core.reranker import MultiProviderReranker
 
             all_items = MultiProviderReranker().rerank(task_description, all_items)

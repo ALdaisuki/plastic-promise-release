@@ -1,8 +1,6 @@
 """rebuild_from_memories 恢复测试"""
 
-import pytest
-import json
-from plastic_promise.core.domain_manager import DomainManager
+from plastic_promise.core.domain_manager import DomainInfo, DomainManager
 
 
 class TestRebuild:
@@ -32,7 +30,7 @@ class TestRebuild:
     def test_rebuild_preserves_predefined_domains(self):
         """重建后预定义域仍存在"""
         dm = DomainManager(db_path=":memory:")
-        result = dm.rebuild_from_memories(memories_source=[])
+        dm.rebuild_from_memories(memories_source=[])
         stats = dm.stats()
         required = {
             "building",
@@ -54,3 +52,22 @@ class TestRebuild:
         )
         after = dm._count_audit_log()
         assert after > before
+
+    def test_rebuild_prunes_stale_domain_rows(self, tmp_path):
+        """重建后旧 domains 行不应在新 DomainManager 实例中复活。"""
+        db_path = tmp_path / "domains.db"
+        dm = DomainManager(db_path=str(db_path))
+        dm.domains["cat:fact"] = DomainInfo(
+            name="cat:fact",
+            score=0.3,
+            tags={"cat:fact"},
+            status="candidate",
+            memory_count=80,
+        )
+        dm._persist_domain("cat:fact")
+
+        dm.rebuild_from_memories(memories_source=[])
+        assert "cat:fact" not in dm.domains
+
+        fresh = DomainManager(db_path=str(db_path))
+        assert "cat:fact" not in fresh.domains

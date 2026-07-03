@@ -397,6 +397,99 @@ class TestRecallCache:
         assert loose != strict
 
 
+class TestQueryExpansionIntegration:
+    def test_supply_python_expands_query_without_os_env_crash(self, monkeypatch):
+        monkeypatch.setenv("PP_QUERY_EXPANSION", "1")
+        monkeypatch.setenv("PP_HARD_MIN_SCORE", "0")
+        monkeypatch.setenv("PP_RERANK_DISABLED", "1")
+        seen = {}
+        engine = ContextEngine(use_sqlite=False)
+        engine._ensure_heavy_init = lambda: None
+        engine._activate_principles = lambda task_type, task_description: []
+        engine._inject_activated_to_graph = lambda activated, task_type: 0
+        engine._graph_traversal = lambda task_type: []
+        engine._vector_retrieval = lambda vector: []
+        engine._fts_retrieval = lambda query, scope="global": []
+        engine._apply_edge_feedback = lambda: None
+        engine._apply_decay_awareness = lambda score, mem, current_time, trust_boost: score
+        engine._apply_mmr = lambda items, threshold=0.85, penalty=0.70: items
+        engine._compute_divergent_quality = lambda items, all_items: items
+        engine._calc_freshness = lambda item_id: "valid"
+        engine._calc_decay_status = lambda item_id, mem: "healthy"
+        engine._memories = {
+            "m1": {"source": "user", "memory_type": "experience", "worth_success": 0, "worth_failure": 0}
+        }
+
+        def text_retrieval(query, trust_boost=1.0):
+            seen["query"] = query
+            return [("m1", 0.9, "useful enough memory retrieval content", "bm25")]
+
+        engine._text_retrieval = text_retrieval
+
+        pack = engine._supply_python("I forgot the config", [0.0], "debugging", "fixing", debug=True)
+
+        assert pack.total_items == 1
+        assert seen["query"] != "I forgot the config"
+        assert any(term in seen["query"] for term in ("memory", "recall", "记忆"))
+
+    def test_memory_recall_handler_does_not_return_os_env_error(self, monkeypatch):
+        import asyncio
+        import json
+
+        import plastic_promise.adaptive_retrieval as adaptive_retrieval
+        import plastic_promise.core.embedder as embedder_mod
+        from plastic_promise.core.context_engine import ContextPack
+        from plastic_promise.mcp.tools.memory import handle_memory_recall
+
+        class FakeEmbedder:
+            async def aembed(self, text):
+                return [0.0]
+
+        class FakeEngine:
+            def supply(self, query, vec, task_type, scope, debug=False):
+                return ContextPack()
+
+        monkeypatch.setattr(adaptive_retrieval, "should_retrieve", lambda query: True)
+        monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+
+        result = asyncio.run(
+            handle_memory_recall(FakeEngine(), {"query": "remember config", "debug": True})
+        )
+        payload = json.loads(result[0].text)
+
+        assert "error" not in payload
+        assert "_os_env" not in result[0].text
+
+    def test_context_supply_handler_does_not_return_os_env_error(self, monkeypatch):
+        import asyncio
+        import json
+
+        import plastic_promise.core.embedder as embedder_mod
+        from plastic_promise.core.context_engine import ContextPack
+        from plastic_promise.mcp.tools.context import handle_context_supply
+
+        class FakeEmbedder:
+            async def aembed(self, text):
+                return [0.0]
+
+        class FakeEngine:
+            def supply(self, task_description, task_vector, task_type, scope):
+                return ContextPack()
+
+        monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+
+        result = asyncio.run(
+            handle_context_supply(FakeEngine(), {"task_description": "debug config recall"})
+        )
+
+        assert "_os_env" not in result[0].text
+        try:
+            payload = json.loads(result[0].text)
+        except json.JSONDecodeError:
+            payload = {}
+        assert "error" not in payload
+
+
 class TestSmartExtractorEfficiency:
     def test_generate_l0_l1_splits_once(self, monkeypatch):
         calls = {"count": 0}
