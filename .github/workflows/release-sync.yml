@@ -1,0 +1,57 @@
+name: Release Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer tag (e.g. v0.3.0)"
+        required: true
+      commit_range:
+        description: "Dev repo commit range (e.g. HEAD~5..HEAD or main)"
+        required: true
+
+jobs:
+  sync-and-publish:
+    name: Sync from dev and publish to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout release repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout dev repo (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ALdaisuki/plastic-promise
+          token: ${{ secrets.DEV_REPO_PAT }}
+          path: dev-repo
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dev dependencies
+        run: pip install -e "dev-repo/[dev]"
+
+      - name: Run release sync
+        run: |
+          python dev-repo/scripts/release-sync.py \
+            --from "${{ github.event.inputs.commit_range }}" \
+            --version "${{ github.event.inputs.version }}" \
+            --release-repo .
+
+      - name: Run tests
+        run: python -m pytest tests/ -q --tb=short
+
+      - name: Git push
+        run: git push origin main --tags
+
+      - name: Build and publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}

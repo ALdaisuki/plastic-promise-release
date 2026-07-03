@@ -2,15 +2,15 @@
 Description: Plastic Promise — AI behavioral governance system with 48 MCP tools across 12 domains. Commitment Engineering replaces constraint enforcement with internalized conventions, featuring multi-agent autonomous pipelines, trust-driven permission escalation, and Weibull-based memory decay.
 Keywords: ai-governance, mcp-server, agent-memory, commitment-engineering, context-engine, llm-agent, multi-agent, trust-score, memory-decay, lance-db
 author: ALdaisuki
-canonical: https://github.com/ALdaisuki/plastic-promise
+canonical: https://github.com/ALdaisuki/plastic-promise-release
 -->
 
 <!-- Open Graph / Facebook
 og:type: website
-og:url: https://github.com/ALdaisuki/plastic-promise
+og:url: https://github.com/ALdaisuki/plastic-promise-release
 og:title: Plastic Promise — AI Behavioral Governance System with Multi-Agent Pipeline
-og:description: An AI behavioral governance system built on Commitment Engineering. 48 MCP tools, multi-agent autonomous pipeline (Claude PM + Pi Builder/Fixer/Reviewer), trust-driven permissions, and Weibull-based memory decay.
-og:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise/Dev/docs/architecture/social-preview.png
+og:description: An AI behavioral governance system built on Commitment Engineering. 48 MCP tools, multi-agent autonomous pipeline, trust-driven permissions, and Weibull-based memory decay.
+og:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise-release/main/docs/architecture/social-preview.png
 og:image:alt: Plastic Promise architecture diagram showing MCP server, memory pipeline, and multi-agent team
 og:site_name: Plastic Promise
 og:locale: en_US
@@ -18,19 +18,19 @@ og:locale: en_US
 
 <!-- Twitter Card
 twitter:card: summary_large_image
-twitter:url: https://github.com/ALdaisuki/plastic-promise
+twitter:url: https://github.com/ALdaisuki/plastic-promise-release
 twitter:title: Plastic Promise — AI Behavioral Governance System
 twitter:description: Commitment Engineering replaces constraint enforcement. 48 MCP tools, multi-agent pipeline, trust-driven permissions, memory decay engine.
-twitter:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise/Dev/docs/architecture/social-preview.png
+twitter:image: https://raw.githubusercontent.com/ALdaisuki/plastic-promise-release/main/docs/architecture/social-preview.png
 -->
 
 <!-- GitHub Metadata
 topics: ai-governance, mcp-server, agent-memory, commitment-engineering, multi-agent, trust-score, memory-decay, lancedb, python, rust
 languages: python, rust
-homepage: https://github.com/ALdaisuki/plastic-promise
+homepage: https://github.com/ALdaisuki/plastic-promise-release
 funding: https://github.com/sponsors/ALdaisuki
-roadmap: https://github.com/ALdaisuki/plastic-promise/blob/Dev/docs/GOAL.md
-security: https://github.com/ALdaisuki/plastic-promise/blob/Dev/SECURITY.md
+roadmap: https://github.com/ALdaisuki/plastic-promise-release/blob/main/docs/GOAL.md
+security: https://github.com/ALdaisuki/plastic-promise-release/blob/main/SECURITY.md
 -->
 
 <div align="center">
@@ -39,9 +39,10 @@ security: https://github.com/ALdaisuki/plastic-promise/blob/Dev/SECURITY.md
 
 ### Memory is plastic; the soul exists through memory and grows through commitment.
 
+[![PyPI version](https://badge.fury.io/py/plastic-promise.svg)](https://badge.fury.io/py/plastic-promise)
 [![Python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white&style=flat-square)](https://www.python.org/)
 [![Rust](https://img.shields.io/badge/rust-core-000000?logo=rust&style=flat-square)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/github/license/ALdaisuki/plastic-promise?style=flat-square)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![MCP Tools](https://img.shields.io/badge/mcp-48_tools-orange.svg?style=flat-square)](https://spec.modelcontextprotocol.io/)
 [![Status](https://img.shields.io/badge/status-alpha-red.svg?style=flat-square)](#)
 
@@ -50,12 +51,12 @@ security: https://github.com/ALdaisuki/plastic-promise/blob/Dev/SECURITY.md
 ![MCP](https://img.shields.io/badge/protocol-MCP_1.0-FF6B35?style=flat-square)
 ![sentence-transformers](https://img.shields.io/badge/embeddings-all--MiniLM--L6--v2-FFB000?style=flat-square)
 
-![GitHub Stars](https://img.shields.io/github/stars/ALdaisuki/plastic-promise?style=social)
-![GitHub Forks](https://img.shields.io/github/forks/ALdaisuki/plastic-promise?style=social)
-![GitHub Issues](https://img.shields.io/github/issues/ALdaisuki/plastic-promise)
-![GitHub Last Commit](https://img.shields.io/github/last-commit/ALdaisuki/plastic-promise)
+[![GitHub Stars](https://img.shields.io/github/stars/ALdaisuki/plastic-promise-release?style=social)](https://github.com/ALdaisuki/plastic-promise-release/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/ALdaisuki/plastic-promise-release?style=social)](https://github.com/ALdaisuki/plastic-promise-release/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/ALdaisuki/plastic-promise-release)](https://github.com/ALdaisuki/plastic-promise-release/issues)
+[![GitHub Last Commit](https://img.shields.io/github/last-commit/ALdaisuki/plastic-promise-release)](https://github.com/ALdaisuki/plastic-promise-release/commits/main)
 
-[Architecture Docs](docs/architecture/architecture.md) - [Goal & Roadmap](docs/GOAL.md) - [Report Bug](https://github.com/ALdaisuki/plastic-promise/issues) - [Request Feature](https://github.com/ALdaisuki/plastic-promise/issues)
+[Architecture](docs/architecture/architecture.md) · [Roadmap](docs/GOAL.md) · [Full System Chain](docs/SYSTEM_FULL_CHAIN.md) · [Report Issue](https://github.com/ALdaisuki/plastic-promise-release/issues)
 
 </div>
 
@@ -150,65 +151,55 @@ task:pending -> Daemon tag-based detection -> spawn Pi -> task:active
 ### Installation
 
 ```bash
-# Core dependencies
-pip install -r requirements.txt
+# From PyPI (recommended)
+pip install plastic-promise
 
-# Full install (includes dev tools)
-pip install -e ".[dev]"
+# From source (latest)
+git clone https://github.com/ALdaisuki/plastic-promise-release.git
+cd plastic-promise-release
+pip install -e .
 
 # Optional: build Rust core engine (3-5x context engine performance)
-cd rust/context-engine-core && pip install maturin && maturin develop
+cd rust/context-engine-core && pip install maturin && maturin develop --release
 ```
 
 ### Launch
 
 ```bash
-# 1. Start shared memory server (SSE multi-agent mode)
-python -m plastic_promise.mcp.server --sse 9020
-
-# 2. Start autonomous pipeline daemon
-python daemons/pi_daemon.py
+# One-click launcher (MCP server + daemon + watchdog)
+python scripts/init_and_start.py
 ```
 
-### Verify Installation
+### Verify
 
 ```bash
-# Health check -- server must respond
 python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:9020/health').read())"
-# Expected: {"status": "ok", "version": "0.1.0", ...}
-
-# Store a test memory and verify retrieval
-# Via MCP tool (from Claude Code or another client connected to the server):
-#   memory_store(content="test memory", tags=["test"])
-#   memory_recall(query="test memory")
-# Expected: returns the stored memory with similarity score
-
-# Send a task through the pipeline
-#   memory_store(content="Implement hello world", tags=["task:pending", "assignee:pi_builder", "domain:building"])
-# Watch daemon output:
-#   [Pi] task detected -> spawning builder -> task:active
-#   [Pi] builder complete -> waking reviewer -> task:review
+# Expected: {"status": "ok", "version": "0.2.0", ...}
 ```
 
 ### Connect to Claude Code
 
-Merge into your MCP configuration:
+Add to your MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "plastic-promise": {
       "command": "python",
-      "args": ["-m", "plastic_promise.mcp.server"],
-      "cwd": "/path/to/Memory system",
-      "env": {
-        "PP_EMBEDDING_DIM": "384",
-        "PP_LANCEDB_PATH": ".data/lancedb",
-        "PP_SQLITE_PATH": ".data/memories.db"
-      }
+      "args": ["-m", "plastic_promise", "--sse", "9020"]
     }
   }
 }
+```
+
+The MCP server exposes **48 tools across 11 domains**: Memory, Context, Principles, Audit & Defense, Reflection, System, Experience Pack, Domain Federation, Skill Tracking, Programmatic Skills, and Dispatch. See [CLAUDE.md](CLAUDE.md) for the complete tool reference and workflow guide.
+
+### Connect Other MCP Clients
+
+Plastic Promise is protocol-compliant with any MCP client. Point your client at `http://127.0.0.1:9020/sse` for SSE transport, or connect via stdio:
+
+```bash
+python -m plastic_promise
 ```
 
 ---
@@ -404,9 +395,10 @@ docs/                         # Public documentation
 ├── BUILD_PLAN.md             # Build plan (historical reference)
 └── architecture/             # Architecture documentation
 scripts/                      # Helper scripts
-├── start-all.bat             # One-click start (Windows)
-├── start-all.sh              # One-click start (Linux/macOS)
-└── eco.py                    # Carbon footprint calculator
+├── init_and_start.py          # One-click launcher
+├── release-sync.py            # Dev-to-release sync engine
+├── start-all.bat              # Quick start (Windows)
+└── start-all.sh               # Quick start (Linux/macOS)
 utils/                        # Utility functions
 bridge/                       # N.E.K.O bridge
 .data/                        # Runtime data (SQLite + LanceDB)
@@ -503,13 +495,23 @@ Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for the full tex
 
 ---
 
-<div align="center">
+## Development
+
+This is the public release repository. Active development happens in the private repository. To contribute, please [open an issue](https://github.com/ALdaisuki/plastic-promise-release/issues) — core team members will port fixes through the internal development pipeline.
+
+For the full architecture and current status:
+- [GOAL.md](docs/GOAL.md) — project goals and architecture
+- [SYSTEM_FULL_CHAIN.md](docs/SYSTEM_FULL_CHAIN.md) — complete system chain and data flow
+- [BUILD_PLAN.md](docs/BUILD_PLAN.md) — build and recovery plan
+
+---
+</div>
 
 **Plastic Promise** — Built by [ALdaisuki](https://github.com/ALdaisuki)
 
 Star this repo if you find it helpful.
 
-[![GitHub Stars](https://img.shields.io/github/stars/ALdaisuki/plastic-promise?style=social)](https://github.com/ALdaisuki/plastic-promise/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/ALdaisuki/plastic-promise?style=social)](https://github.com/ALdaisuki/plastic-promise/network/members)
+[![GitHub Stars](https://img.shields.io/github/stars/ALdaisuki/plastic-promise-release?style=social)](https://github.com/ALdaisuki/plastic-promise-release/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/ALdaisuki/plastic-promise-release?style=social)](https://github.com/ALdaisuki/plastic-promise-release/network/members)
 
 </div>
