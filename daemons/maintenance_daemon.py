@@ -35,10 +35,6 @@ import sys
 import time
 from datetime import datetime, timedelta
 
-# Path setup — must be before plastic_promise imports
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _project_root)
-
 # Hunter Guild — 5 discovery scanners (Task 8)
 from plastic_promise.cron.scan_architecture import scan_architecture
 from plastic_promise.cron.scan_quality_trends import scan_quality_trends
@@ -47,8 +43,9 @@ from plastic_promise.cron.scan_trust import scan_trust
 from plastic_promise.cron.scan_memory_decay import scan_memory_decay
 from plastic_promise.cron.scan_data_quality import scan_data_quality
 from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
+from plastic_promise.core.paths import get_db_path
 
-DB_PATH = os.environ.get("PLASTIC_DB_PATH", os.path.join(_project_root, "data", "db", "plastic_memory.db"))
+DB_PATH = get_db_path()
 INTERVAL = int(os.environ.get("AUDIT_INTERVAL_SECONDS", "300"))
 MCP_URL = "http://127.0.0.1:9020"
 
@@ -56,6 +53,7 @@ MCP_URL = "http://127.0.0.1:9020"
 # ═══════════════════════════════════════════════════════════════
 # Adaptive Throttle — continuous empty scans double interval (max 8x)
 # ═══════════════════════════════════════════════════════════════
+
 
 class AdaptiveThrottle:
     """Continuous empty scans → double interval (max 8x). Hit → reset."""
@@ -89,6 +87,7 @@ _scanner_throttles = {
     "scan_data_quality": AdaptiveThrottle(600),
 }
 
+
 # ── 超时恢复 ──────────────────────────────────────────────
 def recover_stuck_tasks():
     """task:active > 5min 或 task:reviewed > 10min → 重置."""
@@ -120,19 +119,23 @@ def recover_stuck_tasks():
         elapsed = (now - task_time).total_seconds()
         new_tags = None
         if "task:active" in tags and elapsed > 300:
-            new_tags = ["task:pending" if t == "task:active" else t
-                        for t in tags if not t.startswith("ts:")]
+            new_tags = [
+                "task:pending" if t == "task:active" else t for t in tags if not t.startswith("ts:")
+            ]
             print(f"  [RECOVER] task:active {elapsed:.0f}s → pending")
         elif "task:reviewed" in tags and elapsed > 600:
-            new_tags = ["task:active" if t == "task:reviewed" else t
-                        for t in tags if not t.startswith("ts:")]
+            new_tags = [
+                "task:active" if t == "task:reviewed" else t
+                for t in tags
+                if not t.startswith("ts:")
+            ]
             print(f"  [RECOVER] task:reviewed {elapsed:.0f}s → active")
 
         if new_tags:
-            conn.execute("UPDATE memories SET tags = ? WHERE id = ?",
-                         (json.dumps(new_tags), mid))
+            conn.execute("UPDATE memories SET tags = ? WHERE id = ?", (json.dumps(new_tags), mid))
     conn.commit()
     conn.close()
+
 
 # ── 旧标签清理 ────────────────────────────────────────────
 def cleanup_old_tags():
@@ -162,18 +165,18 @@ def cleanup_old_tags():
         except ValueError:
             continue
         if task_time < cutoff:
-            new_tags = [t for t in tags
-                        if not t.startswith("task:") and not t.startswith("ts:")]
-            conn.execute("UPDATE memories SET tags = ? WHERE id = ?",
-                         (json.dumps(new_tags), mid))
+            new_tags = [t for t in tags if not t.startswith("task:") and not t.startswith("ts:")]
+            conn.execute("UPDATE memories SET tags = ? WHERE id = ?", (json.dumps(new_tags), mid))
             removed += 1
     if removed:
         print(f"  [CLEANUP] {removed} old task tags removed (>7 days)")
     conn.commit()
     conn.close()
 
+
 # ── 健康审计 ──────────────────────────────────────────────
 _last_audit_report = ""  # 自身去重：daemon 不制造重复噪音
+
 
 async def run_audit():
     """五维健康审计: trust + pipeline + domain + bridge + memory_quality."""
@@ -184,6 +187,7 @@ async def run_audit():
     # 1. Trust
     try:
         from plastic_promise.defense.soul_enforcer import TrustManager
+
         tm = TrustManager()
         trust_vals = [tm.get(r) for r in ("pi_builder", "pi_fixer", "pi_reviewer", "default")]
         scores["trust"] = round(sum(trust_vals) / len(trust_vals), 2)
@@ -196,22 +200,32 @@ async def run_audit():
     # 2. Pipeline
     try:
         conn = sqlite3.connect(DB_PATH)
-        total = conn.execute("SELECT COUNT(*) FROM memories WHERE tags LIKE '%task:%'").fetchone()[0]
-        stuck = conn.execute("SELECT COUNT(*) FROM memories WHERE tags LIKE '%task:active%'").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM memories WHERE tags LIKE '%task:%'").fetchone()[
+            0
+        ]
+        stuck = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE tags LIKE '%task:active%'"
+        ).fetchone()[0]
         conn.close()
         denom = max(total, 1)
         scores["pipeline"] = round(1.0 - stuck / denom, 2)
         if stuck > 0:
-            findings.append({"dim": "pipeline", "detail": f"{stuck} stuck active of {total} total tasks",
-                             "auto_fix": True})
+            findings.append(
+                {
+                    "dim": "pipeline",
+                    "detail": f"{stuck} stuck active of {total} total tasks",
+                    "auto_fix": True,
+                }
+            )
     except Exception:
         scores["pipeline"] = 1.0
 
     # 3. Domain
     try:
         from plastic_promise.core.context_engine import ContextEngine
+
         engine = ContextEngine()
-        dm = getattr(engine, '_dm', None)
+        dm = getattr(engine, "_dm", None)
         if dm:
             ds = dm.stats()
             active = sum(1 for d in ds.values() if d.get("status") == "active")
@@ -249,9 +263,13 @@ async def run_audit():
         else:
             scores["memory_quality"] = 1.0
         if zero_worth > 50:
-            findings.append({"dim": "memory_quality",
-                             "detail": f"{zero_worth}/{total_mem} zero-worth, {duplicate_clusters} dup clusters",
-                             "auto_fix": True})
+            findings.append(
+                {
+                    "dim": "memory_quality",
+                    "detail": f"{zero_worth}/{total_mem} zero-worth, {duplicate_clusters} dup clusters",
+                    "auto_fix": True,
+                }
+            )
     except Exception:
         scores["memory_quality"] = 0.5
 
@@ -281,14 +299,18 @@ async def run_audit():
         _last_audit_report = report_body
         try:
             async with httpx.AsyncClient() as client:
-                await client.post(f"{MCP_URL}/notify", json={
-                    "type": "audit_report",
-                    "content": report,
-                    "scores": scores,
-                    "overall": overall,
-                    "fixes": auto_fixes,
-                    "ts": datetime.now().isoformat(),
-                }, timeout=5)
+                await client.post(
+                    f"{MCP_URL}/notify",
+                    json={
+                        "type": "audit_report",
+                        "content": report,
+                        "scores": scores,
+                        "overall": overall,
+                        "fixes": auto_fixes,
+                        "ts": datetime.now().isoformat(),
+                    },
+                    timeout=5,
+                )
         except Exception:
             pass  # notify is best-effort
 
@@ -311,14 +333,16 @@ async def run_audit():
 
 # 调度目标 → Agent 映射
 _DISPATCH_MAP = {
-    "fixer":    {"assignee": "pi_fixer",    "domain": "fixing"},
+    "fixer": {"assignee": "pi_fixer", "domain": "fixing"},
     "reviewer": {"assignee": "pi_reviewer", "domain": "reflecting"},
-    "builder":  {"assignee": "pi_builder",  "domain": "building"},
-    "claude":   {"assignee": "claude",      "domain": "governing"},
+    "builder": {"assignee": "pi_builder", "domain": "building"},
+    "claude": {"assignee": "claude", "domain": "governing"},
 }
 
-async def _store_tagged_memory(content: str, tags: list, memory_type: str = "experience",
-                                target_id: str = ""):
+
+async def _store_tagged_memory(
+    content: str, tags: list, memory_type: str = "experience", target_id: str = ""
+):
     """通过 /notify 将带标签的记忆写入 MCP 记忆池，使其可被其他 Agent 召回。
 
     这是 daemon 的"出声"机制 — 不直接写 SQLite，而是通过 MCP 接口确保
@@ -330,23 +354,32 @@ async def _store_tagged_memory(content: str, tags: list, memory_type: str = "exp
     payload_tags.append(f"ts:{datetime.now().strftime('%Y%m%dT%H%M%S')}")
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(f"{MCP_URL}/notify", json={
-                "type": "memory_store",
-                "content": content,
-                "memory_type": memory_type,
-                "tags": payload_tags,
-                "source": "maintenance_daemon",
-                "ts": datetime.now().isoformat(),
-            }, timeout=5)
+            await client.post(
+                f"{MCP_URL}/notify",
+                json={
+                    "type": "memory_store",
+                    "content": content,
+                    "memory_type": memory_type,
+                    "tags": payload_tags,
+                    "source": "maintenance_daemon",
+                    "ts": datetime.now().isoformat(),
+                },
+                timeout=5,
+            )
         return True
     except Exception as e:
         print(f"  [TAG] store error: {e}")
         return False
 
 
-async def dispatch_fix_task(task_type: str, detail: str, target_id: str = "",
-                             assignee: str = "fixer", severity: str = "warning",
-                             redo: bool = False):
+async def dispatch_fix_task(
+    task_type: str,
+    detail: str,
+    target_id: str = "",
+    assignee: str = "fixer",
+    severity: str = "warning",
+    redo: bool = False,
+):
     """标签驱动的多 Agent 调度引擎 — 通过 /notify 写入带标签的记忆。
 
     Args:
@@ -382,8 +415,9 @@ async def dispatch_fix_task(task_type: str, detail: str, target_id: str = "",
         print(f"  [DISPATCH] {task_type} → {tag_info} ({detail[:80]})")
 
 
-async def tag_for_redo(memory_id: str, reason: str, assignee: str = "reviewer",
-                        severity: str = "warning"):
+async def tag_for_redo(
+    memory_id: str, reason: str, assignee: str = "reviewer", severity: str = "warning"
+):
     """标记记忆进入打回区 — 写入 redo:required 标签，等待 Agent 认领审查。
 
     打回区生命周期:
@@ -403,8 +437,7 @@ async def tag_for_redo(memory_id: str, reason: str, assignee: str = "reviewer",
         target_id=memory_id,
     )
     if stored:
-        print(f"  [REDO] tagged memory for {assignee} review: "
-              f"{memory_id[:20]}... ({reason[:60]})")
+        print(f"  [REDO] tagged memory for {assignee} review: {memory_id[:20]}... ({reason[:60]})")
 
 
 async def tag_audit_finding(dimension: str, detail: str, severity: str = "info"):
@@ -451,9 +484,9 @@ async def scan_redo_queue():
         escalated = 0
         for mid, tags_raw, created_str in rows:
             try:
-                created_dt = datetime.fromisoformat(
-                    created_str.replace("Z", "+00:00")
-                ).replace(tzinfo=None)
+                created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00")).replace(
+                    tzinfo=None
+                )
                 age_h = (now - created_dt).total_seconds() / 3600
             except (ValueError, TypeError):
                 continue
@@ -469,27 +502,28 @@ async def scan_redo_queue():
                 new_tags.append("domain:fixing")
                 conn2 = sqlite3.connect(DB_PATH)
                 conn2.execute(
-                    "UPDATE memories SET tags = ? WHERE id = ?",
-                    (json.dumps(new_tags), mid)
+                    "UPDATE memories SET tags = ? WHERE id = ?", (json.dumps(new_tags), mid)
                 )
                 conn2.commit()
                 conn2.close()
                 escalated += 1
-                print(f"  [REDO_QUEUE] escalated stale redo → task:pending "
-                      f"({age_h:.0f}h, {mid[:20]}...)")
+                print(
+                    f"  [REDO_QUEUE] escalated stale redo → task:pending "
+                    f"({age_h:.0f}h, {mid[:20]}...)"
+                )
             elif age_h > 12:
                 # 提醒 Claude
                 if "dispatch:claude" not in tags:
                     tags.append("dispatch:claude")
                     conn2 = sqlite3.connect(DB_PATH)
                     conn2.execute(
-                        "UPDATE memories SET tags = ? WHERE id = ?",
-                        (json.dumps(tags), mid)
+                        "UPDATE memories SET tags = ? WHERE id = ?", (json.dumps(tags), mid)
                     )
                     conn2.commit()
                     conn2.close()
-                    print(f"  [REDO_QUEUE] added claude attention: "
-                          f"{mid[:20]}... (age={age_h:.0f}h)")
+                    print(
+                        f"  [REDO_QUEUE] added claude attention: {mid[:20]}... (age={age_h:.0f}h)"
+                    )
 
         if escalated:
             print(f"  [REDO_QUEUE] escalated {escalated} stale redo items")
@@ -512,6 +546,7 @@ async def scan_orphan_steps():
             handle_skill_session_trace,
             handle_skill_session_complete,
         )
+
         engine = ContextEngine()
         trace_args = {"session_scope": "all", "include_auto_inject": False}
         result_list = await handle_skill_session_trace(engine, trace_args)
@@ -531,12 +566,17 @@ async def scan_orphan_steps():
 
         if idle_m > 120:
             # Tier 1: 自动关闭
-            await handle_skill_session_complete(engine, {
-                "entity_id": eid,
-                "outcome": f"abandoned: safety-net auto-close after {idle_m:.0f}min idle",
-            })
-            print(f"  [SAFETY_NET] auto-closed orphan step: {skill_name} "
-                  f"({eid[:30]}..., idle={idle_m:.0f}min)")
+            await handle_skill_session_complete(
+                engine,
+                {
+                    "entity_id": eid,
+                    "outcome": f"abandoned: safety-net auto-close after {idle_m:.0f}min idle",
+                },
+            )
+            print(
+                f"  [SAFETY_NET] auto-closed orphan step: {skill_name} "
+                f"({eid[:30]}..., idle={idle_m:.0f}min)"
+            )
         elif idle_m > 30:
             # Tier 2: 发任务给 Pi
             await dispatch_fix_task(
@@ -610,15 +650,17 @@ async def scan_duplicate_clusters():
                         "  COALESCE(tags, '[]'), '$[#]', 'decaying', '$[#]', "
                         "  'forget:safety-net:duplicate_cluster'"
                         ") WHERE id = ?",
-                        (mid,)
+                        (mid,),
                     )
                     # 直接删除（SQLite 层面清除，下次 GC 会清理 LanceDB）
                     conn2.execute("DELETE FROM memories WHERE id = ?", (mid,))
                     conn2.commit()
                     conn2.close()
                     cleaned += 1
-                    print(f"  [DUP_CLEAN] forgot duplicate: {mid[:20]}... "
-                          f"from cluster of {cnt} (kept {best_id[:20]}...)")
+                    print(
+                        f"  [DUP_CLEAN] forgot duplicate: {mid[:20]}... "
+                        f"from cluster of {cnt} (kept {best_id[:20]}...)"
+                    )
                 except Exception as e:
                     print(f"  [DUP_CLEAN] forget failed for {mid[:20]}...: {e}")
                     continue
@@ -687,7 +729,7 @@ async def scan_stale_worth():
                 conn2 = sqlite3.connect(DB_PATH)
                 conn2.execute(
                     "UPDATE memories SET worth_success=?, worth_failure=? WHERE id=?",
-                    (new_success, new_failure, mid)
+                    (new_success, new_failure, mid),
                 )
                 conn2.commit()
                 conn2.close()
@@ -696,8 +738,7 @@ async def scan_stale_worth():
                 pass
 
         if updated:
-            print(f"  [WORTH] revived {updated} stale worth records "
-                  f"(remaining: {count - updated})")
+            print(f"  [WORTH] revived {updated} stale worth records (remaining: {count - updated})")
 
     except Exception as e:
         print(f"  [SAFETY_NET] scan_stale_worth error: {e}")
@@ -718,16 +759,14 @@ async def scan_tier_migration():
 
         # L1 → L2: 最近被访问过
         upgraded_l1 = conn.execute(
-            "UPDATE memories SET tier='L2' "
-            "WHERE tier='L1' AND last_accessed > ?",
-            (seven_days_ago,)
+            "UPDATE memories SET tier='L2' WHERE tier='L1' AND last_accessed > ?", (seven_days_ago,)
         ).rowcount
 
         # L2 → L3: 高活跃度
         upgraded_l2 = conn.execute(
             "UPDATE memories SET tier='L3' "
             "WHERE tier='L2' AND access_count > 5 AND last_accessed > ?",
-            (three_days_ago,)
+            (three_days_ago,),
         ).rowcount
 
         conn.commit()
@@ -756,8 +795,10 @@ async def scan_category_stuck():
         ).fetchone()[0]
 
         if stuck_pending > 5:
-            print(f"  [CAT_STUCK] {stuck_pending} memories stuck in LLM queue "
-                  f"— Ollama may be offline or overloaded")
+            print(
+                f"  [CAT_STUCK] {stuck_pending} memories stuck in LLM queue "
+                f"— Ollama may be offline or overloaded"
+            )
 
         # 2. 检测大量 other 分类 (可能是分类管道卡住)
         other_count = conn.execute(
@@ -776,6 +817,7 @@ async def scan_category_stuck():
             if rows:
                 from plastic_promise.core.context_engine import ContextEngine
                 from plastic_promise.mcp.tools.memory import handle_memory_reclassify
+
                 engine = ContextEngine()
                 reclassified = 0
                 for (mid,) in rows:
@@ -817,7 +859,7 @@ async def scan_llm_classify():
             "WHERE tags LIKE '%llm_pending:true%' "
             "AND tags NOT LIKE '%llm_classified:true%' "
             "ORDER BY created_at ASC LIMIT ?",
-            (LLM_BATCH_SIZE,)
+            (LLM_BATCH_SIZE,),
         ).fetchall()
         conn.close()
 
@@ -833,21 +875,18 @@ async def scan_llm_classify():
                 tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
 
                 # Call Ollama LLM for classification
-                new_cat = _llm_classify(
-                    content, OLLAMA_HOST, OLLAMA_MODEL, timeout=15
-                )
+                new_cat = _llm_classify(content, OLLAMA_HOST, OLLAMA_MODEL, timeout=15)
 
                 if new_cat and new_cat != old_category:
                     # Update SQLite in-place
                     conn2 = sqlite3.connect(DB_PATH)
-                    conn2.execute(
-                        "UPDATE memories SET category = ? WHERE id = ?",
-                        (new_cat, mid)
-                    )
+                    conn2.execute("UPDATE memories SET category = ? WHERE id = ?", (new_cat, mid))
                     conn2.commit()
                     conn2.close()
-                    print(f"  [LLM_CLASSIFY] {mid[:12]}... {old_category} → {new_cat} "
-                          f"({(content or '')[:40]}...)")
+                    print(
+                        f"  [LLM_CLASSIFY] {mid[:12]}... {old_category} → {new_cat} "
+                        f"({(content or '')[:40]}...)"
+                    )
 
                 # Replace llm_pending with llm_classified (even if LLM returned same/None)
                 tags = [t for t in tags if t != "llm_pending:true"]
@@ -857,22 +896,23 @@ async def scan_llm_classify():
                     tags.append(f"cat:{new_cat}")
 
                 conn2 = sqlite3.connect(DB_PATH)
-                conn2.execute(
-                    "UPDATE memories SET tags = ? WHERE id = ?",
-                    (json.dumps(tags), mid)
-                )
+                conn2.execute("UPDATE memories SET tags = ? WHERE id = ?", (json.dumps(tags), mid))
                 conn2.commit()
                 conn2.close()
 
                 # Notify MCP to refresh in-memory cache
                 try:
                     async with httpx.AsyncClient() as client:
-                        await client.post(f"{MCP_URL}/notify", json={
-                            "type": "llm_classified",
-                            "memory_id": mid,
-                            "new_category": new_cat,
-                            "ts": datetime.now().isoformat(),
-                        }, timeout=3)
+                        await client.post(
+                            f"{MCP_URL}/notify",
+                            json={
+                                "type": "llm_classified",
+                                "memory_id": mid,
+                                "new_category": new_cat,
+                                "ts": datetime.now().isoformat(),
+                            },
+                            timeout=3,
+                        )
                 except Exception:
                     pass  # notify is best-effort
 
@@ -912,16 +952,18 @@ async def scan_innovation_opportunities():
             "FROM memories WHERE tags LIKE '%type:correct_memory%' "
             "OR tags LIKE '%type:close_orphan_step%' "
             "GROUP BY preview HAVING cnt >= ? ORDER BY cnt DESC LIMIT 3",
-            (INNOVATION_THRESHOLD,)
+            (INNOVATION_THRESHOLD,),
         ).fetchall()
         for cnt, preview in fix_tasks:
-            proposals.append({
-                "type": "recurring_fix",
-                "detail": f"同一类修复出现 {cnt} 次: {preview}",
-                "suggestion": "考虑从根因修复：架构 review 或代码重构",
-                "assignee": "reviewer",
-                "severity": "warning" if cnt < 5 else "critical",
-            })
+            proposals.append(
+                {
+                    "type": "recurring_fix",
+                    "detail": f"同一类修复出现 {cnt} 次: {preview}",
+                    "suggestion": "考虑从根因修复：架构 review 或代码重构",
+                    "assignee": "reviewer",
+                    "severity": "warning" if cnt < 5 else "critical",
+                }
+            )
 
         # 2. 记忆池退化趋势 — 最近 100 条记忆的 worth 趋势
         worth_trend = conn.execute(
@@ -934,13 +976,15 @@ async def scan_innovation_opportunities():
         if worth_trend and worth_trend[0] is not None:
             avg_w = worth_trend[0]
             if avg_w < 0.45:
-                proposals.append({
-                    "type": "worth_decline",
-                    "detail": f"最近 50 条记忆平均 worth={avg_w:.2f} (<0.45)",
-                    "suggestion": "建议 memory_gc 清理 + 提高 quality_gate 阈值",
-                    "assignee": "fixer",
-                    "severity": "critical" if avg_w < 0.35 else "warning",
-                })
+                proposals.append(
+                    {
+                        "type": "worth_decline",
+                        "detail": f"最近 50 条记忆平均 worth={avg_w:.2f} (<0.45)",
+                        "suggestion": "建议 memory_gc 清理 + 提高 quality_gate 阈值",
+                        "assignee": "fixer",
+                        "severity": "critical" if avg_w < 0.35 else "warning",
+                    }
+                )
 
         # 3. 技能链断裂 — 检测多个 orphan step
         orphan_count = conn.execute(
@@ -948,13 +992,15 @@ async def scan_innovation_opportunities():
             "AND tags NOT LIKE '%task:done%'"
         ).fetchone()[0]
         if orphan_count > 5:
-            proposals.append({
-                "type": "skill_chain_gap",
-                "detail": f"检测到 {orphan_count} 个未闭环的 task:active",
-                "suggestion": "建议审查 DAEMON 超时恢复参数，排查 Pi 执行卡死",
-                "assignee": "reviewer",
-                "severity": "warning",
-            })
+            proposals.append(
+                {
+                    "type": "skill_chain_gap",
+                    "detail": f"检测到 {orphan_count} 个未闭环的 task:active",
+                    "suggestion": "建议审查 DAEMON 超时恢复参数，排查 Pi 执行卡死",
+                    "assignee": "reviewer",
+                    "severity": "warning",
+                }
+            )
 
         # 4. 信任分异常 — 检查 trust_history 趋势
         try:
@@ -964,13 +1010,15 @@ async def scan_innovation_opportunities():
             ).fetchall()
             if trust_row:
                 low_agents = [f"{r[0]}({r[1]:.2f})" for r in trust_row]
-                proposals.append({
-                    "type": "trust_decline",
-                    "detail": f"低信任分 Agent: {', '.join(low_agents)}",
-                    "suggestion": "建议 Claude 审计对应 Agent 的行为记录",
-                    "assignee": "claude",
-                    "severity": "critical",
-                })
+                proposals.append(
+                    {
+                        "type": "trust_decline",
+                        "detail": f"低信任分 Agent: {', '.join(low_agents)}",
+                        "suggestion": "建议 Claude 审计对应 Agent 的行为记录",
+                        "assignee": "claude",
+                        "severity": "critical",
+                    }
+                )
         except Exception:
             pass
 
@@ -980,34 +1028,37 @@ async def scan_innovation_opportunities():
             zombie_domains = conn.execute(
                 "SELECT DISTINCT domain FROM domain_stats "
                 "WHERE last_active < ? AND status='active' LIMIT 5",
-                (three_days_ago,)
+                (three_days_ago,),
             ).fetchall()
             if zombie_domains:
                 zd = [r[0] for r in zombie_domains]
-                proposals.append({
-                    "type": "zombie_domain",
-                    "detail": f"僵尸域: {', '.join(zd)} (3天无活动)",
-                    "suggestion": "建议 domain(action='merge') 合并到活跃域",
-                    "assignee": "claude",
-                    "severity": "info",
-                })
+                proposals.append(
+                    {
+                        "type": "zombie_domain",
+                        "detail": f"僵尸域: {', '.join(zd)} (3天无活动)",
+                        "suggestion": "建议 domain(action='merge') 合并到活跃域",
+                        "assignee": "claude",
+                        "severity": "info",
+                    }
+                )
         except Exception:
             pass
 
         # 6. 分类管道瓶颈 — 大量 other 未分类
         other_stale = conn.execute(
-            "SELECT COUNT(1) FROM memories WHERE category='other' "
-            "AND created_at < ?",
-            ((datetime.now() - timedelta(hours=2)).isoformat(),)
+            "SELECT COUNT(1) FROM memories WHERE category='other' AND created_at < ?",
+            ((datetime.now() - timedelta(hours=2)).isoformat(),),
         ).fetchone()[0]
         if other_stale > 15:
-            proposals.append({
-                "type": "classify_bottleneck",
-                "detail": f"{other_stale} 条记忆超过 2h 仍为 'other' 分类",
-                "suggestion": "Ollama 分类管道可能卡住，建议检查 LLM 服务",
-                "assignee": "fixer",
-                "severity": "warning",
-            })
+            proposals.append(
+                {
+                    "type": "classify_bottleneck",
+                    "detail": f"{other_stale} 条记忆超过 2h 仍为 'other' 分类",
+                    "suggestion": "Ollama 分类管道可能卡住，建议检查 LLM 服务",
+                    "assignee": "fixer",
+                    "severity": "warning",
+                }
+            )
 
         conn.close()
 
@@ -1046,6 +1097,7 @@ async def scan_unclosed_issues():
             handle_issue_list,
             handle_issue_transition,
         )
+
         engine = ContextEngine()
         result_list = await handle_issue_list(engine, {"status": "open"})
         if not result_list:
@@ -1070,13 +1122,18 @@ async def scan_unclosed_issues():
             title = issue.get("title", "")[:60]
 
             if age_h > 48:
-                await handle_issue_transition(engine, {
-                    "issue_id": issue_id,
-                    "to_status": "closed",
-                    "comment": f"safety-net: auto-closed stale after {age_h:.0f}h",
-                })
-                print(f"  [SAFETY_NET] auto-closed stale issue: "
-                      f"#{issue_id} ({title}) age={age_h:.0f}h")
+                await handle_issue_transition(
+                    engine,
+                    {
+                        "issue_id": issue_id,
+                        "to_status": "closed",
+                        "comment": f"safety-net: auto-closed stale after {age_h:.0f}h",
+                    },
+                )
+                print(
+                    f"  [SAFETY_NET] auto-closed stale issue: "
+                    f"#{issue_id} ({title}) age={age_h:.0f}h"
+                )
                 return  # 一次只处理一个
             elif age_h > 24:
                 await dispatch_fix_task(
@@ -1093,6 +1150,7 @@ async def scan_unclosed_issues():
 # Hunter Guild — 任务心跳监控 (Task 9)
 # ═══════════════════════════════════════════════════════════════
 
+
 async def scan_task_heartbeats():
     """Check all claimed/executing tasks for heartbeat timeout.
 
@@ -1104,6 +1162,7 @@ async def scan_task_heartbeats():
         conn = sqlite3.connect(DB_PATH)
         # Ensure task_queue table exists
         from plastic_promise.core.task_queue_schema import ensure_task_tables
+
         ensure_task_tables(conn)
 
         overdue = conn.execute("""
@@ -1124,30 +1183,32 @@ async def scan_task_heartbeats():
                     "to_agent='claude', priority=1, "
                     "escalation_count=escalation_count+1, "
                     "last_escalation_at=datetime('now') WHERE id=?",
-                    (task_id,)
+                    (task_id,),
                 )
             else:
                 conn.execute(
                     "UPDATE task_queue SET status='pending', claimed_by=NULL, "
                     "escalation_count=escalation_count+1, "
                     "last_escalation_at=datetime('now') WHERE id=?",
-                    (task_id,)
+                    (task_id,),
                 )
             conn.commit()
-            print(f"  [HEARTBEAT] task {task_id[:20]}... overdue → released "
-                  f"(escalation={esc_count+1})")
+            print(
+                f"  [HEARTBEAT] task {task_id[:20]}... overdue → released "
+                f"(escalation={esc_count + 1})"
+            )
 
             # Apply timeout penalty
             try:
                 from plastic_promise.core.hunter_penalty import HunterPenaltyEngine
                 from plastic_promise.defense.soul_enforcer import TrustManager
+
                 tm = TrustManager()
                 current = tm.get(claimed_by)
                 engine = HunterPenaltyEngine()
-                asyncio.ensure_future(engine.apply_penalty(
-                    claimed_by, task_id, "unknown",
-                    "timeout", current
-                ))
+                asyncio.ensure_future(
+                    engine.apply_penalty(claimed_by, task_id, "unknown", "timeout", current)
+                )
             except Exception:
                 pass
         conn.close()
@@ -1161,8 +1222,9 @@ async def scan_task_heartbeats():
 # ═══════════════════════════════════════════════════════════════
 _audit_seq = [0]
 
+
 async def main():
-    _pid_path = os.path.join(_project_root, "var", "run", "maintenance_daemon.pid")
+    _pid_path = os.path.join(_project_root, "maintenance_daemon.pid")
     with open(_pid_path, "w") as f:
         f.write(str(os.getpid()))
 
@@ -1185,21 +1247,26 @@ async def main():
         except Exception:
             pass
         if attempt < 4:
-            print(f"  MCP /health retry {attempt+1}/5...")
+            print(f"  MCP /health retry {attempt + 1}/5...")
             await asyncio.sleep(5)
 
     if not mcp_ok:
-        print(f"  WARNING: MCP /health unreachable after 5 retries — daemon will continue"
-              f" but scanner dispatch may fail")
+        print(
+            f"  WARNING: MCP /health unreachable after 5 retries — daemon will continue"
+            f" but scanner dispatch may fail"
+        )
 
-    print(f"Maintenance Daemon (audit={INTERVAL}s, safety_net={SAFETY_NET_INTERVAL}s, "
-          f"llm_classify={LLM_CLASSIFY_INTERVAL}s, PID={os.getpid()})")
+    print(
+        f"Maintenance Daemon (audit={INTERVAL}s, safety_net={SAFETY_NET_INTERVAL}s, "
+        f"llm_classify={LLM_CLASSIFY_INTERVAL}s, PID={os.getpid()})"
+    )
     print(f"  DB: {DB_PATH}")
     print(f"  MCP: {MCP_URL}")
-    print(f"  6 scanners: scan_trust scan_architecture scan_quality_trends "
-          f"scan_coupling scan_memory_decay scan_data_quality")
-    print(f"  Throttle bases: "
-          f"{' '.join(f'{k}={v.base}s' for k, v in _scanner_throttles.items())}")
+    print(
+        f"  6 scanners: scan_trust scan_architecture scan_quality_trends "
+        f"scan_coupling scan_memory_decay scan_data_quality"
+    )
+    print(f"  Throttle bases: {' '.join(f'{k}={v.base}s' for k, v in _scanner_throttles.items())}")
 
     tick = 0
     audit_threshold = max(1, INTERVAL // 10)  # 每 INTERVAL 秒审计一次
@@ -1207,6 +1274,7 @@ async def main():
     # Ensure task queue tables exist before any scanner runs
     try:
         from plastic_promise.core.task_queue_schema import ensure_task_tables
+
         conn = sqlite3.connect(DB_PATH)
         ensure_task_tables(conn)
         conn.close()
@@ -1238,6 +1306,7 @@ async def main():
             # Create a shared engine instance for scanners that need it
             try:
                 from plastic_promise.core.context_engine import ContextEngine
+
                 engine = ContextEngine()
             except Exception:
                 engine = None
@@ -1345,6 +1414,7 @@ async def main():
             recover_stuck_tasks()
 
         await asyncio.sleep(10)  # 10s 粒度
+
 
 if __name__ == "__main__":
     asyncio.run(main())

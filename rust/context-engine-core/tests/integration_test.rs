@@ -87,7 +87,7 @@ fn test_memory_record_worth_integration() {
     let mut r = context_engine_core::memory_worth::MemoryRecord::new(
         "w1".into(), "test".into(), "task".into(), "system".into(),
     );
-    assert_eq!(r.tier, "working");
+    assert_eq!(r.tier, "L1");
     assert_eq!(r.scope, "global");
     assert_eq!(r.category, "other");
     assert_eq!(r.importance, 0.7);
@@ -98,5 +98,5 @@ fn test_memory_record_worth_integration() {
     r.record_rejected();
     r.record_ignored();
     assert_eq!(r.worth_success, 2);
-    assert_eq!(r.worth_failure, 1);
+    assert_eq!(r.worth_failure, 2);
 }

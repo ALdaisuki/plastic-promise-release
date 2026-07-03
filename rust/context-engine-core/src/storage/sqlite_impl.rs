@@ -270,7 +270,7 @@ impl StorageBackend for SqliteStorage {
         }
         if let Some(v) = filter.min_worth {
             conditions.push(
-                "CASE WHEN (worth_success + worth_failure) >= 5 THEN (CAST(worth_success AS REAL) * 1.0 - CAST(worth_failure AS REAL) * 1.5) / CAST(worth_success + worth_failure + 1 AS REAL) ELSE 0.0 END >= ?"
+                "(CAST(worth_success AS REAL) + 1.0) / CAST(worth_success + worth_failure + 2 AS REAL) >= ?"
                     .into(),
             );
             param_vals.push(Box::new(v));
@@ -330,12 +330,10 @@ impl StorageBackend for SqliteStorage {
         let totals_sql = format!(
             "SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN worth_success > worth_failure THEN 1 ELSE 0 END) as healthy,
+                SUM(CASE WHEN worth_success >= worth_failure THEN 1 ELSE 0 END) as healthy,
                 SUM(CASE WHEN worth_success < worth_failure THEN 1 ELSE 0 END) as decaying,
-                AVG(CASE WHEN (worth_success + worth_failure) >= 5
-                    THEN (CAST(worth_success AS REAL) * 1.0 - CAST(worth_failure AS REAL) * 1.5)
-                         / CAST(worth_success + worth_failure + 1 AS REAL)
-                    ELSE 0.0 END) as avg_worth
+                AVG((CAST(worth_success AS REAL) + 1.0)
+                    / CAST(worth_success + worth_failure + 2 AS REAL)) as avg_worth
             FROM memories WHERE 1=1 {}",
             scope_filter
         );

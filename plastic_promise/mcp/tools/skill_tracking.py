@@ -9,6 +9,7 @@ Public tools:
 
 import datetime
 import json
+import logging
 import threading
 from typing import Any
 
@@ -293,10 +294,52 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
 
     now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
 
+    def _graph_nodes() -> list[dict]:
+        try:
+            nodes = engine.list_graph_nodes()
+            if isinstance(nodes, list):
+                return nodes
+        except Exception as e:
+            logging.getLogger("plastic-promise").warning(
+                "skill_session_trace: list_graph_nodes() failed, falling back to _graph_nodes: %s",
+                e,
+            )
+        raw = getattr(engine, "_graph_nodes", {})
+        if isinstance(raw, dict):
+            return [dict({"id": node_id}, **data) for node_id, data in raw.items()]
+        return []
+
+    def _graph_edges() -> list[dict]:
+        try:
+            edges = engine.list_graph_edges()
+            if isinstance(edges, list):
+                return edges
+        except Exception as e:
+            logging.getLogger("plastic-promise").warning(
+                "skill_session_trace: list_graph_edges() failed, falling back to _graph_edges: %s",
+                e,
+            )
+        raw = getattr(engine, "_graph_edges", [])
+        return raw if isinstance(raw, list) else []
+
+    def _iter_memories() -> list[Any]:
+        try:
+            memories = engine.iter_memories()
+            if isinstance(memories, list):
+                return memories
+        except Exception as e:
+            logging.getLogger("plastic-promise").warning(
+                "skill_session_trace: iter_memories() failed, falling back to _memories: %s", e
+            )
+        raw = getattr(engine, "_memories", {})
+        if isinstance(raw, dict):
+            return list(raw.values())
+        return []
+
     # -- Collect skill_session entities from graph nodes --------------------
     sessions: list[dict] = []
 
-    for node in engine.list_graph_nodes():
+    for node in _graph_nodes():
         node_id = node.get("id", "")
         if not isinstance(node, dict):
             continue
@@ -314,7 +357,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
 
         # -- Find associated memory record ----------------------------------
         memory: dict[str, Any] | None = None
-        for mem in engine.iter_memories():
+        for mem in _iter_memories():
             # Normalize to dict (handle both dict and object memories)
             if isinstance(mem, dict):
                 mem_dict = mem
@@ -373,7 +416,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
 
         # -- Child sessions via graph edges ---------------------------------
         child_skills: list[str] = []
-        for edge in engine.list_graph_edges():
+        for edge in _graph_edges():
             if not isinstance(edge, dict):
                 continue
             # Edge goes FROM parent TO child with relation "parent_of"
@@ -402,7 +445,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
         )
 
     # -- Build parent relationships from edges ------------------------------
-    for edge in engine.list_graph_edges():
+    for edge in _graph_edges():
         if not isinstance(edge, dict):
             continue
         if edge.get("relation") == "parent_of":
@@ -464,7 +507,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
         if s["status"] == "done":
             # Re-check original memory for tag integrity
             mem_for_session = None
-            for mem in engine.iter_memories():
+            for mem in _iter_memories():
                 if isinstance(mem, dict):
                     m = mem
                 else:
@@ -1163,8 +1206,8 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
         ]
 
     elif phase == "complete":
-        eid = _current_skill
         with _skill_state_lock:
+            eid = _current_skill
             if eid:
                 try:
                     # Lightweight complete: run the session_complete handler

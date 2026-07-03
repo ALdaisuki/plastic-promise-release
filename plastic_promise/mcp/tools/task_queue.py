@@ -58,6 +58,10 @@ def _inject_payload_hash(payload: dict) -> dict:
 def _get_conn():
     conn = sqlite3.connect(_get_db_path())
     conn.row_factory = sqlite3.Row
+    # Ensure Hunter Guild tables exist (idempotent — CREATE TABLE IF NOT EXISTS)
+    from plastic_promise.core.task_queue_schema import ensure_task_tables
+
+    ensure_task_tables(conn)
     return conn
 
 
@@ -535,6 +539,38 @@ async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
             TextContent(
                 type="text",
                 text=json.dumps({"success": False, "reason": "委托不存在"}, ensure_ascii=False),
+            )
+        ]
+
+    # ── Status guard: only completed tasks can be verified ──
+    if task["status"] != "done":
+        conn.close()
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "success": False,
+                        "reason": f"只能验收已完成(done)的委托，当前状态: {task['status']}",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
+    # ── Idempotency guard: already verified or reassigned ──
+    if task["status"] in ("verified", "reassigned"):
+        conn.close()
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "success": False,
+                        "reason": f"委托已被处理，当前状态: {task['status']}，无法重复验收",
+                    },
+                    ensure_ascii=False,
+                ),
             )
         ]
 

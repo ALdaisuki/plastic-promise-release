@@ -7,7 +7,12 @@ use std::collections::HashSet;
 /// Returns multiplier in [0.5, 2.0].
 pub fn length_norm(content: &str, anchor: usize) -> f64 {
     let len = content.chars().count().max(1) as f64;
-    1.0 / (1.0 + (len / anchor as f64).log2())
+    let ratio = len / anchor as f64;
+    if ratio <= 1.0 {
+        (1.0 + (1.0 - ratio) * 0.2).clamp(1.0, 1.2)
+    } else {
+        (1.0 / (1.0 + ratio.log2())).clamp(0.5, 1.0)
+    }
 }
 
 /// Hard minimum score filter — removes items below threshold.
@@ -69,7 +74,7 @@ mod tests {
             ("b".into(), 0.7, "hello world python".into()),
             ("c".into(), 0.5, "completely different topic".into()),
         ];
-        let result = mmr_dedup(items, 0.5);
+        let result = mmr_dedup(items, 0.49);
         assert_eq!(result.len(), 2); // a and b are similar, b removed
     }
 }

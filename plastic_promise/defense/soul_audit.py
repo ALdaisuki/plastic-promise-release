@@ -22,6 +22,7 @@ from plastic_promise.core.constants import (
     PRE_CHECK_ALERT_THRESHOLD,
     WORTH_MIN_OBSERVATIONS,
 )
+from plastic_promise.core.paths import get_db_path
 
 
 class AuditReport:
@@ -137,10 +138,7 @@ class SoulAuditor:
         """
         self._reports: list[AuditReport] = []
         self._last_audit_time: datetime.datetime | None = None
-        self._db_path = db_path or os.environ.get(
-            "PLASTIC_DB_PATH",
-            os.path.join(os.path.dirname(__file__), "..", "..", "plastic_memory.db"),
-        )
+        self._db_path = db_path or get_db_path()
         self._engine = engine
 
     # ── 动态评分：从真实数据源计算每个维度 ────────────────────

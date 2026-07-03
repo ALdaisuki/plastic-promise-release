@@ -38,19 +38,13 @@ impl WorthCounters {
     /// 失败权重（惩罚大于奖励）
     pub const FAILURE_WEIGHT: f64 = -1.5;
 
-    /// 计算 worth_score，范围 [-1.5, 1.0]
+    /// 计算 retrieval-facing worth_score，范围 [0.0, 1.0]
     ///
-    /// 不足 MIN_OBSERVATIONS 时返回 0.0（中性）
+    /// 与 Python MemoryRecord.worth_score 保持一致：无观察时返回 0.5，
+    /// 有观察时使用 Bayesian smoothing (success + 1) / (total + 2)。
     pub fn worth_score(&self) -> f64 {
         let total = self.success + self.failure;
-        if total < Self::MIN_OBSERVATIONS {
-            return 0.0;
-        }
-        let total_f = total as f64;
-        let success_ratio = self.success as f64 / (total_f + 1.0);
-        let failure_ratio = self.failure as f64 / (total_f + 1.0);
-
-        success_ratio * Self::SUCCESS_WEIGHT + failure_ratio * Self::FAILURE_WEIGHT
+        ((self.success + 1) as f64 / (total + 2) as f64).clamp(0.0, 1.0)
     }
 
     /// 记录一次采纳（成功共现）
@@ -60,8 +54,7 @@ impl WorthCounters {
 
     /// 记录一次忽略（微小负面信号）
     pub fn record_ignored(&mut self) {
-        // 忽略时轻微增加 failure 计数（权重由外部处理）
-        // 这里仅在 failure 上做 0.5 增量
+        self.failure += 1;
     }
 
     /// 记录一次拒绝（显著负面信号）
@@ -200,9 +193,9 @@ impl MemoryRecord {
         self.worth_failure += 1;
     }
 
-    /// 记录忽略（失败 +0.5）
+    /// 记录忽略（失败 +1，u32 计数器无法表达 Python 的 +0.5）
     pub fn record_ignored(&mut self) {
-        // 忽略时轻微负面影响
+        self.worth_failure += 1;
     }
 
     /// Return the total number of observations (success + failure).

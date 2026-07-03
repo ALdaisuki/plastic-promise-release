@@ -176,7 +176,7 @@ mod tests {
             format!("content of {}", id),
             "experience".to_string(),
             "test".to_string(),
-            "working".to_string(),
+            "L1".to_string(),
             "global".to_string(),
             category.to_string(),
             0.7,
@@ -186,6 +186,10 @@ mod tests {
             String::new(),
             created_at.to_string(),
             "{}".to_string(),
+            Vec::new(),
+            "uncategorized".to_string(),
+            1.0,
+            3.0,
         )
     }
 

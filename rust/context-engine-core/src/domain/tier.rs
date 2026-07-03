@@ -1,20 +1,21 @@
-//! Memory tier enum — 4-layer classification inspired by N.E.K.O.
+//! Memory tier enum — aligned with Python L1/L2/L3 tiers.
 //!
-//! Working(1h) → Recent(7d) → Core(90d) → Principle(permanent)
-//! Each tier carries its own decay beta and capacity limit.
+//! L1 → L2 → L3 → Principle. Each tier carries its own decay beta
+//! and capacity limit; aliases for the older working/recent/core names
+//! are accepted on read for backward compatibility.
 
 use serde::{Deserialize, Serialize};
 
 /// 4-tier memory classification with per-tier decay and capacity parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tier {
-    /// Session-scoped, ttl ~1 hour, max 50 entries, fast decay (β=1.5)
+    /// L1 working memory, ttl ~3 days, fast decay (β=1.5)
     Working,
-    /// Cross-session short-term, ttl 7 days, max 200 entries, standard decay (β=1.0)
+    /// L2 recent memory, ttl 7 days, standard decay (β=1.2)
     Recent,
-    /// Long-term core memory, ttl 90 days, max 2000 entries, slow decay (β=0.6)
+    /// L3 core memory, ttl 90 days, slow decay (β=0.7)
     Core,
-    /// Identity/principle memory, permanent, max 11 entries, very slow decay (β=0.3)
+    /// Identity/principle memory, permanent, very slow decay
     Principle,
 }
 
@@ -22,10 +23,10 @@ impl Tier {
     /// Base half-life in days for this tier.
     pub fn base_half_life_days(&self) -> f64 {
         match self {
-            Tier::Working => 0.04,    // ~1 hour
-            Tier::Recent => 7.0,      // 7 days
-            Tier::Core => 90.0,       // ~3 months
-            Tier::Principle => 365.0, // effectively permanent
+            Tier::Working => 3.0,
+            Tier::Recent => 7.0,
+            Tier::Core => 90.0,
+            Tier::Principle => 3650.0, // effectively permanent
         }
     }
 
@@ -33,8 +34,8 @@ impl Tier {
     pub fn decay_beta(&self) -> f64 {
         match self {
             Tier::Working => 1.5,
-            Tier::Recent => 1.0,
-            Tier::Core => 0.6,
+            Tier::Recent => 1.2,
+            Tier::Core => 0.7,
             Tier::Principle => 0.3,
         }
     }
@@ -52,10 +53,10 @@ impl Tier {
     /// Convert from SQLite string representation.
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "working" => Some(Tier::Working),
-            "recent" => Some(Tier::Recent),
-            "core" => Some(Tier::Core),
-            "principle" => Some(Tier::Principle),
+            "L1" | "working" => Some(Tier::Working),
+            "L2" | "recent" => Some(Tier::Recent),
+            "L3" | "core" => Some(Tier::Core),
+            "principle" | "Principle" => Some(Tier::Principle),
             _ => None,
         }
     }
@@ -63,9 +64,9 @@ impl Tier {
     /// Convert to SQLite-compatible string.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Tier::Working => "working",
-            Tier::Recent => "recent",
-            Tier::Core => "core",
+            Tier::Working => "L1",
+            Tier::Recent => "L2",
+            Tier::Core => "L3",
             Tier::Principle => "principle",
         }
     }
@@ -95,15 +96,16 @@ impl TierManager for DefaultTierManager {
             return Tier::Principle;
         }
         let worth = record.worth_score();
-        if record.tier == Tier::Recent.as_str() && record.access_count >= 10 && worth >= 0.80 {
+        let tier_normalized = Tier::from_str(&record.tier).unwrap_or_default();
+        if tier_normalized == Tier::Recent && record.access_count >= 20 && worth >= 0.80 {
             return Tier::Core;
         }
-        if record.tier == Tier::Working.as_str() && record.access_count >= 2 && worth >= 0.50 {
+        if tier_normalized == Tier::Working && record.access_count >= 5 && worth >= 0.50 {
             return Tier::Recent;
         }
-        if record.tier == Tier::Core.as_str() && worth < 0.15 {
+        if tier_normalized == Tier::Core && worth < 0.15 {
             return Tier::Recent;
         }
-        Tier::from_str(&record.tier).unwrap_or_default()
+        tier_normalized
     }
 }

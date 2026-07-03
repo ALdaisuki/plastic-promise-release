@@ -50,6 +50,12 @@ pub struct ContextPack {
     /// 审计元数据
     #[pyo3(get)]
     pub audit_metadata: HashMap<String, String>,
+    /// Debug pipeline-level counters (Python ContextPack parity)
+    #[pyo3(get)]
+    pub pipeline_stats: HashMap<String, String>,
+    /// Debug per-item scoring rows serialized as string maps
+    #[pyo3(get)]
+    pub per_item_stats: Vec<HashMap<String, String>>,
 }
 
 /// Python-visible methods for ContextPack: construction, prompt rendering, and stats.
@@ -64,6 +70,8 @@ impl ContextPack {
             divergent: Vec::new(),
             activated_principles: Vec::new(),
             audit_metadata: HashMap::new(),
+            pipeline_stats: HashMap::new(),
+            per_item_stats: Vec::new(),
         }
     }
 
@@ -72,7 +80,7 @@ impl ContextPack {
         let mut lines = Vec::new();
 
         if !self.activated_principles.is_empty() {
-            lines.push("## 🧬 激活的核心原则".to_string());
+            lines.push("## 激活的核心原则".to_string());
             for p in &self.activated_principles {
                 lines.push(format!("- {}", p));
             }
@@ -80,7 +88,7 @@ impl ContextPack {
         }
 
         if !self.core.is_empty() {
-            lines.push("## 🔵 核心上下文（必读）".to_string());
+            lines.push("## 核心上下文（必读）".to_string());
             for item in &self.core {
                 lines.push(item.to_prompt_line());
             }
@@ -88,7 +96,7 @@ impl ContextPack {
         }
 
         if !self.related.is_empty() {
-            lines.push("## 🟡 关联上下文（参考）".to_string());
+            lines.push("## 关联上下文（参考）".to_string());
             for item in &self.related {
                 lines.push(item.to_prompt_line());
             }
@@ -96,7 +104,7 @@ impl ContextPack {
         }
 
         if !self.divergent.is_empty() {
-            lines.push("## 🟢 发散联想（灵感）".to_string());
+            lines.push("## 发散联想（灵感）".to_string());
             for item in &self.divergent {
                 lines.push(item.to_prompt_line());
             }
@@ -151,6 +159,23 @@ pub struct ContextItem {
     /// worth_score (如果有)
     #[pyo3(get, set)]
     pub worth_score: f64,
+    /// 自动召回标记（与 Python ContextItem 对齐）
+    #[pyo3(get, set)]
+    pub is_auto_recall: bool,
+    #[pyo3(get, set)]
+    pub novelty_score: f64,
+    #[pyo3(get, set)]
+    pub confidence: f64,
+    #[pyo3(get, set)]
+    pub inspiration_score: f64,
+    #[pyo3(get, set)]
+    pub adoption_count: u32,
+    #[pyo3(get, set)]
+    pub rejection_count: u32,
+    #[pyo3(get, set)]
+    pub times_retrieved: u32,
+    #[pyo3(get, set)]
+    pub decay_status: String,
 }
 
 /// Python-visible methods for ContextItem: field access and prompt formatting.
@@ -167,12 +192,20 @@ impl ContextItem {
             freshness: "valid".into(),
             layer: "related".into(),
             is_principle: false,
-            worth_score: 0.0,
+            worth_score: 0.5,
+            is_auto_recall: false,
+            novelty_score: 0.0,
+            confidence: 0.0,
+            inspiration_score: 0.0,
+            adoption_count: 0,
+            rejection_count: 0,
+            times_retrieved: 0,
+            decay_status: "active".into(),
         }
     }
 
     fn to_prompt_line(&self) -> String {
-        let principle_mark = if self.is_principle { " 🧬" } else { "" };
+        let principle_mark = if self.is_principle { " [原则]" } else { "" };
         format!(
             "- [{:.2}]{} [{}] {}",
             self.relevance, principle_mark, self.source, self.content
@@ -511,6 +544,19 @@ impl ContextEngine {
                 let category_val: String = obj.get_item("category").ok()
                     .and_then(|v| v.extract().ok()).unwrap_or_else(|| "other".to_string());
 
+                let tags_val: Vec<String> = obj.get_item("tags").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or_default();
+                let domain_val: String = obj.get_item("domain").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or_else(|| "uncategorized".to_string());
+                let entity_ids_val: Vec<String> = obj.get_item("entity_ids").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or_default();
+                let access_count_val: u32 = obj.get_item("access_count").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or(0);
+                let decay_multiplier_val: f64 = obj.get_item("decay_multiplier").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or(1.0);
+                let effective_half_life_val: f64 = obj.get_item("effective_half_life").ok()
+                    .and_then(|v| v.extract().ok()).unwrap_or(3.0);
+
                 if let Some(ref vec) = vec_opt {
                     if vec.len() == 1024 && vec.iter().any(|&v| v != 0.0) {
                         vectors.push((id.clone(), vec.clone(), content.clone(), tier_val.clone(), scope_val.clone()));
@@ -530,18 +576,18 @@ impl ContextEngine {
                     last_accessed: last_accessed_val,
                     last_accessed_at: String::new(),
                     activation_weight: 0.5,
-                    tier: "working".to_string(),
-                    scope: "global".to_string(),
-                    category: "other".to_string(),
+                    tier: tier_val,
+                    scope: scope_val,
+                    category: category_val,
                     importance: 0.7,
-                    access_count: 0,
+                    access_count: access_count_val,
                     metadata_json: String::new(),
-                    entity_ids: Vec::new(),
+                    entity_ids: entity_ids_val,
                     attributes: HashMap::new(),
-                    tags: Vec::new(),
-                    domain: "uncategorized".to_string(),
-                    decay_multiplier: 1.0,
-                    effective_half_life: 3.0,
+                    tags: tags_val,
+                    domain: domain_val,
+                    decay_multiplier: decay_multiplier_val,
+                    effective_half_life: effective_half_life_val,
                 });
             }
             Ok((item_lookup, memory_index, vectors, texts))
@@ -590,6 +636,17 @@ impl ContextEngine {
             self.bm25_index.borrow_mut().rebuild(&all_docs, current_version);
         }
 
+        // Ensure snapshot-fed memories are searchable even when storage version
+        // is absent or unchanged. This keeps CJK BM25 parity for Python-provided
+        // memory snapshots.
+        if self.bm25_index.borrow().total_docs() == 0 && !item_lookup.is_empty() {
+            let all_docs: Vec<(String, String)> = item_lookup
+                .iter()
+                .map(|(id, (content, _))| (id.clone(), content.clone()))
+                .collect();
+            self.bm25_index.borrow_mut().rebuild(&all_docs, current_version.max(1));
+        }
+
         // ============================================================
         // Phase 2: Real retrieval (vector from populated LanceDbStore + BM25 keyword fallback)
         // ============================================================
@@ -603,24 +660,8 @@ impl ContextEngine {
             &ldb_store, &task_vector, candidate_pool_size, &filter,
         ).unwrap_or_default();
 
-        // BM25: keyword-overlap fallback (same logic as old HybridRetriever.retrieve())
-        let bm25_hits: Vec<(String, f64)> = {
-            let mut hits: Vec<(String, f64)> = Vec::new();
-            let q_lower = task_description.to_lowercase();
-            let q_words: Vec<&str> = q_lower.split_whitespace().collect();
-            if !q_words.is_empty() {
-                for (id, (content, _source)) in item_lookup.iter() {
-                    let c_lower = content.to_lowercase();
-                    let matched = q_words.iter().filter(|w| c_lower.contains(*w)).count();
-                    let score = matched as f64 / q_words.len() as f64;
-                    if score > 0.0 {
-                        hits.push((id.clone(), score));
-                    }
-                }
-                hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            }
-            hits
-        };
+        // BM25: CJK-aware Okapi BM25 index shared with Python fallback semantics.
+        let bm25_hits: Vec<(String, f64)> = self.bm25_index.borrow().search(&task_description, candidate_pool_size);
 
         // Score-based fusion: max(vector_score, bm25_score) per doc
         use std::collections::HashMap as FuseMap;
@@ -660,6 +701,7 @@ impl ContextEngine {
 
             // Build a scored list using vector similarity + keyword overlap
             let mut ranked: Vec<(String, f64, String)> = Vec::new();
+            let bm25 = self.bm25_index.borrow(); // borrow once outside hot loop
             for (id, mem) in memory_index.iter() {
                 // Vector score: cosine similarity (or 0.50 if no vector)
                 let vec_score = real_vector.iter()
@@ -673,14 +715,10 @@ impl ContextEngine {
                     })
                     .unwrap_or(0.50);
 
-                // BM25 keyword overlap
-                let q_lower = task_description.to_lowercase();
-                let q_words: Vec<&str> = q_lower.split_whitespace().collect();
-                let c_lower = mem.content.to_lowercase();
-                let kw_hits = q_words.iter().filter(|w| c_lower.contains(*w)).count();
-                let kw_score = if !q_words.is_empty() { kw_hits as f64 / q_words.len() as f64 } else { 0.0 };
+                // BM25 score from CJK-aware index
+                let kw_score = bm25.score(&task_description, id).clamp(0.0, 1.0);
 
-                // Combined: 50% vector + 50% keyword
+                // Combined: 50% vector + 50% BM25 text
                 let combined = vec_score * 0.5 + kw_score * 0.5;
                 if combined > 0.0 {
                     ranked.push((id.clone(), combined, mem.content.clone()));
@@ -729,6 +767,25 @@ impl ContextEngine {
             audit.insert("timestamp".into(), self.current_time.clone());
             audit.insert("vector_search".into(), "active".into());
             pack.audit_metadata = audit;
+            pack.pipeline_stats.insert("vector_count".into(), real_vector.len().to_string());
+            pack.pipeline_stats.insert("bm25_count".into(), self.bm25_index.borrow().total_docs().to_string());
+            pack.pipeline_stats.insert("fused_count".into(), pack.total_items().to_string());
+            pack.pipeline_stats.insert("core_count".into(), pack.core.len().to_string());
+            pack.pipeline_stats.insert("related_count".into(), pack.related.len().to_string());
+            pack.pipeline_stats.insert("divergent_count".into(), pack.divergent.len().to_string());
+
+            // Populate per_item_stats for Python parity (debug mode)
+            // ranked was consumed by into_iter above; collect from pack layers
+            for item in pack.core.iter().chain(pack.related.iter()).chain(pack.divergent.iter()) {
+                let mut row = HashMap::new();
+                row.insert("id".into(), item.id.clone());
+                row.insert("final_score".into(), format!("{:.4}", item.relevance));
+                row.insert("worth".into(), format!("{:.3}", item.worth_score));
+                row.insert("source".into(), item.source.clone());
+                row.insert("tier".into(), "L1".into()); // tier not separately tracked in fallback
+                row.insert("category".into(), "other".into());
+                pack.per_item_stats.push(row);
+            }
 
             return Ok(pack);
         }
@@ -804,11 +861,11 @@ impl ContextEngine {
             item.is_principle = is_principle;
             item.worth_score = worth;
 
-            // 按 relevance 分层
-            if *score >= 0.80 {
+            // 按 relevance 分层 — 与 Python 对齐: core≥0.70, related≥0.40, divergent≥0.20
+            if *score >= 0.70 {
                 item.layer = "core".into();
                 pack.core.push(item);
-            } else if *score >= 0.50 {
+            } else if *score >= 0.40 {
                 item.layer = "related".into();
                 pack.related.push(item);
             } else if *score >= 0.20 {
@@ -853,6 +910,24 @@ impl ContextEngine {
         }
         audit.insert("timestamp".into(), self.current_time.clone());
         pack.audit_metadata = audit;
+
+        // Populate pipeline_stats and per_item_stats for Python debug parity
+        pack.pipeline_stats.insert("fused_count".into(), format!("{}", scored_items.len()));
+        pack.pipeline_stats.insert("core_count".into(), pack.core.len().to_string());
+        pack.pipeline_stats.insert("related_count".into(), pack.related.len().to_string());
+        pack.pipeline_stats.insert("divergent_count".into(), pack.divergent.len().to_string());
+        pack.pipeline_stats.insert("after_feedback".into(), adjusted.len().to_string());
+        for (item_id, score) in &adjusted {
+            let mem = memory_index.get(item_id);
+            let mut row = HashMap::new();
+            row.insert("id".into(), item_id.clone());
+            row.insert("final_score".into(), format!("{:.4}", score));
+            row.insert("worth".into(), mem.map(|m| format!("{:.3}", m.worth_score())).unwrap_or_else(|| "0.500".into()));
+            row.insert("source".into(), mem.map(|m| m.source.clone()).unwrap_or_else(|| "unknown".into()));
+            row.insert("tier".into(), mem.map(|m| m.tier.clone()).unwrap_or_else(|| "L1".into()));
+            row.insert("category".into(), mem.map(|m| m.category.clone()).unwrap_or_else(|| "other".into()));
+            pack.per_item_stats.push(row);
+        }
 
         Ok(pack)
     }

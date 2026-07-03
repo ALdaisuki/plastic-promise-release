@@ -45,7 +45,7 @@ impl DecayModel for WeibullDecay {
         let beta = tier.decay_beta();
         let lambda = half_life / (2.0_f64.ln().powf(1.0 / beta));
         let decay = (-(age_days / lambda).powf(beta)).exp();
-        let importance_factor = 0.7 + (1.0 - 0.7) * importance;
+        let importance_factor = 0.85 + 0.15 * importance;
         (decay * importance_factor).clamp(0.0, 1.0)
     }
 

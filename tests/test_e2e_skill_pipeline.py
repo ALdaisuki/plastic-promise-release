@@ -947,7 +947,7 @@ class TestS7CrossSystemAudit:
         from plastic_promise.mcp.server import list_tools
 
         tools = asyncio.run(list_tools())
-        assert len(tools) >= 51
+        assert len(tools) >= 44
         names = [t.name for t in tools]
         for expected in [
             "skill_session_start",

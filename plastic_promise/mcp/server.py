@@ -149,8 +149,25 @@ async def list_tools() -> list[Tool]:
                             "type": "boolean",
                             "description": "调试模式: 返回 pipeline_stats 与 per_item_stats (默认 false)",
                         },
+                        "scope": {
+                            "type": "string",
+                            "description": "检索范围: global (默认) 或 domain 限定",
+                        },
+                        "domain_hint": {
+                            "type": "string",
+                            "description": "域联邦提示域；用于生成跨域信号",
+                        },
+                        "federation": {
+                            "type": "boolean",
+                            "description": "是否生成跨域联邦信号 (默认 true)",
+                        },
+                        "pack": {
+                            "type": "string",
+                            "description": "兼容字段；预留给经验包限定检索",
+                        },
                     },
                     "required": ["query"],
+                    "additionalProperties": False,
                 },
             ),
             Tool(
@@ -287,9 +304,19 @@ async def list_tools() -> list[Tool]:
                         "domain_hint": {
                             "type": "string",
                             "description": "可选，限定域: building|fixing|designing|reflecting|governing|connecting|all",
+                            "enum": [
+                                "building",
+                                "fixing",
+                                "designing",
+                                "reflecting",
+                                "governing",
+                                "connecting",
+                                "all",
+                            ],
                         },
                     },
                     "required": ["task_type"],
+                    "additionalProperties": False,
                 },
             ),
             Tool(
@@ -327,6 +354,7 @@ async def list_tools() -> list[Tool]:
                         },
                     },
                     "required": ["task_description"],
+                    "additionalProperties": False,
                 },
             ),
             Tool(
@@ -361,9 +389,11 @@ async def list_tools() -> list[Tool]:
                         "max_hops": {"type": "integer", "description": "最大跳数 (默认 3)"},
                         "query_type": {
                             "type": "string",
-                            "description": "查询类型: traverse/node_info/edge_list/activated_principles",
+                            "description": "查询类型: node_info/traverse/full_graph/neighbors",
+                            "enum": ["node_info", "traverse", "full_graph", "neighbors"],
                         },
                     },
+                    "additionalProperties": False,
                 },
             ),
             Tool(
@@ -404,6 +434,11 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "action": {
+                            "type": "string",
+                            "description": "full|report",
+                            "enum": ["full", "report"],
+                        },
                         "scope": {
                             "type": "string",
                             "description": "审计范围: full/quick/principles_only/memory_only",
@@ -412,8 +447,8 @@ async def list_tools() -> list[Tool]:
                             "type": "integer",
                             "description": "审计时间范围（小时）",
                         },
-                        "action": {"type": "string", "description": "full|report"},
                     },
+                    "additionalProperties": False,
                 },
             ),
             Tool(
@@ -426,9 +461,11 @@ async def list_tools() -> list[Tool]:
                         "action_type": {
                             "type": "string",
                             "description": "操作类型: exec/write/edit/delete/read",
+                            "enum": ["exec", "write", "edit", "delete", "read"],
                         },
                     },
                     "required": ["action_description"],
+                    "additionalProperties": False,
                 },
             ),
             Tool(
@@ -437,11 +474,17 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "get|history|adjust|status"},
+                        "action": {
+                            "type": "string",
+                            "description": "get|history|adjust|status",
+                            "enum": ["get", "history", "adjust", "status"],
+                        },
                         "delta": {"type": "number", "description": "调整量 (±0.01 ~ ±0.10)"},
                         "reason": {"type": "string", "description": "调整原因"},
+                        "target": {"type": "string", "description": "信任分目标 (空串=当前 Agent)"},
                     },
                     "required": ["action"],
+                    "additionalProperties": False,
                 },
             ),
         ]
@@ -1103,6 +1146,25 @@ async def list_tools() -> list[Tool]:
         ]
     )
 
+    # Compatibility aliases for clients that normalize tool names into identifiers.
+    alias_targets = {
+        "session_init": "session-init",
+        "smart_remember": "smart-remember",
+        "step_closure": "step-closure",
+        "sp_stage": "sp-stage",
+    }
+    by_name = {tool.name: tool for tool in tools}
+    for alias, target in alias_targets.items():
+        original = by_name.get(target)
+        if original is not None and alias not in by_name:
+            tools.append(
+                Tool(
+                    name=alias,
+                    description=f"Compatibility alias for {target}. {original.description}",
+                    inputSchema=original.inputSchema,
+                )
+            )
+
     return tools
 
 
@@ -1402,7 +1464,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return await handle_skill_auto_track(engine, arguments)
 
         # === Skills 域 (Phase 1) ===
-        elif name == "session-init":
+        elif name in ("session-init", "session_init"):
             se = get_skill_engine()
             result = await se.exec("session-init", arguments, caller="claude")
             return [
@@ -1422,7 +1484,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     ),
                 )
             ]
-        elif name == "smart-remember":
+        elif name in ("smart-remember", "smart_remember"):
             se = get_skill_engine()
             result = await se.exec("smart-remember", arguments, caller="claude")
             return [
@@ -1442,7 +1504,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     ),
                 )
             ]
-        elif name == "step-closure":
+        elif name in ("step-closure", "step_closure"):
             import asyncio
 
             from plastic_promise.loop.soul_loop import post_task
@@ -1581,7 +1643,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return await handle_review_run(engine, arguments)
 
         # === SuperPowers 流水线阶段技能 (统一入口) ===
-        elif name == "sp-stage":
+        elif name in ("sp-stage", "sp_stage"):
             stage = arguments.get("stage", "")
             task_desc = arguments.get("task_description", "")
             # ── Chain validation: reject invalid non-root stage transitions ──
@@ -1625,6 +1687,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                             )
                         ]
             # ── End chain validation ──
+            # ── Stage existence validation: reject unknown/empty stages ──
+            if not lookup_stage or lookup_stage not in _CHAIN_MAP:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "invalid_stage",
+                                "message": f"Unknown stage: '{stage}'. Valid stages: {sorted(_CHAIN_MAP.keys())}",
+                                "requested_stage": stage,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
             se = get_skill_engine()
             skill_name = f"sp-{lookup_stage}"
             result = await se.exec(skill_name, {"task_description": task_desc}, caller="trae")

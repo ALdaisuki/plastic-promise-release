@@ -127,17 +127,19 @@ impl HybridRetriever {
         let vector_results = self.vector.search(query_vector, self.candidate_pool_size, &filter)
             .unwrap_or_default();
 
-        // 2. BM25 search — fall back to keyword-overlap scan on error
+        // 2. BM25 search — fall back to CJK-aware keyword-overlap scan on error.
+        // NOTE: This is a degraded fallback. The primary pipeline in
+        // ContextEngine::supply() uses the full CJK Bm25Index directly.
         let bm25_results = self.fts.search(query_text, self.candidate_pool_size, &filter)
             .unwrap_or_else(|_| {
+                use crate::retrieval::bm25::tokenize as cjk_tokenize;
                 let mut fallback: Vec<(String, f64)> = Vec::new();
-                let q_lower = query_text.to_lowercase();
-                let q_words: Vec<&str> = q_lower.split_whitespace().collect();
-                if !q_words.is_empty() {
+                let q_tokens: Vec<String> = cjk_tokenize(query_text);
+                if !q_tokens.is_empty() {
                     for (id, (content, _source)) in item_lookup.iter() {
-                        let c_lower = content.to_lowercase();
-                        let hits = q_words.iter().filter(|w| c_lower.contains(*w)).count();
-                        let score = hits as f64 / q_words.len() as f64;
+                        let c_tokens: Vec<String> = cjk_tokenize(content);
+                        let hits = q_tokens.iter().filter(|qt| c_tokens.contains(qt)).count();
+                        let score = hits as f64 / q_tokens.len() as f64;
                         if score > 0.0 {
                             fallback.push((id.clone(), score));
                         }

@@ -27,14 +27,14 @@ impl WorthCalculator for WilsonWorthCalculator {
         let center = (p + z2 / (2.0 * n_f)) / (1.0 + z2 / n_f);
         let margin =
             self.z * (p * (1.0 - p) / n_f + z2 / (4.0 * n_f * n_f)).sqrt() / (1.0 + z2 / n_f);
-        ((center - margin).max(0.0) * 2.5 - 0.5).clamp(-1.5, 1.0)
+        (center - margin).clamp(0.0, 1.0)
     }
 
     fn record_feedback(&self, success: &mut u32, failure: &mut u32, ft: FeedbackType) {
         match ft {
             FeedbackType::Adopted => *success += 1,
             FeedbackType::Rejected => *failure += 1,
-            FeedbackType::Ignored => {}
+            FeedbackType::Ignored => *failure += 1,
         }
     }
 }
@@ -64,6 +64,6 @@ mod tests {
         c.record_feedback(&mut s, &mut f, FeedbackType::Rejected);
         assert_eq!((s, f), (1, 1));
         c.record_feedback(&mut s, &mut f, FeedbackType::Ignored);
-        assert_eq!((s, f), (1, 1));
+        assert_eq!((s, f), (1, 2));
     }
 }

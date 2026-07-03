@@ -23,8 +23,6 @@ class TestSessionInit:
             _make_mock_tool(n)
             for n in [
                 "principle_activate",
-                "context_supply",
-                "memory_store",
                 "domain",
                 "system",
                 "defense",
@@ -53,13 +51,6 @@ class TestSessionInit:
             "principle_activate",
             {"task_type": "general", "activated": [{"id": 1, "name": "奥卡姆剃刀"}], "count": 1},
         )
-        se._atoms["context_supply"] = await record_call(
-            "context_supply",
-            {"core": [{"id": "m1", "content": "test"}], "related": [], "divergent": []},
-        )
-        se._atoms["memory_store"] = await record_call(
-            "memory_store", {"stored": True, "memory_id": "mem_001"}
-        )
         se._atoms["domain"] = await record_call("domain", {"domains": {"building": {"score": 0.8}}})
         se._atoms["system"] = await record_call(
             "system", {"memory": {"total": 42, "healthy": 40, "decaying": 2}}
@@ -87,11 +78,9 @@ class TestSessionInit:
 
         assert result.success is True
         assert result.skill_name == "session-init"
-        # Verify all 7 atoms called in order (index 0 is skill_session_start, called internally by engine)
-        assert call_order[1:8] == [
+        # Verify bootstrap atoms called in order (index 0 is skill_session_start, called internally by engine)
+        assert call_order[1:6] == [
             "principle_activate",
-            "context_supply",
-            "memory_store",
             "domain",
             "system",
             "defense",
@@ -99,6 +88,8 @@ class TestSessionInit:
         ]
         # Verify handler assembled the data
         assert "context" in result.data
+        assert result.data["context_status"]["status"] == "deferred"
+        assert result.data["memory_injection_status"]["status"] == "deferred"
         assert "domain_health" in result.data
         assert "system_stats" in result.data
         assert "trust" in result.data
@@ -124,8 +115,6 @@ class TestSessionInit:
             return handler
 
         se._atoms["principle_activate"] = await ok_atom("principle_activate", {"activated": []})
-        se._atoms["context_supply"] = await ok_atom("context_supply", {"core": []})
-        se._atoms["memory_store"] = await ok_atom("memory_store", {"stored": True})
         se._atoms["domain"] = await failing_atom("domain")  # This will fail
         se._atoms["system"] = await ok_atom("system", {"memory": {"total": 0}})
         se._atoms["defense"] = await ok_atom("defense", {"trust": 0.5})

@@ -60,14 +60,13 @@ def engine():
         _tool(n)
         for n in [
             "principle_activate",
-            "context_supply",
-            "memory_store",
             "memory_recall",
             "memory_update",
             "domain",
             "system",
             "defense",
             "memory_gc",
+            "scarf_reflect",
             "skill_session_start",
             "skill_session_complete",
         ]
@@ -114,18 +113,6 @@ def skill_engine(engine):
         )
 
     se._atoms["principle_activate"] = mock_principle_activate
-
-    # context_supply: returns empty context pack
-    async def mock_context_supply(ctx, args):
-        return _response(
-            {
-                "core": [],
-                "related": [],
-                "divergent": [],
-            }
-        )
-
-    se._atoms["context_supply"] = mock_context_supply
 
     # memory_store: actually persists to the real ContextEngine
     async def mock_memory_store(ctx, args):

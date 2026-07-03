@@ -39,13 +39,15 @@ def _compile_component_health(ctx) -> dict:
 
 
 async def _session_init_handler(ctx, params, atom_results):
-    """session-init handler: assemble atom results into a unified context pack.
+    """session-init handler: assemble atom results into a unified bootstrap pack.
+
+    session-init must stay lightweight. Task-specific retrieval and memory
+    injection are explicit follow-up steps (`context_supply` / `memory_store`),
+    not mandatory startup atoms.
 
     Atoms called before this handler:
     - principle_activate: {activated: [...], count: N}
     - scarf_reflect: {overall_score, dimensions: {Status, Certainty, ...}}
-    - context_supply: ContextPack JSON (core/related/divergent)
-    - memory_store: {stored: true, memory_id: "..."}
     - domain: {domains: {...}}
     - system: {memory: {...}, fuzzy_buffer: {...}}
     - defense: {trust: float, tier: str}
@@ -63,13 +65,15 @@ async def _session_init_handler(ctx, params, atom_results):
 
     principle_data = parse(atom_results.get("principle_activate"))
     scarf_data = parse(atom_results.get("scarf_reflect"))
-    context_data = {}
-    context_raw = atom_results.get("context_supply")
-    if context_raw and hasattr(context_raw[0], "text"):
-        context_data = {
-            "prompt": context_raw[0].text
-        }  # ContextPack.to_prompt() returns formatted text
-    memory_data = parse(atom_results.get("memory_store"))
+    context_data = {
+        "status": "deferred",
+        "reason": "session-init is a lightweight bootstrap; call context_supply for task-specific context",
+    }
+    memory_data = {
+        "stored": False,
+        "status": "deferred",
+        "reason": "session-init no longer writes startup memories synchronously",
+    }
     domain_data = parse(atom_results.get("domain"))
     system_data = parse(atom_results.get("system"))
     defense_data = parse(atom_results.get("defense"))
@@ -104,7 +108,9 @@ async def _session_init_handler(ctx, params, atom_results):
             "principles": principle_data.get("activated", []),
             "scarf_baseline": scarf_data,
             "context": context_data,
+            "context_status": context_data,
             "inject_memory_id": memory_data.get("memory_id", ""),
+            "memory_injection_status": memory_data,
             "domain_health": domain_data,
             "system_stats": system_data,
             "trust": defense_data,
@@ -129,8 +135,6 @@ skill_session_init = SkillDef(
     atoms=[
         "principle_activate",
         "scarf_reflect",
-        "context_supply",
-        "memory_store",
         "domain",
         "system",
         "defense",
