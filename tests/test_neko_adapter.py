@@ -6,7 +6,13 @@ import time
 import threading
 import orjson
 
-from plastic_promise.core.neko_adapter import NekoAdapter
+# Ensure bridge is importable
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bridge"))
+
+from neko_adapter import NekoAdapter
 
 
 def test_zmq_connect_and_receive_message():
@@ -271,7 +277,7 @@ def test_error_handling_invalid_zmq_message():
 def test_wsslot_reconnect_backoff():
     """WSSlot maintainer uses exponential backoff."""
     import asyncio
-    from plastic_promise.core.neko_adapter import WSSlot
+    from neko_adapter import WSSlot
 
     async def run_test():
         slot = WSSlot(
@@ -295,7 +301,7 @@ def test_wsslot_reconnect_backoff():
 
 def test_dedup_cache():
     """DedupCache rejects duplicates within window."""
-    from plastic_promise.core.neko_adapter import DedupCache
+    from neko_adapter import DedupCache
 
     cache = DedupCache(max_size=100)
 

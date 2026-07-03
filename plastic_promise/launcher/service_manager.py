@@ -202,7 +202,7 @@ class ServiceManager:
 
         # 2. Heartbeat file check (for daemon)
         if svc.name == "maintenance-daemon":
-            heartbeat_path = os.path.join(self._project_root, "var", "run", "maintenance_daemon.heartbeat")
+            heartbeat_path = os.path.join(self._project_root, "maintenance_daemon.heartbeat")
             if os.path.exists(heartbeat_path):
                 try:
                     mtime = os.path.getmtime(heartbeat_path)

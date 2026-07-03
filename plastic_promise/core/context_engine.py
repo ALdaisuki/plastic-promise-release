@@ -1380,7 +1380,7 @@ class ContextEngine:
         # Query expansion: inject domain-relevant synonyms for BM25 text search.
         # Vector search uses raw query — semantic models handle synonyms natively.
         expanded_query = task_description
-        if os.environ.get("PP_QUERY_EXPANSION", "1") == "1":
+        if _os_env.environ.get("PP_QUERY_EXPANSION", "1") == "1":
             try:
                 from plastic_promise.core.query_expander import expand_query
                 expanded_query = expand_query(task_description, self._domain_hint)

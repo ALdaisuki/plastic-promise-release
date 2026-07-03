@@ -8,10 +8,6 @@ from typing import Any, Callable
 class SkillRegistrationError(Exception):
     """Raised when a SkillDef fails validation during registration."""
 
-
-class WorkflowViolation(Exception):
-    """Raised when workflow_mode=strict blocks an action."""
-
     pass
 
 
@@ -42,9 +38,6 @@ class SkillDef:
 
     # Performance: run all atoms concurrently via asyncio.gather (default: False = serial)
     concurrent: bool = False
-
-    # Workflow pack: full skill prompt text (for skill_resolve)
-    prompt: str = ""
 
 
 @dataclass
@@ -127,6 +120,10 @@ class AtomRegistry:
             "plastic_promise.skills.superpowers_stages",
             "_governance_step_closure_full",
         ),
+        "code_memory": (
+            "plastic_promise.skills.superpowers_stages",
+            "_governance_code_memory",
+        ),
     }
 
     @staticmethod
@@ -164,44 +161,6 @@ class SkillEngine:
         self._ctx = engine
         self._registry: dict[str, SkillDef] = {}
         self._atoms: dict[str, "Callable"] = AtomRegistry.build(engine)
-        self._workflow_mode: str = "advisory"
-        self._completed_stages: set[str] = set()
-
-    def set_workflow_mode(self, mode: str) -> None:
-        """Set workflow mode: 'strict' or 'advisory'."""
-        if mode in ("strict", "advisory"):
-            self._workflow_mode = mode
-
-    def mark_stage_completed(self, stage_name: str) -> None:
-        """Record that a stage has been completed (for strict mode enforcement)."""
-        self._completed_stages.add(stage_name)
-
-    def stage_completed(self, stage_name: str) -> bool:
-        """Check if a stage has been completed."""
-        return stage_name in self._completed_stages
-
-    def enforce_workflow_mode(self, action: str) -> bool:
-        """If workflow_mode is strict, block code-modifying actions
-        until session-init + brainstorming have run.
-
-        Returns True if action is allowed, False if blocked.
-        """
-        if self._workflow_mode != "strict":
-            return True
-        # Read-only and planning actions are always allowed
-        if action in (
-            "session-init", "brainstorming", "exemplar-research",
-            "read", "search", "market_list", "market_status",
-        ):
-            return True
-        # Code-modifying actions require session-init + brainstorming
-        required = {"session-init", "brainstorming"}
-        if not required.issubset(self._completed_stages):
-            missing = required - self._completed_stages
-            raise WorkflowViolation(
-                f"workflow_mode=strict: {missing} required before '{action}'"
-            )
-        return True
 
     def register(self, skill_def: SkillDef) -> None:
         """Register a skill definition. Validates dependencies and permissions.
@@ -236,51 +195,6 @@ class SkillEngine:
                 skill_def.allowed_callers = ["daemon"]
 
         self._registry[skill_def.name] = skill_def
-
-    def resolve(self, name: str) -> str:
-        """Return the full prompt for a skill by name.
-
-        Used by Agents to query SuperPowers specifications.
-        Returns empty string if skill not found.
-        """
-        skill = self._registry.get(name)
-        if skill:
-            return skill.prompt
-        return ""
-
-    def register_from_pack(self, pack) -> int:
-        """Register all skills from a workflow-type pack.
-
-        Args:
-            pack: PackInfo with pack_type='workflow'
-
-        Returns:
-            Number of skills registered.
-        """
-        if pack.pack_type != "workflow":
-            return 0
-
-        count = 0
-        for skill_name, skill_data in pack.skills.items():
-            if isinstance(skill_data, dict):
-                prompt = skill_data.get("prompt", "")
-                description = skill_data.get("description", "")
-            elif isinstance(skill_data, str):
-                prompt = skill_data
-                description = ""
-            else:
-                continue
-
-            self.register(SkillDef(
-                name=skill_name,
-                domain="workflow",
-                description=description,
-                tier="P0",
-                prompt=prompt,
-            ))
-            count += 1
-
-        return count
 
     async def exec(
         self, skill_name: str, params: dict = None, caller: str = "claude"

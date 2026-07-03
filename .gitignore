@@ -76,22 +76,5 @@ build/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Runtime data (created by launcher)
-var/
-
-# Installed plugins (created by market install)
-plugins/
-
-# Daemon runtime (additional patterns)
-maintenance_daemon.pid
-maintenance_daemon.heartbeat
-init_and_start.log
-*.heartbeat
-
-# Skills (dev-time symlinks, platform caches managed externally)
-.agents/
-.trae/
-.pi/
-
 # Docker
 .dockerignore

@@ -4,7 +4,7 @@ import datetime
 
 import pytest
 
-from plastic_promise.core.date_helpers import days_between, get_next_business_day, is_weekend
+from utils.date_helpers import days_between, get_next_business_day, is_weekend
 
 
 # ---------------------------------------------------------------------------
