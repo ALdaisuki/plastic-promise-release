@@ -1,10 +1,11 @@
-"""Multi-provider cross-encoder reranker with graceful degradation.
+"""Multi-provider reranker with local-first graceful degradation.
 
-Provider chain (configurable via PP_RERANK_PROVIDERS):
-  1. Jina AI (free tier, 1M tokens/day) — POST api.jina.ai/v1/rerank
-  2. SiliconFlow (free tier, 1K calls/day) — POST api.siliconflow.cn/v1/rerank
-  3. Ollama local (zero network) — /api/generate with structured prompt
-  4. Cosine fallback (always available) — pure computation
+Default provider chain (configurable via PP_RERANK_PROVIDERS):
+  1. Ollama local (zero external network): /api/generate with structured prompt
+  2. Cosine fallback (always available): pure computation
+
+Hosted providers are opt-in, for example:
+  PP_RERANK_PROVIDERS=jina,siliconflow,ollama,cosine
 
 Blend: final = 0.6 * ce + 0.4 * original, floor original * 0.5
 Cache: SHA-256(query + candidate_ids), LRU 64, TTL 60s
@@ -22,7 +23,7 @@ logger = logging.getLogger("plastic-promise.reranker")
 
 # ── Configuration ──────────────────────────────────────────────
 
-_DEFAULT_PROVIDERS = ["jina", "siliconflow", "ollama", "cosine"]
+_DEFAULT_PROVIDERS = ["ollama", "cosine"]
 _PROVIDER_TIMEOUT = float(os.environ.get("PP_RERANK_TIMEOUT", "5.0"))
 _TOTAL_TIMEOUT = float(os.environ.get("PP_RERANK_TOTAL_TIMEOUT", "10.0"))
 
@@ -45,7 +46,7 @@ class MultiProviderReranker:
     def __init__(self) -> None:
         disabled = os.environ.get("PP_RERANK_DISABLED", "0") == "1"
         provider_str = os.environ.get("PP_RERANK_PROVIDERS", ",".join(_DEFAULT_PROVIDERS))
-        self._providers = provider_str.split(",")
+        self._providers = [p.strip() for p in provider_str.split(",") if p.strip()] or ["cosine"]
         self._disabled = disabled
         self._last_provider: str = "none"
         self._last_error: str = ""

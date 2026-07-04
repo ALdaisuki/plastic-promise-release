@@ -168,6 +168,42 @@ def _get_agent_id(engine: Any) -> str:
 async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
     """域联邦统一入口。action: stats|merge|unmerge|rename|rebuild|reset_throttle"""
     action = args.get("action", "stats")
+    if action == "stats":
+        dm = getattr(engine, "_dm", None)
+        if dm is None:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "status": "deferred",
+                            "domains": {},
+                            "reason": (
+                                "DomainManager is not initialized; call context_supply or a "
+                                "mutating domain action when full domain state is required"
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            ]
+        agent_id = _get_agent_id(engine)
+        try:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(dm.stats(agent_id=agent_id), ensure_ascii=False, indent=2),
+                )
+            ]
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": str(e), "tool": "domain"}, ensure_ascii=False),
+                )
+            ]
+
     try:
         engine.ensure_heavy_init()  # ensure DomainManager is initialized before access
     except Exception as e:
@@ -191,14 +227,7 @@ async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
     agent_id = _get_agent_id(engine)
 
     try:
-        if action == "stats":
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(dm.stats(agent_id=agent_id), ensure_ascii=False, indent=2),
-                )
-            ]
-        elif action == "merge":
+        if action == "merge":
             ok = dm.merge(args["source"], args["target"], agent_id=agent_id)
             return [
                 TextContent(

@@ -96,8 +96,10 @@ maintenance_daemon.heartbeat
 init_and_start.log
 *.heartbeat
 
-# Skills (dev-time symlinks, platform caches managed externally)
-.agents/
+# Codex repo-scoped skills
+.agents/*
+!.agents/skills/
+!.agents/skills/**
 .pi/
 
 # Docker

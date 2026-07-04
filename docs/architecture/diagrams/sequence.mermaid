@@ -12,17 +12,20 @@ sequenceDiagram
 
     Note over U,SC: === Session Initialization ===
     U->>C: Task description
-    C->>SI: session-init(task_description)
+    C->>SI: session-init(task_description, context_mode="light")
     SI->>CE: principle_activate(domain_hint)
     CE-->>SI: 12 principles (domain-filtered)
-    SI->>CE: context_supply(task_description)
-    CE->>M: memory_recall (3-way retrieval)
-    M-->>CE: Core + related memories
-    CE-->>SI: 🔵Core + 🟡Related context
-    SI->>M: memory_store (session start)
-    SI-->>C: principles + scarf_baseline + domain_health
+    opt context_mode=light
+        SI->>M: local lexical memory preview (1-2, bounded)
+        M-->>SI: optional light context_status
+    end
+    SI-->>C: principles + trust + chain_state + context_status
 
     Note over U,SC: === Task Execution ===
+    C->>CE: context_supply(task_description, task_type, scope)
+    CE->>M: memory_recall (3-way retrieval)
+    M-->>CE: Core + related memories
+    CE-->>C: Core + related + divergent context
     C->>C: Decompose task
     C->>D: task_enqueue (via memory_store tags)
     D->>D: Zero-token poll (SQLite)

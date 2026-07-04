@@ -157,6 +157,21 @@ Stdio example:
 }
 ```
 
+Codex project config example (`.codex/config.toml` in a trusted checkout):
+
+```toml
+[mcp_servers.plastic_promise]
+command = ".venv\\Scripts\\python.exe"
+args = ["-m", "plastic_promise"]
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+
+[mcp_servers.plastic_promise.env]
+PYTHONIOENCODING = "utf-8"
+PLASTIC_DB_PATH = "data\\db\\plastic_memory.db"
+PLASTIC_LANCEDB_PATH = "data\\lancedb"
+```
+
 SSE clients can connect to:
 
 ```text
@@ -168,7 +183,7 @@ http://127.0.0.1:9020/sse
 ## First useful calls
 
 ```text
-session-init(task_description="start a governed coding session")
+session-init(task_description="start a governed coding session", context_mode="light")
 memory_recall(query="release documentation", task_type="architecture")
 context_supply(task_description="update README", task_type="architecture")
 audit_pre_check(action_description="write docs", action_type="write")
@@ -245,6 +260,8 @@ Memory is admitted only when it passes quality checks. Reuse increases worth; st
 
 `context_supply` produces a layered context package for a task. It combines semantic search, text search, graph links, principles, and ranking signals into core, related, and divergent context.
 
+`session-init` stays lightweight and does not run full `context_supply` automatically. Its `context_mode` is `light` by default: it may return a bounded 1-2 item lexical memory preview, but material planning, code edits, reviews, and subagent dispatch still require an explicit `memory_recall` / `context_supply` call. Use `context_mode="none"` for pure bootstrap and `context_mode="full"` only when startup-time full retrieval is intentional.
+
 ### Step closure
 
 `step-closure` records what changed, what was learned, why it happened, and what should improve next. That reflection updates memory and trust signals.
@@ -270,6 +287,8 @@ Local storage is the default. Optional external calls depend on configured agent
 | Default local embedding path | Ollama `mxbai-embed-large`, with fallback embedder when configured |
 | Structured database | `data/db/plastic_memory.db` unless `PLASTIC_DB_PATH` overrides it |
 | Vector database | `data/lancedb` unless `PLASTIC_LANCEDB_PATH` overrides it |
+| Codex repo skills | `.agents/skills/*/SKILL.md` |
+| Reranker providers | Local Ollama plus cosine fallback by default; hosted providers require `PP_RERANK_PROVIDERS` opt-in |
 | Runtime logs and PIDs | `var/log/`, `var/run/` |
 
 Privacy boundary: Plastic Promise is local-first by default. Data can leave the machine only when you configure external agents, hosted embedding providers, hosted rerankers, or other network integrations.

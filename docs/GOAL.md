@@ -150,7 +150,7 @@ python daemons/maintenance_daemon.py
 ### Claude / MCP 客户端开始任务
 
 ```text
-session-init(task_description="当前任务")
+session-init(task_description="当前任务", context_mode="light")
 context_supply(task_description="当前任务", task_type="architecture|code_generation|debugging|code_review")
 audit_pre_check(action_description="即将执行的操作", action_type="write|edit|exec")
 ```

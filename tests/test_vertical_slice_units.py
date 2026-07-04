@@ -81,6 +81,15 @@ class TestReranker:
         r = MultiProviderReranker()
         assert "cosine" in r._providers
 
+    def test_default_reranker_is_local_first(self, monkeypatch):
+        monkeypatch.delenv("PP_RERANK_PROVIDERS", raising=False)
+        from plastic_promise.core.reranker import MultiProviderReranker
+
+        r = MultiProviderReranker()
+        assert r._providers == ["ollama", "cosine"]
+        assert "jina" not in r._providers
+        assert "siliconflow" not in r._providers
+
     def test_disabled_returns_unchanged(self, monkeypatch):
         monkeypatch.setenv("PP_RERANK_DISABLED", "1")
         from plastic_promise.core.reranker import MultiProviderReranker

@@ -86,6 +86,7 @@ class TestSessionInit:
 
         assert result.success is True
         assert result.skill_name == "session-init"
+        assert seen_args["skill_session_start"]["record_memory"] is False
         assert seen_args["scarf_reflect"]["context"] == "test task"
         # Verify bootstrap atoms called in order (index 0 is skill_session_start, called internally by engine)
         assert call_order[1:7] == [
@@ -103,6 +104,71 @@ class TestSessionInit:
         assert "domain_health" in result.data
         assert "system_stats" in result.data
         assert "trust" in result.data
+        assert result.audit_trail["tracking_persistence"] == "entity_only"
+
+    @pytest.mark.asyncio
+    async def test_session_init_light_context_uses_local_memory_preview(self, mock_engine):
+        """context_mode=light returns a bounded lexical preview without heavy recall atoms."""
+        mock_engine._memories = {
+            "mem_context": {
+                "id": "mem_context",
+                "content": "session init context mode should use light lexical memory preview",
+                "memory_type": "experience",
+                "source": "test",
+                "domain": "designing",
+                "category": "architecture",
+                "tags": ["session-init"],
+                "importance": 0.8,
+                "tier": "L1",
+                "worth_success": 3,
+                "worth_failure": 0,
+            },
+            "mem_other": {
+                "id": "mem_other",
+                "content": "unrelated release checklist",
+                "memory_type": "experience",
+                "source": "test",
+                "tags": [],
+            },
+        }
+        se = SkillEngine(mock_engine)
+
+        async def ok_atom(data):
+            async def handler(engine, args):
+                return [TextContent(type="text", text=json.dumps(data))]
+
+            return handler
+
+        se._atoms["principle_activate"] = await ok_atom({"activated": []})
+        se._atoms["scarf_reflect"] = await ok_atom({"reflection": {"summary": {}}})
+        se._atoms["domain"] = await ok_atom({})
+        se._atoms["system"] = await ok_atom({})
+        se._atoms["defense"] = await ok_atom({})
+        se._atoms["memory_gc"] = await ok_atom({})
+        se._atoms["skill_session_start"] = await ok_atom({"entity_id": "skill:session-init:..."})
+
+        async def fail_if_called(engine, args):
+            raise AssertionError("session-init entity-only mode should skip completion memory lookup")
+
+        se._atoms["skill_session_complete"] = fail_if_called
+
+        se.register(skill_session_init)
+        result = await se.exec(
+            "session-init",
+            params={
+                "task_description": "update session init context mode",
+                "task_type": "architecture",
+                "context_mode": "light",
+            },
+            caller="claude",
+        )
+
+        assert result.success is True
+        assert result.data["context_status"]["mode"] == "light"
+        assert result.data["context_status"]["status"] == "ready"
+        assert result.data["context_status"]["item_count"] == 1
+        assert result.data["context_status"]["items"][0]["id"] == "mem_context"
+        assert result.data["context_status"]["requires_full_context_before_action"] is True
 
     @pytest.mark.asyncio
     async def test_session_init_degraded_domain_skip(self, mock_engine):

@@ -49,7 +49,8 @@ class TestResilienceE2E:
 
         result = asyncio.run(handle_domain(e, {"action": "stats"}))
         assert len(result) > 0
-        assert "not available" in result[0].text.lower() or "error" in result[0].text.lower()
+        text = result[0].text.lower()
+        assert "deferred" in text or "not available" in text or "error" in text
 
         e._dm = old_dm
         e._dm_ok = True

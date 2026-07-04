@@ -14,7 +14,7 @@
    - 启动器同时拉起 MCP Server (:9020) + Maintenance Daemon + Watchdog 守护
    - 仍不可用 → 告警，本次会话使用文件系统降级（写入 `.md` 需加 `[[pending-sync]]` 标记）
 
-1. `session-init(task_description="<当前任务>")` — **Phase 1 技能：一条调用替代原有 5 步**（原则激活 + SCARF 基线自省 + domain stats + system stats + defense + memory_gc preview）。返回 `data.principles`、`data.scarf_baseline`、`data.domain_health`、`data.system_stats`、`data.trust`、`data.gc_preview`。context_supply 和 memory_store 已从启动原子中移除；启动后按需显式调用 `context_supply` 获取任务上下文，用 `memory_store` 写入记忆。
+1. `session-init(task_description="<当前任务>", context_mode="light")` — **Phase 1 技能：一条调用替代原有 5 步**（原则激活 + SCARF 基线自省 + domain stats + system stats + defense + memory_gc preview + chain_state + context_status）。`context_mode="light"` 只返回 1-2 条本地词面记忆预览；`context_mode="none"` 纯启动；`context_mode="full"` 才显式运行完整 `context_supply`。启动后按需显式调用 `context_supply` 获取任务上下文，用 `memory_store` 写入记忆。
 
 > **重要**: 具体任务时重新调用 `context_supply(task_description, task_type, scope)` 获取针对性上下文。
 > - 编码/实施 → `task_type="code_generation"`
@@ -115,7 +115,7 @@ Claude: Skill() → PreToolUse hook → mcp_tool: skill_auto_track → skill_ses
 MCP:    sp-stage → skill_auto_track → skill_session_start/complete
 ```
 
-> **注**: `context_supply` 已从 sp-stage 原子和 session-init 启动原子中移除。其 `engine.supply()` 三路检索 + Ollama rerank 耗时 5~60s，且结果已不返回给调用方。`context_supply` 变为按需显式调用。
+> **注**: 完整 `context_supply` 已从 sp-stage 原子和 session-init 默认启动路径中移除。其 `engine.supply()` 三路检索 + Ollama rerank 耗时 5~60s；`session-init(context_mode="light")` 只做有界轻量预览，实质决策前仍需按需显式调用 `context_supply`。
 
 ## 记忆质量管道 (方向 A + B)
 
@@ -482,7 +482,7 @@ scan_scheduler_health 发现问题
 ## Skill 调用追踪
 
 Skill 调用自动通过 hook (`PreToolUse/PostToolUse` → `mcp_tool: skill_auto_track`) 追踪，**无需手动调用** `skill_session_start/complete`。
-会话上下文通过 `session-init` 注入（见上方会话启动）。子 Agent 派发时使用 `auto_context_inject` 或手动 `memory_recall + context_supply`。
+会话启动只通过 `session-init` 返回 `context_status` 和可选轻量预览；完整任务上下文不由启动隐式注入。子 Agent 派发时使用 `auto_context_inject` 或手动 `memory_recall + context_supply`。
 
 ## 开发分支完成前验收
 

@@ -410,10 +410,10 @@ async def handle_memory_update(engine: Any, args: dict) -> list[TextContent]:
 
 # ---- memory_forget ----
 async def handle_memory_forget(engine: Any, args: dict) -> list[TextContent]:
-    """Delete a memory (hard delete from SQLite).
+    """Soft-delete a memory while preserving its audit record.
 
-    The memory is permanently removed from the storage backend.
-    For soft-delete semantics, reduce importance to near-zero instead.
+    The SQLite record is retained and marked as forgotten. Any LanceDB vector
+    entry is removed so semantic retrieval cannot surface stale content.
 
     Args:
         engine: ContextEngine instance.
@@ -426,15 +426,60 @@ async def handle_memory_forget(engine: Any, args: dict) -> list[TextContent]:
         memory_id = args["memory_id"]
         reason = args.get("reason", "")
 
-        # Clean LanceDB vector store first (prevents orphan vector entries)
-        ldb = getattr(engine, "_ldb", None)
-        if ldb is not None:
-            try:
-                ldb.delete(memory_id)
-            except Exception:
-                pass
+        record = engine.get_memory(memory_id)
+        if record is None:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "forgotten": False,
+                            "status": "not_found",
+                            "memory_id": memory_id,
+                            "reason": reason,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
-        success = engine.delete_memory(memory_id)
+        tags = getattr(record, "tags", []) or []
+        if isinstance(tags, str):
+            try:
+                parsed_tags = json.loads(tags)
+                tags = parsed_tags if isinstance(parsed_tags, list) else [tags]
+            except Exception:
+                tags = [tags]
+        tags = sorted(set(tags) | {"status:forgotten", "decay:pending"})
+
+        fields = {
+            "importance": 0.0,
+            "activation_weight": 0.0,
+            "worth_success": 0,
+            "worth_failure": max(getattr(record, "worth_failure", 0), 10),
+            "decay_multiplier": 0.0,
+            "last_accessed": datetime.datetime.now().isoformat(),
+            "tags": tags,
+            "forgotten_reason": reason,
+        }
+
+        update_fields = getattr(engine, "update_memory_fields", None)
+        if callable(update_fields):
+            success = update_fields(memory_id, **fields)
+        else:
+            for key, value in fields.items():
+                setattr(record, key, value)
+            engine.store_memory(record)
+            success = True
+
+        if success:
+            # Remove vector entry to prevent ANN recall while preserving SQLite audit data.
+            ldb = getattr(engine, "_ldb", None)
+            if ldb is not None:
+                try:
+                    ldb.delete(memory_id)
+                except Exception:
+                    pass
 
         return [
             TextContent(
@@ -442,8 +487,10 @@ async def handle_memory_forget(engine: Any, args: dict) -> list[TextContent]:
                 text=json.dumps(
                     {
                         "forgotten": success,
+                        "status": "soft_deleted" if success else "not_found",
                         "memory_id": memory_id,
                         "reason": reason,
+                        "tags": tags if success else [],
                     },
                     ensure_ascii=False,
                 ),
@@ -582,10 +629,45 @@ async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
     Returns:
         list[TextContent]: MCP response with GC results from MemoryGC.
     """
-    engine._ensure_heavy_init()  # ensure LanceDB is initialized before GC access
     try:
         dry_run = args.get("dry_run", True)
         force = args.get("force", False)
+
+        if dry_run:
+            from plastic_promise.core.constants import MEMORY_DECAY_THRESHOLD
+
+            candidates: list[tuple[str, float]] = []
+            for mid, mem in getattr(engine, "_memories", {}).items():
+                try:
+                    worth = mem.get("worth_score")
+                    decay = mem.get("decay_multiplier")
+                    score = worth if worth is not None else decay
+                    if score is not None and score < MEMORY_DECAY_THRESHOLD:
+                        candidates.append((mid, float(score)))
+                except Exception:
+                    continue
+            candidates.sort(key=lambda item: item[1])
+            result = {
+                "dry_run": True,
+                "candidates_count": len(candidates),
+                "candidates": [mid for mid, _score in candidates[:50]],
+                "removed": 0,
+                "health_before": 1.0,
+                "health_after": 1.0,
+                "freed_slots": 0,
+                "merge": {
+                    "dry_run": True,
+                    "candidates_found": 0,
+                    "would_merge": 0,
+                    "would_free": 0,
+                    "merged_pairs": [],
+                    "skipped": "lightweight dry_run does not initialize LanceDB",
+                },
+                "context_status": "lightweight",
+            }
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        engine._ensure_heavy_init()  # actual GC needs LanceDB/decay components
 
         from plastic_promise.memory.soul_memory import MemoryGC, RecMem
 

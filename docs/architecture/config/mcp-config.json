@@ -5,9 +5,12 @@
       "args": ["-m", "plastic_promise.mcp.server"],
       "cwd": ".",
       "env": {
-        "PP_EMBEDDING_DIM": "384",
-        "PP_LANCEDB_PATH": ".data/lancedb",
-        "PP_SQLITE_PATH": ".data/memories.db",
+        "PLASTIC_DB_PATH": "data/db/plastic_memory.db",
+        "PLASTIC_LANCEDB_PATH": "data/lancedb",
+        "EMBEDDER_PROVIDER": "ollama",
+        "EMBEDDER_MODEL": "mxbai-embed-large",
+        "PP_EMBEDDING_DIM": "1024",
+        "PP_RERANK_PROVIDERS": "ollama,cosine",
         "PP_RUST_ENGINE": "auto"
       },
       "disabled": false,
@@ -60,7 +63,7 @@
     },
     {
       "name": "step-closure",
-      "description": "6-link closed loop: principle alignment → SCARF → hormone → trust → reflection → CEI",
+      "description": "6-link closed loop: principle alignment -> SCARF -> hormone -> trust -> reflection -> CEI",
       "inputSchema": {
         "type": "object",
         "properties": {

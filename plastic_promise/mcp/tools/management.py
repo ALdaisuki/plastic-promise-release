@@ -104,16 +104,17 @@ def _get_fuzzy_buffer(engine: Any):
 
 async def handle_system(engine: Any, args: dict) -> list[TextContent]:
     """系统工具统一入口。action: stats|backup|migrate"""
-    try:
-        engine.ensure_heavy_init()  # ensure DomainManager + embedder are initialized
-    except Exception as e:
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps({"error": str(e), "tool": "system"}, ensure_ascii=False),
-            )
-        ]
     action = args.get("action", "stats")
+    if action in ("backup", "migrate"):
+        try:
+            engine.ensure_heavy_init()  # heavyweight actions need full components
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": str(e), "tool": "system"}, ensure_ascii=False),
+                )
+            ]
     if action == "backup":
         return await handle_system_backup(engine, args)
     elif action == "migrate":
@@ -123,7 +124,7 @@ async def handle_system(engine: Any, args: dict) -> list[TextContent]:
         result = await handle_system_stats(engine, args)
         # 追加 fuzzy buffer 积压信息
         try:
-            fb = _get_fuzzy_buffer(engine)
+            fb = engine.get_fuzzy_buffer()
             if fb:
                 buf_stats = fb.stats()
                 parsed = json.loads(result[0].text) if result else {}

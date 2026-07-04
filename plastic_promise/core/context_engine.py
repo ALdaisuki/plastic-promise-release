@@ -1465,6 +1465,9 @@ class ContextEngine:
             memory_source = mem.get("source", source) if mem else source
             source_penalty = 1.0
 
+            if mem and ContextEngine._is_forgotten_memory(mem):
+                continue
+
             # --- Drop low-information write-side legacy noise during recall too. ---
             if ContextEngine._is_recall_noise(content):
                 continue
@@ -2392,6 +2395,8 @@ class ContextEngine:
             mem_owner = mem.get("owner", "")
             if current_owner and mem_owner not in (current_owner, "shared", ""):
                 continue
+            if ContextEngine._is_forgotten_memory(mem):
+                continue
             content = mem.get("content", "")
             if not content.strip():
                 continue
@@ -2685,6 +2690,20 @@ class ContextEngine:
             return is_noise(content)
         except Exception:
             return False
+
+    @staticmethod
+    def _is_forgotten_memory(mem: dict | None) -> bool:
+        """Return True for soft-deleted records that must not enter recall."""
+        if not mem:
+            return False
+        tags = mem.get("tags", []) or []
+        if isinstance(tags, str):
+            try:
+                parsed_tags = json.loads(tags)
+                tags = parsed_tags if isinstance(parsed_tags, list) else [tags]
+            except Exception:
+                tags = [tags]
+        return bool(set(tags) & {"status:forgotten", "status:deleted", "decay:pending"})
 
     @staticmethod
     def _calc_worth_score_from_memory(mem: dict | None) -> float:

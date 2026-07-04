@@ -140,6 +140,25 @@ def build_argparser() -> argparse.ArgumentParser:
         "--message", "-m", default=None,
         help="Custom commit message (default: auto-generated)"
     )
+    p.add_argument(
+        "--audit-range", default=None,
+        help=(
+            "Additional git revision range to verify against the release tree after copy. "
+            "Defaults to --from. Use a wider range to catch omitted predecessor commits."
+        ),
+    )
+    p.add_argument(
+        "--validation-profile",
+        choices=("full", "targeted", "compile", "none"),
+        default="full",
+        help="Validation mode: full pytest, targeted pytest, compileall only, or none.",
+    )
+    p.add_argument(
+        "--targeted-test",
+        action="append",
+        default=[],
+        help="Test path for --validation-profile targeted. Can be provided multiple times.",
+    )
     return p
 
 
@@ -207,6 +226,37 @@ def get_changed_files(from_range: str) -> list[str]:
     return [f.strip() for f in result.stdout.splitlines() if f.strip()]
 
 
+def warn_left_endpoint_excluded(from_range: str) -> None:
+    """Warn when a simple A..B range excludes release files changed by A."""
+    if "..." in from_range or from_range.count("..") != 1:
+        return
+
+    left, right = from_range.split("..", 1)
+    if not left:
+        return
+
+    result = subprocess.run(
+        ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", left],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return
+
+    included = [
+        f.strip() for f in result.stdout.splitlines() if f.strip() and is_included(f.strip())
+    ]
+    if not included:
+        return
+
+    print(
+        f"  [WARN] Range '{from_range}' excludes left endpoint {left}; "
+        f"that commit changes {len(included)} release-included file(s). "
+        f"Use '{left}^..{right}' or a wider --audit-range if it should be released."
+    )
+
+
 def filter_files(files: list[str]) -> tuple[list[str], list[str]]:
     """Split files into included and excluded lists."""
     included = [f for f in files if is_included(f)]
@@ -251,6 +301,61 @@ def apply_transform(filepath: str, version: str, dev_root: Path) -> str | None:
     return content
 
 
+def expected_release_bytes(filepath: str, version: str) -> bytes | None:
+    """Return expected release bytes for a dev file after release transforms."""
+    src = PROJECT_ROOT / filepath
+    if not src.exists():
+        return None
+
+    transformed = apply_transform(filepath, version, PROJECT_ROOT)
+    if transformed is not None:
+        return transformed.encode("utf-8")
+    return src.read_bytes()
+
+
+def release_file_matches(filepath: str, version: str, dst: Path) -> bool:
+    """Compare a release file with expected dev content."""
+    transformed = apply_transform(filepath, version, PROJECT_ROOT)
+    if transformed is not None:
+        return dst.read_text(encoding="utf-8") == transformed
+
+    expected = expected_release_bytes(filepath, version)
+    return expected is not None and dst.read_bytes() == expected
+
+
+def audit_release_tree(filepaths: list[str], version: str, release_repo: Path) -> bool:
+    """Verify release files match dev content for included paths."""
+    print("  Auditing release tree against dev content...")
+    failures: list[tuple[str, str]] = []
+
+    for filepath in sorted(set(filepaths)):
+        expected = expected_release_bytes(filepath, version)
+        dst = release_repo / filepath
+
+        if expected is None:
+            if dst.exists():
+                failures.append(("stale", filepath))
+            continue
+
+        if not dst.exists():
+            failures.append(("missing", filepath))
+            continue
+
+        if not release_file_matches(filepath, version, dst):
+            failures.append(("diff", filepath))
+
+    if failures:
+        print("  FAIL: release audit found mismatches")
+        for kind, filepath in failures[:50]:
+            print(f"    {kind}: {filepath}")
+        if len(failures) > 50:
+            print(f"    ... and {len(failures) - 50} more")
+        return False
+
+    print("  release audit: OK")
+    return True
+
+
 def apply_to_release(
     included_files: list[str],
     version: str,
@@ -292,8 +397,16 @@ def apply_to_release(
     return copied
 
 
-def validate_release(release_repo: Path) -> bool:
+def validate_release(
+    release_repo: Path,
+    profile: str = "full",
+    targeted_tests: list[str] | None = None,
+) -> bool:
     """Run compileall and pytest in the release repo. Return True if both pass."""
+    if profile == "none":
+        print("  validation: SKIP (--validation-profile none)")
+        return True
+
     print("  Running compileall...")
     result = subprocess.run(
         [sys.executable, "-m", "compileall", "-q",
@@ -306,9 +419,22 @@ def validate_release(release_repo: Path) -> bool:
         return False
     print("  compileall: OK")
 
-    print("  Running pytest...")
+    if profile == "compile":
+        return True
+
+    if profile == "targeted":
+        tests = targeted_tests or []
+        if not tests:
+            print("  FAIL: --validation-profile targeted requires --targeted-test")
+            return False
+        pytest_args = [sys.executable, "-m", "pytest", *tests, "-q", "--tb=short"]
+        print(f"  Running targeted pytest: {' '.join(tests)}")
+    else:
+        pytest_args = [sys.executable, "-m", "pytest", "tests/", "-q", "--tb=short"]
+        print("  Running pytest...")
+
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/", "-q", "--tb=short"],
+        pytest_args,
         cwd=release_repo, capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -361,7 +487,8 @@ def main() -> None:
     print()
 
     # 1. Get changed files
-    print("[1/6] Computing diff...")
+    print("[1/8] Computing diff...")
+    warn_left_endpoint_excluded(args.from_range)
     files = get_changed_files(args.from_range)
     included, excluded = filter_files(files)
     print(f"  Total changed: {len(files)}")
@@ -377,32 +504,53 @@ def main() -> None:
         print("\n  No files to sync. Nothing to do.")
         return
 
+    # 2. Compute audit scope
+    print("\n[2/8] Computing audit scope...")
+    audit_range = args.audit_range or args.from_range
+    audit_files, _audit_excluded = filter_files(get_changed_files(audit_range))
+    audit_scope = sorted(set(included) | set(audit_files))
+    print(f"  Audit range:   {audit_range}")
+    print(f"  Audit files:   {len(audit_scope)}")
+
     # 2. Copy files
-    print(f"\n[2/6] Copying {len(included)} files...")
+    print(f"\n[3/8] Copying {len(included)} files...")
     copied = apply_to_release(included, args.version, release_repo, args.dry_run)
     for f in copied:
         tag = " [TRANSFORMED]" if f in TRANSFORM else ""
         print(f"  {'[DRY] ' if args.dry_run else ''}{f}{tag}")
 
-    # 3. Validate
-    print("\n[3/6] Validating...")
+    # 4. Audit release tree
+    print("\n[4/8] Auditing synced content...")
     if not args.dry_run:
-        if not validate_release(release_repo):
+        if not audit_release_tree(audit_scope, args.version, release_repo):
+            print("ERROR: Release audit failed. Refusing to continue.")
+            sys.exit(1)
+    else:
+        print("  DRY RUN - skipping content audit")
+
+    # 5. Validate
+    print("\n[5/8] Validating...")
+    if not args.dry_run:
+        if not validate_release(
+            release_repo,
+            profile=args.validation_profile,
+            targeted_tests=args.targeted_test,
+        ):
             print("ERROR: Validation failed. Release repo may be in dirty state.")
             sys.exit(1)
     else:
         print("  DRY RUN — skipping validation")
 
-    # 4. Git add + cleanup
-    print("\n[4/6] Staging changes...")
+    # 6. Git add + cleanup
+    print("\n[6/8] Staging changes...")
     if not args.dry_run:
         # Clean runtime artifacts that may have been generated during validation
         _cleanup_runtime(release_repo)
         run(["git", "add", "-A"], cwd=release_repo)
 
-    # 5. Commit
+    # 7. Commit
     message = args.message or f"chore(release): sync {args.version}"
-    print(f"\n[5/6] Committing: {message}")
+    print(f"\n[7/8] Committing: {message}")
     if not args.dry_run:
         run(
             ["git", "commit", "-m", message, "--allow-empty", "--no-gpg-sign"],
@@ -410,8 +558,8 @@ def main() -> None:
             env=_GIT_NO_INTERACTIVE,
         )
 
-    # 6. Tag
-    print(f"\n[6/6] Tagging: {args.version}")
+    # 8. Tag
+    print(f"\n[8/8] Tagging: {args.version}")
     if not args.dry_run:
         run(
             ["git", "tag", "-a", args.version, "-m", f"Release {args.version}"],

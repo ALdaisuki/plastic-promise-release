@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from mcp.types import TextContent
 
+from plastic_promise.mcp.tools.memory import handle_memory_forget
 from plastic_promise.skills.engine import SkillEngine, SkillDef, SkillResult
 from plastic_promise.skills.memory_operations import skill_smart_remember
 
@@ -144,6 +145,42 @@ class TestSmartRemember:
                 mock_engine,
                 {"memory_id": "mem_existing_042", "content": "User prefers tabs over spaces"},
             )
+
+
+class TestMemoryForget:
+    @pytest.mark.asyncio
+    async def test_memory_forget_soft_deletes_without_hard_delete(self):
+        class Record:
+            tags = ["existing"]
+            worth_failure = 2
+
+        engine = MagicMock()
+        engine.get_memory.return_value = Record()
+        engine.update_memory_fields.return_value = True
+        engine._ldb = MagicMock()
+
+        result = await handle_memory_forget(
+            engine,
+            {"memory_id": "mem_001", "reason": "user requested removal"},
+        )
+
+        payload = json.loads(result[0].text)
+        assert payload["forgotten"] is True
+        assert payload["status"] == "soft_deleted"
+        assert "status:forgotten" in payload["tags"]
+        assert "decay:pending" in payload["tags"]
+
+        engine.delete_memory.assert_not_called()
+        engine._ldb.delete.assert_called_once_with("mem_001")
+
+        call_args = engine.update_memory_fields.call_args
+        assert call_args.args == ("mem_001",)
+        assert call_args.kwargs["importance"] == 0.0
+        assert call_args.kwargs["activation_weight"] == 0.0
+        assert call_args.kwargs["worth_success"] == 0
+        assert call_args.kwargs["worth_failure"] == 10
+        assert call_args.kwargs["decay_multiplier"] == 0.0
+        assert "status:forgotten" in call_args.kwargs["tags"]
 
 
 def _make_mock_tool(name: str):
