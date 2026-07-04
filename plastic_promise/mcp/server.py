@@ -921,7 +921,7 @@ async def list_tools() -> list[Tool]:
             # === Skills 域 (程序化技能 — Phase 1) ===
             Tool(
                 name="session-init",
-                description="会话启动 — 封装 CLAUDE.md 步骤 0-5：原则激活 + 上下文注入 + 域健康 + 信任分 + GC 预览。替代原有的 6 个独立 MCP 调用。",
+                description="会话启动 — 轻量引导：原则激活 + SCARF 基线 + 域/系统健康快照 + 信任分 + GC 预览 + chain_state。任务上下文需显式调用 context_supply。",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -929,6 +929,19 @@ async def list_tools() -> list[Tool]:
                         "task_type": {
                             "type": "string",
                             "description": "任务类型: general/code_generation/debugging/architecture",
+                        },
+                        "context_mode": {
+                            "type": "string",
+                            "enum": ["none", "light", "full"],
+                            "description": "启动上下文模式：none=只提示延迟；light=1-2条轻量记忆预览；full=显式运行完整 context_supply",
+                        },
+                        "context_timeout_s": {
+                            "type": "number",
+                            "description": "context_mode light/full 的超时秒数上限",
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": "context_mode=full 时传给 context_supply 的检索范围",
                         },
                     },
                     "required": ["task_description"],
@@ -2355,6 +2368,15 @@ setInterval(refresh, 5000);
     async def shutdown():
         logger.info("Shutting down Plastic Promise SSE server...")
 
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            await shutdown()
+
     async def handle_messages(request: Request):
         """Wrap sse.handle_post_message as a Starlette Route endpoint.
 
@@ -2378,7 +2400,7 @@ setInterval(refresh, 5000);
             Route("/api/skill-track", endpoint=api_skill_track, methods=["POST"]),
             Route("/dashboard", endpoint=dashboard),
         ],
-        on_shutdown=[shutdown],
+        lifespan=lifespan,
     )
 
     logger.info("Plastic Promise MCP Server v0.1.0")

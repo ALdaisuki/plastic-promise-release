@@ -35,6 +35,11 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_run_dir = os.path.join(_project_root, "var", "run")
+_pid_path = os.path.join(_run_dir, "maintenance_daemon.pid")
+_heartbeat_path = os.path.join(_run_dir, "maintenance_daemon.heartbeat")
+
 # Hunter Guild — 5 discovery scanners (Task 8)
 from plastic_promise.cron.scan_architecture import scan_architecture
 from plastic_promise.cron.scan_quality_trends import scan_quality_trends
@@ -1224,9 +1229,11 @@ _audit_seq = [0]
 
 
 async def main():
-    _pid_path = os.path.join(_project_root, "maintenance_daemon.pid")
+    os.makedirs(_run_dir, exist_ok=True)
     with open(_pid_path, "w") as f:
         f.write(str(os.getpid()))
+    with open(_heartbeat_path, "w", encoding="utf-8") as f:
+        f.write(datetime.now().isoformat())
 
     # 安全网扫描间隔 (秒)，可通过环境变量覆盖
     SAFETY_NET_INTERVAL = int(os.environ.get("SAFETY_NET_INTERVAL", "600"))
@@ -1286,6 +1293,12 @@ async def main():
     await run_audit()
 
     while True:
+        try:
+            with open(_heartbeat_path, "w", encoding="utf-8") as f:
+                f.write(datetime.now().isoformat())
+        except Exception:
+            pass
+
         tick += 1
         if tick >= audit_threshold:
             _audit_seq[0] += 1

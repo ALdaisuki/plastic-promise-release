@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,6 +44,8 @@ class SkillDef:
 
     # Performance: run all atoms concurrently via asyncio.gather (default: False = serial)
     concurrent: bool = False
+    atom_timeout_seconds: float | None = None
+    track_start_memory: bool = True
 
     # Workflow pack: full skill prompt text (for skill_resolve)
     prompt: str = ""
@@ -219,6 +222,55 @@ class SkillEngine:
             atom_params["context"] = params.get("task_description", "")
         return atom_params
 
+    @staticmethod
+    def _atom_timeout(skill_def: SkillDef) -> float | None:
+        timeout = skill_def.atom_timeout_seconds
+        if timeout is None:
+            raw = os.environ.get("PP_SKILL_ATOM_TIMEOUT_SEC", "")
+            if not raw:
+                return None
+            try:
+                timeout = float(raw)
+            except ValueError:
+                return None
+        return timeout if timeout and timeout > 0 else None
+
+    @classmethod
+    def _lifecycle_timeout(cls, skill_def: SkillDef) -> float | None:
+        """Timeout for skill start/handler/complete bookkeeping.
+
+        Programmatic skills can keep atoms bounded but still hang in lifecycle
+        tracking or handlers. Default to the atom timeout when one is set, and
+        allow a separate override for operational tuning.
+        """
+        raw = os.environ.get("PP_SKILL_LIFECYCLE_TIMEOUT_SEC", "")
+        if raw:
+            try:
+                timeout = float(raw)
+            except ValueError:
+                timeout = None
+        else:
+            timeout = cls._atom_timeout(skill_def)
+        return timeout if timeout and timeout > 0 else None
+
+    async def _call_lifecycle(self, skill_def: SkillDef, coro):
+        timeout = self._lifecycle_timeout(skill_def)
+        if timeout is None:
+            return await coro
+        return await asyncio.wait_for(coro, timeout=timeout)
+
+    async def _call_atom(
+        self,
+        skill_def: SkillDef,
+        atom_handler: Callable,
+        atom_params: dict,
+    ):
+        coro = atom_handler(self._ctx, atom_params)
+        timeout = self._atom_timeout(skill_def)
+        if timeout is None:
+            return await coro
+        return await asyncio.wait_for(coro, timeout=timeout)
+
     def register(self, skill_def: SkillDef) -> None:
         """Register a skill definition. Validates dependencies and permissions.
 
@@ -349,6 +401,7 @@ class SkillEngine:
         errors: list[str] = []
         entity_id: str = ""
         task_description = params.get("task_description", skill_def.description)
+        track_start_memory = skill_def.track_start_memory
 
         # 3. skill_session_start — skip if hook already created one (via /api/skill-track)
         tracking_degraded = False
@@ -367,12 +420,18 @@ class SkillEngine:
             start_handler = self._atoms.get("skill_session_start")
             if start_handler:
                 try:
-                    start_result = await start_handler(
-                        self._ctx,
-                        {
-                            "skill_name": skill_name,
-                            "task_description": task_description,
-                        },
+                    start_args = {
+                        "skill_name": skill_name,
+                        "task_description": task_description,
+                    }
+                    if not track_start_memory:
+                        start_args["record_memory"] = False
+                    start_result = await self._call_lifecycle(
+                        skill_def,
+                        start_handler(
+                            self._ctx,
+                            start_args,
+                        ),
                     )
                     start_data = json.loads(start_result[0].text)
                     entity_id = start_data.get("entity_id", "")
@@ -398,16 +457,19 @@ class SkillEngine:
                 # Check for abort-level failures from concurrent execution
                 for err in errors:
                     if "abort --" in err:
-                        if entity_id:
+                        if entity_id and track_start_memory:
                             try:
                                 complete_handler = self._atoms.get("skill_session_complete")
                                 if complete_handler:
-                                    await complete_handler(
-                                        self._ctx,
-                                        {
-                                            "entity_id": entity_id,
-                                            "outcome": f"abandoned: {err}",
-                                        },
+                                    await self._call_lifecycle(
+                                        skill_def,
+                                        complete_handler(
+                                            self._ctx,
+                                            {
+                                                "entity_id": entity_id,
+                                                "outcome": f"abandoned: {err}",
+                                            },
+                                        ),
                                     )
                             except Exception as close_err:
                                 degrade_log.append(
@@ -422,6 +484,9 @@ class SkillEngine:
                             audit_trail={
                                 "entity_id": entity_id,
                                 "tracking_degraded": tracking_degraded,
+                                "tracking_persistence": "memory"
+                                if track_start_memory
+                                else "entity_only",
                             },
                             errors=errors,
                         )
@@ -439,30 +504,43 @@ class SkillEngine:
                         audit_trail={
                             "entity_id": entity_id,
                             "tracking_degraded": tracking_degraded,
+                            "tracking_persistence": "memory"
+                            if track_start_memory
+                            else "entity_only",
                         },
                         errors=errors,
                     )
 
             # 5. Call handler
-            result = await skill_def.handler(self._ctx, params, atom_results)
+            result = await self._call_lifecycle(
+                skill_def,
+                skill_def.handler(self._ctx, params, atom_results),
+            )
 
             # 6. skill_session_complete — skip if hook will handle it
-            if not hook_entity_id:
+            if not hook_entity_id and track_start_memory:
                 complete_handler = self._atoms.get("skill_session_complete")
                 if complete_handler and entity_id:
                     try:
-                        await complete_handler(
-                            self._ctx,
-                            {
-                                "entity_id": entity_id,
-                                "outcome": "",
-                            },
+                        await self._call_lifecycle(
+                            skill_def,
+                            complete_handler(
+                                self._ctx,
+                                {
+                                    "entity_id": entity_id,
+                                    "outcome": "",
+                                },
+                            ),
                         )
                     except Exception as e:
                         degrade_log.append(f"skill_session_complete: {e}")
 
             # 7. Return
-            result.audit_trail = {"entity_id": entity_id, "tracking_degraded": tracking_degraded}
+            result.audit_trail = {
+                "entity_id": entity_id,
+                "tracking_degraded": tracking_degraded,
+                "tracking_persistence": "memory" if track_start_memory else "entity_only",
+            }
             result.degrade_log = result.degrade_log or degrade_log
             result.errors = result.errors or errors
             return result
@@ -470,16 +548,19 @@ class SkillEngine:
         except Exception as e:
             # Handler-level failure -- still attempt session close
             errors.append(f"handler: {e}")
-            if entity_id and not hook_entity_id:
+            if entity_id and not hook_entity_id and track_start_memory:
                 try:
                     complete_handler = self._atoms.get("skill_session_complete")
                     if complete_handler:
-                        await complete_handler(
-                            self._ctx,
-                            {
-                                "entity_id": entity_id,
-                                "outcome": f"abandoned: handler error -- {e}",
-                            },
+                        await self._call_lifecycle(
+                            skill_def,
+                            complete_handler(
+                                self._ctx,
+                                {
+                                    "entity_id": entity_id,
+                                    "outcome": f"abandoned: handler error -- {e}",
+                                },
+                            ),
                         )
                 except Exception as close_err:
                     degrade_log.append(
@@ -491,7 +572,11 @@ class SkillEngine:
                 data={},
                 atom_results={k: _text_or_str(v) for k, v in atom_results.items()},
                 degrade_log=degrade_log,
-                audit_trail={"entity_id": entity_id, "tracking_degraded": tracking_degraded},
+                audit_trail={
+                    "entity_id": entity_id,
+                    "tracking_degraded": tracking_degraded,
+                    "tracking_persistence": "memory" if track_start_memory else "entity_only",
+                },
                 errors=errors,
             )
 
@@ -521,8 +606,38 @@ class SkillEngine:
             atom_params = self._build_atom_params(atom_name, params)
 
             try:
-                result = await atom_handler(self._ctx, atom_params)
+                result = await self._call_atom(skill_def, atom_handler, atom_params)
                 atom_results[atom_name] = result
+            except TimeoutError:
+                error_text = f"timed out after {self._atom_timeout(skill_def)}s"
+                action = skill_def.degrade_map.get(atom_name, "abort")
+                if action == "skip":
+                    degrade_log.append(f"{atom_name}: skip -- {error_text}")
+                    continue
+                elif action == "warn":
+                    degrade_log.append(f"{atom_name}: warn -- {error_text}")
+                    continue
+                errors.append(f"{atom_name}: {error_text}")
+                degrade_log.append(f"{atom_name}: abort -- {error_text}")
+                if entity_id:
+                    try:
+                        complete_handler = self._atoms.get("skill_session_complete")
+                        if complete_handler:
+                            await self._call_lifecycle(
+                                skill_def,
+                                complete_handler(
+                                    self._ctx,
+                                    {
+                                        "entity_id": entity_id,
+                                        "outcome": f"abandoned: atom {atom_name} timed out",
+                                    },
+                                ),
+                            )
+                    except Exception as close_err:
+                        degrade_log.append(
+                            f"skill_session_complete also failed during abort: {close_err}"
+                        )
+                return atom_results, degrade_log, errors, True
             except Exception as e:
                 action = skill_def.degrade_map.get(atom_name, "abort")
                 if action == "skip":
@@ -537,7 +652,7 @@ class SkillEngine:
                     try:
                         fb_handler = self._atoms.get(fallback_atom)
                         if fb_handler:
-                            fb_result = await fb_handler(self._ctx, params)
+                            fb_result = await self._call_atom(skill_def, fb_handler, params)
                             atom_results[atom_name] = fb_result
                             fallback_executed.add(fallback_atom)
                     except Exception as fb_e:
@@ -549,16 +664,19 @@ class SkillEngine:
                 else:
                     errors.append(f"{atom_name}: {e}")
                     degrade_log.append(f"{atom_name}: abort -- {e}")
-                    if entity_id:
+                    if entity_id and skill_def.track_start_memory:
                         try:
                             complete_handler = self._atoms.get("skill_session_complete")
                             if complete_handler:
-                                await complete_handler(
-                                    self._ctx,
-                                    {
-                                        "entity_id": entity_id,
-                                        "outcome": f"abandoned: atom {atom_name} failed",
-                                    },
+                                await self._call_lifecycle(
+                                    skill_def,
+                                    complete_handler(
+                                        self._ctx,
+                                        {
+                                            "entity_id": entity_id,
+                                            "outcome": f"abandoned: atom {atom_name} failed",
+                                        },
+                                    ),
                                 )
                         except Exception as close_err:
                             degrade_log.append(
@@ -584,8 +702,10 @@ class SkillEngine:
                 return atom_name, None, f"Atom '{atom_name}' not in registry"
             atom_params = self._build_atom_params(atom_name, params)
             try:
-                result = await atom_handler(self._ctx, atom_params)
+                result = await self._call_atom(skill_def, atom_handler, atom_params)
                 return atom_name, result, None
+            except TimeoutError:
+                return atom_name, None, f"timed out after {self._atom_timeout(skill_def)}s"
             except Exception as e:
                 return atom_name, None, str(e)
 

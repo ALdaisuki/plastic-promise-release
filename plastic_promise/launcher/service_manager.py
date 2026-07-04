@@ -17,6 +17,7 @@ from plastic_promise.launcher.service_definition import (
     ServiceDefinition,
     ServiceStatus,
 )
+from plastic_promise.launcher.subprocess_utils import hidden_subprocess_kwargs
 
 
 class ServiceRuntime:
@@ -120,7 +121,14 @@ class ServiceManager:
         # Run pre-start commands
         for cmd in svc.pre_start:
             try:
-                subprocess.run(cmd, shell=True, cwd=self._project_root, timeout=30, check=True)
+                subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=self._project_root,
+                    timeout=30,
+                    check=True,
+                    **hidden_subprocess_kwargs(),
+                )
             except Exception as e:
                 self._log(
                     f"[START] {svc.name} .................... FAILED (pre_start: {e})", log_file
@@ -137,7 +145,7 @@ class ServiceManager:
             cwd = self._project_root
             kwargs: dict = {"env": env, "cwd": cwd}
             if sys.platform == "win32":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                kwargs.update(hidden_subprocess_kwargs(new_process_group=True))
             else:
                 kwargs["preexec_fn"] = os.setsid
             rt.process = subprocess.Popen(svc.command, **kwargs)
@@ -233,6 +241,7 @@ class ServiceManager:
                     capture_output=True,
                     text=True,
                     timeout=5,
+                    **hidden_subprocess_kwargs(),
                 )
                 return str(pid) in result.stdout
             except Exception:

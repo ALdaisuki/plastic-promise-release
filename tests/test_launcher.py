@@ -2,6 +2,8 @@
 
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import pytest
 
@@ -47,6 +49,18 @@ def test_service_status_enum():
     assert ServiceStatus.PENDING.value == "pending"
     assert ServiceStatus.HEALTHY.value == "healthy"
     assert ServiceStatus.UNRECOVERABLE.value == "unrecoverable"
+
+
+def test_hidden_subprocess_kwargs():
+    from plastic_promise.launcher.subprocess_utils import hidden_subprocess_kwargs
+
+    kwargs = hidden_subprocess_kwargs(new_process_group=True)
+    if sys.platform == "win32":
+        assert kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW
+        assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+        assert "startupinfo" in kwargs
+    else:
+        assert kwargs == {}
 
 
 # -- env_checker tests -----------------------------------------------

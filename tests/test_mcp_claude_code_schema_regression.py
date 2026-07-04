@@ -65,6 +65,9 @@ def test_handler_read_optional_fields_are_declared():
     context_graph = tools["context_graph"].inputSchema["properties"]["query_type"]
     assert set(context_graph["enum"]) == {"node_info", "traverse", "full_graph", "neighbors"}
 
+    session_props = set(tools["session-init"].inputSchema["properties"])
+    assert {"context_mode", "context_timeout_s", "scope"}.issubset(session_props)
+
 
 def test_hyphenated_skill_aliases_are_exposed_with_matching_required_fields():
     tools = _tools_by_name()
@@ -139,3 +142,13 @@ def test_session_init_alias_routes_to_canonical_skill(monkeypatch):
     data = json.loads(result[0].text)
     assert data["success"] is True
     assert calls == [("session-init", {"task_description": "alias route"}, "claude")]
+
+
+def test_sse_app_constructs_with_installed_starlette(monkeypatch):
+    async def fake_serve(self):
+        return None
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+    asyncio.run(mcp_server.run_sse(0))

@@ -6,6 +6,8 @@ import sqlite3
 import subprocess
 import sys
 
+from plastic_promise.launcher.subprocess_utils import hidden_subprocess_kwargs
+
 
 def check_bootstrap(db_path: str) -> tuple[bool, str]:
     """Check if bootstrap is needed. Returns (needs_bootstrap, message)."""
@@ -40,6 +42,7 @@ async def run_bootstrap(project_root: str) -> tuple[bool, str]:
             text=True,
             timeout=60,
             cwd=project_root,
+            **hidden_subprocess_kwargs(),
         )
         return result
 

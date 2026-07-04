@@ -25,6 +25,7 @@ from plastic_promise.launcher.service_definition import (
 from plastic_promise.launcher.env_checker import run_env_checks
 from plastic_promise.launcher.bootstrap_checker import check_bootstrap, run_bootstrap
 from plastic_promise.launcher.service_manager import ServiceManager
+from plastic_promise.launcher.subprocess_utils import hidden_subprocess_kwargs
 from plastic_promise.launcher.watchdog import (
     setup_signal_handlers,
     watchdog_loop,
@@ -67,6 +68,7 @@ def _pid_alive(pid: int) -> bool:
             result = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}"],
                 capture_output=True, text=True, timeout=5,
+                **hidden_subprocess_kwargs(),
             )
             return str(pid) in result.stdout
         except Exception:
@@ -94,8 +96,11 @@ def do_stop():
                 with open(pid_path) as f:
                     pid = int(f.read().strip())
                 if sys.platform == "win32":
-                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                   capture_output=True)
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True,
+                        **hidden_subprocess_kwargs(),
+                    )
                 else:
                     os.kill(pid, 15)
                 killed += 1
@@ -108,6 +113,7 @@ def do_stop():
         subprocess.run(
             ["taskkill", "/F", "/FI", "IMAGENAME eq python.exe"],
             capture_output=True,
+            **hidden_subprocess_kwargs(),
         )
     else:
         subprocess.run(["pkill", "-f", "plastic_promise.mcp.server"], capture_output=True)

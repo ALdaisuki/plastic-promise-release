@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -576,6 +577,109 @@ class TestSkillEngineExec:
         assert result.success is True
         assert call_order == ["failing", "ok"]  # atom_b executed despite atom_a failure
         assert any("atom_a" in log for log in result.degrade_log)
+
+    @pytest.mark.asyncio
+    async def test_exec_atom_timeout_uses_degrade_map(self, mock_engine):
+        """A slow async atom must degrade instead of blocking the whole skill."""
+        from plastic_promise.skills.engine import SkillEngine
+
+        se = SkillEngine(mock_engine)
+        call_order = []
+
+        async def mock_slow_atom(engine, args):
+            call_order.append("slow")
+            await asyncio.sleep(0.2)
+            return [TextContent(type="text", text=json.dumps({"status": "slow"}))]
+
+        async def mock_ok_atom(engine, args):
+            call_order.append("ok")
+            return [TextContent(type="text", text=json.dumps({"status": "ok"}))]
+
+        async def mock_session_start(engine, args):
+            return [TextContent(type="text", text=json.dumps({"entity_id": "skill:test:..."}))]
+
+        async def mock_session_complete(engine, args):
+            return [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+        se._atoms["atom_a"] = mock_slow_atom
+        se._atoms["atom_b"] = mock_ok_atom
+        se._atoms["skill_session_start"] = mock_session_start
+        se._atoms["skill_session_complete"] = mock_session_complete
+
+        async def handler(ctx, params, atoms):
+            return SkillResult(
+                skill_name="test",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
+
+        sd = SkillDef(
+            name="timeout-skip-test",
+            domain="session_lifecycle",
+            description="Test",
+            tier="P0",
+            atoms=["atom_a", "atom_b"],
+            degrade_map={"atom_a": "skip"},
+            handler=handler,
+            allowed_callers=["claude"],
+            atom_timeout_seconds=0.01,
+        )
+        se.register(sd)
+
+        result = await se.exec("timeout-skip-test", params={}, caller="claude")
+        assert result.success is True
+        assert call_order == ["slow", "ok"]
+        assert any("atom_a" in log and "timed out" in log for log in result.degrade_log)
+
+    @pytest.mark.asyncio
+    async def test_exec_lifecycle_timeout_degrades_completion(self, mock_engine):
+        """Slow session completion must not block the whole skill execution."""
+        from plastic_promise.skills.engine import SkillEngine
+
+        se = SkillEngine(mock_engine)
+
+        async def mock_session_start(engine, args):
+            return [TextContent(type="text", text=json.dumps({"entity_id": "skill:test:..."}))]
+
+        async def mock_session_complete(engine, args):
+            await asyncio.sleep(0.2)
+            return [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+        se._atoms["skill_session_start"] = mock_session_start
+        se._atoms["skill_session_complete"] = mock_session_complete
+
+        async def handler(ctx, params, atoms):
+            return SkillResult(
+                skill_name="test",
+                success=True,
+                data={"ok": True},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
+
+        sd = SkillDef(
+            name="complete-timeout-test",
+            domain="session_lifecycle",
+            description="Test",
+            tier="P0",
+            atoms=[],
+            degrade_map={},
+            handler=handler,
+            allowed_callers=["claude"],
+            atom_timeout_seconds=0.01,
+        )
+        se.register(sd)
+
+        result = await se.exec("complete-timeout-test", params={}, caller="claude")
+
+        assert result.success is True
+        assert any("skill_session_complete" in log for log in result.degrade_log)
 
     @pytest.mark.asyncio
     async def test_exec_atom_degraded_abort(self, mock_engine):

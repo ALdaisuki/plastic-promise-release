@@ -65,6 +65,11 @@ def _make_entity_id(skill_name: str) -> str:
     return f"skill:{skill_name}:{ts}"
 
 
+def _skill_start_memory_id(entity_id: str) -> str:
+    """Return the deterministic memory id used for a skill start record."""
+    return "skill_start_" + entity_id.replace(":", "_")
+
+
 def _parse_skill_from_entity_id(entity_id: str) -> str | None:
     """Extract skill_name from entity_id like 'skill:brainstorming:2026-...'"""
     parts = entity_id.split(":")
@@ -82,7 +87,7 @@ def _get_current_branch() -> str:
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=1,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -172,14 +177,13 @@ async def _store_skill_start(
     task_description: str,
     domain: str,
 ) -> str:
-    """Persist the skill session start as a memory record.
+    """Persist the skill session start as a lightweight memory record.
 
-    Uses lazy import of handle_memory_store, matching server.py pattern.
-    Adds branch tag when inside a git repository.
+    Skill startup is on the critical path for session-init and sp-stage.  It
+    must not enter the full memory_store quality pipeline because that can
+    synchronously invoke extraction, embedding, LanceDB, and reranking work.
     """
     try:
-        from plastic_promise.mcp.tools.memory import handle_memory_store
-
         content = f"[SKILL START] {skill_name}: {task_description}"
         branch = _get_current_branch()
         tags = [
@@ -189,18 +193,20 @@ async def _store_skill_start(
         ]
         if branch:
             tags.append(f"branch:{branch}")
-        result = await handle_memory_store(
-            engine,
+        memory_id = _skill_start_memory_id(entity_id)
+        return engine.register_memory(
             {
+                "id": memory_id,
                 "content": content,
                 "memory_type": "experience",
                 "source": "superpowers",
                 "entity_ids": [entity_id],
                 "tags": tags,
-            },
+                "domain": domain,
+                "tier": "L1",
+                "category": "skill_session",
+            }
         )
-        data = json.loads(result[0].text)
-        return data.get("memory_id", "?")
     except Exception:
         return "?"
 
@@ -572,9 +578,7 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
     2. Derive domain and generate entity_id
     3. Parent chain validation (warning, never blocking)
     4. Register entity in context graph via engine.register_entity()
-    5. Activate principles for this skill's domain
-    6. Recall related memories
-    7. Persist as memory record with tags
+    5. Persist a lightweight memory record with tags unless record_memory=False
 
     Args:
         engine: ContextEngine instance.
@@ -582,6 +586,7 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
             skill_name: str (required) -- Skill name
             task_description: str (required) -- What this execution does
             parent_entity_id: str | None -- Parent skill's entity_id
+            record_memory: bool -- False keeps tracking entity-only
             estimated_duration_minutes: int | None -- Optional estimate
 
     Returns:
@@ -591,6 +596,7 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
     skill_name = args.get("skill_name", "")
     task_description = args.get("task_description", "")
     parent_entity_id = args.get("parent_entity_id")
+    record_memory = bool(args.get("record_memory", True))
 
     # Normalize: strip plugin namespace prefix (e.g. "superpowers:brainstorming" → "brainstorming")
     _normalized_name = skill_name
@@ -643,14 +649,17 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
         parent_entity_id,
     )
 
-    # 2. Persist as memory record (principles + recall handled by sp-stage atoms)
-    memory_id = await _store_skill_start(
-        engine,
-        entity_id,
-        skill_name,
-        task_description,
-        domain,
-    )
+    # 2. Persist as memory record unless the caller explicitly requests
+    # entity-only tracking for lightweight bootstrap paths.
+    memory_id = ""
+    if record_memory:
+        memory_id = await _store_skill_start(
+            engine,
+            entity_id,
+            skill_name,
+            task_description,
+            domain,
+        )
 
     tags_applied = ["task:active", f"skill:{skill_name}", f"domain:{domain}"]
 
@@ -660,7 +669,8 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
         "status": "active",
         "domain": domain,
         "activated_principles": [],  # handled by atoms, not duplicated here
-        "related_memories": [],  # handled by session-init context_supply
+        "related_memories": [],  # callers use explicit memory_recall/context_supply
+        "tracking_persistence": "memory" if record_memory else "entity_only",
         "tags_applied": tags_applied,
         "chain_warning": chain_warning,
         "memory_id": memory_id,
@@ -721,27 +731,45 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
     # ------------------------------------------------------------------
     # Locate the existing skill-start memory
     # ------------------------------------------------------------------
-    memory_id = None
+    memory_id = _skill_start_memory_id(entity_id)
     mem_data = None
-    for mem in engine.iter_memories():
-        mid = mem.get("id", "")
-        # mem is always a plain dict (register_memory / store_memory both
-        # produce dicts).  Normalize defensively in case a MemoryRecord
-        # object slips through from older paths.
-        if isinstance(mem, dict):
-            mem_entity_ids = mem.get("entity_ids", [])
-            mem_content = mem.get("content", "")
-        else:
-            mem_entity_ids = getattr(mem, "entity_ids", [])
-            mem_content = getattr(mem, "content", "")
 
-        if entity_id in mem_entity_ids and "[SKILL START]" in mem_content:
-            memory_id = mid
+    # Fast path: SkillEngine-created sessions use a deterministic id. Avoid
+    # scanning the whole memory pool on the sp-stage hot path.
+    if hasattr(engine, "get_memory_dict"):
+        try:
+            mem_data = engine.get_memory_dict(memory_id)
+        except Exception:
+            mem_data = None
+        if not isinstance(mem_data, dict) or "[SKILL START]" not in mem_data.get(
+            "content", ""
+        ):
+            mem_data = None
+
+    # Compatibility fallback for older records or test doubles.
+    if mem_data is None:
+        memory_id = None
+        for mem in engine.iter_memories():
+            mid = mem.get("id", "")
+            # mem is always a plain dict (register_memory / store_memory both
+            # produce dicts).  Normalize defensively in case a MemoryRecord
+            # object slips through from older paths.
             if isinstance(mem, dict):
-                mem_data = dict(mem)  # shallow copy so we can mutate safely
+                mem_entity_ids = mem.get("entity_ids", [])
+                mem_content = mem.get("content", "")
             else:
-                mem_data = {k: getattr(mem, k, None) for k in dir(mem) if not k.startswith("_")}
-            break
+                mem_entity_ids = getattr(mem, "entity_ids", [])
+                mem_content = getattr(mem, "content", "")
+
+            if entity_id in mem_entity_ids and "[SKILL START]" in mem_content:
+                memory_id = mid
+                if isinstance(mem, dict):
+                    mem_data = dict(mem)  # shallow copy so we can mutate safely
+                else:
+                    mem_data = {
+                        k: getattr(mem, k, None) for k in dir(mem) if not k.startswith("_")
+                    }
+                break
 
     if not memory_id:
         return [

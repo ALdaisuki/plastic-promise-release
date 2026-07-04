@@ -93,9 +93,11 @@ async def _governance_step_closure_light(ctx, params: dict):
 
     task_desc = params.get("task_description", "step-closure-light")
     try:
+        import asyncio
+
         from plastic_promise.loop.soul_loop import post_task
 
-        post_task(task_description=task_desc, mode="light")
+        await asyncio.to_thread(post_task, task_description=task_desc, mode="light")
     except Exception:
         pass
     return [TextContent(type="text", text=json.dumps({"closed": True, "mode": "light"}))]
@@ -117,9 +119,12 @@ async def _governance_step_closure_full(ctx, params: dict):
     optimization = params.get("optimization", "")
 
     try:
+        import asyncio
+
         from plastic_promise.loop.soul_loop import post_task
 
-        post_task(
+        await asyncio.to_thread(
+            post_task,
             task_description=task_desc,
             git_commit=git_commit,
             mode="full",
@@ -411,72 +416,57 @@ async def _receive_review_handler(ctx, params, atom_results):
 # ═══════════════════════════════════════════════════════════════
 
 STAGE_ATOMS = {
-    # ── 设计阶段: 信任检查 + 上下文回忆 + 原则激活 + 轻量闭环 ──
+    # ── 设计阶段: 信任检查 + 原则激活 + 轻量闭环 ──
+    # Retrieval is explicit (memory_recall/context_supply) so stage entry stays fast.
     "brainstorming": [
         "defense",
-        "memory_recall",
         "principle_activate",
-        "memory_store",
         "step_closure_light",
     ],
     "exemplar-research": [
         "defense",
-        "memory_recall",
         "principle_activate",
-        "memory_store",
         "step_closure_light",
     ],
     "writing-plans": [
         "defense",
-        "memory_recall",
         "principle_activate",
-        "memory_store",
         "step_closure_light",
     ],
     # ── 实施阶段: 信任检查 + 原则激活 + 完整闭环 ──
-    "executing-plans": ["defense", "principle_activate", "memory_store", "step_closure_full"],
+    "executing-plans": ["defense", "principle_activate", "step_closure_full"],
     "subagent-driven-development": [
         "defense",
-        "context_supply",
         "principle_activate",
-        "memory_store",
         "step_closure_full",
     ],
     "test-driven-development": [
         "defense",
         "principle_activate",
-        "memory_store",
         "step_closure_full",
     ],
     "verification-before-completion": [
         "defense",
         "principle_activate",
         "memory_gc",
-        "memory_store",
         "step_closure_full",
     ],
-    "using-git-worktrees": ["defense", "principle_activate", "memory_store"],
+    "using-git-worktrees": ["defense", "principle_activate"],
     "dispatching-parallel-agents": [
         "defense",
-        "context_supply",
         "principle_activate",
-        "memory_store",
     ],
-    # ── 审查阶段: + audit_run + memory_recall ──
+    # ── 审查阶段: + audit_run；retrieval remains explicit ──
     "requesting-code-review": [
         "defense",
         "principle_activate",
-        "memory_recall",
         "audit_run",
-        "memory_store",
         "step_closure_full",
     ],
     "receiving-code-review": [
         "defense",
         "principle_activate",
-        "memory_recall",
         "audit_run",
-        "memory_store",
         "step_closure_full",
     ],
     # ── 治理阶段: + defense(adjust) + 审计 + GC + 经验包 ──
@@ -484,8 +474,6 @@ STAGE_ATOMS = {
         "defense",
         "principle_activate",
         "audit_run",
-        "memory_recall",
-        "memory_store",
         "step_closure_full",
     ],
     "finishing-a-development-branch": [
@@ -496,12 +484,10 @@ STAGE_ATOMS = {
         "step_closure_full",
         "pack_export",
     ],
-    # ── 修复阶段: 信任检查 + 回忆上下文 + 完整闭环 ──
+    # ── 修复阶段: 信任检查 + 原则激活 + 完整闭环 ──
     "systematic-debugging": [
         "defense",
-        "memory_recall",
         "principle_activate",
-        "memory_store",
         "step_closure_full",
     ],
 }
@@ -554,6 +540,7 @@ for _stage_name, _atoms in STAGE_ATOMS.items():
         degrade_map=STAGE_DEGRADE,
         handler=_handler,
         allowed_callers=["claude", "pi", "trae"],
+        atom_timeout_seconds=5.0,
     )
 
 # 暴露为模块级变量，方便 SkillEngine 自动发现
