@@ -1214,7 +1214,7 @@ async def list_tools() -> list[Tool]:
             # === SuperPowers 流水线阶段技能 (统一入口) ===
             Tool(
                 name="sp-stage",
-                description="SuperPowers 流水线统一阶段入口。stage 参数对应 SuperPowers 标准阶段: audit | brainstorming | exemplar-research | writing-plans | executing-plans | subagent-driven-development | test-driven-development | verification-before-completion | finishing-a-development-branch | requesting-code-review | receiving-code-review | systematic-debugging | using-git-worktrees | dispatching-parallel-agents。自动触发 skill_session_start/complete 追踪。",
+                description="SuperPowers 流水线统一阶段入口。stage 参数对应 SuperPowers 标准阶段: using-superpowers | audit | brainstorming | exemplar-research | writing-plans | executing-plans | subagent-driven-development | test-driven-development | verification-before-completion | finishing-a-development-branch | requesting-code-review | receiving-code-review | systematic-debugging | using-git-worktrees | dispatching-parallel-agents | writing-skills。自动触发 skill_session_start/complete 追踪。",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -1222,6 +1222,7 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "SuperPowers 阶段名称",
                             "enum": [
+                                "using-superpowers",
                                 "audit",
                                 "brainstorming",
                                 "exemplar-research",
@@ -1236,6 +1237,7 @@ async def list_tools() -> list[Tool]:
                                 "systematic-debugging",
                                 "using-git-worktrees",
                                 "dispatching-parallel-agents",
+                                "writing-skills",
                             ],
                         },
                         "task_description": {"type": "string", "description": "当前阶段任务描述"},

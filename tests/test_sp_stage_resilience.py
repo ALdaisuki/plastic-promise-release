@@ -110,3 +110,27 @@ def test_custom_route_guidance_keeps_explicit_route_id():
     assert guidance["route_summary"]["label"] == "Custom route"
     assert guidance["route_summary"]["stages"] == ["writing-plans"]
     assert guidance["official_skill"] == "superpowers:writing-plans"
+
+
+def test_using_superpowers_guidance_is_bootstrap_stage():
+    from plastic_promise.skills.superpowers_stages import build_stage_guidance
+
+    guidance = build_stage_guidance("using-superpowers")
+
+    assert guidance["stage_summary"]["layer"] == "bootstrap"
+    assert guidance["official_skill"] == "superpowers:using-superpowers"
+    assert guidance["route_summary"]["route_id"] == "superpowers-bootstrap"
+    assert guidance["route_summary"]["stages"][0] == "using-superpowers"
+    assert "load/read that SKILL" in guidance["stage_summary"]["skill_authority"]
+
+
+def test_writing_skills_guidance_uses_skill_authoring_route():
+    from plastic_promise.skills.superpowers_stages import build_stage_guidance
+
+    guidance = build_stage_guidance("writing-skills")
+
+    assert guidance["stage_summary"]["layer"] == "skill-authoring"
+    assert guidance["official_skill"] == "superpowers:writing-skills"
+    assert guidance["route_summary"]["route_id"] == "skill-authoring"
+    assert guidance["route_summary"]["stages"] == ["writing-skills"]
+    assert guidance["closure_reminder"]["mode"] == "light"

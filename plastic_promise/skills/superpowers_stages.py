@@ -44,6 +44,8 @@ STAGE_DOMAIN_MAP = {
     "systematic-debugging": "fixing",
     "using-git-worktrees": "building",
     "dispatching-parallel-agents": "building",
+    "using-superpowers": "governing",
+    "writing-skills": "designing",
 }
 
 STAGE_TAGS_MAP = {
@@ -61,6 +63,8 @@ STAGE_TAGS_MAP = {
     "systematic-debugging": ["stage:debug", "domain:fixing", "task:active"],
     "using-git-worktrees": ["stage:worktrees", "domain:building"],
     "dispatching-parallel-agents": ["stage:parallel", "domain:building"],
+    "using-superpowers": ["stage:using-superpowers", "domain:governing", "task:bootstrap"],
+    "writing-skills": ["stage:writing-skills", "domain:designing", "task:author-skill"],
 }
 
 STAGE_DESCRIPTIONS = {
@@ -85,8 +89,33 @@ STAGE_DESCRIPTIONS = {
 # Plastic Promise 治理注入: step_closure + code_memory handlers
 # ═══════════════════════════════════════════════════════════════
 
+STAGE_DESCRIPTIONS.update(
+    {
+        "using-superpowers": "SuperPowers stage: bootstrap skill discovery before action",
+        "writing-skills": "SuperPowers stage: author, edit, and validate skills",
+    }
+)
+
 
 STAGE_GUIDANCE_MAP = {
+    "using-superpowers": {
+        "layer": "bootstrap",
+        "summary": "Load and follow the relevant SuperPowers skill before any action.",
+        "artifact": "Skill selection and official skill-read evidence.",
+        "handoff": "After bootstrap, continue to the root stage that matches the task.",
+        "artifacts": [
+            {
+                "kind": "skill_bootstrap_trace",
+                "path": "current conversation skill-read trace",
+                "required": True,
+            }
+        ],
+        "next_actions": [
+            "Identify the relevant SuperPowers skill.",
+            "Load/read the official skill file.",
+            "Enter brainstorming, systematic-debugging, requesting-code-review, or writing-skills as appropriate.",
+        ],
+    },
     "brainstorming": {
         "layer": "design",
         "summary": "Clarify requirements, compare approaches, and write the approved design spec.",
@@ -287,10 +316,36 @@ STAGE_GUIDANCE_MAP = {
             "Run step-closure after integration.",
         ],
     },
+    "writing-skills": {
+        "layer": "skill-authoring",
+        "summary": "Create, edit, or verify a SuperPowers skill with validation evidence.",
+        "artifact": "Skill files, validation output, and installation/update notes.",
+        "handoff": "After the skill is validated, continue to verification-before-completion if code changed.",
+        "artifacts": [
+            {"kind": "skill_artifact", "path": "skills/<skill-name>/SKILL.md", "required": True},
+            {"kind": "validation_log", "path": "skill validation command output", "required": True},
+        ],
+        "next_actions": [
+            "Read the official writing-skills instructions.",
+            "Create or edit the skill artifact.",
+            "Validate the skill and record the result.",
+        ],
+    },
 }
 
 
 STAGE_ROUTE_MAP = {
+    "superpowers-bootstrap": {
+        "label": "SuperPowers bootstrap",
+        "summary": "Session bootstrap route that loads the relevant official SuperPowers skill before work begins.",
+        "stages": [
+            "using-superpowers",
+            "brainstorming",
+            "systematic-debugging",
+            "requesting-code-review",
+            "writing-skills",
+        ],
+    },
     "normal-development": {
         "label": "Normal development",
         "summary": "Standard feature/change route from design through implementation, verification, and branch finishing.",
@@ -325,13 +380,20 @@ STAGE_ROUTE_MAP = {
             "finishing-a-development-branch",
         ],
     },
+    "skill-authoring": {
+        "label": "Skill authoring",
+        "summary": "Specialized route for creating, editing, and validating SuperPowers skills.",
+        "stages": ["writing-skills"],
+    },
 }
 
 STAGE_DEFAULT_ROUTE_MAP = {
+    "using-superpowers": "superpowers-bootstrap",
     "requesting-code-review": "audit-review",
     "receiving-code-review": "audit-review",
     "audit": "audit-review",
     "systematic-debugging": "bug-hunt",
+    "writing-skills": "skill-authoring",
 }
 
 
@@ -805,6 +867,11 @@ async def _receive_review_handler(ctx, params, atom_results):
 # ═══════════════════════════════════════════════════════════════
 
 STAGE_ATOMS = {
+    "using-superpowers": [
+        "defense",
+        "principle_activate",
+        "step_closure_light",
+    ],
     # ── 设计阶段: 信任检查 + 原则激活 + 轻量闭环 ──
     # Retrieval is explicit (memory_recall/context_supply) so stage entry stays fast.
     "brainstorming": [
@@ -879,6 +946,11 @@ STAGE_ATOMS = {
         "principle_activate",
         "step_closure_full",
     ],
+    "writing-skills": [
+        "defense",
+        "principle_activate",
+        "step_closure_light",
+    ],
 }
 
 STAGE_DEGRADE = {
@@ -948,6 +1020,8 @@ using_git_worktrees = SKILL_DEFS.get("using-git-worktrees")
 dispatching_parallel_agents = SKILL_DEFS.get("dispatching-parallel-agents")
 exemplar_research = SKILL_DEFS.get("exemplar-research")
 audit = SKILL_DEFS.get("audit")
+using_superpowers = SKILL_DEFS.get("using-superpowers")
+writing_skills = SKILL_DEFS.get("writing-skills")
 
 
 # ═══════════════════════════════════════════════════════════════

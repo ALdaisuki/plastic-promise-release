@@ -92,6 +92,21 @@ def test_hyphenated_skill_aliases_are_exposed_with_matching_required_fields():
         )
 
 
+def test_sp_stage_schema_exposes_full_superpowers_skill_surface():
+    tools = _tools_by_name()
+    enum_values = set(tools["sp-stage"].inputSchema["properties"]["stage"]["enum"])
+
+    assert {"using-superpowers", "writing-skills"}.issubset(enum_values)
+
+
+def test_sp_stage_description_lists_every_exposed_stage():
+    tool = _tools_by_name()["sp-stage"]
+    enum_values = set(tool.inputSchema["properties"]["stage"]["enum"])
+    missing = sorted(stage for stage in enum_values if stage not in (tool.description or ""))
+
+    assert not missing
+
+
 def test_codex_deferred_tool_discovery_keywords_are_exposed():
     tools = _tools_by_name()
     expected_keywords = {

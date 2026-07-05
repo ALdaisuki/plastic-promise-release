@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plastic-promise"
-version = "0.2.10"
+version = "0.2.11"
 description = "AI 行为治理系统 — 以约定工程替代约束工程"
 readme = "README.md"
 license = { text = "MIT" }

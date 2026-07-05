@@ -52,6 +52,7 @@ step_audit_log.jsonl
 
 # SuperPowers scratch (runtime generated)
 .superpowers/
+.worktrees/
 
 # Daemon runtime
 pi_daemon.pid

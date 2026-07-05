@@ -869,6 +869,9 @@ STAGE_ALIASES: dict[str, str] = {
     "debug": "systematic-debugging",
     "parallel": "dispatching-parallel-agents",
     "worktrees": "using-git-worktrees",
+    "skills": "writing-skills",
+    "write-skills": "writing-skills",
+    "superpowers": "using-superpowers",
 }
 
 
@@ -936,7 +939,12 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     "writing-skills": {"predecessors": [], "successors": []},
     "using-superpowers": {
         "predecessors": [],
-        "successors": ["brainstorming", "systematic-debugging", "requesting-code-review"],
+        "successors": [
+            "brainstorming",
+            "systematic-debugging",
+            "requesting-code-review",
+            "writing-skills",
+        ],
     },
     # ── Plastic Promise Programmatic Skills (sp-* 系列) — 与概念层一一对应 ──
     "sp-brainstorming": {"predecessors": [], "successors": ["sp-exemplar-research"]},
@@ -992,6 +1000,16 @@ SKILL_CHAIN_MAP: dict[str, dict[str, list[str]]] = {
     },
     "sp-systematic-debugging": {"predecessors": [], "successors": ["sp-test-driven-development"]},
     "sp-dispatching-parallel-agents": {"predecessors": [], "successors": []},
+    "sp-writing-skills": {"predecessors": [], "successors": []},
+    "sp-using-superpowers": {
+        "predecessors": [],
+        "successors": [
+            "sp-brainstorming",
+            "sp-systematic-debugging",
+            "sp-requesting-code-review",
+            "sp-writing-skills",
+        ],
+    },
 }
 
 SKILL_DOMAIN_MAP: dict[str, str] = {
@@ -1027,6 +1045,8 @@ SKILL_DOMAIN_MAP: dict[str, str] = {
     "sp-systematic-debugging": "fixing",
     "sp-dispatching-parallel-agents": "building",
     "sp-finishing-a-development-branch": "governing",
+    "sp-writing-skills": "designing",
+    "sp-using-superpowers": "governing",
 }
 
 DOMAIN_TO_TASK_TYPE: dict[str, str] = {

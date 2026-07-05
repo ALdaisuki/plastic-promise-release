@@ -155,3 +155,21 @@ def test_sp_stage_flow_line_id_isolates_chain_state(monkeypatch):
     assert data["flow_line_id"] == "dev"
     assert data["flow_scope_id"] == "stage:shared::flow:dev"
     assert fake.calls[0][1]["stage_session_id"] == "stage:shared::flow:dev"
+
+
+def test_sp_stage_allows_meta_root_stages_from_stale_chain(monkeypatch):
+    expectations = {
+        "using-superpowers": ("sp-using-superpowers", "superpowers-bootstrap"),
+        "writing-skills": ("sp-writing-skills", "skill-authoring"),
+    }
+
+    for stage, (skill_name, route_id) in expectations.items():
+        data, fake = _run_sp_stage(
+            monkeypatch,
+            stage,
+            current="requesting-code-review",
+        )
+
+        assert data["success"] is True
+        assert fake.calls[0][0] == skill_name
+        assert data["data"]["stage_guidance"]["route_summary"]["route_id"] == route_id

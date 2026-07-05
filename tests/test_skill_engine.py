@@ -377,6 +377,31 @@ class TestSkillEngineRegister:
 
         assert stage_atoms <= registered_atoms
 
+    def test_superpowers_meta_stages_are_registered_consistently(self, mock_engine):
+        """Meta SuperPowers skills must be first-class sp-stage entries."""
+        from plastic_promise.core.constants import SKILL_CHAIN_MAP, SKILL_DOMAIN_MAP
+        from plastic_promise.skills.superpowers_stages import (
+            SKILL_DEFS,
+            STAGE_ATOMS,
+            STAGE_DESCRIPTIONS,
+            STAGE_DOMAIN_MAP,
+            STAGE_TAGS_MAP,
+        )
+
+        expected_meta_stages = {"using-superpowers", "writing-skills"}
+
+        assert expected_meta_stages <= set(STAGE_ATOMS)
+        assert expected_meta_stages <= set(SKILL_DEFS)
+        assert expected_meta_stages <= set(STAGE_DOMAIN_MAP)
+        assert expected_meta_stages <= set(STAGE_TAGS_MAP)
+        assert expected_meta_stages <= set(STAGE_DESCRIPTIONS)
+
+        for stage in expected_meta_stages:
+            assert stage in SKILL_CHAIN_MAP
+            assert f"sp-{stage}" in SKILL_CHAIN_MAP
+            assert stage in SKILL_DOMAIN_MAP
+            assert f"sp-{stage}" in SKILL_DOMAIN_MAP
+
 
 # ──────────────────────────────────────────────
 # SkillEngine.exec tests (Task 4)
