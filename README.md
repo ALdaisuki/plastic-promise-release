@@ -5,6 +5,21 @@ Author: ALdaisuki
 Canonical: https://github.com/ALdaisuki/plastic-promise-release
 -->
 
+<!-- Open Graph / Twitter
+og:type: website
+og:url: https://github.com/ALdaisuki/plastic-promise-release
+og:title: Plastic Promise - Local-first MCP governance runtime
+og:description: Local-first memory, context supply, audit, trust, skills, and governed task dispatch for MCP agents.
+twitter:card: summary
+twitter:title: Plastic Promise - Local-first MCP governance runtime
+twitter:description: Local-first memory, context supply, audit, trust, skills, and governed task dispatch for MCP agents.
+-->
+
+<!-- GitHub Metadata
+topics: ai-governance, mcp-server, agent-memory, multi-agent, local-first, lancedb, sqlite, rust-python
+languages: Python, Rust
+-->
+
 <div align="center">
 
 # Plastic Promise
@@ -37,6 +52,22 @@ The project is built around **Commitment Engineering**: instead of relying only 
 
 ---
 
+## Who it is for
+
+Plastic Promise is for developers and agent teams that need more than a one-off memory store. It is useful when an MCP client, coding agent, or multi-agent workflow needs shared memory, explicit governance rules, auditable task handoff, and a local-first runtime that can explain what context was used before an action.
+
+It is intentionally biased toward operational traceability:
+
+| Need | Plastic Promise answer |
+|---|---|
+| Agents forget decisions between sessions | Store and retrieve memories with worth, decay, deduplication, and graph links. |
+| Context retrieval is inconsistent | Use `context_supply` to produce a structured core/related/divergent context package. |
+| Automation needs guardrails | Run defense, audit, trust, and principle checks before shared-state changes. |
+| Multi-agent work is hard to verify | Route work through Hunter Guild claim, heartbeat, completion, and verification states. |
+| Workflows become prompt folklore | Turn startup, remembering, closure, review, and SuperPowers stages into MCP tools. |
+
+---
+
 ## What it does
 
 | Capability | What it provides |
@@ -53,39 +84,16 @@ The project is built around **Commitment Engineering**: instead of relying only 
 
 ## Architecture
 
-![Plastic Promise flow](docs/architecture/plastic-promise-flow.svg)
+<p align="center">
+  <img src="docs/architecture/plastic-promise-flow.svg" alt="Plastic Promise local governance runtime architecture" width="960">
+</p>
 
-```text
-+--------------------------------------------------------------------------+
-| Plastic Promise Local Governance Runtime                                 |
-|                                                                          |
-| +------------------+      +-------------------+      +----------------+ |
-| | MCP Server       | ---> | Context Engine    | ---> | Storage Layer  | |
-| | stdio / SSE      |      | recall + supply   |      | SQLite/LanceDB | |
-| +--------+---------+      +---------+---------+      +--------+-------+ |
-|          |                          ^                         ^         |
-|          v                          |                         |         |
-| +------------------+      +---------+---------+      +--------+-------+ |
-| | Memory Pipeline  | ---> | Principles/Graph  |      | Trust/Defense  | |
-| | extract/dedup/GC |      | activate/evaluate |      | audit + tiers  | |
-| +--------+---------+      +-------------------+      +--------+-------+ |
-|          |                                                     ^         |
-|          v                                                     |         |
-| +------------------+      +-------------------+      +--------+-------+ |
-| | Skills/Tracking  | ---> | Daemon/Guild      | ---> | Agent Bridge   | |
-| | workflow stages  |      | scans/task queue  |      | events/notify  | |
-| +------------------+      +-------------------+      +----------------+ |
-|                                                                          |
-+--------------------------------------------------------------------------+
-
-Legend:
-  --->  primary call, data write, or lifecycle event
-  ^     read/query dependency
-  Boundary = local runtime owned by this repository
-```
+The README-level vector diagram shows the runtime in five layers: actors, MCP entrypoints, governance core, automation loop, and local persistence/acceleration. It is intentionally higher level than the C4 files so the first architecture view stays readable on GitHub.
 
 Full architecture diagrams:
 
+- [Vector overview - English](docs/architecture/plastic-promise-flow.svg)
+- [Vector overview - Chinese](docs/architecture/plastic-promise-flow.zh-CN.svg)
 - [C4 Level 1 — Context](docs/architecture/diagrams/c4-level1-context.txt)
 - [C4 Level 2 — Container](docs/architecture/diagrams/c4-level2-container.txt)
 - [C4 Level 3 — Component](docs/architecture/diagrams/c4-level3-component.txt)
@@ -324,6 +332,22 @@ Local storage is the default. Optional external calls depend on configured agent
 | Runtime logs and PIDs | `var/log/`, `var/run/` |
 
 Privacy boundary: Plastic Promise is local-first by default. Data can leave the machine only when you configure external agents, hosted embedding providers, hosted rerankers, or other network integrations.
+
+---
+
+## Roadmap Snapshot
+
+The current roadmap lives in [docs/TODO List/README.md](docs/TODO%20List/README.md). At a high level, active work is organized around:
+
+| Track | Direction |
+|---|---|
+| Runtime reliability | Keep `session-init`, `context_supply`, `runtime_mode`, daemon startup, and degraded-mode behavior predictable under light and full modes. |
+| Rust acceleration | Continue converging the optional Rust context-engine path with the canonical Python pipeline. |
+| Hunter Guild | Harden task queue policy, scanner quality, reassignment, verification, and trust-score effects. |
+| Extension market | Stabilize pack validation, install/enable/disable flows, and plugin metadata boundaries. |
+| Public documentation | Keep README, architecture docs, quickstarts, and roadmap entries aligned with source truth. Future release docs should maintain English and Chinese coverage together. |
+
+Known status is summarized below; unfinished detail remains in the roadmap document rather than expanding this README into a full project manual.
 
 ---
 

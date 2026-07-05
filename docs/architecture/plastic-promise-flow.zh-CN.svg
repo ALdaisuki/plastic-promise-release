@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
-  <title id="title">Plastic Promise local governance runtime architecture</title>
-  <desc id="desc">Layered vector architecture diagram showing actors, MCP entrypoints, governance core modules, automation loop, and local persistence for Plastic Promise.</desc>
+  <title id="title">Plastic Promise 本地治理运行时架构</title>
+  <desc id="desc">分层矢量架构图，展示 Plastic Promise 的参与者、MCP 入口、治理核心、自动化闭环、本地持久化与可选加速路径。</desc>
   <defs>
     <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
       <stop offset="0" stop-color="#0b1220"/>
@@ -14,12 +14,12 @@
       <path d="M0,0 L0,6 L9,3 z" fill="#93a4b8"/>
     </marker>
     <style>
-      .title{font:700 34px system-ui,-apple-system,Segoe UI,Arial,sans-serif;fill:#f8fafc}
-      .subtitle{font:400 16px system-ui,-apple-system,Segoe UI,Arial,sans-serif;fill:#cbd5e1}
-      .layer{font:700 14px system-ui,-apple-system,Segoe UI,Arial,sans-serif;fill:#38bdf8;letter-spacing:.08em}
-      .label{font:700 17px system-ui,-apple-system,Segoe UI,Arial,sans-serif;fill:#f8fafc}
-      .small{font:400 13px system-ui,-apple-system,Segoe UI,Arial,sans-serif;fill:#cbd5e1}
-      .tiny{font:400 12px system-ui,-apple-system,Segoe UI,Arial,sans-serif;fill:#94a3b8}
+      .title{font:700 34px system-ui,-apple-system,Segoe UI,Microsoft YaHei,SimHei,Arial,sans-serif;fill:#f8fafc}
+      .subtitle{font:400 16px system-ui,-apple-system,Segoe UI,Microsoft YaHei,SimHei,Arial,sans-serif;fill:#cbd5e1}
+      .layer{font:700 14px system-ui,-apple-system,Segoe UI,Microsoft YaHei,SimHei,Arial,sans-serif;fill:#38bdf8;letter-spacing:.08em}
+      .label{font:700 17px system-ui,-apple-system,Segoe UI,Microsoft YaHei,SimHei,Arial,sans-serif;fill:#f8fafc}
+      .small{font:400 13px system-ui,-apple-system,Segoe UI,Microsoft YaHei,SimHei,Arial,sans-serif;fill:#cbd5e1}
+      .tiny{font:400 12px system-ui,-apple-system,Segoe UI,Microsoft YaHei,SimHei,Arial,sans-serif;fill:#94a3b8}
       .panel{fill:#0f172a;stroke:#334155;stroke-width:1.2}
       .actor{fill:#1e293b;stroke:#38bdf8;stroke-width:1.5}
       .entry{fill:#172554;stroke:#60a5fa;stroke-width:1.5}
@@ -35,79 +35,79 @@
   <rect width="1280" height="720" rx="28" fill="url(#bg)"/>
   <rect x="36" y="104" width="1208" height="552" rx="22" fill="url(#band)" stroke="#1e3a8a" stroke-width="1"/>
 
-  <text x="64" y="58" class="title">Plastic Promise Architecture</text>
-  <text x="64" y="86" class="subtitle">Local-first MCP governance runtime for memory, context, audit, trust, skills, and task dispatch</text>
+  <text x="64" y="58" class="title">Plastic Promise 架构</text>
+  <text x="64" y="86" class="subtitle">本地优先的 MCP 治理运行时：记忆、上下文、审计、信任、技能与任务调度</text>
 
-  <text x="64" y="136" class="layer">ACTORS</text>
+  <text x="64" y="136" class="layer">参与者</text>
   <rect x="64" y="154" width="190" height="82" rx="14" class="actor"/>
-  <text x="88" y="185" class="label">Human Developer</text>
-  <text x="88" y="208" class="small">reviews, approves, ships</text>
+  <text x="88" y="185" class="label">开发者</text>
+  <text x="88" y="208" class="small">审查、授权、发布</text>
 
   <rect x="64" y="262" width="190" height="82" rx="14" class="actor"/>
-  <text x="88" y="293" class="label">MCP Clients</text>
-  <text x="88" y="316" class="small">Claude Code, Codex</text>
+  <text x="88" y="293" class="label">MCP 客户端</text>
+  <text x="88" y="316" class="small">Claude Code、Codex</text>
 
   <rect x="64" y="370" width="190" height="82" rx="14" class="actor"/>
-  <text x="88" y="401" class="label">Agent Team</text>
-  <text x="88" y="424" class="small">Builder, Fixer, Reviewer</text>
+  <text x="88" y="401" class="label">Agent 团队</text>
+  <text x="88" y="424" class="small">Builder、Fixer、Reviewer</text>
 
-  <text x="316" y="136" class="layer">MCP ENTRYPOINTS</text>
+  <text x="316" y="136" class="layer">MCP 入口</text>
   <rect x="316" y="176" width="206" height="96" rx="14" class="entry"/>
   <text x="344" y="210" class="label">MCP Server</text>
   <text x="344" y="234" class="small">stdio / SSE / HTTP</text>
-  <text x="344" y="252" class="tiny">56 tools + aliases</text>
+  <text x="344" y="252" class="tiny">56 个工具与兼容别名</text>
 
   <rect x="316" y="322" width="206" height="96" rx="14" class="entry"/>
-  <text x="344" y="356" class="label">Tool Surface</text>
-  <text x="344" y="380" class="small">schemas, prompts, health</text>
-  <text x="344" y="398" class="tiny">runtime_mode, context_supply</text>
+  <text x="344" y="356" class="label">工具暴露面</text>
+  <text x="344" y="380" class="small">schema、prompt、健康检查</text>
+  <text x="344" y="398" class="tiny">runtime_mode、context_supply</text>
 
-  <text x="584" y="136" class="layer">GOVERNANCE CORE</text>
+  <text x="584" y="136" class="layer">治理核心</text>
   <rect x="584" y="150" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="181" class="label">Context Engine</text>
-  <text x="612" y="204" class="small">recall, graph, ranking</text>
+  <text x="612" y="181" class="label">上下文引擎</text>
+  <text x="612" y="204" class="small">检索、图谱、排序</text>
 
   <rect x="584" y="252" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="283" class="label">Memory Pipeline</text>
-  <text x="612" y="306" class="small">extract, dedup, decay</text>
+  <text x="612" y="283" class="label">记忆管道</text>
+  <text x="612" y="306" class="small">提取、去重、衰减</text>
 
   <rect x="584" y="354" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="385" class="label">Principles + Graph</text>
-  <text x="612" y="408" class="small">activate, evaluate, link</text>
+  <text x="612" y="385" class="label">原则与图谱</text>
+  <text x="612" y="408" class="small">激活、评估、关联</text>
 
   <rect x="584" y="456" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="487" class="label">Trust + Defense</text>
-  <text x="612" y="510" class="small">audit, tiers, pre-checks</text>
+  <text x="612" y="487" class="label">信任与防线</text>
+  <text x="612" y="510" class="small">审计、等级、预检查</text>
 
-  <text x="862" y="136" class="layer">AUTOMATION LOOP</text>
+  <text x="862" y="136" class="layer">自动化闭环</text>
   <rect x="862" y="176" width="214" height="82" rx="14" class="loop"/>
-  <text x="890" y="207" class="label">Skills + Closure</text>
-  <text x="890" y="230" class="small">session-init, sp-stage</text>
+  <text x="890" y="207" class="label">技能与闭环</text>
+  <text x="890" y="230" class="small">session-init、sp-stage</text>
 
   <rect x="862" y="298" width="214" height="82" rx="14" class="loop"/>
   <text x="890" y="329" class="label">Hunter Guild</text>
-  <text x="890" y="352" class="small">claim, heartbeat, verify</text>
+  <text x="890" y="352" class="small">认领、心跳、验收</text>
 
   <rect x="862" y="420" width="214" height="82" rx="14" class="loop"/>
-  <text x="890" y="451" class="label">Maintenance Daemon</text>
-  <text x="890" y="474" class="small">scan, recover, GC</text>
+  <text x="890" y="451" class="label">维护守护进程</text>
+  <text x="890" y="474" class="small">扫描、恢复、GC</text>
 
-  <text x="64" y="586" class="layer">LOCAL PERSISTENCE AND ACCELERATION</text>
+  <text x="64" y="586" class="layer">本地持久化与加速</text>
   <rect x="64" y="604" width="246" height="60" rx="14" class="store"/>
   <text x="90" y="631" class="label">SQLite WAL</text>
-  <text x="90" y="651" class="small">structured truth source</text>
+  <text x="90" y="651" class="small">结构化真相源</text>
 
   <rect x="342" y="604" width="246" height="60" rx="14" class="store"/>
   <text x="368" y="631" class="label">LanceDB</text>
-  <text x="368" y="651" class="small">vectors and similarity search</text>
+  <text x="368" y="651" class="small">向量与相似度检索</text>
 
   <rect x="620" y="604" width="246" height="60" rx="14" class="rust"/>
   <text x="646" y="631" class="label">Rust Context Core</text>
-  <text x="646" y="651" class="small">optional acceleration path</text>
+  <text x="646" y="651" class="small">可选加速路径</text>
 
   <rect x="898" y="604" width="246" height="60" rx="14" class="store"/>
-  <text x="924" y="631" class="label">Logs + Runtime State</text>
-  <text x="924" y="651" class="small">health, events, audit trail</text>
+  <text x="924" y="631" class="label">日志与运行态</text>
+  <text x="924" y="651" class="small">健康、事件、审计轨迹</text>
 
   <path class="arrow" d="M254 195 H316"/>
   <path class="arrow" d="M254 303 H316"/>
@@ -124,5 +124,5 @@
   <path class="softArrow" d="M969 502 V604"/>
   <path class="softArrow" d="M743 604 C743 570 742 552 742 538"/>
 
-  <text x="64" y="692" class="tiny">Flow: clients call MCP tools, governance modules retrieve context and enforce agreements, automation loops close work, local stores keep state inspectable.</text>
+  <text x="64" y="692" class="tiny">流程：客户端调用 MCP 工具，治理核心检索上下文并执行约定，自动化闭环完成任务，本地存储保持状态可审计。</text>
 </svg>

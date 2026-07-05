@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.2.14] - 2026-07-06
+
+### Changed
+
+- Synced bilingual README architecture overview and English/Chinese SVG architecture diagrams.
+
 ### Changed
 
 - Reworked the public README into an English-first release entrypoint with a Chinese companion guide at `docs/README.zh-CN.md`.
