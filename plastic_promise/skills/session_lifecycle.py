@@ -10,6 +10,98 @@ _CONTEXT_MODES = {"none", "light", "full"}
 _LIGHT_CONTEXT_LIMIT = 2
 _LIGHT_CONTEXT_TIMEOUT_S = 1.5
 _FULL_CONTEXT_TIMEOUT_S = 10.0
+_DEFAULT_WORKFLOW_ROUTE = "normal-development"
+_DEFAULT_WORKFLOW_ENTRY_STAGE = "brainstorming"
+_VALID_WORKFLOW_ENTRYPOINTS = [
+    "brainstorming",
+    "systematic-debugging",
+    "requesting-code-review",
+]
+_WORKFLOW_SKILL_AUTHORITY = (
+    "Call sp-stage with stage_session_id, route, and flow_line_id. "
+    "Each stage must keep official_skill='superpowers:<stage>'; agents must load/read "
+    "the official SuperPowers SKILL before executing the current stage and must not "
+    "begin development from workflow_contract summaries alone."
+)
+
+
+def _nonempty_text(value, default: str) -> str:
+    text = str(value or "").strip()
+    return text or default
+
+
+def _workflow_route_catalog() -> dict:
+    try:
+        from plastic_promise.skills.superpowers_stages import STAGE_ROUTE_MAP
+
+        catalog = {}
+        for route_id, route in STAGE_ROUTE_MAP.items():
+            stages = list(route.get("stages") or [])
+            catalog[route_id] = {
+                "label": route.get("label", route_id),
+                "summary": route.get("summary", ""),
+                "entry_stage": stages[0] if stages else _DEFAULT_WORKFLOW_ENTRY_STAGE,
+                "stages": stages,
+            }
+        if catalog:
+            return catalog
+    except Exception:
+        pass
+
+    return {
+        _DEFAULT_WORKFLOW_ROUTE: {
+            "label": "Normal development",
+            "summary": "Default SuperPowers development route.",
+            "entry_stage": _DEFAULT_WORKFLOW_ENTRY_STAGE,
+            "stages": [_DEFAULT_WORKFLOW_ENTRY_STAGE],
+        }
+    }
+
+
+def _build_workflow_contract(params: dict, stage_session_id: str) -> dict:
+    route = _nonempty_text(
+        params.get("route") or params.get("workflow_route"),
+        _DEFAULT_WORKFLOW_ROUTE,
+    )
+    flow_line_id = _nonempty_text(
+        params.get("flow_line_id") or params.get("flow_id"),
+        route,
+    )
+    public_stage_session_id = _nonempty_text(
+        stage_session_id or params.get("stage_session_id") or params.get("stage_id"),
+        "default",
+    )
+    route_catalog = _workflow_route_catalog()
+    route_profile = route_catalog.get(route)
+    stages = list((route_profile or {}).get("stages") or [_DEFAULT_WORKFLOW_ENTRY_STAGE])
+    entry_stage = stages[0] if stages else _DEFAULT_WORKFLOW_ENTRY_STAGE
+    flow_scope_id = f"{public_stage_session_id}::flow:{flow_line_id}"
+
+    return {
+        "default_route": _DEFAULT_WORKFLOW_ROUTE,
+        "route": route,
+        "route_id": route,
+        "flow_line_id": flow_line_id,
+        "stage_session_id": public_stage_session_id,
+        "flow_scope_id": flow_scope_id,
+        "entry_stage": entry_stage,
+        "stages": stages,
+        "valid_root_entrypoints": list(_VALID_WORKFLOW_ENTRYPOINTS),
+        "available_routes": route_catalog,
+        "custom_route_policy": (
+            "Custom route ids are allowed, but every call must still pass a "
+            "non-empty flow_line_id and read the official SuperPowers SKILL for the stage."
+        ),
+        "skill_authority": _WORKFLOW_SKILL_AUTHORITY,
+        "next_call": {
+            "tool": "sp-stage",
+            "stage": entry_stage,
+            "task_description": params.get("task_description", ""),
+            "stage_session_id": public_stage_session_id,
+            "route": route,
+            "flow_line_id": flow_line_id,
+        },
+    }
 
 
 def _compile_component_health(ctx) -> dict:
@@ -330,6 +422,26 @@ async def _session_init_handler(ctx, params, atom_results):
     except Exception:
         chain_state = None
 
+    if not stage_session_id:
+        stage_session_id = _nonempty_text(
+            params.get("stage_session_id") or params.get("stage_id"),
+            "default",
+        )
+    workflow_contract = _build_workflow_contract(params, stage_session_id)
+    if chain_state is not None:
+        chain_state.update(
+            {
+                "default_route": workflow_contract["default_route"],
+                "route": workflow_contract["route"],
+                "route_id": workflow_contract["route_id"],
+                "flow_line_id": workflow_contract["flow_line_id"],
+                "flow_scope_id": workflow_contract["flow_scope_id"],
+                "entry_stage": workflow_contract["entry_stage"],
+                "valid_root_entrypoints": workflow_contract["valid_root_entrypoints"],
+                "skill_authority": workflow_contract["skill_authority"],
+            }
+        )
+
     component_health = _compile_component_health(ctx)
 
     return SkillResult(
@@ -347,6 +459,7 @@ async def _session_init_handler(ctx, params, atom_results):
             "trust": defense_data,
             "gc_preview": gc_data,
             "stage_session_id": stage_session_id,
+            "workflow_contract": workflow_contract,
             "chain_state": chain_state,
             "component_health": component_health,
         },

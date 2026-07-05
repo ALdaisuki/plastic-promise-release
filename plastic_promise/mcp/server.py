@@ -989,6 +989,14 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "SuperPowers stage chain scope id; omitted means session-init allocates one",
                         },
+                        "flow_line_id": {
+                            "type": "string",
+                            "description": "SuperPowers flow line id to pair with stage_session_id; omitted defaults to the selected route",
+                        },
+                        "route": {
+                            "type": "string",
+                            "description": "Default SuperPowers route profile for workflow_contract; built-ins include normal-development, audit-review, and bug-hunt",
+                        },
                         "agent_name": {
                             "type": "string",
                             "description": "Agent identity used when allocating a stage_session_id",

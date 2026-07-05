@@ -66,7 +66,9 @@ def test_handler_read_optional_fields_are_declared():
     assert set(context_graph["enum"]) == {"node_info", "traverse", "full_graph", "neighbors"}
 
     session_props = set(tools["session-init"].inputSchema["properties"])
-    assert {"context_mode", "context_timeout_s", "scope"}.issubset(session_props)
+    assert {"context_mode", "context_timeout_s", "scope", "route", "flow_line_id"}.issubset(
+        session_props
+    )
 
 
 def test_hyphenated_skill_aliases_are_exposed_with_matching_required_fields():

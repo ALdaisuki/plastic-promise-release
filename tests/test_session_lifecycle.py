@@ -207,6 +207,94 @@ class TestSessionInit:
         assert first.data["chain_state"]["stage_session_id"] == first.data["stage_session_id"]
 
     @pytest.mark.asyncio
+    async def test_session_init_returns_default_workflow_contract(self, mock_engine):
+        """session-init should declare non-null default route and flow inputs for sp-stage."""
+        se = SkillEngine(mock_engine)
+
+        async def ok_atom(data):
+            async def handler(engine, args):
+                return [TextContent(type="text", text=json.dumps(data))]
+
+            return handler
+
+        se._atoms["principle_activate"] = await ok_atom({"activated": []})
+        se._atoms["scarf_reflect"] = await ok_atom({})
+        se._atoms["domain"] = await ok_atom({})
+        se._atoms["system"] = await ok_atom({})
+        se._atoms["defense"] = await ok_atom({})
+        se._atoms["memory_gc"] = await ok_atom({})
+        se._atoms["skill_session_start"] = await ok_atom({"entity_id": "skill:session-init:..."})
+        se.register(skill_session_init)
+
+        result = await se.exec(
+            "session-init",
+            params={"task_description": "default workflow", "agent_name": "agent-a"},
+            caller="claude",
+        )
+
+        contract = result.data["workflow_contract"]
+        stage_session_id = result.data["stage_session_id"]
+        assert contract["default_route"] == "normal-development"
+        assert contract["route"] == "normal-development"
+        assert contract["route_id"] == "normal-development"
+        assert contract["flow_line_id"] == "normal-development"
+        assert contract["flow_scope_id"] == f"{stage_session_id}::flow:normal-development"
+        assert contract["entry_stage"] == "brainstorming"
+        assert contract["stages"][:2] == ["brainstorming", "exemplar-research"]
+        assert "superpowers:<stage>" in contract["skill_authority"]
+        assert "must load/read" in contract["skill_authority"]
+
+        for key in ("route", "route_id", "flow_line_id", "flow_scope_id", "entry_stage"):
+            assert contract[key] is not None
+            assert result.data["chain_state"][key] == contract[key]
+
+    @pytest.mark.asyncio
+    async def test_session_init_accepts_explicit_workflow_route_and_flow(self, mock_engine):
+        """Callers can start a named flow line without route/flow falling back to null."""
+        se = SkillEngine(mock_engine)
+
+        async def ok_atom(data):
+            async def handler(engine, args):
+                return [TextContent(type="text", text=json.dumps(data))]
+
+            return handler
+
+        se._atoms["principle_activate"] = await ok_atom({"activated": []})
+        se._atoms["scarf_reflect"] = await ok_atom({})
+        se._atoms["domain"] = await ok_atom({})
+        se._atoms["system"] = await ok_atom({})
+        se._atoms["defense"] = await ok_atom({})
+        se._atoms["memory_gc"] = await ok_atom({})
+        se._atoms["skill_session_start"] = await ok_atom({"entity_id": "skill:session-init:..."})
+        se.register(skill_session_init)
+
+        result = await se.exec(
+            "session-init",
+            params={
+                "task_description": "bug hunt workflow",
+                "stage_session_id": "stage:test:explicit",
+                "route": "bug-hunt",
+                "flow_line_id": "debug-a",
+            },
+            caller="claude",
+        )
+
+        contract = result.data["workflow_contract"]
+        assert contract["route"] == "bug-hunt"
+        assert contract["route_id"] == "bug-hunt"
+        assert contract["flow_line_id"] == "debug-a"
+        assert contract["flow_scope_id"] == "stage:test:explicit::flow:debug-a"
+        assert contract["entry_stage"] == "systematic-debugging"
+        assert contract["stages"] == [
+            "systematic-debugging",
+            "test-driven-development",
+            "verification-before-completion",
+            "finishing-a-development-branch",
+        ]
+        assert result.data["chain_state"]["route"] == "bug-hunt"
+        assert result.data["chain_state"]["flow_line_id"] == "debug-a"
+
+    @pytest.mark.asyncio
     async def test_session_init_degraded_domain_skip(self, mock_engine):
         """When domain fails with degrade='skip', session-init must continue and note the skip."""
         se = SkillEngine(mock_engine)
