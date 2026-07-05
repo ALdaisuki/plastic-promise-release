@@ -13,7 +13,9 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 - **审计同步**: 11 维审计结果所有 Agent 可见
 - **自治流水线**: 标签驱动、零 Token Daemon、自动衔接
 
-## MCP 工具目录 (51 工具, 以源码 `plastic_promise/mcp/server.py` 为准)
+## MCP 工具目录 (56 暴露工具, 以源码 `plastic_promise/mcp/server.py` 为准)
+
+> 计数包含 `session_init` / `sp_stage` 等兼容别名。下方按主工具面分组列出；兼容别名只用于客户端命名差异，不另列业务域。
 
 ### 记忆域 (9)
 | 工具 | 用途 |
@@ -62,6 +64,11 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | `issue_create` | 创建 Issue，关联原则和依赖关系 |
 | `issue_transition` | 推进 Issue 状态：open→in_progress→resolved→closed |
 | `issue_list` | 列出 Issue，按状态和 owner 筛选 |
+
+### 运行模式域 (1)
+| 工具 | 用途 |
+|------|------|
+| `runtime_mode` | 查询或热更新当前 MCP 进程运行模式：light/normal/rust-normal/full/rust-full；更新后刷新 Rust health 与重型初始化状态 |
 
 ### 经验包域 (2)
 | 工具 | 用途 |
@@ -131,7 +138,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 ## 工作流约定
 
 ### 1. 每次任务开始
-Codex 工具暴露约定：Codex 可能把 MCP 工具放在 deferred/dynamic metadata 中，初始显式工具列表未出现不代表 MCP 未连接。若 `session-init` / `sp-stage` 等 Plastic Promise MCP 工具未展开，必须先调用 `tool_search` 查询 `Plastic Promise MCP session-init sp-stage defense memory_recall context_supply`；只有 `tool_search` 仍找不到、且配置/健康检查也不可用时，才明确说明 MCP 未加载或未连接并进入本地文件、shell、测试和显式上下文降级。不要因 MCP 缺失而卡死当前工作。
+Codex 工具暴露约定：Codex 可能把 MCP 工具放在 deferred/dynamic metadata 中，初始显式工具列表未出现不代表 MCP 未连接。若 `session-init` / `sp-stage` / `runtime_mode` 等 Plastic Promise MCP 工具未展开，必须先调用 `tool_search` 查询 `Plastic Promise MCP session-init sp-stage defense memory_recall context_supply runtime_mode`；只有 `tool_search` 仍找不到、且配置/健康检查也不可用时，才明确说明 MCP 未加载或未连接并进入本地文件、shell、测试和显式上下文降级。不要因 MCP 缺失而卡死当前工作。
 
 ```
 1. session-init(task_description="<任务描述>", context_mode="light")  → 获取 chain_state + 原则 + SCARF基线 + 信任分 + context_status
@@ -398,6 +405,9 @@ Daemon 扫描器(5个) → 发现问题
 # 推荐：一键启动 MCP Server + Maintenance Daemon + Watchdog
 python scripts/init_and_start.py
 
+# 显式指定启动运行模式
+python scripts/init_and_start.py --mode rust-full
+
 # 仅启动共享 MCP Server
 python -m plastic_promise --sse 9020
 
@@ -415,7 +425,7 @@ Claude Code / Pi Agent / 外部 Agent
         │
         ▼ MCP (stdio | SSE)
 ┌──────────────────────────────────────┐
-│ Plastic Promise MCP Server (51工具)   │
+│ Plastic Promise MCP Server (56工具)   │
 │  ┌────┐┌────┐┌────┐┌────┐┌────┐┌────┐│
 │  │记忆││原则││上下文││审计││技能││SP  ││  14 组
 │  │ 9  ││ 2  ││ 4  ││ 3  ││ 5  ││ 1  ││

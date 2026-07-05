@@ -7,12 +7,14 @@
 
 每次会话开始，依次执行：
 
-> Codex 兼容提示：Codex 可能将 Plastic Promise MCP 工具作为 deferred/dynamic metadata 暂存，初始显式工具列表未出现不等于服务器未连接。若 `session-init` / `sp-stage` 不在当前工具面，先用 `tool_search` 查询 `Plastic Promise MCP session-init sp-stage defense memory_recall context_supply`，再决定是否降级。
+> Codex 兼容提示：Codex 可能将 Plastic Promise MCP 工具作为 deferred/dynamic metadata 暂存，初始显式工具列表未出现不等于服务器未连接。若 `session-init` / `sp-stage` / `runtime_mode` 不在当前工具面，先用 `tool_search` 查询 `Plastic Promise MCP session-init sp-stage defense memory_recall context_supply runtime_mode`，再决定是否降级。
 
 0. **server up check** — `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9020/health')"`
    - 不可用（报错）→ 启动:
-     - 完整模式: `python scripts/init_and_start.py` (需要 Ollama 提供 embedding)
-     - 降级模式: `python scripts/init_and_start.py --skip-ollama-check` (Ollama 不可用时使用 FallbackEmbedder)
+     - 推荐模式: `python scripts/init_and_start.py --mode rust-full`
+     - 交互选择: `python scripts/init_and_start.py`（终端交互时询问模式；非交互默认 `rust-full`）
+     - 轻量降级: `python scripts/init_and_start.py --mode light --skip-ollama-check`（Ollama 不可用时使用 FallbackEmbedder）
+   - 启动模式: `light` / `normal` / `rust-normal` / `full` / `rust-full`
    - 启动器同时拉起 MCP Server (:9020) + Maintenance Daemon + Watchdog 守护
    - 仍不可用 → 告警，本次会话使用文件系统降级（写入 `.md` 需加 `[[pending-sync]]` 标记）
 
@@ -27,22 +29,38 @@
 >
 > `principle_activate` 使用 `domain_hint` 参数限定原则域: `building` | `fixing` | `designing` | `reflecting` | `governing` | `connecting` | `all`
 
-## MCP 工具 (48 个, 11 域 + 1 SuperPowers)
+## MCP 工具 (56 个暴露工具, 以源码为准)
 
 | 域 | 工具 |
 |------|------|
-| Memory (10) | memory_recall, memory_store, memory_update, memory_forget, memory_stats, memory_list, memory_gc, memory_correct, memory_reclassify, memory_sync_files |
-| Domain (1) | domain(action=stats\|merge\|unmerge\|rename\|rebuild) |
-| Principles (4) | principle_activate(+domain_hint), principle_inherit, principle_diffuse, principle_evaluate |
-| Context (5) | context_supply, context_inject, context_graph, context_ready, auto_context_inject |
+| Memory (9) | memory_recall, memory_store, memory_update, memory_forget, memory_list, memory_gc, memory_correct, memory_reclassify, memory_sync_files |
+| Principles (2) | principle_activate(+domain_hint), principle_evaluate |
+| Context (4) | context_supply, context_inject, context_graph, auto_context_inject |
 | Audit (3) | audit_run(action=full\|report), audit_pre_check, defense(action=get\|history\|adjust\|status) |
 | Reflection (2) | scarf_reflect(mode=standard\|inertia), feedback_apply |
 | System (4) | system(action=stats\|backup\|migrate), issue_create, issue_transition, issue_list |
-| Pack (3) | pack_export(streaming), pack_import(strategy), pack_recall(strict) |
+| Runtime (1) | runtime_mode(action=get\|set, mode=light\|normal\|rust-normal\|full\|rust-full) |
+| Pack (2) | pack_export(streaming), pack_import(strategy) |
 | **Skill Track (5)** | **skill_session_start, skill_session_complete, skill_session_trace, skill_session_audit, skill_auto_track** |
 | **Skills (3)** | **session-init, smart-remember, step-closure** |
+| **Domain (1)** | **domain(action=stats\|merge\|unmerge\|rename\|rebuild)** |
 | **Dispatch (7)** | **task_enqueue, task_claim, task_complete, task_verify, task_inbox, task_heartbeat, task_abandon** |
+| **Review (1)** | **review_run(action=prepare\|evaluate\|apply\|full)** |
+| **Market (7)** | **market_list, market_install, market_upgrade, market_remove, market_enable, market_disable, market_status** |
 | **SuperPowers (1)** | **sp-stage(stage, task_description) — 12 阶段统一入口** |
+| Compatibility aliases (4) | session_init, smart_remember, step_closure, sp_stage |
+
+### 运行模式
+
+| 模式 | 启动行为 |
+|------|----------|
+| `light` | Python 路径，跳过 LanceDB 启动预热，适合快速轻量启动 |
+| `normal` | Python 路径，允许 LanceDB 按需懒初始化 |
+| `rust-normal` | Rust-first context supply，不做启动期 rebuild |
+| `full` | Python 路径，启动时执行 LanceDB init/backfill/rebuild |
+| `rust-full` | Rust-first + 完整 LanceDB 维护；非交互启动默认模式 |
+
+运行后可通过 MCP 热更新当前进程模式：`runtime_mode(action="get")` 查看，`runtime_mode(action="set", mode="rust-normal")` 切换。切换后 MCP Server 会刷新 Rust health 与重型初始化状态。
 
 ## SuperPowers 流水线
 
@@ -433,10 +451,12 @@ defense(action="get") → 根据 tier 决定行为:
 ### 服务启动 (One-Click Launcher)
 
 ```bash
+python scripts/init_and_start.py --mode rust-full
+# 或省略 --mode，在交互终端中选择 light/normal/rust-normal/full/rust-full
 python scripts/init_and_start.py
 ```
 
-自动启动 MCP Server (:9020) + Maintenance Daemon，watchdog 守护崩溃自动恢复。
+自动启动 MCP Server (:9020) + Maintenance Daemon，watchdog 守护崩溃自动恢复。非交互环境默认 `rust-full`；服务运行后可用 `runtime_mode(action="get")` 查询，或 `runtime_mode(action="set", mode="light")` 热切换当前 MCP 进程模式。
 
 ### 元审计扫描器 (scan_scheduler_health)
 

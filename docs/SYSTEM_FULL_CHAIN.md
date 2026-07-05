@@ -33,6 +33,7 @@ Every serious task should pass through this loop:
 | Subsystem | Role |
 |---|---|
 | MCP Server | Exposes the runtime to Claude Code and other MCP clients over stdio or SSE. |
+| Launcher runtime modes | Select startup depth and Rust acceleration before services start, with MCP hot updates through `runtime_mode`. |
 | Memory | Stores reusable experience, decisions, preferences, task knowledge, and derived signals. |
 | Context | Retrieves the most relevant memory and graph context for the current task. |
 | Principles | Keeps work aligned with the project’s operating commitments. |
@@ -106,11 +107,25 @@ Exclude:
 - Detailed internal planning/specification archives that are not needed for users.
 - Temporary diagnostic scripts not part of the supported workflow.
 
-## 9. Degraded-mode boundary
+## 9. Runtime mode boundary
+
+The one-click launcher can start the system in five explicit modes:
+
+| Mode | Boundary |
+|---|---|
+| `light` | Fast bootstrap; LanceDB startup work is deferred and Python context supply is forced. |
+| `normal` | Python context supply with LanceDB available through lazy initialization. |
+| `rust-normal` | Rust-first context supply with Python fallback, without startup LanceDB rebuild. |
+| `full` | Python context supply plus startup LanceDB init/backfill/rebuild. |
+| `rust-full` | Rust-first context supply plus full startup LanceDB maintenance. |
+
+Interactive launcher runs ask for the mode when `--mode` is omitted. Non-interactive runs default to `rust-full`, preserving the most complete Rust-first path for automation. A running MCP process can be inspected or changed with `runtime_mode(action="get")` and `runtime_mode(action="set", mode="light")`; the server refreshes Rust health and heavy initialization state after a change.
+
+## 10. Degraded-mode boundary
 
 Plastic Promise is local-first by default. Optional external calls depend on configured agents, embedding providers, rerankers, or LLM integrations. If optional services are unavailable, the runtime should explicitly label degraded behavior and continue through safe fallback paths when possible.
 
-## 10. Operating principles
+## 11. Operating principles
 
 1. **Context before action** — retrieve relevant memory before major decisions.
 2. **Traceability over speed** — leave a path future agents can audit.
@@ -120,7 +135,7 @@ Plastic Promise is local-first by default. Optional external calls depend on con
 6. **Verification before completion** — done means checked, not merely edited.
 7. **Reflection after output** — useful lessons should feed the next loop.
 
-## 11. Minimal mental model
+## 12. Minimal mental model
 
 Plastic Promise is a loop:
 

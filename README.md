@@ -122,9 +122,24 @@ maturin develop --release
 # One-click launcher: MCP server (:9020) + maintenance daemon + watchdog
 python scripts/init_and_start.py
 
+# Non-interactive startup can pin a runtime mode
+python scripts/init_and_start.py --mode rust-full
+
 # If Ollama is unavailable, use fallback embedding mode
 python scripts/init_and_start.py --skip-ollama-check
 ```
+
+If no mode is provided in an interactive terminal, the launcher asks which runtime mode to use before it starts services. Non-interactive startup defaults to `rust-full` to preserve the Rust-first full warmup path.
+
+| Mode | Rust supply | LanceDB startup warmup | Typical use |
+|---|---:|---:|---|
+| `light` | no | no | Fastest startup; defer LanceDB and use the Python path. |
+| `normal` | no | no | Python path with lazy LanceDB init available later. |
+| `rust-normal` | yes | no | Rust-first context supply without startup rebuild. |
+| `full` | no | yes | Python path plus LanceDB init/backfill/rebuild on startup. |
+| `rust-full` | yes | yes | Rust-first context supply plus full LanceDB maintenance. |
+
+After startup, MCP clients can inspect or hot-switch the process mode with `runtime_mode(action="get")` and `runtime_mode(action="set", mode="rust-normal")`.
 
 Run only the MCP server:
 
@@ -221,7 +236,7 @@ This module map follows a capability-first layout so readers can understand the 
 
 ## MCP Tool Surface
 
-The current source declares **51 MCP tools** in `plastic_promise/mcp/server.py`. Older documents may mention 48; those counts predate the review and market tool groups.
+The current source exposes **56 MCP tools** in `plastic_promise/mcp/server.py`, including compatibility aliases such as `session_init` for `session-init`. Older documents may mention 48 or 51; those counts predate the runtime mode tool, market tools, review tools, and alias surface.
 
 | Group | Tools |
 |---|---|
@@ -230,7 +245,7 @@ The current source declares **51 MCP tools** in `plastic_promise/mcp/server.py`.
 | Context | `context_supply`, `context_inject`, `context_graph`, `auto_context_inject` |
 | Audit and defense | `audit_run`, `audit_pre_check`, `defense` |
 | Reflection | `scarf_reflect`, `feedback_apply` |
-| System | `system`, `issue_create`, `issue_transition`, `issue_list` |
+| System and runtime | `system`, `runtime_mode`, `issue_create`, `issue_transition`, `issue_list` |
 | Experience packs | `pack_export`, `pack_import` |
 | Domain federation | `domain` |
 | Dispatch | `task_enqueue`, `task_claim`, `task_complete`, `task_verify`, `task_inbox`, `task_heartbeat`, `task_abandon` |
@@ -283,6 +298,7 @@ Local storage is the default. Optional external calls depend on configured agent
 | MCP server port | `9020` for SSE mode |
 | Server entrypoint | `python -m plastic_promise` |
 | One-click launcher | `python scripts/init_and_start.py` |
+| Launcher modes | `light`, `normal`, `rust-normal`, `full`, `rust-full`; non-interactive default is `rust-full` |
 | Maintenance daemon | `daemons/maintenance_daemon.py` |
 | Default local embedding path | Ollama `mxbai-embed-large`, with fallback embedder when configured |
 | Structured database | `data/db/plastic_memory.db` unless `PLASTIC_DB_PATH` overrides it |

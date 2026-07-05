@@ -46,7 +46,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 ### 稳定/活跃
 
 - MCP Server 支持 stdio 与 SSE 模式。
-- 一键启动器 `scripts/init_and_start.py` 可启动 MCP Server、Maintenance Daemon 与 Watchdog。
+- 一键启动器 `scripts/init_and_start.py` 可启动 MCP Server、Maintenance Daemon 与 Watchdog，并支持 `light`、`normal`、`rust-normal`、`full`、`rust-full` 五种运行模式。
 - 记忆质量管道已接入提取、分类、向量去重、QualityGate、衰减初始化与 LanceDB 双写。
 - ContextEngine Python 路径是当前权威完整路径。
 - `session-init`、`smart-remember`、`step-closure`、`sp-stage` 已作为程序化技能暴露。
@@ -63,7 +63,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 
 ### 当前 MCP 工具面
 
-当前 `plastic_promise/mcp/server.py` 中声明 51 个 MCP 工具。旧文档中的 40、41、48 等数字是阶段性历史记录，发行版文档以后以源码声明为准。
+当前 `plastic_promise/mcp/server.py` 中暴露 56 个 MCP 工具，其中包含 `session_init` / `sp_stage` 等兼容别名。旧文档中的 40、41、48、51 等数字是阶段性历史记录，发行版文档以后以源码声明为准。
 
 主要分组：
 
@@ -74,7 +74,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 | Context | 上下文供给、图谱、注入与自动上下文注入 |
 | Audit/Defense | 审计、防线、信任分 |
 | Reflection | SCARF 自省与反馈应用 |
-| System | 系统状态、Issue 生命周期 |
+| System/Runtime | 系统状态、运行模式热更新、Issue 生命周期 |
 | Pack | 经验包导入导出 |
 | Domain | 域联邦管理 |
 | Dispatch | Hunter Guild 委托生命周期 |
@@ -137,6 +137,9 @@ task:pending -> task:accepted -> task:active -> task:done -> task:review -> task
 # 推荐：一键启动 MCP Server + Maintenance Daemon + Watchdog
 python scripts/init_and_start.py
 
+# 显式指定运行模式（自动化/后台启动推荐）
+python scripts/init_and_start.py --mode rust-full
+
 # Ollama 不可用时使用 fallback embedder
 python scripts/init_and_start.py --skip-ollama-check
 
@@ -146,6 +149,18 @@ python -m plastic_promise --sse 9020
 # 单独启动维护守护进程
 python daemons/maintenance_daemon.py
 ```
+
+启动模式：
+
+| 模式 | 含义 |
+|---|---|
+| `light` | 最快启动，延迟 LanceDB，强制 Python 供给路径 |
+| `normal` | Python 供给路径，允许后续懒初始化 LanceDB |
+| `rust-normal` | Rust 优先供给，跳过启动 LanceDB backfill/rebuild |
+| `full` | Python 供给路径，启动时执行完整 LanceDB 维护 |
+| `rust-full` | Rust 优先供给，启动时执行完整 LanceDB 维护；非交互默认 |
+
+运行中可通过 MCP `runtime_mode(action="get")` 查看模式，或 `runtime_mode(action="set", mode="light")` 热切换当前 MCP 进程模式。
 
 ### Claude / MCP 客户端开始任务
 
