@@ -112,7 +112,9 @@ http://127.0.0.1:9020/sse
 | 审计与防线 | `audit_pre_check`、`audit_run`、`defense` 在写操作和风险动作前提供检查。 |
 | 信任分驱动自治 | 信任分越高，自主权越大；信任分下降时需要更多显式确认。 |
 | Hunter Guild 委托系统 | 通过 `task_enqueue -> task_claim -> task_complete -> task_verify` 管理多 Agent 协作。 |
-| Skills / SuperPowers | `session-init`、`smart-remember`、`step-closure`、`sp-stage` 把工作流变成可追踪工具。 |
+| Skills / SuperPowers | `session-init`、`smart-remember`、`step-closure`、16 阶段 `sp-stage` 把工作流变成可追踪工具。 |
+
+`sp-stage` 当前覆盖完整 SuperPowers 技能面：`using-superpowers`、`brainstorming`、`exemplar-research`、`using-git-worktrees`、`writing-plans`、`executing-plans`、`subagent-driven-development`、`test-driven-development`、`verification-before-completion`、`finishing-a-development-branch`、`requesting-code-review`、`receiving-code-review`、`audit`、`systematic-debugging`、`dispatching-parallel-agents`、`writing-skills`。其中 `using-superpowers` 和 `writing-skills` 是元技能阶段，用于启动技能选择和技能编写/验证流程。
 | Maintenance Daemon | 执行扫描、恢复、GC、任务生命周期维护和调度健康检查。 |
 | 插件与市场 | 通过 pack 元数据加载知识、工作流、能力和适配器扩展。 |
 

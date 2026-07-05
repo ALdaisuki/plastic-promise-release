@@ -82,7 +82,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 | Skills | session-init、smart-remember、step-closure |
 | Review | 结构化代码审查入口 |
 | Market | 插件市场管理 |
-| SuperPowers | 12 阶段统一入口 `sp-stage` |
+| SuperPowers | 16 阶段统一入口 `sp-stage`，覆盖完整已安装 SuperPowers 技能面 |
 
 ## 四、12 条核心约定
 

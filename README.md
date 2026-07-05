@@ -255,6 +255,22 @@ The current source exposes **56 MCP tools** in `plastic_promise/mcp/server.py`, 
 | Market | `market_list`, `market_install`, `market_upgrade`, `market_remove`, `market_enable`, `market_disable`, `market_status` |
 | SuperPowers | `sp-stage` |
 
+`sp-stage` exposes the full installed SuperPowers surface as a single MCP entrypoint. The 16 stages are:
+
+```text
+using-superpowers -> brainstorming -> exemplar-research -> using-git-worktrees
+  -> writing-plans -> executing-plans / subagent-driven-development
+  -> test-driven-development -> verification-before-completion
+  -> finishing-a-development-branch
+
+requesting-code-review -> receiving-code-review -> audit
+systematic-debugging -> test-driven-development
+dispatching-parallel-agents
+writing-skills
+```
+
+`using-superpowers` and `writing-skills` are meta stages. They are still exposed through `sp-stage` so MCP clients can discover the same skill surface that the installed SuperPowers plugin provides.
+
 ---
 
 ## Core Concepts
@@ -353,7 +369,7 @@ Conventions:
 | Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
 | Context supply | Active | Python path is canonical; Rust path is optional and still converging. |
 | Hunter Guild | Experimental | Task lifecycle is wired; policy and scanner quality are still evolving. |
-| Skills and SuperPowers | Active | `session-init`, `smart-remember`, `step-closure`, and `sp-stage` are exposed. |
+| Skills and SuperPowers | Active | `session-init`, `smart-remember`, `step-closure`, and the 16-stage `sp-stage` surface are exposed. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |
 | Release pipeline | Active | PyPI and GitHub Actions release sync are configured. |
 | Documentation | In progress | This release pass reconciles public docs with current source truth. |
