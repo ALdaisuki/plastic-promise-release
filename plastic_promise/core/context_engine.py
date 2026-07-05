@@ -2054,18 +2054,24 @@ class ContextEngine:
                 pack.audit_metadata = dict(rust_pack.audit_metadata)
         else:
             pack.audit_metadata = {}
+        pack.audit_metadata.setdefault("engine_mode", "snapshot")
+
+        if hasattr(rust_pack, "pipeline_stats") and rust_pack.pipeline_stats:
+            pack.pipeline_stats = dict(rust_pack.pipeline_stats)
+        if hasattr(rust_pack, "per_item_stats") and rust_pack.per_item_stats:
+            pack.per_item_stats = [dict(row) for row in rust_pack.per_item_stats]
 
         return pack
 
     def _supply_rust(
         self, task_description: str, task_vector: list, task_type: str, scope: str
     ) -> ContextPack:
-        """Rust-accelerated supply path (Phase 2 primary).
+        """Rust-accelerated supply path.
 
-        Rust engine reads from its own read-only SQLite connection to
-        plastic_memory.db. Memories are NOT passed from Python — the
-        Rust engine is self-contained. Passes empty list for backward
-        compatibility with the PyO3 signature.
+        Current mode is snapshot-fed: Python owns storage and passes a
+        call-time memory/vector snapshot into Rust. Rust owns deterministic
+        ranking math for this opt-in path, while Python remains the write
+        authority and fallback implementation.
         """
         from context_engine_core import ContextEngine as RustEngine
 

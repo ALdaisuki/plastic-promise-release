@@ -1,10 +1,41 @@
 """Rust vs Python supply() performance benchmarks."""
 
 import os
-import time
 import statistics
+import sys
+import time
+from pathlib import Path
+
+import pytest
 
 os.environ["AGENT_USE_SQLITE"] = "0"
+
+slow_benchmark = pytest.mark.skipif(
+    os.environ.get("PP_RUN_SLOW_BENCHMARKS") != "1",
+    reason="Set PP_RUN_SLOW_BENCHMARKS=1 to run slow Python supply benchmarks.",
+)
+
+
+def _ensure_rust_extension_importable() -> None:
+    """Allow local cargo release builds to satisfy `import context_engine_core`."""
+    root = Path(__file__).resolve().parents[1]
+    release_dir = root / "rust" / "context-engine-core" / "target" / "release"
+    if release_dir.exists():
+        sys.path.insert(0, str(release_dir))
+
+    if sys.platform.startswith("win"):
+        dll_path = release_dir / "context_engine_core.dll"
+        pyd_path = release_dir / "context_engine_core.pyd"
+        if dll_path.exists() and (
+            not pyd_path.exists() or dll_path.stat().st_mtime > pyd_path.stat().st_mtime
+        ):
+            pyd_path.write_bytes(dll_path.read_bytes())
+
+
+def _load_rust_engine():
+    _ensure_rust_extension_importable()
+    module = pytest.importorskip("context_engine_core")
+    return module.ContextEngine
 
 
 def benchmark_supply(engine, memory_count: int, iterations: int = 10) -> dict:
@@ -53,6 +84,8 @@ def benchmark_supply(engine, memory_count: int, iterations: int = 10) -> dict:
     }
 
 
+@pytest.mark.slow
+@slow_benchmark
 def test_baseline_python_supply():
     """Record baseline Python supply() latency (no Rust)."""
     from plastic_promise.core.context_engine import ContextEngine
@@ -68,9 +101,10 @@ def test_baseline_python_supply():
         f"p95={result['p95']:.1f}ms, p99={result['p99']:.1f}ms"
     )
     assert result["p50"] > 0
-    return result
 
 
+@pytest.mark.slow
+@slow_benchmark
 def test_benchmark_1000_memories():
     """Benchmark with 1000 memories — comparison point for Rust."""
     from plastic_promise.core.context_engine import ContextEngine
@@ -88,6 +122,8 @@ def test_benchmark_1000_memories():
     assert result["p50"] > 0
 
 
+@pytest.mark.slow
+@slow_benchmark
 def test_benchmark_empty_pool():
     """Benchmark supply() with empty memory pool."""
     from plastic_promise.core.context_engine import ContextEngine
@@ -106,7 +142,7 @@ def test_benchmark_empty_pool():
 
 def test_pyo3_memory_pass_overhead():
     """Measure PyO3 Vec<PyObject> pass time for 1000 memories."""
-    from context_engine_core import ContextEngine as RustEngine
+    RustEngine = _load_rust_engine()
 
     memories = [
         {
@@ -140,3 +176,32 @@ def test_pyo3_memory_pass_overhead():
     )
     # Rust should process 1000 items well under 100ms
     assert p50 < 100, f"PyO3 pass too slow: {p50:.1f}ms"
+
+
+def test_pyo3_supply_exposes_pipeline_metadata():
+    """Actual PyO3 ContextPack exposes Rust debug counters to Python."""
+    RustEngine = _load_rust_engine()
+
+    memories = [
+        {
+            "id": f"meta_{i}",
+            "content": f"Rust metadata smoke memory {i} about BM25 vector fusion MMR",
+            "source": "benchmark",
+            "memory_type": "experience",
+        }
+        for i in range(4)
+    ]
+
+    rust = RustEngine()
+    pack = rust.supply(
+        "Rust metadata smoke BM25 vector fusion MMR",
+        [0.5] * 768,
+        "code_generation",
+        "global",
+        memories,
+    )
+
+    assert pack.audit_metadata["engine_mode"] == "snapshot"
+    assert pack.pipeline_stats["engine_mode"] == "snapshot"
+    assert "mmr_demoted" in pack.pipeline_stats
+    assert isinstance(pack.per_item_stats, list)

@@ -106,6 +106,48 @@ def test_empty_memories_supply():
     assert pack.total_items == 0
 
 
+def test_convert_rust_pack_preserves_pipeline_metadata():
+    """PyO3 conversion keeps Rust audit and debug counters visible."""
+    from plastic_promise.core.context_engine import ContextEngine
+
+    class FakeItem:
+        def __init__(self):
+            self.id = "mem_1"
+            self.content = "Rust snapshot metadata test"
+            self.relevance = 0.9
+            self.source = "test"
+            self.freshness = "valid"
+            self.layer = "core"
+            self.is_principle = False
+            self.worth_score = 0.5
+
+    class FakeRustPack:
+        core = [FakeItem()]
+        related = []
+        divergent = []
+        activated_principles = ["全过程可查可透明"]
+        audit_metadata = {"engine_version": "0.2.0-rs"}
+        pipeline_stats = {
+            "engine_mode": "snapshot",
+            "vector_hits": "2",
+            "bm25_hits": "3",
+            "mmr_demoted": "1",
+        }
+        per_item_stats = [
+            {"id": "mem_1", "final_score": "0.9000", "source": "test"},
+        ]
+
+    engine = ContextEngine(use_sqlite=False)
+    pack = engine._convert_rust_pack(FakeRustPack())
+
+    assert pack.audit_metadata["engine_version"] == "0.2.0-rs"
+    assert pack.audit_metadata["engine_mode"] == "snapshot"
+    assert pack.pipeline_stats["vector_hits"] == "2"
+    assert pack.pipeline_stats["bm25_hits"] == "3"
+    assert pack.pipeline_stats["mmr_demoted"] == "1"
+    assert pack.per_item_stats[0]["final_score"] == "0.9000"
+
+
 def test_concurrent_supply_does_not_crash():
     """Multiple concurrent supply() calls don't crash or corrupt state."""
     import threading

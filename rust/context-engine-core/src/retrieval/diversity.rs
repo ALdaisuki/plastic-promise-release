@@ -25,14 +25,98 @@ pub fn hard_min_score(items: Vec<(String, f64)>, min_score: f64) -> Vec<(String,
 pub fn mmr_dedup(items: Vec<(String, f64, String)>, threshold: f64) -> Vec<(String, f64, String)> {
     let mut kept: Vec<(String, f64, String)> = Vec::new();
     for (id, score, content) in items {
-        let is_dup = kept.iter().any(|(_, _, existing)| {
-            jaccard_similarity(&content, existing) > threshold
-        });
+        let is_dup = kept
+            .iter()
+            .any(|(_, _, existing)| jaccard_similarity(&content, existing) > threshold);
         if !is_dup {
             kept.push((id, score, content));
         }
     }
     kept
+}
+
+/// Result of soft MMR demotion.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoftMmrResult {
+    pub items: Vec<(String, f64, String)>,
+    pub demoted_count: usize,
+}
+
+/// Soft MMR-style diversity pass.
+///
+/// Unlike [`mmr_dedup`], this preserves every item. Near duplicates are demoted
+/// and deferred, matching Python `_apply_mmr()` semantics used by recall:
+/// keep the strongest item visible, lower duplicate scores, and let lower
+/// layers still see the deferred evidence.
+pub fn soft_mmr_demote(
+    items: Vec<(String, f64, String)>,
+    threshold: f64,
+    duplicate_penalty: f64,
+) -> SoftMmrResult {
+    if items.len() <= 1 {
+        return SoftMmrResult {
+            items,
+            demoted_count: 0,
+        };
+    }
+
+    let mut sorted = items;
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut selected: Vec<(String, f64, String)> = Vec::new();
+    let mut deferred: Vec<(String, f64, String)> = Vec::new();
+    let mut seen_contents: HashSet<String> = HashSet::new();
+    let mut seen_prefixes: HashSet<String> = HashSet::new();
+    let mut demoted_count = 0;
+
+    for (id, score, content) in sorted {
+        if id.starts_with("principle:") {
+            selected.push((id, score, content));
+            continue;
+        }
+
+        let content_key = normalized_prefix(&content, 80);
+        let prefix_key = normalized_prefix(&content, 20);
+        let exact_or_template_dup = (!content_key.is_empty()
+            && seen_contents.contains(&content_key))
+            || (!prefix_key.is_empty() && seen_prefixes.contains(&prefix_key));
+        let semantic_dup = selected
+            .iter()
+            .rev()
+            .take(5)
+            .any(|(_, _, existing)| jaccard_similarity(&content, existing) > threshold);
+
+        if exact_or_template_dup || semantic_dup {
+            demoted_count += 1;
+            deferred.push((id, score * duplicate_penalty, content));
+            continue;
+        }
+
+        if !content_key.is_empty() {
+            seen_contents.insert(content_key);
+        }
+        if !prefix_key.is_empty() {
+            seen_prefixes.insert(prefix_key);
+        }
+        selected.push((id, score, content));
+    }
+
+    deferred.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    selected.extend(deferred);
+
+    SoftMmrResult {
+        items: selected,
+        demoted_count,
+    }
+}
+
+fn normalized_prefix(content: &str, max_chars: usize) -> String {
+    content
+        .chars()
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_lowercase()
 }
 
 /// Jaccard similarity on word sets.
@@ -76,5 +160,39 @@ mod tests {
         ];
         let result = mmr_dedup(items, 0.49);
         assert_eq!(result.len(), 2); // a and b are similar, b removed
+    }
+
+    #[test]
+    fn test_soft_mmr_demotes_duplicates_without_removing() {
+        let items = vec![
+            ("a".into(), 0.9, "hello world rust".into()),
+            ("b".into(), 0.7, "hello world python".into()),
+            ("c".into(), 0.5, "completely different topic".into()),
+        ];
+
+        let result = soft_mmr_demote(items, 0.49, 0.70);
+
+        assert_eq!(result.items.len(), 3);
+        assert_eq!(result.demoted_count, 1);
+        assert_eq!(result.items[0].0, "a");
+        let demoted = result.items.iter().find(|(id, _, _)| id == "b").unwrap();
+        assert!((demoted.1 - 0.49).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_soft_mmr_preserves_principles() {
+        let items = vec![
+            ("a".into(), 0.9, "same content body".into()),
+            ("principle:1".into(), 0.8, "same content body".into()),
+        ];
+
+        let result = soft_mmr_demote(items, 0.20, 0.70);
+
+        assert_eq!(result.demoted_count, 0);
+        assert_eq!(result.items.len(), 2);
+        assert!(result
+            .items
+            .iter()
+            .any(|(id, score, _)| id == "principle:1" && *score == 0.8));
     }
 }

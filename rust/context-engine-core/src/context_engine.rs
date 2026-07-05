@@ -662,29 +662,41 @@ impl ContextEngine {
 
         // BM25: CJK-aware Okapi BM25 index shared with Python fallback semantics.
         let bm25_hits: Vec<(String, f64)> = self.bm25_index.borrow().search(&task_description, candidate_pool_size);
+        let vector_hit_count = vector_hits.len();
+        let bm25_hit_count = bm25_hits.len();
 
-        // Score-based fusion: max(vector_score, bm25_score) per doc
-        use std::collections::HashMap as FuseMap;
-        let mut fuse_map: FuseMap<String, f64> = FuseMap::new();
-        for (id, score) in &vector_hits {
-            fuse_map.insert(id.clone(), *score);
-        }
-        for (id, score) in &bm25_hits {
-            let entry = fuse_map.entry(id.clone()).or_insert(0.0);
-            *entry = f64::max(*entry, *score);
-        }
-        let mut fused: Vec<(String, f64)> = fuse_map.into_iter().collect();
-        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // RRF fusion keeps vector and BM25 channels independent before normalization.
+        let fused_raw = crate::retrieval::fusion::rrf_fuse(&[vector_hits, bm25_hits]);
+        let max_fused_score = fused_raw
+            .first()
+            .map(|(_, score)| *score)
+            .filter(|score| *score > 0.0)
+            .unwrap_or(1.0);
+        let fused: Vec<(String, f64)> = fused_raw.into_iter()
+            .map(|(id, score)| (id, (score / max_fused_score).clamp(0.0, 1.0)))
+            .collect();
 
+        let scored_for_mmr: Vec<(String, f64, String)> = fused.into_iter()
+            .map(|(id, score)| {
+                let content = item_lookup
+                    .get(&id)
+                    .map(|(content, _)| content.clone())
+                    .unwrap_or_default();
+                let norm = crate::retrieval::diversity::length_norm(&content, 500);
+                (id, (score * norm).clamp(0.0, 1.0), content)
+            })
+            .collect();
+        let mmr_result = crate::retrieval::diversity::soft_mmr_demote(scored_for_mmr, 0.85, 0.70);
+        let mmr_demoted_count = mmr_result.demoted_count;
 
         // Build ScoredItems
         let max_results = 30;
-        let scored_items: Vec<crate::retrieval::ScoredItem> = fused.into_iter()
+        let scored_items: Vec<crate::retrieval::ScoredItem> = mmr_result.items.into_iter()
             .take(max_results)
-            .map(|(id, score)| {
+            .map(|(id, score, fallback_content)| {
                 let (content, source) = item_lookup.get(&id)
                     .cloned()
-                    .unwrap_or_else(|| (String::new(), "unknown".to_string()));
+                    .unwrap_or_else(|| (fallback_content, "unknown".to_string()));
                 crate::retrieval::ScoredItem {
                     id, content, score, source,
                     tier: crate::domain::Tier::default(),
@@ -726,12 +738,22 @@ impl ContextEngine {
             }
             ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-            eprintln!("[Rust] ranked {} items, top scores: {:?}",
-                ranked.len(),
-                ranked.iter().take(5).map(|(_, s, _)| *s).collect::<Vec<_>>());
+            let ranked_for_mmr: Vec<(String, f64, String)> = ranked
+                .into_iter()
+                .map(|(id, score, content)| {
+                    let norm = crate::retrieval::diversity::length_norm(&content, 500);
+                    (id, (score * norm).clamp(0.0, 1.0), content)
+                })
+                .collect();
+            let fallback_mmr = crate::retrieval::diversity::soft_mmr_demote(
+                ranked_for_mmr,
+                0.85,
+                0.70,
+            );
+            let fallback_mmr_demoted = fallback_mmr.demoted_count;
 
             let max_return: usize = 200;
-            for (idx, (id, score, content)) in ranked.into_iter().enumerate() {
+            for (idx, (id, score, content)) in fallback_mmr.items.into_iter().enumerate() {
                 if idx >= max_return { break; }
                 let mem = memory_index.get(&id);
                 let worth = mem.map(|m| m.worth_score()).unwrap_or(0.0);
@@ -765,11 +787,16 @@ impl ContextEngine {
             audit.insert("principle_injection_count".into(), pack.activated_principles.len().to_string());
             audit.insert("memory_pool_size".into(), memory_index.len().to_string());
             audit.insert("timestamp".into(), self.current_time.clone());
+            audit.insert("engine_mode".into(), "snapshot".into());
             audit.insert("vector_search".into(), "active".into());
             pack.audit_metadata = audit;
             pack.pipeline_stats.insert("vector_count".into(), real_vector.len().to_string());
+            pack.pipeline_stats.insert("vector_hits".into(), vector_hit_count.to_string());
+            pack.pipeline_stats.insert("bm25_hits".into(), bm25_hit_count.to_string());
             pack.pipeline_stats.insert("bm25_count".into(), self.bm25_index.borrow().total_docs().to_string());
             pack.pipeline_stats.insert("fused_count".into(), pack.total_items().to_string());
+            pack.pipeline_stats.insert("mmr_demoted".into(), fallback_mmr_demoted.to_string());
+            pack.pipeline_stats.insert("engine_mode".into(), "snapshot".into());
             pack.pipeline_stats.insert("core_count".into(), pack.core.len().to_string());
             pack.pipeline_stats.insert("related_count".into(), pack.related.len().to_string());
             pack.pipeline_stats.insert("divergent_count".into(), pack.divergent.len().to_string());
@@ -909,9 +936,16 @@ impl ContextEngine {
             audit.insert("memory_pool_size".into(), count.to_string());
         }
         audit.insert("timestamp".into(), self.current_time.clone());
+        audit.insert("engine_mode".into(), "snapshot".into());
         pack.audit_metadata = audit;
 
         // Populate pipeline_stats and per_item_stats for Python debug parity
+        pack.pipeline_stats.insert("engine_mode".into(), "snapshot".into());
+        pack.pipeline_stats.insert("vector_count".into(), real_vector.len().to_string());
+        pack.pipeline_stats.insert("bm25_count".into(), self.bm25_index.borrow().total_docs().to_string());
+        pack.pipeline_stats.insert("vector_hits".into(), vector_hit_count.to_string());
+        pack.pipeline_stats.insert("bm25_hits".into(), bm25_hit_count.to_string());
+        pack.pipeline_stats.insert("mmr_demoted".into(), mmr_demoted_count.to_string());
         pack.pipeline_stats.insert("fused_count".into(), format!("{}", scored_items.len()));
         pack.pipeline_stats.insert("core_count".into(), pack.core.len().to_string());
         pack.pipeline_stats.insert("related_count".into(), pack.related.len().to_string());
