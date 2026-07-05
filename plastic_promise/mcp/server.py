@@ -2047,10 +2047,12 @@ async def main():
 
     if len(sys.argv) >= 3 and sys.argv[1] == "--sse":
         # SSE 模式 — 供 Pi 和其他 Agent 通过 HTTP 连接
+        os.environ.setdefault("PLASTIC_MCP_TRANSPORT", "sse")
         port = int(sys.argv[2])
         await run_sse(port)
     else:
         # stdio 模式 — 供 Claude Code 本地调用
+        os.environ.setdefault("PLASTIC_MCP_TRANSPORT", "stdio")
         async with stdio_server() as (read_stream, write_stream):
             init_options = server.create_initialization_options()
             await server.run(

@@ -366,8 +366,21 @@ class ContextEngine:
                         "ContextEngine: embedder unavailable — intent matching disabled"
                     )
 
-            # Initialize LanceDB vector store
-            if self._ldb is None:
+            # Initialize LanceDB vector store. Stdio MCP processes are short-lived and
+            # can run concurrently, so they skip LanceDB by default to avoid blocking
+            # user-facing context_supply on connect/open_table/FTS maintenance.
+            ldb_init_setting = os.environ.get("LDB_INIT_ON_HEAVY_INIT")
+            if ldb_init_setting is None:
+                ldb_init_enabled = os.environ.get("PLASTIC_MCP_TRANSPORT") != "stdio"
+            else:
+                ldb_init_enabled = ldb_init_setting == "1"
+
+            if not ldb_init_enabled:
+                logging.info(
+                    "ContextEngine: LanceDBStore init deferred "
+                    "(set LDB_INIT_ON_HEAVY_INIT=1 to enable during init)"
+                )
+            elif self._ldb is None:
                 try:
                     from plastic_promise.core.lancedb_store import LanceDBStore
 
@@ -381,21 +394,39 @@ class ContextEngine:
                     self._ldb = LanceDBStore(
                         ldb_path, self._embedder or get_embedder(fallback_on_error=True)
                     )
-                    self._ldb.backfill(self)
+                    backfill_on_init = os.environ.get("LDB_BACKFILL_ON_INIT", "0") == "1"
+                    rebuild_on_init = os.environ.get("LDB_REBUILD_ON_INIT", "0") == "1"
+                    if backfill_on_init:
+                        self._ldb.backfill(self)
+                    else:
+                        logging.info(
+                            "ContextEngine: LanceDB backfill deferred "
+                            "(set LDB_BACKFILL_ON_INIT=1 to run during init)"
+                        )
                     # Ghost-vector detection: if LanceDB has more rows than SQLite,
                     # there are stale test/pollution vectors — rebuild from SQLite
                     ldb_count = self._ldb.count_rows()
                     sqlite_count = len(self._memories)
                     if ldb_count > sqlite_count:
-                        logging.warning(
-                            "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
-                            " — rebuilding to remove %d ghost vectors",
-                            ldb_count,
-                            sqlite_count,
-                            ldb_count - sqlite_count,
-                        )
-                        self._ldb.rebuild_all(self)
-                    logging.info("ContextEngine: LanceDBStore ready (backfill complete)")
+                        if rebuild_on_init:
+                            logging.warning(
+                                "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
+                                " - rebuilding to remove %d ghost vectors",
+                                ldb_count,
+                                sqlite_count,
+                                ldb_count - sqlite_count,
+                            )
+                            self._ldb.rebuild_all(self)
+                        else:
+                            logging.warning(
+                                "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
+                                " - rebuild deferred for %d ghost vectors "
+                                "(set LDB_REBUILD_ON_INIT=1 to run during init)",
+                                ldb_count,
+                                sqlite_count,
+                                ldb_count - sqlite_count,
+                            )
+                    logging.info("ContextEngine: LanceDBStore ready")
                 except Exception as e:
                     logging.warning(
                         "ContextEngine: LanceDBStore init failed — vector search disabled: %s", e
