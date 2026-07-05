@@ -1,7 +1,7 @@
 import json
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock
 from mcp.types import TextContent
 
 from plastic_promise.skills.engine import SkillEngine
@@ -169,6 +169,42 @@ class TestSessionInit:
         assert result.data["context_status"]["item_count"] == 1
         assert result.data["context_status"]["items"][0]["id"] == "mem_context"
         assert result.data["context_status"]["requires_full_context_before_action"] is True
+
+    @pytest.mark.asyncio
+    async def test_session_init_allocates_stage_session_id(self, mock_engine):
+        """Each session-init call should return an isolated stage chain id."""
+        se = SkillEngine(mock_engine)
+
+        async def ok_atom(data):
+            async def handler(engine, args):
+                return [TextContent(type="text", text=json.dumps(data))]
+
+            return handler
+
+        se._atoms["principle_activate"] = await ok_atom({"activated": []})
+        se._atoms["scarf_reflect"] = await ok_atom({})
+        se._atoms["domain"] = await ok_atom({})
+        se._atoms["system"] = await ok_atom({})
+        se._atoms["defense"] = await ok_atom({})
+        se._atoms["memory_gc"] = await ok_atom({})
+        se._atoms["skill_session_start"] = await ok_atom({"entity_id": "skill:session-init:..."})
+        se.register(skill_session_init)
+
+        first = await se.exec(
+            "session-init",
+            params={"task_description": "agent A", "agent_name": "agent-a"},
+            caller="claude",
+        )
+        second = await se.exec(
+            "session-init",
+            params={"task_description": "agent B", "agent_name": "agent-b"},
+            caller="claude",
+        )
+
+        assert first.data["stage_session_id"].startswith("stage:agent-a:")
+        assert second.data["stage_session_id"].startswith("stage:agent-b:")
+        assert first.data["stage_session_id"] != second.data["stage_session_id"]
+        assert first.data["chain_state"]["stage_session_id"] == first.data["stage_session_id"]
 
     @pytest.mark.asyncio
     async def test_session_init_degraded_domain_skip(self, mock_engine):

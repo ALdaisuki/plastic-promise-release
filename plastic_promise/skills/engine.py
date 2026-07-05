@@ -402,14 +402,21 @@ class SkillEngine:
         entity_id: str = ""
         task_description = params.get("task_description", skill_def.description)
         track_start_memory = skill_def.track_start_memory
+        stage_session_id = params.get("stage_session_id") or params.get("stage_id")
 
         # 3. skill_session_start — skip if hook already created one (via /api/skill-track)
         tracking_degraded = False
         hook_entity_id: str | None = None
+        parent_entity_id: str | None = params.get("parent_entity_id")
         try:
-            from plastic_promise.mcp.tools.skill_tracking import get_current_entity_id
+            from plastic_promise.mcp.tools.skill_tracking import (
+                get_current_entity_id,
+                get_parent_entity_id,
+            )
 
-            hook_entity_id = get_current_entity_id()
+            hook_entity_id = get_current_entity_id(stage_session_id)
+            if not parent_entity_id:
+                parent_entity_id = get_parent_entity_id(stage_session_id)
         except Exception:
             pass
 
@@ -424,6 +431,10 @@ class SkillEngine:
                         "skill_name": skill_name,
                         "task_description": task_description,
                     }
+                    if stage_session_id:
+                        start_args["stage_session_id"] = stage_session_id
+                    if parent_entity_id:
+                        start_args["parent_entity_id"] = parent_entity_id
                     if not track_start_memory:
                         start_args["record_memory"] = False
                     start_result = await self._call_lifecycle(

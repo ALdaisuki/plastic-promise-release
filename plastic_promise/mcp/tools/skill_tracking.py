@@ -10,7 +10,9 @@ Public tools:
 import datetime
 import json
 import logging
+import re
 import threading
+import uuid
 from typing import Any
 
 from mcp.types import TextContent
@@ -34,21 +36,115 @@ _current_skill: str | None = None
 _parent_entity_id: str | None = None
 _current_stage: str | None = None  # Last completed SuperPowers stage name
 _current_entity_id: str | None = None  # Currently active session entity_id (hook-created)
+_DEFAULT_STAGE_SESSION_ID = "default"
+_stage_sessions: dict[str, dict[str, str | None]] = {}
 
 
-def get_current_stage() -> str | None:
-    """Return the last completed SuperPowers stage name, or None."""
+def _normalize_stage_session_id(stage_session_id: str | None = None) -> str:
+    value = str(stage_session_id or "").strip()
+    return value or _DEFAULT_STAGE_SESSION_ID
+
+
+def _safe_agent_name(agent_name: str | None) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(agent_name or "agent")).strip("-")
+    return cleaned.lower() or "agent"
+
+
+def make_stage_session_id(agent_name: str | None = None) -> str:
+    """Allocate an isolated SuperPowers chain scope id."""
+    return f"stage:{_safe_agent_name(agent_name)}:{uuid.uuid4().hex[:12]}"
+
+
+def resolve_stage_session_id(args: dict | None = None) -> str:
+    """Return caller-provided stage_session_id or allocate a new one."""
+    args = args or {}
+    explicit = str(args.get("stage_session_id") or args.get("stage_id") or "").strip()
+    if explicit:
+        return explicit
+    return make_stage_session_id(args.get("agent_name") or args.get("agent"))
+
+
+def _empty_stage_state() -> dict[str, str | None]:
+    return {
+        "current_skill": None,
+        "parent_entity_id": None,
+        "current_stage": None,
+        "current_entity_id": None,
+    }
+
+
+def get_current_stage(stage_session_id: str | None = None) -> str | None:
+    """Return the last completed SuperPowers stage for a chain scope."""
+    scope_id = _normalize_stage_session_id(stage_session_id)
     with _skill_state_lock:
-        return _current_stage
+        if scope_id == _DEFAULT_STAGE_SESSION_ID:
+            return _current_stage
+        return _stage_sessions.get(scope_id, {}).get("current_stage")
 
 
-def get_current_entity_id() -> str | None:
-    """Return the currently active session entity_id (set by hook via /api/skill-track), or None.
+def get_parent_entity_id(stage_session_id: str | None = None) -> str | None:
+    """Return the parent skill entity for the scoped chain."""
+    scope_id = _normalize_stage_session_id(stage_session_id)
+    with _skill_state_lock:
+        if scope_id == _DEFAULT_STAGE_SESSION_ID:
+            return _parent_entity_id
+        return _stage_sessions.get(scope_id, {}).get("parent_entity_id")
+
+
+def set_current_stage(
+    stage: str | None,
+    *,
+    stage_session_id: str | None = None,
+    parent_entity_id: str | None = None,
+) -> None:
+    """Record the last completed stage for a scoped SuperPowers chain."""
+    global _current_stage, _parent_entity_id
+    scope_id = _normalize_stage_session_id(stage_session_id)
+    normalized_stage = normalize_stage_name(stage) if stage else None
+    with _skill_state_lock:
+        if scope_id == _DEFAULT_STAGE_SESSION_ID:
+            _current_stage = normalized_stage
+            if parent_entity_id is not None:
+                _parent_entity_id = parent_entity_id
+            return
+        state = _stage_sessions.setdefault(scope_id, _empty_stage_state())
+        state["current_stage"] = normalized_stage
+        if parent_entity_id is not None:
+            state["parent_entity_id"] = parent_entity_id
+
+
+def get_current_entity_id(stage_session_id: str | None = None) -> str | None:
+    """Return the active session entity_id for a scoped hook-created session.
 
     Used by SkillEngine to skip duplicate skill_session_start when hook already created one.
     """
+    scope_id = _normalize_stage_session_id(stage_session_id)
     with _skill_state_lock:
-        return _current_entity_id
+        if scope_id == _DEFAULT_STAGE_SESSION_ID:
+            return _current_entity_id
+        return _stage_sessions.get(scope_id, {}).get("current_entity_id")
+
+
+def get_stage_chain_state(stage_session_id: str | None = None) -> dict[str, str | None]:
+    """Return a copy of scoped chain state for diagnostics."""
+    scope_id = _normalize_stage_session_id(stage_session_id)
+    with _skill_state_lock:
+        if scope_id == _DEFAULT_STAGE_SESSION_ID:
+            return {
+                "stage_session_id": scope_id,
+                "current_skill": _current_skill,
+                "parent_entity_id": _parent_entity_id,
+                "current_stage": _current_stage,
+                "current_entity_id": _current_entity_id,
+            }
+        state = _stage_sessions.get(scope_id, {})
+        return {
+            "stage_session_id": scope_id,
+            "current_skill": state.get("current_skill"),
+            "parent_entity_id": state.get("parent_entity_id"),
+            "current_stage": state.get("current_stage"),
+            "current_entity_id": state.get("current_entity_id"),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +691,8 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
     """
     skill_name = args.get("skill_name", "")
     task_description = args.get("task_description", "")
-    parent_entity_id = args.get("parent_entity_id")
+    stage_session_id = args.get("stage_session_id") or args.get("stage_id")
+    parent_entity_id = args.get("parent_entity_id") or get_parent_entity_id(stage_session_id)
     record_memory = bool(args.get("record_memory", True))
 
     # Normalize: strip plugin namespace prefix (e.g. "superpowers:brainstorming" → "brainstorming")
@@ -641,7 +738,7 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
     chain_warning = _validate_parent(skill_name, parent_entity_id, engine)
 
     # 1. Register entity in context graph
-    entity_info = _inject_skill_entity(
+    _inject_skill_entity(
         engine,
         entity_id,
         skill_name,
@@ -671,6 +768,7 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
         "activated_principles": [],  # handled by atoms, not duplicated here
         "related_memories": [],  # callers use explicit memory_recall/context_supply
         "tracking_persistence": "memory" if record_memory else "entity_only",
+        "stage_session_id": _normalize_stage_session_id(stage_session_id),
         "tags_applied": tags_applied,
         "chain_warning": chain_warning,
         "memory_id": memory_id,
@@ -1185,13 +1283,19 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
     global _current_skill, _parent_entity_id, _current_stage, _current_entity_id
     phase = args.get("phase", "start")
     skill_name = args.get("skill_name", "")
+    stage_session_id = args.get("stage_session_id") or args.get("stage_id")
+    scope_id = _normalize_stage_session_id(stage_session_id)
 
     if phase == "start":
         with _skill_state_lock:
             # ── Lightweight start: just create entity + activate principles ──
             lookup_name = normalize_stage_name(skill_name)
-            domain = SKILL_DOMAIN_MAP.get(lookup_name, "general")
             entity_id = _make_entity_id(lookup_name)
+            if scope_id == _DEFAULT_STAGE_SESSION_ID:
+                parent_entity_id = _parent_entity_id
+            else:
+                state = _stage_sessions.setdefault(scope_id, _empty_stage_state())
+                parent_entity_id = state.get("parent_entity_id")
 
             # Register entity in context graph (fast, in-memory)
             # Use _parent_entity_id to link to the previous skill in the chain
@@ -1201,7 +1305,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                     entity_id,
                     lookup_name,
                     f"auto-tracked: {lookup_name}",
-                    _parent_entity_id,
+                    parent_entity_id,
                 )
             except Exception:
                 pass
@@ -1217,8 +1321,12 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
             # NOTE: memory_recall and memory_store are intentionally SKIPPED here.
             # The SkillEngine atoms (principle_activate + memory_store) run after
             # hooks and handle the heavy work. Doing it here would double the cost.
-            _current_skill = entity_id
-            _current_entity_id = entity_id
+            if scope_id == _DEFAULT_STAGE_SESSION_ID:
+                _current_skill = entity_id
+                _current_entity_id = entity_id
+            else:
+                state["current_skill"] = entity_id
+                state["current_entity_id"] = entity_id
         return [
             TextContent(
                 type="text",
@@ -1227,6 +1335,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                         "entity_id": entity_id,
                         "status": "tracking",
                         "phase": "start",
+                        "stage_session_id": scope_id,
                     },
                     ensure_ascii=False,
                 ),
@@ -1235,7 +1344,11 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
 
     elif phase == "complete":
         with _skill_state_lock:
-            eid = _current_skill
+            if scope_id == _DEFAULT_STAGE_SESSION_ID:
+                eid = _current_skill
+            else:
+                state = _stage_sessions.setdefault(scope_id, _empty_stage_state())
+                eid = state.get("current_skill")
             if eid:
                 try:
                     # Lightweight complete: run the session_complete handler
@@ -1251,10 +1364,22 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                     pass
             completed_stage = normalize_stage_name(skill_name)
             if completed_stage in SKILL_CHAIN_MAP:
-                _parent_entity_id = eid
-                _current_stage = completed_stage  # Track last completed SuperPowers stage
-            _current_skill = None
-            _current_entity_id = None  # Clear hook session marker
+                if scope_id == _DEFAULT_STAGE_SESSION_ID:
+                    _parent_entity_id = eid
+                    _current_stage = completed_stage  # Track last completed SuperPowers stage
+                else:
+                    state["parent_entity_id"] = eid
+                    state["current_stage"] = completed_stage
+            if scope_id == _DEFAULT_STAGE_SESSION_ID:
+                _current_skill = None
+                _current_entity_id = None  # Clear hook session marker
+                next_parent = _parent_entity_id
+                current_stage = _current_stage
+            else:
+                state["current_skill"] = None
+                state["current_entity_id"] = None
+                next_parent = state.get("parent_entity_id")
+                current_stage = state.get("current_stage")
         return [
             TextContent(
                 type="text",
@@ -1262,8 +1387,9 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                     {
                         "status": "tracked",
                         "phase": "complete",
-                        "next_parent": _parent_entity_id,
-                        "current_stage": _current_stage,
+                        "stage_session_id": scope_id,
+                        "next_parent": next_parent,
+                        "current_stage": current_stage,
                     },
                     ensure_ascii=False,
                 ),

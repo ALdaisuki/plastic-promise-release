@@ -20,6 +20,9 @@ SuperPowers 标准化流水线 (obra 定义):
 
 import json
 
+from mcp.types import TextContent
+
+from plastic_promise.skills.closure_runner import run_post_task_best_effort
 from plastic_promise.skills.engine import SkillDef, SkillResult
 
 # ═══════════════════════════════════════════════════════════════
@@ -89,18 +92,24 @@ async def _governance_step_closure_light(ctx, params: dict):
     用于设计阶段 (brainstorming, exemplar-research, writing-plans)。
     无实质代码产出时使用，仅做原则对齐验证和上下文记录。
     """
-    from plastic_promise.mcp.server import TextContent
-
     task_desc = params.get("task_description", "step-closure-light")
-    try:
-        import asyncio
 
-        from plastic_promise.loop.soul_loop import post_task
-
-        await asyncio.to_thread(post_task, task_description=task_desc, mode="light")
-    except Exception:
-        pass
-    return [TextContent(type="text", text=json.dumps({"closed": True, "mode": "light"}))]
+    closure = await run_post_task_best_effort(task_description=task_desc, mode="light")
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "closed": closure.completed,
+                    "mode": "light",
+                    "timed_out": closure.timed_out,
+                    "skipped": closure.skipped,
+                    "reason": closure.reason,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    ]
 
 
 async def _governance_step_closure_full(ctx, params: dict):
@@ -109,8 +118,6 @@ async def _governance_step_closure_full(ctx, params: dict):
     用于实施/验证/治理阶段 (executing, TDD, verification, finishing)。
     每次有实质产出 (git commit / 设计决策 / 修复完成) 后必须执行。
     """
-    from plastic_promise.mcp.server import TextContent
-
     task_desc = params.get("task_description", "step-closure-full")
     git_commit = params.get("git_commit", "")
     lesson = params.get("lesson", "")
@@ -118,24 +125,31 @@ async def _governance_step_closure_full(ctx, params: dict):
     root_cause = params.get("root_cause", "")
     optimization = params.get("optimization", "")
 
-    try:
-        import asyncio
-
-        from plastic_promise.loop.soul_loop import post_task
-
-        await asyncio.to_thread(
-            post_task,
-            task_description=task_desc,
-            git_commit=git_commit,
-            mode="full",
-            lesson=lesson or f"sp-stage: {task_desc[:100]}",
-            improvement=improvement or "下次遵循 SuperPowers 链约束，不跳步",
-            root_cause=root_cause or "阶段执行完毕，正常闭环",
-            optimization=optimization or "继续执行下一阶段",
+    closure = await run_post_task_best_effort(
+        task_description=task_desc,
+        git_commit=git_commit,
+        mode="full",
+        lesson=lesson or f"sp-stage: {task_desc[:100]}",
+        improvement=improvement or "下次遵循 SuperPowers 链约束，不跳步",
+        root_cause=root_cause or "阶段执行完毕，正常闭环",
+        optimization=optimization or "继续执行下一阶段",
+    )
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "closed": closure.completed,
+                    "mode": "full",
+                    "timed_out": closure.timed_out,
+                    "skipped": closure.skipped,
+                    "reason": closure.reason,
+                },
+                ensure_ascii=False,
+            ),
         )
-    except Exception:
-        pass
-    return [TextContent(type="text", text=json.dumps({"closed": True, "mode": "full"}))]
+    ]
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -149,7 +163,6 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
     组装 atom_results 并返回统一的阶段追踪结果。
     注意: ctx 是 ContextEngine 实例，atom handlers 直接调用 ctx 的方法。
     """
-    task_desc = params.get("task_description", f"sp-{stage_name} execution")
     domain = STAGE_DOMAIN_MAP.get(stage_name, "building")
     tags = STAGE_TAGS_MAP.get(stage_name, [f"stage:{stage_name}"])
 
@@ -220,7 +233,6 @@ async def _request_review_handler(ctx, params, atom_results):
     import json as _json
     import time
 
-    task_desc = params.get("task_description", "代码审查请求")
     commit_range = params.get("commit_range", "HEAD~1..HEAD")
 
     # 调用 ReviewEngine.prepare()
@@ -320,7 +332,6 @@ async def _receive_review_handler(ctx, params, atom_results):
     """
     import json as _json
 
-    task_desc = params.get("task_description", "接收代码审查结果")
     review_output = params.get("review_output", "")
     commit_range = params.get("commit_range", "HEAD~1..HEAD")
     author_target = params.get("author_target", "pi_builder")
@@ -541,6 +552,7 @@ for _stage_name, _atoms in STAGE_ATOMS.items():
         handler=_handler,
         allowed_callers=["claude", "pi", "trae"],
         atom_timeout_seconds=5.0,
+        track_start_memory=False,
     )
 
 # 暴露为模块级变量，方便 SkillEngine 自动发现

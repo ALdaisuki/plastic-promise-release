@@ -80,3 +80,31 @@ def test_sp_stage_rejects_invalid_non_root_transition(monkeypatch):
     assert data["current_stage"] == "requesting-code-review"
     assert data["valid_next"] == ["receiving-code-review"]
     assert fake.calls == []
+
+
+def test_sp_stage_chain_validation_uses_stage_session_scope(monkeypatch):
+    fake = _FakeSkillEngine()
+    _set_current_stage("brainstorming")
+    skill_tracking.set_current_stage(
+        "using-git-worktrees",
+        stage_session_id="stage:agent-b:existing",
+    )
+    monkeypatch.setattr(mcp_server, "get_engine", lambda: object())
+    monkeypatch.setattr(mcp_server, "get_skill_engine", lambda: fake)
+
+    result = asyncio.run(
+        mcp_server.call_tool(
+            "sp-stage",
+            {
+                "stage": "writing-plans",
+                "task_description": "agent B continues its own chain",
+                "stage_session_id": "stage:agent-b:existing",
+            },
+        )
+    )
+    data = json.loads(result[0].text)
+
+    assert data["success"] is True
+    assert data["stage_session_id"] == "stage:agent-b:existing"
+    assert fake.calls[0][0] == "sp-writing-plans"
+    assert fake.calls[0][1]["stage_session_id"] == "stage:agent-b:existing"

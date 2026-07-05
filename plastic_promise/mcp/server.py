@@ -13,6 +13,7 @@
 所有工具共享 ContextEngine 单例，通过依赖注入传递给各工具模块。
 """
 
+import importlib.util
 import json
 import logging
 import os
@@ -71,7 +72,8 @@ def get_engine():
 
     # 预导入 Rust 加速器（如果可用），供 _supply_rust 路径使用
     try:
-        from context_engine_core import ContextEngine as _RustEngine
+        if importlib.util.find_spec("context_engine_core") is None:
+            raise ImportError("context_engine_core")
 
         logging.info("ContextEngine: Rust 加速器可用（待 supply 路径启用）")
     except ImportError:
@@ -983,6 +985,14 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "context_mode=full 时传给 context_supply 的检索范围",
                         },
+                        "stage_session_id": {
+                            "type": "string",
+                            "description": "SuperPowers stage chain scope id; omitted means session-init allocates one",
+                        },
+                        "agent_name": {
+                            "type": "string",
+                            "description": "Agent identity used when allocating a stage_session_id",
+                        },
                     },
                     "required": ["task_description"],
                 },
@@ -1192,6 +1202,14 @@ async def list_tools() -> list[Tool]:
                             ],
                         },
                         "task_description": {"type": "string", "description": "当前阶段任务描述"},
+                        "stage_session_id": {
+                            "type": "string",
+                            "description": "SuperPowers stage chain scope id returned by session-init",
+                        },
+                        "agent_name": {
+                            "type": "string",
+                            "description": "Agent identity for diagnostics when no stage_session_id is supplied",
+                        },
                     },
                     "required": ["stage", "task_description"],
                 },
@@ -1279,9 +1297,6 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
     # Extract actual trust/hormone deltas from this closure (not trend vs history)
     hormone = result.get("hormone", {})
     trust_delta = hormone.get("trust_delta", 0)
-    scarf_overall_val = scarf.get("summary", {}).get("overall_score", 0)
-    scarf_delta = scarf.get("summary", {}).get("delta", 0)
-
     scarf_trend = trend(scarf_overall, "scarf")
     trust_trend = trend(trust_score, "trust")
     cei_trend = trend(cei_score, "cei")
@@ -1701,15 +1716,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name in ("sp-stage", "sp_stage"):
             stage = arguments.get("stage", "")
             task_desc = arguments.get("task_description", "")
+            stage_session_id = arguments.get("stage_session_id") or arguments.get("stage_id")
             # ── Chain validation: reject invalid non-root stage transitions ──
             from plastic_promise.core.constants import (
                 SKILL_CHAIN_MAP as _CHAIN_MAP,
+            )
+            from plastic_promise.core.constants import (
                 normalize_stage_name,
             )
-            from plastic_promise.mcp.tools.skill_tracking import get_current_stage
+            from plastic_promise.mcp.tools.skill_tracking import (
+                get_current_stage,
+                set_current_stage,
+            )
 
             lookup_stage = normalize_stage_name(stage)
-            current = get_current_stage()
+            current = get_current_stage(stage_session_id)
             lookup_current = normalize_stage_name(current)
             if lookup_current and lookup_current != lookup_stage:
                 target_chain = _CHAIN_MAP.get(lookup_stage) or _CHAIN_MAP.get(
@@ -1759,7 +1780,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 ]
             se = get_skill_engine()
             skill_name = f"sp-{lookup_stage}"
-            result = await se.exec(skill_name, {"task_description": task_desc}, caller="trae")
+            stage_params = {"task_description": task_desc}
+            if stage_session_id:
+                stage_params["stage_session_id"] = stage_session_id
+            result = await se.exec(skill_name, stage_params, caller="trae")
             if not result.success:
                 return [
                     TextContent(
@@ -1770,11 +1794,22 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         ),
                     )
                 ]
+            set_current_stage(
+                lookup_stage,
+                stage_session_id=stage_session_id,
+                parent_entity_id=getattr(result, "audit_trail", {}).get("entity_id") or None,
+            )
             return [
                 TextContent(
                     type="text",
                     text=json.dumps(
-                        {"stage": stage, "success": True, "data": result.data}, ensure_ascii=False
+                        {
+                            "stage": stage,
+                            "success": True,
+                            "stage_session_id": stage_session_id or "default",
+                            "data": result.data,
+                        },
+                        ensure_ascii=False,
                     ),
                 )
             ]
@@ -1830,7 +1865,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 _pl.discover()
                 _pl.activate_all()
                 if name in _pl.get_tools():
-                    plugin_tool = _pl.get_tools()[name]
                     result = _pl.call_plugin_tool(name, arguments)
                     if result is not None:
                         return [

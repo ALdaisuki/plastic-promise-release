@@ -6,7 +6,6 @@ import time
 
 from plastic_promise.skills.engine import SkillDef, SkillResult
 
-
 _CONTEXT_MODES = {"none", "light", "full"}
 _LIGHT_CONTEXT_LIMIT = 2
 _LIGHT_CONTEXT_TIMEOUT_S = 1.5
@@ -299,22 +298,35 @@ async def _session_init_handler(ctx, params, atom_results):
     gc_data = parse(atom_results.get("memory_gc"))
 
     # ── Chain state: report current SKILL_CHAIN_MAP position ──
+    stage_session_id = ""
     try:
         from plastic_promise.core.constants import (
             SKILL_CHAIN_MAP as _CHAIN_MAP,
+        )
+        from plastic_promise.core.constants import (
             normalize_stage_name,
         )
-        from plastic_promise.mcp.tools.skill_tracking import get_current_stage
+        from plastic_promise.mcp.tools.skill_tracking import (
+            get_current_stage,
+            resolve_stage_session_id,
+        )
 
-        current_stage = normalize_stage_name(get_current_stage())
-        chain_state = None
+        stage_session_id = resolve_stage_session_id(params)
+        current_stage = normalize_stage_name(get_current_stage(stage_session_id))
+        chain_state = {
+            "stage_session_id": stage_session_id,
+            "current_stage": current_stage or None,
+            "valid_next": [],
+            "predecessors": [],
+        }
         if current_stage:
             chain = _CHAIN_MAP.get(current_stage) or _CHAIN_MAP.get(f"sp-{current_stage}", {})
-            chain_state = {
-                "current_stage": current_stage,
-                "valid_next": [normalize_stage_name(s) for s in chain.get("successors", [])],
-                "predecessors": [normalize_stage_name(s) for s in chain.get("predecessors", [])],
-            }
+            chain_state["valid_next"] = [
+                normalize_stage_name(s) for s in chain.get("successors", [])
+            ]
+            chain_state["predecessors"] = [
+                normalize_stage_name(s) for s in chain.get("predecessors", [])
+            ]
     except Exception:
         chain_state = None
 
@@ -334,6 +346,7 @@ async def _session_init_handler(ctx, params, atom_results):
             "system_stats": system_data,
             "trust": defense_data,
             "gc_preview": gc_data,
+            "stage_session_id": stage_session_id,
             "chain_state": chain_state,
             "component_health": component_health,
         },
