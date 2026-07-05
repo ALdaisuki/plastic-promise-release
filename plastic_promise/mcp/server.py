@@ -108,6 +108,46 @@ def get_skill_engine():
 
 server = Server("plastic-promise", version="0.1.0")
 
+_CODEX_DISCOVERY_HINTS = {
+    "session-init": (
+        "Plastic Promise MCP; Codex tool_search discovery; bootstrap; session init; "
+        "startup; principles; SCARF; trust; chain_state."
+    ),
+    "sp-stage": (
+        "Plastic Promise MCP; Codex tool_search discovery; SuperPowers; workflow stage; "
+        "brainstorming; TDD; verification; skill chain."
+    ),
+    "memory_recall": (
+        "Plastic Promise MCP; Codex tool_search discovery; memory recall; memory_recall; "
+        "retrieve memories; context; agent memory."
+    ),
+    "context_supply": (
+        "Plastic Promise MCP; Codex tool_search discovery; context supply; context_supply; "
+        "three-layer context pack; task context."
+    ),
+    "defense": (
+        "Plastic Promise MCP; Codex tool_search discovery; trust; defense; permissions; "
+        "trust score; autonomy."
+    ),
+    "step-closure": (
+        "Plastic Promise MCP; Codex tool_search discovery; step closure; step_closure; "
+        "SCARF reflection; trust feedback; CEI."
+    ),
+}
+
+
+def _with_codex_discovery_hints(tools: list[Tool]) -> list[Tool]:
+    """Append English discovery terms for clients that search deferred MCP metadata."""
+    by_name = {tool.name: tool for tool in tools}
+    for name, hint in _CODEX_DISCOVERY_HINTS.items():
+        tool = by_name.get(name)
+        if tool is None:
+            continue
+        marker = "Codex/tool_search discovery:"
+        if marker not in (tool.description or ""):
+            tool.description = f"{tool.description} {marker} {hint}"
+    return tools
+
 # ---------------------------------------------------------------------------
 # 能力声明
 # ---------------------------------------------------------------------------
@@ -1158,6 +1198,8 @@ async def list_tools() -> list[Tool]:
             ),
         ]
     )
+
+    _with_codex_discovery_hints(tools)
 
     # Compatibility aliases for clients that normalize tool names into identifiers.
     alias_targets = {

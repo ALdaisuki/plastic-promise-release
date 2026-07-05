@@ -86,6 +86,25 @@ def test_hyphenated_skill_aliases_are_exposed_with_matching_required_fields():
         )
 
 
+def test_codex_deferred_tool_discovery_keywords_are_exposed():
+    tools = _tools_by_name()
+    expected_keywords = {
+        "session-init": ["Plastic Promise MCP", "Codex", "tool_search", "bootstrap"],
+        "sp-stage": ["Plastic Promise MCP", "Codex", "tool_search", "SuperPowers"],
+        "memory_recall": ["Plastic Promise MCP", "Codex", "tool_search", "memory recall"],
+        "context_supply": ["Plastic Promise MCP", "Codex", "tool_search", "context supply"],
+        "defense": ["Plastic Promise MCP", "Codex", "tool_search", "trust"],
+        "session_init": ["Plastic Promise MCP", "Codex", "tool_search", "bootstrap"],
+        "sp_stage": ["Plastic Promise MCP", "Codex", "tool_search", "SuperPowers"],
+        "step_closure": ["Plastic Promise MCP", "Codex", "tool_search", "step closure"],
+    }
+
+    for tool_name, keywords in expected_keywords.items():
+        description = tools[tool_name].description or ""
+        missing = [keyword for keyword in keywords if keyword not in description]
+        assert not missing, f"{tool_name} description is missing discovery keywords: {missing}"
+
+
 def test_normalized_schemas_reject_unknown_fields():
     tool = _tools_by_name()["defense"]
     try:

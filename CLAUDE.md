@@ -7,6 +7,8 @@
 
 每次会话开始，依次执行：
 
+> Codex 兼容提示：Codex 可能将 Plastic Promise MCP 工具作为 deferred/dynamic metadata 暂存，初始显式工具列表未出现不等于服务器未连接。若 `session-init` / `sp-stage` 不在当前工具面，先用 `tool_search` 查询 `Plastic Promise MCP session-init sp-stage defense memory_recall context_supply`，再决定是否降级。
+
 0. **server up check** — `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9020/health')"`
    - 不可用（报错）→ 启动:
      - 完整模式: `python scripts/init_and_start.py` (需要 Ollama 提供 embedding)

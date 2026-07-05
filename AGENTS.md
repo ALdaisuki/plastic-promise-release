@@ -131,7 +131,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 ## 工作流约定
 
 ### 1. 每次任务开始
-Codex 降级约定：如果 `session-init` / `sp-stage` 等 Plastic Promise MCP 工具未暴露，先明确说明 MCP 未加载或未连接，然后继续使用本地文件、shell、测试和显式上下文说明推进任务；不要因 MCP 缺失而卡死当前工作。
+Codex 工具暴露约定：Codex 可能把 MCP 工具放在 deferred/dynamic metadata 中，初始显式工具列表未出现不代表 MCP 未连接。若 `session-init` / `sp-stage` 等 Plastic Promise MCP 工具未展开，必须先调用 `tool_search` 查询 `Plastic Promise MCP session-init sp-stage defense memory_recall context_supply`；只有 `tool_search` 仍找不到、且配置/健康检查也不可用时，才明确说明 MCP 未加载或未连接并进入本地文件、shell、测试和显式上下文降级。不要因 MCP 缺失而卡死当前工作。
 
 ```
 1. session-init(task_description="<任务描述>", context_mode="light")  → 获取 chain_state + 原则 + SCARF基线 + 信任分 + context_status
