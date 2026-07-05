@@ -13,7 +13,8 @@ class _FakeSkillEngine:
 
     async def exec(self, skill_name, params, caller="claude"):
         self.calls.append((skill_name, params, caller))
-        return SimpleNamespace(success=True, data={"skill_name": skill_name}, errors=[])
+        stage = skill_name.removeprefix("sp-")
+        return SimpleNamespace(success=True, data={"skill_name": skill_name, "stage": stage}, errors=[])
 
 
 def _set_current_stage(stage):
@@ -23,15 +24,18 @@ def _set_current_stage(stage):
         skill_tracking._current_entity_id = None
 
 
-def _run_sp_stage(monkeypatch, stage, current="review"):
+def _run_sp_stage(monkeypatch, stage, current="review", extra_args=None):
     fake = _FakeSkillEngine()
     _set_current_stage(current)
     monkeypatch.setattr(mcp_server, "get_engine", lambda: object())
     monkeypatch.setattr(mcp_server, "get_skill_engine", lambda: fake)
+    payload = {"stage": stage, "task_description": "chain validation regression"}
+    if extra_args:
+        payload.update(extra_args)
     result = asyncio.run(
         mcp_server.call_tool(
             "sp-stage",
-            {"stage": stage, "task_description": "chain validation regression"},
+            payload,
         )
     )
     return json.loads(result[0].text), fake
@@ -108,3 +112,46 @@ def test_sp_stage_chain_validation_uses_stage_session_scope(monkeypatch):
     assert data["stage_session_id"] == "stage:agent-b:existing"
     assert fake.calls[0][0] == "sp-writing-plans"
     assert fake.calls[0][1]["stage_session_id"] == "stage:agent-b:existing"
+
+
+def test_sp_stage_wrapper_adds_guidance_to_skill_result(monkeypatch):
+    data, fake = _run_sp_stage(monkeypatch, "audit", current="review")
+
+    guidance = data["data"]["stage_guidance"]
+    assert guidance["stage_summary"]["stage"] == "audit"
+    assert guidance["route_summary"]["route_id"] == "audit-review"
+    assert guidance["official_skill"] == "superpowers:audit"
+    assert guidance["closure_reminder"]["mode"] == "full"
+    assert "audit_run" in guidance["next_actions"][0]
+    assert fake.calls[0][0] == "sp-audit"
+
+
+def test_sp_stage_flow_line_id_isolates_chain_state(monkeypatch):
+    fake = _FakeSkillEngine()
+    _set_current_stage(None)
+    skill_tracking.set_current_stage(
+        "requesting-code-review",
+        stage_session_id="stage:shared",
+    )
+    monkeypatch.setattr(mcp_server, "get_engine", lambda: object())
+    monkeypatch.setattr(mcp_server, "get_skill_engine", lambda: fake)
+
+    result = asyncio.run(
+        mcp_server.call_tool(
+            "sp-stage",
+            {
+                "stage": "writing-plans",
+                "task_description": "dev flow should not inherit review flow",
+                "stage_session_id": "stage:shared",
+                "flow_line_id": "dev",
+                "route": "normal-development",
+            },
+        )
+    )
+    data = json.loads(result[0].text)
+
+    assert data["success"] is True
+    assert data["stage_session_id"] == "stage:shared"
+    assert data["flow_line_id"] == "dev"
+    assert data["flow_scope_id"] == "stage:shared::flow:dev"
+    assert fake.calls[0][1]["stage_session_id"] == "stage:shared::flow:dev"

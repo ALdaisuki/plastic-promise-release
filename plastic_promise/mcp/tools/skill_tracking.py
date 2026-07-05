@@ -491,6 +491,8 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
 
         # -- Parse content --------------------------------------------------
         content: str = memory.get("content", "") if memory else ""
+        is_skill_start_memory = "[SKILL START]" in content
+        tracking_persistence = "memory" if is_skill_start_memory else "entity_only"
         outcome: str = ""
         if "[SKILL COMPLETE]" in content:
             parts = content.split("[SKILL COMPLETE]")
@@ -541,6 +543,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
                 "duration_ms": duration_ms,
                 "description": node.get("description", ""),
                 "outcome": outcome,
+                "tracking_persistence": tracking_persistence,
                 "parent_skill": None,  # filled below via edge lookup
                 "child_skills": child_skills,
             }
@@ -572,7 +575,11 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
             continue
 
         # 1. orphan_active: active and last_accessed > threshold
-        if s["status"] == "active" and s["last_accessed"]:
+        if (
+            s["status"] == "active"
+            and s["last_accessed"]
+            and s.get("tracking_persistence") == "memory"
+        ):
             try:
                 la = datetime.datetime.fromisoformat(s["last_accessed"])
                 if la.tzinfo is not None:

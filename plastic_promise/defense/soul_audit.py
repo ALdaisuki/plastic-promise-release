@@ -219,12 +219,24 @@ class SoulAuditor:
 
         # 回退：检查 git 仓库是否存在
         try:
-            git_dir = os.path.join(os.path.dirname(self._db_path), "..", ".git")
-            if os.path.isdir(git_dir):
-                return 0.75, {"source": "git_dir_exists"}
+            git_dir = self._find_git_dir(os.path.dirname(self._db_path))
+            if git_dir:
+                return 0.75, {"source": "git_dir_exists", "path": git_dir}
             return 0.50, {"source": "no_git_dir"}
         except Exception:
             return 0.50, {"source": "default"}
+
+    @staticmethod
+    def _find_git_dir(start_dir: str) -> str:
+        current = os.path.abspath(start_dir)
+        while True:
+            git_dir = os.path.join(current, ".git")
+            if os.path.isdir(git_dir) or os.path.isfile(git_dir):
+                return git_dir
+            parent = os.path.dirname(current)
+            if parent == current:
+                return ""
+            current = parent
 
     def _score_audit_closure(self) -> tuple[float, dict[str, Any]]:
         """动态计算自我审计闭环评分。

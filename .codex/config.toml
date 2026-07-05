@@ -1,0 +1,15 @@
+[mcp_servers.plastic_promise]
+url = "http://127.0.0.1:9020/mcp"
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+
+[profiles.stdio-fallback.mcp_servers.plastic_promise]
+command = ".venv\\Scripts\\python.exe"
+args = ["-m", "plastic_promise"]
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+
+[profiles.stdio-fallback.mcp_servers.plastic_promise.env]
+PYTHONIOENCODING = "utf-8"
+PLASTIC_DB_PATH = "data\\db\\plastic_memory.db"
+PLASTIC_LANCEDB_PATH = "data\\lancedb"

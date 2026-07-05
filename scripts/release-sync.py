@@ -64,6 +64,7 @@ INCLUDE: list[str] = [
     "LICENSE",
     ".editorconfig",
     ".pre-commit-config.yaml",
+    ".codex/config.toml",
     ".gitignore",
     ".mcp.json",
     ".env.example",

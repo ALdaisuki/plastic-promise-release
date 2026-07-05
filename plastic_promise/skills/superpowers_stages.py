@@ -86,6 +86,379 @@ STAGE_DESCRIPTIONS = {
 # ═══════════════════════════════════════════════════════════════
 
 
+STAGE_GUIDANCE_MAP = {
+    "brainstorming": {
+        "layer": "design",
+        "summary": "Clarify requirements, compare approaches, and write the approved design spec.",
+        "artifact": "Design spec under docs/superpowers/specs before implementation begins.",
+        "handoff": "After the spec is reviewed, continue to exemplar-research.",
+        "artifacts": [
+            {
+                "kind": "design_spec",
+                "path": "docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md",
+                "required": True,
+            }
+        ],
+        "next_actions": [
+            "Write or update the design spec.",
+            "Run step-closure for the current brainstorming phase.",
+            "Proceed to exemplar-research only after design intent is explicit.",
+        ],
+    },
+    "exemplar-research": {
+        "layer": "research",
+        "summary": "Compare mature implementations and extract patterns worth adapting.",
+        "artifact": "Exemplar analysis under docs/superpowers/specs/engineering-patterns.",
+        "handoff": "After research findings are captured, continue to using-git-worktrees.",
+        "artifacts": [
+            {
+                "kind": "exemplar_analysis",
+                "path": "docs/superpowers/specs/engineering-patterns/YYYY-MM-DD-<topic>.md",
+                "required": True,
+            }
+        ],
+        "next_actions": [
+            "Record the three-question analysis.",
+            "Run step-closure for the current exemplar-research phase.",
+            "Proceed to using-git-worktrees after findings are captured.",
+        ],
+    },
+    "using-git-worktrees": {
+        "layer": "isolation",
+        "summary": "Confirm isolated branch/worktree state before implementation.",
+        "artifact": "Branch/worktree status and baseline verification evidence.",
+        "handoff": "After isolation is confirmed, continue to writing-plans.",
+        "artifacts": [
+            {"kind": "workspace_state", "path": "git status --short", "required": True}
+        ],
+        "next_actions": [
+            "Confirm the current branch or worktree.",
+            "Run step-closure if the workspace state changed.",
+            "Proceed to writing-plans.",
+        ],
+    },
+    "writing-plans": {
+        "layer": "planning",
+        "summary": "Turn the design into exact implementation steps and verification commands.",
+        "artifact": "Implementation plan under docs/superpowers/plans before code changes.",
+        "handoff": "After the plan is written, continue to executing-plans or subagent-driven-development.",
+        "artifacts": [
+            {
+                "kind": "implementation_plan",
+                "path": "docs/superpowers/plans/YYYY-MM-DD-<feature>.md",
+                "required": True,
+            }
+        ],
+        "next_actions": [
+            "Write or update the implementation plan.",
+            "Run step-closure for the current writing-plans phase.",
+            "Proceed to executing-plans or subagent-driven-development.",
+        ],
+    },
+    "executing-plans": {
+        "layer": "implementation",
+        "summary": "Apply the written plan step by step without skipping verification checkpoints.",
+        "artifact": "Code changes and per-task verification notes tied to the plan.",
+        "handoff": "After implementation tasks are complete, continue to test-driven-development.",
+        "artifacts": [{"kind": "code_delta", "path": "git diff", "required": True}],
+        "next_actions": [
+            "Execute the plan checklist.",
+            "Run step-closure after substantive outputs or commits.",
+            "Proceed to test-driven-development.",
+        ],
+    },
+    "subagent-driven-development": {
+        "layer": "implementation",
+        "summary": "Dispatch isolated implementation tasks and review each result before integration.",
+        "artifact": "Subagent task prompts, returned diffs, and review notes.",
+        "handoff": "After accepted subagent work, continue to test-driven-development.",
+        "artifacts": [
+            {"kind": "subagent_trace", "path": "task/subagent result log", "required": True}
+        ],
+        "next_actions": [
+            "Dispatch only independent tasks.",
+            "Review each result before applying it.",
+            "Run step-closure after accepted work.",
+        ],
+    },
+    "test-driven-development": {
+        "layer": "testing",
+        "summary": "Write failing tests first, implement minimally, then keep the suite green.",
+        "artifact": "Red-green evidence from pytest or the relevant test runner.",
+        "handoff": "After tests cover the behavior, continue to verification-before-completion.",
+        "artifacts": [{"kind": "test_evidence", "path": "pytest <target> -q", "required": True}],
+        "next_actions": [
+            "Show the red test failure.",
+            "Implement the minimal fix.",
+            "Run step-closure after the TDD cycle.",
+        ],
+    },
+    "verification-before-completion": {
+        "layer": "verification",
+        "summary": "Run fresh verification commands before making completion claims.",
+        "artifact": "Fresh command output proving tests/build/smoke checks pass.",
+        "handoff": "After verification passes, continue to finishing-a-development-branch.",
+        "artifacts": [
+            {"kind": "verification_log", "path": "fresh verification command output", "required": True}
+        ],
+        "next_actions": [
+            "Run the full targeted verification command.",
+            "Read the output and record failures if any.",
+            "Run step-closure before finishing.",
+        ],
+    },
+    "finishing-a-development-branch": {
+        "layer": "integration",
+        "summary": "Decide how the branch is integrated, then merge or prepare release handoff.",
+        "artifact": "Commit, PR, merge, and release-sync evidence as requested.",
+        "handoff": "After branch finish, stop unless the user requested deployment or release sync.",
+        "artifacts": [
+            {"kind": "integration_record", "path": "git log / PR / release-sync output", "required": True}
+        ],
+        "next_actions": [
+            "Run final verification.",
+            "Run step-closure with commit or PR evidence.",
+            "Merge or release only when explicitly requested.",
+        ],
+    },
+    "requesting-code-review": {
+        "layer": "review",
+        "summary": "Prepare a structured review request from the current diff.",
+        "artifact": "Review prompt, changed-file list, and pre-check result.",
+        "handoff": "After review is requested, continue to receiving-code-review when feedback arrives.",
+        "artifacts": [{"kind": "review_request", "path": "review_run prepare output", "required": True}],
+        "next_actions": [
+            "Run review preparation.",
+            "Run step-closure for the review request.",
+            "Wait for review feedback.",
+        ],
+    },
+    "receiving-code-review": {
+        "layer": "review",
+        "summary": "Evaluate review feedback technically and apply only verified fixes.",
+        "artifact": "Review report, applied fixes, and re-verification evidence.",
+        "handoff": "After feedback is resolved, continue to audit or finishing-a-development-branch.",
+        "artifacts": [
+            {"kind": "review_resolution", "path": "review_run evaluate/apply output", "required": True}
+        ],
+        "next_actions": [
+            "Verify each review item against code reality.",
+            "Apply fixes one at a time.",
+            "Run step-closure after review resolution.",
+        ],
+    },
+    "audit": {
+        "layer": "audit",
+        "summary": "Run structured self-audit before integration or release.",
+        "artifact": "audit_run report and pass/block decision.",
+        "handoff": "If audit passes, continue to finishing-a-development-branch.",
+        "artifacts": [{"kind": "audit_report", "path": "audit_run(action='full')", "required": True}],
+        "next_actions": [
+            "Run audit_run or the local audit checklist.",
+            "Record pass/block decision.",
+            "Run step-closure for the audit phase.",
+        ],
+    },
+    "systematic-debugging": {
+        "layer": "debugging",
+        "summary": "Find root cause before fixing unexpected behavior.",
+        "artifact": "Root-cause notes, reproduction, hypothesis, and fix verification.",
+        "handoff": "After root cause is known, continue to test-driven-development.",
+        "artifacts": [
+            {"kind": "debug_trace", "path": "root-cause investigation notes", "required": True}
+        ],
+        "next_actions": [
+            "Reproduce and trace the failure.",
+            "Write a failing regression test.",
+            "Run step-closure after the fix is verified.",
+        ],
+    },
+    "dispatching-parallel-agents": {
+        "layer": "coordination",
+        "summary": "Split independent work across agents with injected context.",
+        "artifact": "Dispatch prompts and returned task summaries.",
+        "handoff": "After agents return, review and integrate results through executing-plans.",
+        "artifacts": [
+            {"kind": "dispatch_record", "path": "agent dispatch prompts/results", "required": True}
+        ],
+        "next_actions": [
+            "Inject context before dispatch.",
+            "Review each returned result.",
+            "Run step-closure after integration.",
+        ],
+    },
+}
+
+
+STAGE_ROUTE_MAP = {
+    "normal-development": {
+        "label": "Normal development",
+        "summary": "Standard feature/change route from design through implementation, verification, and branch finishing.",
+        "stages": [
+            "brainstorming",
+            "exemplar-research",
+            "using-git-worktrees",
+            "writing-plans",
+            "executing-plans",
+            "test-driven-development",
+            "verification-before-completion",
+            "finishing-a-development-branch",
+        ],
+    },
+    "audit-review": {
+        "label": "Audit/review",
+        "summary": "Review route for structured code review, feedback handling, audit, and integration decisions.",
+        "stages": [
+            "requesting-code-review",
+            "receiving-code-review",
+            "audit",
+            "finishing-a-development-branch",
+        ],
+    },
+    "bug-hunt": {
+        "label": "Bug hunt",
+        "summary": "Debugging route that finds root cause before writing regression tests and verifying the fix.",
+        "stages": [
+            "systematic-debugging",
+            "test-driven-development",
+            "verification-before-completion",
+            "finishing-a-development-branch",
+        ],
+    },
+}
+
+STAGE_DEFAULT_ROUTE_MAP = {
+    "requesting-code-review": "audit-review",
+    "receiving-code-review": "audit-review",
+    "audit": "audit-review",
+    "systematic-debugging": "bug-hunt",
+}
+
+
+def _closure_mode_for_stage(stage_name: str) -> str:
+    atoms = STAGE_ATOMS.get(stage_name, [])
+    if "step_closure_full" in atoms:
+        return "full"
+    if "step_closure_light" in atoms:
+        return "light"
+    return "as-needed"
+
+
+def _infer_route_id(stage_name: str, route_id: str | None = None) -> str:
+    requested = str(route_id or "").strip()
+    if requested:
+        return requested
+    if stage_name in STAGE_DEFAULT_ROUTE_MAP:
+        return STAGE_DEFAULT_ROUTE_MAP[stage_name]
+    if stage_name in STAGE_ROUTE_MAP["normal-development"]["stages"]:
+        return "normal-development"
+    return "custom"
+
+
+def _skill_authority_message(summary_kind: str, official_skill: str) -> str:
+    return (
+        f"This {summary_kind} summary is advisory only. The official SuperPowers SKILL "
+        f"is {official_skill}; agents must load/read that SKILL before executing "
+        "the current stage and must not begin development from sp-stage summaries alone."
+    )
+
+
+def _build_route_summary(stage_name: str, route_id: str | None = None) -> dict:
+    resolved_route = _infer_route_id(stage_name, route_id)
+    route = STAGE_ROUTE_MAP.get(
+        resolved_route,
+        {
+            "label": "Custom route",
+            "summary": "Caller-defined route; follow SKILL_CHAIN_MAP for valid stage transitions.",
+            "stages": [stage_name],
+        },
+    )
+    stages = list(route["stages"])
+    official_skill = f"superpowers:{stage_name}"
+    return {
+        "route_id": resolved_route,
+        "label": route["label"],
+        "summary": route["summary"],
+        "official_skill": official_skill,
+        "skill_authority": _skill_authority_message("route", official_skill),
+        "stages": stages,
+        "current_stage": stage_name,
+        "current_index": stages.index(stage_name) if stage_name in stages else None,
+        "advisory_only": True,
+        "session_isolation": (
+            "Use stage_session_id plus flow_line_id to isolate concurrent "
+            "SuperPowers flow lines within the same agent session."
+        ),
+    }
+
+
+def build_stage_guidance(
+    stage_name: str,
+    closed: bool | None = None,
+    route_id: str | None = None,
+) -> dict:
+    """Return stage-specific workflow guidance for sp-stage responses."""
+    guidance = STAGE_GUIDANCE_MAP.get(
+        stage_name,
+        {
+            "layer": "workflow",
+            "summary": f"Execute SuperPowers stage {stage_name}.",
+            "artifact": "Record durable evidence for this stage.",
+            "handoff": "Continue to the next valid stage from SKILL_CHAIN_MAP.",
+            "artifacts": [],
+            "next_actions": [
+                "Confirm the stage output.",
+                "Run step-closure for substantive work.",
+                "Continue through SKILL_CHAIN_MAP.",
+            ],
+        },
+    )
+    closure_mode = _closure_mode_for_stage(stage_name)
+    official_skill = f"superpowers:{stage_name}"
+    skill_authority = _skill_authority_message("stage", official_skill)
+    return {
+        "official_skill": official_skill,
+        "stage_summary": {
+            "stage": stage_name,
+            "layer": guidance["layer"],
+            "summary": guidance["summary"],
+            "skill_authority": skill_authority,
+        },
+        "route_summary": _build_route_summary(stage_name, route_id=route_id),
+        "artifact_summary": guidance["artifact"],
+        "handoff_summary": guidance["handoff"],
+        "required_artifacts": list(guidance["artifacts"]),
+        "closure_reminder": {
+            "tool": "step-closure",
+            "mode": closure_mode,
+            "current_stage": stage_name,
+            "required": closure_mode != "as-needed",
+            "sp_stage_closed": closed,
+            "message": (
+                f"Execute step-closure for current stage '{stage_name}' "
+                f"with mode='{closure_mode}' after substantive output or commit."
+            ),
+        },
+        "next_actions": list(guidance["next_actions"]),
+    }
+
+
+def attach_stage_guidance(
+    data: dict,
+    stage_name: str,
+    closed: bool | None = None,
+    route_id: str | None = None,
+) -> dict:
+    """Attach guidance to a SkillResult data dict without overwriting custom handlers."""
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault(
+        "stage_guidance",
+        build_stage_guidance(stage_name, closed=closed, route_id=route_id),
+    )
+    return data
+
+
 async def _governance_step_closure_light(ctx, params: dict):
     """轻量闭环 — 原则对齐检查 + 上下文注入（跳过 SCARF/激素/信任联动）。
 
@@ -194,6 +567,11 @@ async def _stage_handler(ctx, params, atom_results, stage_name):
             "memory_id": store_data.get("memory_id", ""),
             "trust": defense_data if defense_data else "unchecked",
             "closed": closure_data.get("closed", False) if closure_data else None,
+            "stage_guidance": build_stage_guidance(
+                stage_name,
+                closed=closure_data.get("closed", False) if closure_data else None,
+                route_id=params.get("route"),
+            ),
             "transition": f"→ {stage_name}",
         },
         atom_results={},

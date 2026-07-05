@@ -605,6 +605,47 @@ class TestSkillSessionTrace:
         assert len(sessions) == 1
         assert sessions[0]["status"] == "active"
 
+    def test_trace_ignores_non_start_memory_for_orphan_detection(self):
+        """Graph-only/entity-only stage tracking should not create an
+        orphan_active gap that skill_session_complete cannot repair."""
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
+
+        engine = MagicMock()
+        entity_id = "skill:sp-writing-plans:2026-07-03T02:07:11.763360"
+        engine._graph_nodes = {
+            f"skill_session:{entity_id}": {
+                "type": "skill_session",
+                "name": "sp-writing-plans",
+                "description": "entity-only stage trace",
+            },
+        }
+        engine._graph_edges = []
+
+        import datetime as _dt
+
+        la_ts = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(minutes=45)).isoformat()
+        engine._memories = {
+            "mem_entity_only": {
+                "id": "mem_entity_only",
+                "content": "legacy stage note without a skill start marker",
+                "entity_ids": [entity_id],
+                "tags": ["task:active", "skill:sp-writing-plans", "domain:designing"],
+                "created_at": "2026-07-03T02:07:11.763360",
+                "last_accessed": la_ts,
+            },
+        }
+
+        engine.list_graph_nodes = lambda: [{"id": k, **v} for k, v in engine._graph_nodes.items()]
+        engine.list_graph_edges = lambda: engine._graph_edges
+        engine.iter_memories = lambda: iter(engine._memories.values())
+
+        result = asyncio.run(handle_skill_session_trace(engine, {"session_scope": "all"}))
+        data = json.loads(result[0].text)
+
+        assert data["chain_complete"] is True
+        assert data["gaps"] == []
+        assert data["sessions"][0]["tracking_persistence"] == "entity_only"
+
 
 class TestSkillSessionAudit:
     """Tests for handle_skill_session_audit."""

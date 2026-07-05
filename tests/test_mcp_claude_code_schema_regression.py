@@ -164,10 +164,14 @@ def test_session_init_alias_routes_to_canonical_skill(monkeypatch):
 
 
 def test_sse_app_constructs_with_installed_starlette(monkeypatch):
+    route_paths = []
+
     async def fake_serve(self):
+        route_paths.extend(route.path for route in self.config.app.routes)
         return None
 
     import uvicorn
 
     monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
     asyncio.run(mcp_server.run_sse(0))
+    assert "/mcp" in route_paths

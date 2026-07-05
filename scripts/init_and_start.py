@@ -30,6 +30,7 @@ from plastic_promise.launcher.watchdog import (
     setup_signal_handlers,
     watchdog_loop,
 )
+from plastic_promise.core.context_engine import ContextEngine
 
 # Service definitions
 SERVICES = [
@@ -54,6 +55,12 @@ SERVICES = [
 
 LOG_FILE = os.path.join(_project_root, "var", "log", "init_and_start.log")
 PID_FILE = os.path.join(_project_root, "var", "run", "maintenance_daemon.pid")
+LANCEDB_WARMUP_ENV = {
+    "PLASTIC_MCP_TRANSPORT": "sse",
+    "LDB_INIT_ON_HEAVY_INIT": "1",
+    "LDB_BACKFILL_ON_INIT": "1",
+    "LDB_REBUILD_ON_INIT": "1",
+}
 
 BANNER = """\
 ==============================================================
@@ -79,6 +86,25 @@ def _pid_alive(pid: int) -> bool:
             return True
         except (OSError, ProcessLookupError):
             return False
+
+
+def run_lancedb_warmup_maintenance():
+    """Warm LanceDB and run its existing backfill/rebuild maintenance once."""
+    previous = {key: os.environ.get(key) for key in LANCEDB_WARMUP_ENV}
+    try:
+        os.environ.update(LANCEDB_WARMUP_ENV)
+        engine = ContextEngine()
+        engine._ensure_heavy_init()
+        row_count = engine._ldb.count_rows() if getattr(engine, "_ldb", None) is not None else 0
+        return True, f"ready ({row_count} rows)"
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def do_stop():
@@ -219,6 +245,14 @@ async def main():
     else:
         print(f"\n[INIT]  Bootstrap ..................... {bootstrap_msg}")
 
+    # LanceDB warmup / maintenance
+    if args.skip_lancedb_warmup or os.environ.get("PLASTIC_SKIP_LANCEDB_WARMUP") == "1":
+        print("[INIT]  LanceDB warmup/maintenance ... skipped")
+    else:
+        ok, warmup_msg = run_lancedb_warmup_maintenance()
+        status = "ready" if ok else "degraded"
+        print(f"[INIT]  LanceDB warmup/maintenance ... {status} ({warmup_msg})")
+
     # Start services
     manager = ServiceManager(services_to_start, _project_root)
     setup_signal_handlers(manager, LOG_FILE)
@@ -264,6 +298,11 @@ def parse_args():
         "--stop",
         action="store_true",
         help="Stop all running services and clean up",
+    )
+    parser.add_argument(
+        "--skip-lancedb-warmup",
+        action="store_true",
+        help="Skip LanceDB warmup/maintenance before services start",
     )
     return parser.parse_args()
 

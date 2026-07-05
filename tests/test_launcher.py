@@ -1,6 +1,7 @@
 """Tests for One-Click Launcher components."""
 
 import os
+import importlib.util
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,14 @@ from plastic_promise.launcher.service_definition import (
 )
 from plastic_promise.launcher.env_checker import run_env_checks
 from plastic_promise.launcher.bootstrap_checker import check_bootstrap
+
+
+def _load_init_and_start():
+    path = os.path.join(os.getcwd(), "scripts", "init_and_start.py")
+    spec = importlib.util.spec_from_file_location("init_and_start_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # -- service_definition tests -----------------------------------------
@@ -189,6 +198,45 @@ def test_pid_alive_nonexistent():
     svcs = [ServiceDefinition(name="s1", command=["echo"])]
     mgr = ServiceManager(svcs, ".")
     assert mgr._pid_alive(99999999) is False
+
+
+def test_lancedb_warmup_sets_maintenance_env_only_during_pass(monkeypatch):
+    module = _load_init_and_start()
+    calls = []
+
+    class FakeContextEngine:
+        def _ensure_heavy_init(self):
+            calls.append(
+                {
+                    "transport": os.environ.get("PLASTIC_MCP_TRANSPORT"),
+                    "init": os.environ.get("LDB_INIT_ON_HEAVY_INIT"),
+                    "backfill": os.environ.get("LDB_BACKFILL_ON_INIT"),
+                    "rebuild": os.environ.get("LDB_REBUILD_ON_INIT"),
+                }
+            )
+
+    monkeypatch.setattr(module, "ContextEngine", FakeContextEngine)
+    monkeypatch.setenv("PLASTIC_MCP_TRANSPORT", "stdio")
+    monkeypatch.delenv("LDB_INIT_ON_HEAVY_INIT", raising=False)
+    monkeypatch.delenv("LDB_BACKFILL_ON_INIT", raising=False)
+    monkeypatch.delenv("LDB_REBUILD_ON_INIT", raising=False)
+
+    ok, msg = module.run_lancedb_warmup_maintenance()
+
+    assert ok is True
+    assert "ready" in msg
+    assert calls == [
+        {
+            "transport": "sse",
+            "init": "1",
+            "backfill": "1",
+            "rebuild": "1",
+        }
+    ]
+    assert os.environ.get("PLASTIC_MCP_TRANSPORT") == "stdio"
+    assert "LDB_INIT_ON_HEAVY_INIT" not in os.environ
+    assert "LDB_BACKFILL_ON_INIT" not in os.environ
+    assert "LDB_REBUILD_ON_INIT" not in os.environ
 
 
 # -- ServiceRuntime tests --------------------------------------------

@@ -1206,6 +1206,14 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "SuperPowers stage chain scope id returned by session-init",
                         },
+                        "flow_line_id": {
+                            "type": "string",
+                            "description": "Optional flow line id for isolating concurrent SuperPowers routes within a stage_session_id",
+                        },
+                        "route": {
+                            "type": "string",
+                            "description": "Advisory SuperPowers route profile for stage summaries; built-ins include normal-development, audit-review, and bug-hunt",
+                        },
                         "agent_name": {
                             "type": "string",
                             "description": "Agent identity for diagnostics when no stage_session_id is supplied",
@@ -1717,6 +1725,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             stage = arguments.get("stage", "")
             task_desc = arguments.get("task_description", "")
             stage_session_id = arguments.get("stage_session_id") or arguments.get("stage_id")
+            flow_line_id = str(arguments.get("flow_line_id") or arguments.get("flow_id") or "").strip()
+            flow_line_id = flow_line_id or None
+            route_id = str(arguments.get("route") or "").strip() or None
+            public_stage_session_id = stage_session_id or "default"
+            flow_scope_id = (
+                f"{public_stage_session_id}::flow:{flow_line_id}"
+                if flow_line_id
+                else public_stage_session_id
+            )
             # ── Chain validation: reject invalid non-root stage transitions ──
             from plastic_promise.core.constants import (
                 SKILL_CHAIN_MAP as _CHAIN_MAP,
@@ -1724,13 +1741,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             from plastic_promise.core.constants import (
                 normalize_stage_name,
             )
+            from plastic_promise.skills.superpowers_stages import attach_stage_guidance
             from plastic_promise.mcp.tools.skill_tracking import (
                 get_current_stage,
                 set_current_stage,
             )
 
             lookup_stage = normalize_stage_name(stage)
-            current = get_current_stage(stage_session_id)
+            current = get_current_stage(flow_scope_id)
             lookup_current = normalize_stage_name(current)
             if lookup_current and lookup_current != lookup_stage:
                 target_chain = _CHAIN_MAP.get(lookup_stage) or _CHAIN_MAP.get(
@@ -1780,9 +1798,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 ]
             se = get_skill_engine()
             skill_name = f"sp-{lookup_stage}"
-            stage_params = {"task_description": task_desc}
-            if stage_session_id:
-                stage_params["stage_session_id"] = stage_session_id
+            stage_params = {
+                "task_description": task_desc,
+                "stage_session_id": flow_scope_id,
+            }
+            if flow_line_id:
+                stage_params["flow_line_id"] = flow_line_id
+            if route_id:
+                stage_params["route"] = route_id
             result = await se.exec(skill_name, stage_params, caller="trae")
             if not result.success:
                 return [
@@ -1796,8 +1819,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 ]
             set_current_stage(
                 lookup_stage,
-                stage_session_id=stage_session_id,
+                stage_session_id=flow_scope_id,
                 parent_entity_id=getattr(result, "audit_trail", {}).get("entity_id") or None,
+            )
+            result_data = attach_stage_guidance(
+                result.data if isinstance(result.data, dict) else {},
+                lookup_stage,
+                closed=result.data.get("closed") if isinstance(result.data, dict) else None,
+                route_id=route_id,
             )
             return [
                 TextContent(
@@ -1806,8 +1835,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         {
                             "stage": stage,
                             "success": True,
-                            "stage_session_id": stage_session_id or "default",
-                            "data": result.data,
+                            "stage_session_id": public_stage_session_id,
+                            "flow_line_id": flow_line_id,
+                            "flow_scope_id": flow_scope_id,
+                            "data": result_data,
                         },
                         ensure_ascii=False,
                     ),
@@ -2071,6 +2102,7 @@ async def run_sse(port: int = 9020):
     """
     import uvicorn
     from mcp.server.sse import SseServerTransport
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from starlette.applications import Starlette
     from starlette.requests import Request
     from starlette.responses import Response
@@ -2082,6 +2114,7 @@ async def run_sse(port: int = 9020):
     start_time = _time.time()
 
     sse = SseServerTransport("/messages")
+    streamable_http = StreamableHTTPSessionManager(app=server)
 
     # Notification queue — issue transitions push here, /events streams
     import asyncio as _asyncio
@@ -2450,10 +2483,11 @@ setInterval(refresh, 5000);
 
     @asynccontextmanager
     async def lifespan(_app):
-        try:
-            yield
-        finally:
-            await shutdown()
+        async with streamable_http.run():
+            try:
+                yield
+            finally:
+                await shutdown()
 
     async def handle_messages(request: Request):
         """Wrap sse.handle_post_message as a Starlette Route endpoint.
@@ -2465,8 +2499,14 @@ setInterval(refresh, 5000);
         await sse.handle_post_message(request.scope, request.receive, request._send)
         return _NoOpResponse()
 
+    async def handle_mcp(request: Request):
+        """Streamable HTTP MCP endpoint used by Codex and modern MCP clients."""
+        await streamable_http.handle_request(request.scope, request.receive, request._send)
+        return _NoOpResponse()
+
     app = Starlette(
         routes=[
+            Route("/mcp", endpoint=handle_mcp, methods=["GET", "POST", "DELETE"]),
             Route("/sse", endpoint=handle_sse, methods=["GET"]),
             Route("/messages", endpoint=handle_messages, methods=["POST"]),
             Route("/events", endpoint=handle_events, methods=["GET"]),
@@ -2482,6 +2522,7 @@ setInterval(refresh, 5000);
     )
 
     logger.info("Plastic Promise MCP Server v0.1.0")
+    logger.info(f"Streamable HTTP endpoint: http://127.0.0.1:{port}/mcp")
     logger.info(f"SSE endpoint: http://127.0.0.1:{port}/sse")
     logger.info(f"Health:      http://127.0.0.1:{port}/health")
     logger.info(f"PID: {os.getpid()}")
