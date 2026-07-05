@@ -667,7 +667,7 @@ async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
             }
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
-        engine._ensure_heavy_init()  # actual GC needs LanceDB/decay components
+        engine.ensure_heavy_init()  # actual GC needs LanceDB/decay components
 
         from plastic_promise.memory.soul_memory import MemoryGC, RecMem
 

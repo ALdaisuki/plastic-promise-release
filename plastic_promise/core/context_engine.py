@@ -1210,9 +1210,9 @@ class ContextEngine:
             task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
 
         # PP_FORCE_PYTHON_SUPPLY=1 bypasses Rust entirely.
-        # PP_PREFER_RUST_SUPPLY=1 enables Rust as primary (off by default
-        # until Rust retriever backends — VectorIndex + FtsIndex — are real).
-        prefer_rust = os.environ.get("PP_PREFER_RUST_SUPPLY", "0") == "1"
+        # PP_PREFER_RUST_SUPPLY=0 disables Rust primary; default is Rust-first
+        # with automatic Python fallback if the extension is unavailable.
+        prefer_rust = os.environ.get("PP_PREFER_RUST_SUPPLY", "1") == "1"
         force_python = os.environ.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1"
 
         if force_python or not prefer_rust:
@@ -1860,6 +1860,21 @@ class ContextEngine:
 
     def ensure_heavy_init(self):
         """Public wrapper for _ensure_heavy_init."""
+        self._ensure_heavy_init()
+
+    def refresh_runtime_mode(self, initialize_heavy: bool = False):
+        """Refresh cached runtime state after launcher/MCP mode changes."""
+        self.reset_rust_health()
+        if not initialize_heavy:
+            with self._heavy_init_lock:
+                if os.environ.get("LDB_INIT_ON_HEAVY_INIT") != "1":
+                    self._ldb = None
+            return
+
+        with self._heavy_init_lock:
+            self._heavy_init_done = False
+            if os.environ.get("LDB_INIT_ON_HEAVY_INIT") == "1":
+                self._ldb = None
         self._ensure_heavy_init()
 
     def activate_principles(self, task_type: str, task_description: str) -> list[str]:

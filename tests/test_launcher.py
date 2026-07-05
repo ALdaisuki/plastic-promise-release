@@ -239,6 +239,24 @@ def test_lancedb_warmup_sets_maintenance_env_only_during_pass(monkeypatch):
     assert "LDB_REBUILD_ON_INIT" not in os.environ
 
 
+@pytest.mark.asyncio
+async def test_main_stop_returns_before_runtime_mode_prompt(monkeypatch):
+    module = _load_init_and_start()
+    stopped = []
+
+    monkeypatch.setattr(sys, "argv", ["init_and_start.py", "--stop"])
+    monkeypatch.setattr(module, "do_stop", lambda: stopped.append(True) or True)
+
+    def fail_select_runtime_mode(*args, **kwargs):
+        raise AssertionError("stop should not select a startup mode")
+
+    monkeypatch.setattr(module, "select_runtime_mode", fail_select_runtime_mode)
+
+    await module.main()
+
+    assert stopped == [True]
+
+
 # -- ServiceRuntime tests --------------------------------------------
 
 

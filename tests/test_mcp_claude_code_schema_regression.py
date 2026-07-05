@@ -39,6 +39,7 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
             "scope": "governing",
         },
         "defense": {"action": "get"},
+        "runtime_mode": {"action": "set", "mode": "rust-full"},
         "audit_pre_check": {
             "action_description": "写入 MCP schema validation hardening spec/plan",
             "action_type": "write",
@@ -61,6 +62,9 @@ def test_handler_read_optional_fields_are_declared():
 
     defense_props = set(tools["defense"].inputSchema["properties"])
     assert "target" in defense_props
+
+    runtime_mode_props = set(tools["runtime_mode"].inputSchema["properties"])
+    assert {"action", "mode"}.issubset(runtime_mode_props)
 
     context_graph = tools["context_graph"].inputSchema["properties"]["query_type"]
     assert set(context_graph["enum"]) == {"node_info", "traverse", "full_graph", "neighbors"}
@@ -96,6 +100,7 @@ def test_codex_deferred_tool_discovery_keywords_are_exposed():
         "memory_recall": ["Plastic Promise MCP", "Codex", "tool_search", "memory recall"],
         "context_supply": ["Plastic Promise MCP", "Codex", "tool_search", "context supply"],
         "defense": ["Plastic Promise MCP", "Codex", "tool_search", "trust"],
+        "runtime_mode": ["Plastic Promise MCP", "Codex", "tool_search", "runtime mode"],
         "session_init": ["Plastic Promise MCP", "Codex", "tool_search", "bootstrap"],
         "sp_stage": ["Plastic Promise MCP", "Codex", "tool_search", "SuperPowers"],
         "step_closure": ["Plastic Promise MCP", "Codex", "tool_search", "step closure"],

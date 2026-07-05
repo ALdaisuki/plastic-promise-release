@@ -10,20 +10,25 @@ Usage:
 import argparse
 import asyncio
 import os
-import sys
 import subprocess
+import sys
 
 # Path setup
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _project_root)
 
+from plastic_promise.launcher.bootstrap_checker import check_bootstrap, run_bootstrap
+from plastic_promise.launcher.env_checker import run_env_checks
+from plastic_promise.launcher.runtime_mode import (
+    RUNTIME_MODE_KEYS,
+    apply_runtime_mode,
+    select_runtime_mode,
+)
 from plastic_promise.launcher.service_definition import (
-    ServiceDefinition,
     RestartPolicy,
+    ServiceDefinition,
     ServiceStatus,
 )
-from plastic_promise.launcher.env_checker import run_env_checks
-from plastic_promise.launcher.bootstrap_checker import check_bootstrap, run_bootstrap
 from plastic_promise.launcher.service_manager import ServiceManager
 from plastic_promise.launcher.subprocess_utils import hidden_subprocess_kwargs
 from plastic_promise.launcher.watchdog import (
@@ -169,6 +174,33 @@ async def main():
 
     args = parse_args()
 
+    if args.stop:
+        do_stop()
+        return
+
+    runtime_mode = None
+    if not args.check_only:
+        try:
+            runtime_mode = select_runtime_mode(args.mode)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}")
+            sys.exit(2)
+        apply_runtime_mode(runtime_mode)
+        print(
+            f"[INIT]  Runtime mode ................. {runtime_mode.label} "
+            f"({runtime_mode.key})"
+        )
+    elif args.mode:
+        try:
+            runtime_mode = apply_runtime_mode(args.mode)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}")
+            sys.exit(2)
+        print(
+            f"[INIT]  Runtime mode ................. {runtime_mode.label} "
+            f"({runtime_mode.key}; check-only)"
+        )
+
     # Clean up stale PID files from previous crashed sessions
     for pid_path in [PID_FILE]:
         if os.path.exists(pid_path):
@@ -247,7 +279,10 @@ async def main():
 
     # LanceDB warmup / maintenance
     if args.skip_lancedb_warmup or os.environ.get("PLASTIC_SKIP_LANCEDB_WARMUP") == "1":
-        print("[INIT]  LanceDB warmup/maintenance ... skipped")
+        reason = "requested"
+        if runtime_mode is not None and not runtime_mode.runs_lancedb_warmup:
+            reason = f"mode {runtime_mode.label}"
+        print(f"[INIT]  LanceDB warmup/maintenance ... skipped ({reason})")
     else:
         ok, warmup_msg = run_lancedb_warmup_maintenance()
         status = "ready" if ok else "degraded"
@@ -303,6 +338,14 @@ def parse_args():
         "--skip-lancedb-warmup",
         action="store_true",
         help="Skip LanceDB warmup/maintenance before services start",
+    )
+    parser.add_argument(
+        "--mode",
+        help=(
+            "Startup mode. Valid modes: "
+            + ", ".join(RUNTIME_MODE_KEYS)
+            + ". If omitted in an interactive terminal, the launcher asks before starting."
+        ),
     )
     return parser.parse_args()
 

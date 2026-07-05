@@ -42,6 +42,7 @@ from mcp.types import (
 from plastic_promise.core.constants import (
     CORE_PRINCIPLES,
 )
+from plastic_promise.launcher.runtime_mode import RUNTIME_MODE_KEYS
 
 _engine = None  # 延迟初始化
 _skill_engine = None  # 延迟初始化 — SkillEngine 单例
@@ -134,6 +135,10 @@ _CODEX_DISCOVERY_HINTS = {
     "step-closure": (
         "Plastic Promise MCP; Codex tool_search discovery; step closure; step_closure; "
         "SCARF reflection; trust feedback; CEI."
+    ),
+    "runtime_mode": (
+        "Plastic Promise MCP; Codex tool_search discovery; runtime mode; hot update; "
+        "launcher mode; Rust acceleration; light normal full."
     ),
 }
 
@@ -591,6 +596,30 @@ async def list_tools() -> list[Tool]:
                         "dry_run": {"type": "boolean", "description": "仅预览，不实际导入"},
                     },
                     "required": ["action"],
+                },
+            ),
+            Tool(
+                name="runtime_mode",
+                description=(
+                    "Get or hot-update the current MCP runtime mode. Modes: light, "
+                    "normal, rust-normal, full, rust-full."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["get", "set"],
+                            "description": "get|set",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": list(RUNTIME_MODE_KEYS),
+                            "description": "Required when action=set.",
+                        },
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
                 },
             ),
             Tool(
@@ -1471,6 +1500,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             from plastic_promise.mcp.tools.management import handle_system
 
             return await handle_system(engine, arguments)
+        elif name == "runtime_mode":
+            from plastic_promise.mcp.tools.runtime import handle_runtime_mode
+
+            return await handle_runtime_mode(engine, arguments)
         elif name == "issue_create":
             from plastic_promise.mcp.tools.management import handle_issue_create
 
