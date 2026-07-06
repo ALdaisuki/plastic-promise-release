@@ -78,6 +78,8 @@ runtime_mode(action="get")
 runtime_mode(action="set", mode="rust-normal")
 ```
 
+启动器会将项目根目录放在子进程 `PYTHONPATH` 最前面，因此 Maintenance Daemon 等脚本式服务会导入当前源码树。Daemon 脚本在直接启动时也会自举项目根路径。
+
 仅启动 MCP Server：
 
 ```bash
@@ -86,6 +88,12 @@ python -m plastic_promise
 
 # SSE 模式
 python -m plastic_promise --sse 9020
+```
+
+MCP Server 已启动时，也可以单独启动 Maintenance Daemon：
+
+```bash
+python daemons/maintenance_daemon.py
 ```
 
 健康检查：
@@ -131,6 +139,8 @@ http://127.0.0.1:9020/sse
 `sp-stage` 当前覆盖完整 SuperPowers 技能面：`using-superpowers`、`brainstorming`、`exemplar-research`、`using-git-worktrees`、`writing-plans`、`executing-plans`、`subagent-driven-development`、`test-driven-development`、`verification-before-completion`、`finishing-a-development-branch`、`requesting-code-review`、`receiving-code-review`、`audit`、`systematic-debugging`、`dispatching-parallel-agents`、`writing-skills`。其中 `using-superpowers` 和 `writing-skills` 是元技能阶段，用于启动技能选择和技能编写/验证流程。
 
 重型 `memory_recall` / `context_supply` 调用可携带 `stage_session_id`、`flow_line_id` 和 `request_id`。系统会派生 `request_scope_id`，写入审计元数据并显示在 `context_supply` 输出中，同时用它隔离重叠 SuperPowers 阶段或多 Agent 流程中的召回缓存。
+
+在 `rust-full` 模式下，`memory_recall(debug=true)` 在 Rust 健康且优先时仍走 Rust snapshot 热路径，并返回 Rust `pipeline_stats` / `per_item_stats`；只有 Rust 不可用或异常时才回退 Python。
 
 ## 架构概览
 

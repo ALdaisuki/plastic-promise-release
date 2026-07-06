@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-07-06
+
+### Fixed
+
+- Kept `memory_recall(debug=true)` on the Rust snapshot hot path when Rust is healthy and preferred, preventing debug recall from forcing the MCP server into the slower Python full pipeline under `rust-full`.
+- Added regression coverage proving `debug=True` uses `_supply_rust()` instead of `_supply_python()` in Rust-preferred mode, while Rust debug counters remain visible through `pipeline_stats` and `per_item_stats`.
+
+## [0.1.4] - 2026-07-06
+
+### Fixed
+
+- Bootstrapped the Maintenance Daemon import path for both launcher-managed startup and direct `python daemons/maintenance_daemon.py` usage, preventing `ModuleNotFoundError: No module named 'plastic_promise'` after service restarts.
+- Prepended the project root to child-process `PYTHONPATH` in the launcher `ServiceManager`, preserving existing `PYTHONPATH` while making script-based services importable from hidden Windows subprocesses.
+- Updated the one-click launcher banner to report the package version instead of the stale `0.1.0` label.
+
 ## [0.1.3] - 2026-07-06
 
 ### Fixed
@@ -78,6 +93,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.5]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.0...v0.1.1

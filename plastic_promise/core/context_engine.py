@@ -1231,10 +1231,6 @@ class ContextEngine:
         # Falls back to Python if Rust engine is unavailable or throws.
         if self._check_rust_health():
             try:
-                if debug:
-                    return self._supply_python(
-                        task_description, task_vector, task_type, scope, debug=True
-                    )
                 return self._supply_rust(task_description, task_vector, task_type, scope)
             except Exception as e:
                 logger.warning("Rust supply failed, falling back to Python: %s", e)

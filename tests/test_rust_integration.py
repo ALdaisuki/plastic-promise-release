@@ -193,6 +193,39 @@ def test_convert_rust_pack_filters_audit_telemetry_from_native_layers():
     assert all("audit trust=" not in item.content.lower() for item in recalled)
 
 
+def test_debug_supply_uses_rust_path_when_rust_is_preferred(monkeypatch):
+    """debug=True must not force the MCP server off the Rust hot path."""
+    from plastic_promise.core.context_engine import ContextEngine, ContextPack
+
+    monkeypatch.setenv("PP_PREFER_RUST_SUPPLY", "1")
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "0")
+
+    engine = ContextEngine(use_sqlite=False)
+    engine._check_rust_health = lambda: True
+
+    calls = {"rust": 0, "python": 0}
+
+    def fake_rust(task_description, task_vector, task_type, scope):
+        calls["rust"] += 1
+        pack = ContextPack()
+        pack.audit_metadata = {"engine_version": "0.2.0-rs"}
+        pack.pipeline_stats = {"engine_mode": "snapshot"}
+        return pack
+
+    def fail_python(*args, **kwargs):
+        calls["python"] += 1
+        raise AssertionError("debug=True should not force Python supply in rust-full")
+
+    engine._supply_rust = fake_rust
+    engine._supply_python = fail_python
+
+    pack = engine.supply("debug recall path", [0.0] * 1024, "debugging", "global", debug=True)
+
+    assert calls == {"rust": 1, "python": 0}
+    assert pack.audit_metadata["engine_version"] == "0.2.0-rs"
+    assert pack.pipeline_stats["engine_mode"] == "snapshot"
+
+
 def test_concurrent_supply_does_not_crash():
     """Multiple concurrent supply() calls don't crash or corrupt state."""
     import threading

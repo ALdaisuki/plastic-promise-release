@@ -11,7 +11,7 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 - **Primary users**: Claude Code, MCP clients, agent teams, and maintainers operating local governance workflows.
 - **Current tool surface**: 56 MCP tools declared in `plastic_promise/mcp/server.py`, including compatibility aliases.
 - **Primary storage**: SQLite WAL for structured state and LanceDB for vector/text retrieval.
-- **Acceleration path**: optional Rust `context-engine-core`; Python remains the canonical full pipeline and applies a final recall-noise guard to Rust results.
+- **Acceleration path**: optional Rust `context-engine-core`; Python remains the canonical write/full fallback pipeline and applies a final recall-noise guard to Rust results. In `rust-full`, normal recall and `memory_recall(debug=true)` stay on the Rust snapshot hot path while Rust is healthy.
 
 ## 2. Architecture Diagrams
 
@@ -33,8 +33,8 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 | Trust and Defense | `plastic_promise/defense/`, `plastic_promise/core/step_auditor.py` | Applies hard boundaries, trust tiers, audit reports, and pre-action checks. |
 | Skills | `plastic_promise/skills/`, `plastic_promise/loop/` | Implements session lifecycle, smart remembering, step closure, and SuperPowers stage integration. |
 | Hunter Guild | `plastic_promise/mcp/tools/task_queue.py`, `plastic_promise/core/task_*` | Coordinates task enqueue, claim, heartbeat, completion, verification, and penalties. |
-| Maintenance Daemon | `daemons/maintenance_daemon.py`, `plastic_promise/cron/` | Runs lifecycle scans, scheduler health checks, memory decay scans, trust scans, and quality scans. |
-| Launcher | `scripts/init_and_start.py`, `plastic_promise/launcher/` | Starts MCP server, daemon, watchdog, environment checks, and bootstrap checks. |
+| Maintenance Daemon | `daemons/maintenance_daemon.py`, `plastic_promise/cron/` | Runs lifecycle scans, scheduler health checks, memory decay scans, trust scans, and quality scans. The script bootstraps the project root for direct execution. |
+| Launcher | `scripts/init_and_start.py`, `plastic_promise/launcher/` | Starts MCP server, daemon, watchdog, environment checks, and bootstrap checks. Child services inherit runtime-mode environment and receive the project root at the front of `PYTHONPATH`. |
 | Extensions | `plastic_promise/extensions/`, `plugins/` | Loads validated optional packs and external capability adapters. |
 | Rust Core | `rust/context-engine-core/` | Optional context-engine acceleration path. Snapshot ingestion filters audit telemetry before BM25/FTS/vector indexing, while Python still guards the native result boundary. |
 
@@ -65,6 +65,7 @@ MCP Server (stdio or SSE)
 
 Maintenance Daemon
     |
+    +--> direct script bootstrap inserts project root for imports
     +--> scans SQLite state, task queues, trust, memory decay, scheduler health
     +--> creates or updates tasks through the same governed lifecycle
 ```
@@ -85,6 +86,7 @@ context_supply(task)
   -> request_scope_id from stage_session_id + flow_line_id + request_id
   -> principle activation
   -> vector/text/symbolic/graph retrieval
+  -> Rust snapshot hot path for rust-full normal and debug recall
   -> recall-noise guard before scoring and at the Rust/Python boundary
   -> rank fusion and optional rerank
   -> worth/decay adjustment
@@ -112,6 +114,7 @@ Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flo
 | Task queue | SQLite | Hunter Guild lifecycle tables. |
 | Runtime logs | `var/log/` | Local runtime output; not part of public docs. |
 | Runtime PIDs/heartbeats | `var/run/` | Used by launcher and daemon. |
+| Service import path | child-process `PYTHONPATH` + daemon `sys.path` bootstrap | Keeps launcher-managed and direct daemon starts aligned with source checkout imports. |
 | Experience packs | JSON exports | Portable knowledge bundles. |
 
 ## 9. Technology Stack
@@ -133,8 +136,8 @@ Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flo
 |---|---|---|
 | MCP server | Active | stdio and SSE modes are implemented. |
 | Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
-| Context supply | Active | Python path is canonical; heavy calls carry request-scope metadata for concurrent flow isolation. |
-| Rust context core | Experimental | Optional acceleration path, with audit-telemetry filtering applied at snapshot ingestion and again when Python converts native Rust results. |
+| Context supply | Active | Python remains full fallback and write-side authority; heavy calls carry request-scope metadata for concurrent flow isolation. |
+| Rust context core | Experimental | Optional acceleration path; `rust-full` keeps normal and debug recall on Rust snapshot while Rust is healthy, with audit-telemetry filtering at snapshot ingestion and Python conversion. |
 | Hunter Guild | Experimental | Lifecycle tools exist; scanner policy and SNR are evolving. |
 | Skills and SuperPowers | Active | Programmatic tools and stage entrypoint exposed. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |
@@ -145,6 +148,7 @@ Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flo
 - SQLite WAL is sufficient for local agent teams with many readers and a small number of writers.
 - LanceDB keeps vector indexes disk-backed and suitable for larger memory pools than in-memory search.
 - The daemon performs lifecycle detection without LLM calls; LLM cost belongs to agent reasoning, extraction fallback, or configured external providers.
+- The launcher owns subprocess environment normalization. It prepends the project root to `PYTHONPATH`, while the daemon script also self-bootstraps `_project_root` for direct starts.
 - Context quality depends on explicit degraded-mode labeling when optional services are unavailable.
 
 ## 12. Security and Privacy Boundary

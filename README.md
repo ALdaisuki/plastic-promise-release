@@ -149,6 +149,8 @@ If no mode is provided in an interactive terminal, the launcher asks which runti
 
 After startup, MCP clients can inspect or hot-switch the process mode with `runtime_mode(action="get")` and `runtime_mode(action="set", mode="rust-normal")`.
 
+The launcher prepends the project root to child-process `PYTHONPATH`, so script services such as the Maintenance Daemon import the same local package tree as the MCP Server. The daemon also self-bootstraps its project root for direct starts.
+
 Run only the MCP server:
 
 ```bash
@@ -157,6 +159,12 @@ python -m plastic_promise
 
 # SSE mode on port 9020
 python -m plastic_promise --sse 9020
+```
+
+Run only the Maintenance Daemon after an MCP Server is already available:
+
+```bash
+python daemons/maintenance_daemon.py
 ```
 
 Health check:
@@ -303,6 +311,8 @@ Memory is admitted only when it passes quality checks. Reuse increases worth; st
 
 Concurrent heavy context calls can carry `stage_session_id`, `flow_line_id`, and `request_id`. Plastic Promise derives a `request_scope_id` from those fields, includes it in audit metadata and `context_supply` output, and uses it to isolate `memory_recall` cache entries across overlapping SuperPowers stages or agent flows.
 
+In `rust-full`, `memory_recall(debug=true)` stays on the Rust snapshot hot path when Rust is healthy and preferred. Debug recall still returns Rust `pipeline_stats` and `per_item_stats`, and only falls back to Python if the Rust path is unavailable or throws.
+
 ### Step closure
 
 `step-closure` records what changed, what was learned, why it happened, and what should improve next. That reflection updates memory and trust signals.
@@ -332,6 +342,8 @@ Local storage is the default. Optional external calls depend on configured agent
 | Codex repo skills | `.agents/skills/*/SKILL.md` |
 | Reranker providers | Local Ollama plus cosine fallback by default; hosted providers require `PP_RERANK_PROVIDERS` opt-in |
 | Runtime logs and PIDs | `var/log/`, `var/run/` |
+
+Service subprocesses inherit the launcher's runtime-mode environment and receive the project root at the front of `PYTHONPATH`; this keeps direct script entrypoints and hidden Windows subprocesses aligned with source-checkout execution.
 
 Privacy boundary: Plastic Promise is local-first by default. Data can leave the machine only when you configure external agents, hosted embedding providers, hosted rerankers, or other network integrations.
 
@@ -393,7 +405,7 @@ Conventions:
 |---|---|---|
 | MCP server | Active | stdio and SSE modes are implemented. |
 | Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
-| Context supply | Active | Python path is canonical; Rust path is optional, request-scoped, and guarded against daemon audit telemetry at both snapshot ingestion and native-result conversion. |
+| Context supply | Active | Python remains full fallback and write-side authority; Rust snapshot is optional, request-scoped, used for normal and debug recall in `rust-full`, and guarded against daemon audit telemetry at snapshot ingestion plus native-result conversion. |
 | Hunter Guild | Experimental | Task lifecycle is wired; policy and scanner quality are still evolving. |
 | Skills and SuperPowers | Active | `session-init`, `smart-remember`, `step-closure`, and the 16-stage `sp-stage` surface are exposed. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |

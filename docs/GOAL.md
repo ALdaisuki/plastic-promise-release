@@ -48,7 +48,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 - MCP Server 支持 stdio 与 SSE 模式。
 - 一键启动器 `scripts/init_and_start.py` 可启动 MCP Server、Maintenance Daemon 与 Watchdog，并支持 `light`、`normal`、`rust-normal`、`full`、`rust-full` 五种运行模式。
 - 记忆质量管道已接入提取、分类、向量去重、QualityGate、衰减初始化与 LanceDB 双写。
-- ContextEngine Python 路径是当前权威完整路径。
+- ContextEngine Python 路径仍是完整回退和写侧权威路径；`rust-full` 下正常召回和 `memory_recall(debug=true)` 在 Rust 健康时走 Rust snapshot 热路径。
 - `memory_recall` / `context_supply` 支持 `stage_session_id`、`flow_line_id`、`request_id`，通过 `request_scope_id` 隔离并发重型上下文请求、审计元数据和 `context_supply` 可见 trace。
 - `session-init`、`smart-remember`、`step-closure`、`sp-stage` 已作为程序化技能暴露。
 - TrustStore 将信任分持久化到 SQLite。
@@ -193,3 +193,8 @@ step-closure(
 ## 九、路线图
 
 当前未完成事项见 [TODO List/README.md](TODO%20List/README.md)。其中 dated comparison 文档保留为研究基线；README 中的 Roadmap Status 才是当前未完成工作的索引。
+
+## 2026-07-06 Runtime Startup Note
+
+- Launcher-managed services prepend the project root to child-process `PYTHONPATH`.
+- `maintenance_daemon.py` self-bootstraps `_project_root` into `sys.path`, so direct script starts and one-click launcher starts use the same source checkout imports.

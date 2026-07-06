@@ -1,5 +1,5 @@
 Title: Plastic Promise C4 Level 3 Component
-Focus: memory_recall/context_supply path
+Focus: memory_recall/context_supply path plus daemon startup bootstrap
 Last updated: 2026-07-06
 
 memory_recall(query) / context_supply(task, stage_session_id, flow_line_id, request_id)
@@ -32,6 +32,11 @@ memory_recall(query) / context_supply(task, stage_session_id, flow_line_id, requ
 | +-------+--------+   +-----------+-------------+ |
 |         |                        |               |
 |         v                        v               |
+| +------------------------------------------------+ |
+| | Rust Snapshot Hot Path                         | |
+| | rust-full normal + debug recall                | |
+| +----------------------+-------------------------+ |
+|                        |                           |
 | +------------------------------------------------+ |
 | | Rank Fusion / Rerank                           | |
 | | ANN + FTS + symbolic + worth + decay           | |
@@ -74,5 +79,28 @@ memory_store(content)
 
 Legend:
   ->  synchronous in-process call or data pipeline step
-  Context Engine Python path is the canonical full pipeline.
-  Rust context-engine-core is optional and guarded at snapshot ingestion plus Python conversion.
+  Context Engine Python path is the canonical full fallback and write-side pipeline.
+  Rust context-engine-core is optional, keeps rust-full debug recall on the hot path,
+  and is guarded at snapshot ingestion plus Python conversion.
+
+
+Launcher-managed service startup
+        |
+        v
++---------------------------+
+| ServiceManager            |
+| runtime env inheritance   |
+| PYTHONPATH project root   |
++------------+--------------+
+             |
+             v
++---------------------------+
+| maintenance_daemon.py     |
+| direct sys.path bootstrap |
++------------+--------------+
+             |
+             v
++---------------------------+
+| Cron scanners             |
+| scheduler/trust/quality   |
++---------------------------+

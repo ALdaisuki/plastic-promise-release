@@ -26,6 +26,7 @@ sequenceDiagram
     C->>RS: context_supply(..., stage_session_id, flow_line_id, request_id)
     RS->>CE: derive request_scope_id + audit metadata
     CE->>M: memory_recall (3-way retrieval, scoped cache)
+    Note over CE,M: rust-full debug recall stays on Rust snapshot path
     M-->>CE: Core + related memories
     CE-->>C: Core + related + divergent context
     C->>C: Decompose task

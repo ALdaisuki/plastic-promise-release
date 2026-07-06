@@ -15,7 +15,7 @@ graph TD
 
     MCP --> Scope["Request Scope<br/>stage_session_id + flow_line_id + request_id"]
     Scope --> CE["⚡ ContextEngine<br/>EntityGraph + RRF + Symbolic Rules"]
-    CE --> RustCore["Rust Snapshot Guard<br/>telemetry filter + BM25/FTS/vector"]
+    CE --> RustCore["Rust Snapshot Hot Path<br/>normal/debug recall + telemetry filter"]
     Memory --> Scope
     Principles --> CE
     Context --> CE
@@ -24,6 +24,8 @@ graph TD
     CE --> LanceDB["🔢 LanceDB<br/>ANN + FTS + RRF Fusion"]
 
     MCP --> Daemon["🤖 Daemon Layer"]
+    Launcher["Launcher / ServiceManager<br/>runtime env + PYTHONPATH bootstrap"] --> Daemon
+    DaemonBootstrap["maintenance_daemon.py<br/>direct sys.path bootstrap"] --> Daemon
     Daemon --> PiDaemon["pi_daemon.py<br/>Zero-Token Polling"]
     Daemon --> AuditDaemon["audit_daemon.py<br/>Hourly 11-Dim Scan"]
     Daemon --> SafetyNet["Safety-Net Daemon<br/>Orphan/Duplicate/Tier/Innovation"]
@@ -50,5 +52,7 @@ graph TD
     style SQLite fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000
     style LanceDB fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000
     style Daemon fill:#FFA07A,stroke:#8B0000,stroke-width:2px,color:#000
+    style Launcher fill:#FFE4B5,stroke:#8B4513,stroke-width:2px,color:#000
+    style DaemonBootstrap fill:#FFE4B5,stroke:#8B4513,stroke-width:2px,color:#000
     style SafetyNet fill:#FF6347,stroke:#8B0000,stroke-width:2px,color:#000
     style TagSM fill:#98FB98,stroke:#006400,stroke-width:2px,color:#000

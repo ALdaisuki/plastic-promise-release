@@ -56,6 +56,8 @@ python -m plastic_promise --sse 9020
 python daemons/maintenance_daemon.py
 ```
 
+Launcher-managed child services receive the project root at the front of `PYTHONPATH`. The Maintenance Daemon also inserts its computed project root into `sys.path`, so the manual command above works from a source checkout without extra environment setup.
+
 Health check:
 
 ```bash
@@ -141,7 +143,9 @@ make check
 | Large memory pool | Run `memory_gc(dry_run=True)` and monitor memory stats before destructive cleanup. |
 | Trust score stagnates | Ensure `step-closure` runs after substantive work and review outcomes are recorded. |
 | Daemon process drift | Use `scripts/init_and_start.py` so ServiceManager and watchdog own lifecycle. |
+| Daemon import path drift | Keep launcher child `PYTHONPATH` bootstrap and daemon direct-script `sys.path` bootstrap in sync; verify with `tests/test_launcher.py` daemon path tests. |
 | Optional Rust mismatch | Treat Python context supply as canonical until Rust parity is verified for the specific path. Rebuild and import-test the release PyO3 extension after Rust changes, because `cargo test` alone does not refresh the server's `target/release` module. |
+| Debug recall stalls MCP | Keep `memory_recall(debug=true)` on the Rust snapshot path in `rust-full`; debug counters should come from Rust `pipeline_stats` / `per_item_stats` and Python fallback should only happen after Rust is unavailable or throws. |
 | Rust audit telemetry leak | Filter telemetry before Rust snapshot indexes are built and keep the Python `ContextPack` conversion guard enabled for stale or mismatched native extensions. |
 | Context race or cross-talk | Pass `stage_session_id`, `flow_line_id`, and `request_id` to heavy `memory_recall` / `context_supply` calls and check `request_scope_id` in audit metadata or the `context_supply` trace section. |
 

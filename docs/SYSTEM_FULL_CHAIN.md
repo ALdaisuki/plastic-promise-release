@@ -34,6 +34,7 @@ Every serious task should pass through this loop:
 |---|---|
 | MCP Server | Exposes the runtime to Claude Code and other MCP clients over stdio or SSE. |
 | Launcher runtime modes | Select startup depth and Rust acceleration before services start, with MCP hot updates through `runtime_mode`. |
+| Service bootstrap | Launcher child processes inherit runtime-mode env and receive project root on `PYTHONPATH`; the Maintenance Daemon also bootstraps `_project_root` for direct script starts. |
 | Memory | Stores reusable experience, decisions, preferences, task knowledge, and derived signals. |
 | Context | Retrieves the most relevant memory and graph context for the current task. |
 | Principles | Keeps work aligned with the project’s operating commitments. |
@@ -129,12 +130,13 @@ Plastic Promise is local-first by default. Optional external calls depend on con
 
 1. **Context before action** — retrieve relevant memory before major decisions.
 2. **Scoped heavy context** — pass `stage_session_id`, `flow_line_id`, and `request_id` to concurrent `memory_recall` / `context_supply` calls so the derived `request_scope_id` isolates cache and audit state and remains visible in `context_supply` output.
-3. **Traceability over speed** — leave a path future agents can audit.
-4. **Small reversible steps** — prefer changes that are easy to review and undo.
-5. **Explicit degradation** — if a subsystem is unavailable, say so and use a safe fallback.
-6. **No blind delegation** — subagents must receive context and principles.
-7. **Verification before completion** — done means checked, not merely edited.
-8. **Reflection after output** — useful lessons should feed the next loop.
+3. **Debug parity on hot paths** — in `rust-full`, `memory_recall(debug=true)` should keep the Rust snapshot path when Rust is healthy, returning debug counters without forcing a Python full-pipeline detour.
+4. **Traceability over speed** — leave a path future agents can audit.
+5. **Small reversible steps** — prefer changes that are easy to review and undo.
+6. **Explicit degradation** — if a subsystem is unavailable, say so and use a safe fallback.
+7. **No blind delegation** — subagents must receive context and principles.
+8. **Verification before completion** — done means checked, not merely edited.
+9. **Reflection after output** — useful lessons should feed the next loop.
 
 ## 12. Minimal mental model
 
