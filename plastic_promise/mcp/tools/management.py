@@ -4,6 +4,9 @@ import json
 from typing import Any
 
 from mcp.types import TextContent
+from plastic_promise import __version__
+
+PLASTIC_PROMISE_VERSION = __version__
 
 # ---------------------------------------------------------------------------
 # system_stats
@@ -59,7 +62,7 @@ async def handle_system_stats(engine: Any, args: dict) -> list[TextContent]:
                         "memory": mem_stats,
                         "graph": graph_stats,
                         "digital_body_systems": systems,
-                        "engine_version": "0.1.0",
+                        "engine_version": PLASTIC_PROMISE_VERSION,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -181,7 +184,7 @@ async def handle_system_backup(engine: Any, args: dict) -> list[TextContent]:
             graph_data = {"nodes": {}, "edges": []}
 
         backup = {
-            "version": "0.1.0",
+            "version": PLASTIC_PROMISE_VERSION,
             "timestamp": __import__("datetime").datetime.now().isoformat(),
             "memories": mem_list,
             "graph": graph_data,

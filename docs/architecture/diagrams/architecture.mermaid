@@ -15,6 +15,7 @@ graph TD
 
     MCP --> Scope["Request Scope<br/>stage_session_id + flow_line_id + request_id"]
     Scope --> CE["⚡ ContextEngine<br/>EntityGraph + RRF + Symbolic Rules"]
+    CE --> RustCore["Rust Snapshot Guard<br/>telemetry filter + BM25/FTS/vector"]
     Memory --> Scope
     Principles --> CE
     Context --> CE
@@ -45,6 +46,7 @@ graph TD
     style MCP fill:#87CEEB,stroke:#1E3A5F,stroke-width:3px,color:#000
     style Scope fill:#E6F7FF,stroke:#1E3A5F,stroke-width:2px,color:#000
     style CE fill:#FFD700,stroke:#8B4513,stroke-width:3px,color:#000
+    style RustCore fill:#FFF8DC,stroke:#8B4513,stroke-width:2px,color:#000
     style SQLite fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000
     style LanceDB fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000
     style Daemon fill:#FFA07A,stroke:#8B0000,stroke-width:2px,color:#000

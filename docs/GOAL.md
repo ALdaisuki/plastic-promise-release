@@ -38,7 +38,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
   SQLite WAL 结构化状态
   LanceDB 向量存储
   Ollama mxbai-embed-large 默认本地 embedding，可降级 fallback embedder
-  Rust context-engine-core 可选加速路径，Python 管线仍是权威完整路径
+  Rust context-engine-core 可选加速路径，Python 管线仍是权威完整路径；Rust snapshot 入口过滤 audit telemetry，Python 转换边界保留最终防线
 ```
 
 ## 三、当前状态 (2026-07-04)
@@ -57,7 +57,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 
 ### 实验/仍需验证
 
-- Rust context-engine-core 是可选加速路径，仍需持续补齐与 Python 管线的语义一致性。
+- Rust context-engine-core 是可选加速路径，仍需持续补齐与 Python 管线的语义一致性；当前已对 daemon audit telemetry 建立 Rust snapshot 入口过滤与 Python native-result 边界过滤。
 - Hunter Guild 的扫描器信噪比、惩罚策略和任务路由仍在迭代。
 - 插件市场生态处于早期阶段。
 - 发行版文档正在从内部操作手册整理为公开用户文档。

@@ -238,7 +238,7 @@ This module map follows a capability-first layout so readers can understand the 
 | Hunter Guild dispatch | `plastic_promise/mcp/tools/task_queue.py`, `plastic_promise/core/task_*` | Manages task posting, claiming, heartbeat, completion, verification, and failure penalties. |
 | Daemons and launcher | `scripts/init_and_start.py`, `daemons/maintenance_daemon.py`, `plastic_promise/launcher/` | Starts services, watches health, runs scans, and recovers routine lifecycle issues. |
 | Extensions and market | `plastic_promise/extensions/`, `plugins/` | Loads optional packs through validated metadata without importing untrusted code during validation. |
-| Rust context core | `rust/context-engine-core/` | Optional PyO3 acceleration path. Python remains the canonical full pipeline while Rust parity evolves. |
+| Rust context core | `rust/context-engine-core/` | Optional PyO3 acceleration path. Rust snapshot ingestion filters audit telemetry before indexing, and Python keeps a final native-result guard while parity evolves. |
 
 ---
 
@@ -344,7 +344,7 @@ The current roadmap lives in [docs/TODO List/README.md](docs/TODO%20List/README.
 | Track | Direction |
 |---|---|
 | Runtime reliability | Keep `session-init`, `context_supply`, `runtime_mode`, daemon startup, and degraded-mode behavior predictable under light and full modes. |
-| Rust acceleration | Continue converging the optional Rust context-engine path with the canonical Python pipeline. |
+| Rust acceleration | Continue converging the optional Rust context-engine path with the canonical Python pipeline; rebuild and import-test the release PyO3 module after Rust changes. |
 | Hunter Guild | Harden task queue policy, scanner quality, reassignment, verification, and trust-score effects. |
 | Extension market | Stabilize pack validation, install/enable/disable flows, and plugin metadata boundaries. |
 | Public documentation | Keep README, architecture docs, quickstarts, and roadmap entries aligned with source truth. Future release docs should maintain English and Chinese coverage together. |
@@ -393,7 +393,7 @@ Conventions:
 |---|---|---|
 | MCP server | Active | stdio and SSE modes are implemented. |
 | Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
-| Context supply | Active | Python path is canonical; Rust path is optional and still converging. |
+| Context supply | Active | Python path is canonical; Rust path is optional, request-scoped, and guarded against daemon audit telemetry at both snapshot ingestion and native-result conversion. |
 | Hunter Guild | Experimental | Task lifecycle is wired; policy and scanner quality are still evolving. |
 | Skills and SuperPowers | Active | `session-init`, `smart-remember`, `step-closure`, and the 16-stage `sp-stage` surface are exposed. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |

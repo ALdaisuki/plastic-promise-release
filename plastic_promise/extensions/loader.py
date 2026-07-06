@@ -14,8 +14,10 @@ import logging
 import subprocess
 from pathlib import Path
 
+from plastic_promise import __version__
 from plastic_promise.extensions.registry import PackInfo, PackRegistry
 
+PLASTIC_PROMISE_VERSION = __version__
 logger = logging.getLogger("plastic-promise.extensions.loader")
 
 HOOK_MERGE_STRATEGIES = {
@@ -35,7 +37,7 @@ class PluginLoader:
         self._tools: dict[str, dict] = {}
         self._dispatch_providers: list = []
         self._activated: list[str] = []
-        self._core_version = "0.1.0"
+        self._core_version = PLASTIC_PROMISE_VERSION
 
     # ── Discovery ──
 

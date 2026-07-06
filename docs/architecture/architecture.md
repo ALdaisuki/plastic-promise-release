@@ -11,7 +11,7 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 - **Primary users**: Claude Code, MCP clients, agent teams, and maintainers operating local governance workflows.
 - **Current tool surface**: 56 MCP tools declared in `plastic_promise/mcp/server.py`, including compatibility aliases.
 - **Primary storage**: SQLite WAL for structured state and LanceDB for vector/text retrieval.
-- **Acceleration path**: optional Rust `context-engine-core`; Python remains the canonical full pipeline.
+- **Acceleration path**: optional Rust `context-engine-core`; Python remains the canonical full pipeline and applies a final recall-noise guard to Rust results.
 
 ## 2. Architecture Diagrams
 
@@ -36,7 +36,7 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 | Maintenance Daemon | `daemons/maintenance_daemon.py`, `plastic_promise/cron/` | Runs lifecycle scans, scheduler health checks, memory decay scans, trust scans, and quality scans. |
 | Launcher | `scripts/init_and_start.py`, `plastic_promise/launcher/` | Starts MCP server, daemon, watchdog, environment checks, and bootstrap checks. |
 | Extensions | `plastic_promise/extensions/`, `plugins/` | Loads validated optional packs and external capability adapters. |
-| Rust Core | `rust/context-engine-core/` | Optional context-engine acceleration path. It is experimental relative to the Python pipeline. |
+| Rust Core | `rust/context-engine-core/` | Optional context-engine acceleration path. Snapshot ingestion filters audit telemetry before BM25/FTS/vector indexing, while Python still guards the native result boundary. |
 
 ## 4. Agent and Actor Inventory
 
@@ -85,6 +85,7 @@ context_supply(task)
   -> request_scope_id from stage_session_id + flow_line_id + request_id
   -> principle activation
   -> vector/text/symbolic/graph retrieval
+  -> recall-noise guard before scoring and at the Rust/Python boundary
   -> rank fusion and optional rerank
   -> worth/decay adjustment
   -> core, related, divergent context package
@@ -133,7 +134,7 @@ Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flo
 | MCP server | Active | stdio and SSE modes are implemented. |
 | Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
 | Context supply | Active | Python path is canonical; heavy calls carry request-scope metadata for concurrent flow isolation. |
-| Rust context core | Experimental | Optional acceleration path, with recall-noise filtering kept aligned with Python for the audited hot path. |
+| Rust context core | Experimental | Optional acceleration path, with audit-telemetry filtering applied at snapshot ingestion and again when Python converts native Rust results. |
 | Hunter Guild | Experimental | Lifecycle tools exist; scanner policy and SNR are evolving. |
 | Skills and SuperPowers | Active | Programmatic tools and stage entrypoint exposed. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |

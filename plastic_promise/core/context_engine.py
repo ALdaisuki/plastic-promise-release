@@ -2029,46 +2029,32 @@ class ContextEngine:
         Preserves audit_metadata from Rust (engine_version, timings,
         graph stats, etc.) for observability.
         """
+        def convert_item(item):
+            if ContextEngine._is_recall_noise(getattr(item, "content", "")):
+                return None
+            return ContextItem(
+                id=item.id,
+                content=item.content,
+                relevance=item.relevance,
+                source=item.source,
+                freshness=item.freshness,
+                layer=item.layer,
+                is_principle=item.is_principle,
+                worth_score=item.worth_score,
+            )
+
+        def convert_layer(items):
+            converted = []
+            for item in items:
+                context_item = convert_item(item)
+                if context_item is not None:
+                    converted.append(context_item)
+            return converted
+
         pack = ContextPack()
-        pack.core = [
-            ContextItem(
-                id=item.id,
-                content=item.content,
-                relevance=item.relevance,
-                source=item.source,
-                freshness=item.freshness,
-                layer=item.layer,
-                is_principle=item.is_principle,
-                worth_score=item.worth_score,
-            )
-            for item in rust_pack.core
-        ]
-        pack.related = [
-            ContextItem(
-                id=item.id,
-                content=item.content,
-                relevance=item.relevance,
-                source=item.source,
-                freshness=item.freshness,
-                layer=item.layer,
-                is_principle=item.is_principle,
-                worth_score=item.worth_score,
-            )
-            for item in rust_pack.related
-        ]
-        pack.divergent = [
-            ContextItem(
-                id=item.id,
-                content=item.content,
-                relevance=item.relevance,
-                source=item.source,
-                freshness=item.freshness,
-                layer=item.layer,
-                is_principle=item.is_principle,
-                worth_score=item.worth_score,
-            )
-            for item in rust_pack.divergent
-        ]
+        pack.core = convert_layer(rust_pack.core)
+        pack.related = convert_layer(rust_pack.related)
+        pack.divergent = convert_layer(rust_pack.divergent)
         pack.activated_principles = list(rust_pack.activated_principles)
         # Preserve audit metadata from Rust for observability
         # Use isinstance guard: PyO3 may return PyDict wrapper, not plain dict

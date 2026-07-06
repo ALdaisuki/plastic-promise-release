@@ -563,6 +563,9 @@ impl ContextEngine {
                     .ok()
                     .and_then(|v| v.extract().ok())
                     .unwrap_or_default();
+                if is_recall_noise(&content) {
+                    continue;
+                }
                 let memory_type: String = obj.get_item("memory_type")
                     .ok()
                     .and_then(|v| v.extract().ok())

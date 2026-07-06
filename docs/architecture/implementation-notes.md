@@ -141,7 +141,8 @@ make check
 | Large memory pool | Run `memory_gc(dry_run=True)` and monitor memory stats before destructive cleanup. |
 | Trust score stagnates | Ensure `step-closure` runs after substantive work and review outcomes are recorded. |
 | Daemon process drift | Use `scripts/init_and_start.py` so ServiceManager and watchdog own lifecycle. |
-| Optional Rust mismatch | Treat Python context supply as canonical until Rust parity is verified for the specific path. |
+| Optional Rust mismatch | Treat Python context supply as canonical until Rust parity is verified for the specific path. Rebuild and import-test the release PyO3 extension after Rust changes, because `cargo test` alone does not refresh the server's `target/release` module. |
+| Rust audit telemetry leak | Filter telemetry before Rust snapshot indexes are built and keep the Python `ContextPack` conversion guard enabled for stale or mismatched native extensions. |
 | Context race or cross-talk | Pass `stage_session_id`, `flow_line_id`, and `request_id` to heavy `memory_recall` / `context_supply` calls and check `request_scope_id` in audit metadata or the `context_supply` trace section. |
 
 ## 7. Deployment Checklist

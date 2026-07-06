@@ -157,3 +157,68 @@ fn test_audit_telemetry_is_filtered_from_rust_supply() {
         assert!(!all_ids.contains(&"audit".to_string()));
     });
 }
+
+#[test]
+fn test_audit_telemetry_is_excluded_from_rust_snapshot_indexes() {
+    pyo3::prepare_freethreaded_python();
+    Python::with_gil(|py| {
+        fn memory_map(py: Python<'_>, id: &str, content: &str, source: &str) -> PyObject {
+            let dict = PyDict::new(py);
+            dict.set_item("id", id).unwrap();
+            dict.set_item("content", content).unwrap();
+            dict.set_item("source", source).unwrap();
+            dict.set_item("memory_type", "reflection").unwrap();
+            dict.set_item("scope", "global").unwrap();
+            dict.set_item("worth_success", 0).unwrap();
+            dict.set_item("worth_failure", 0).unwrap();
+            dict.into()
+        }
+
+        let engine = ContextEngine::new();
+        let memories = vec![
+            memory_map(
+                py,
+                "bare_audit",
+                "AUDIT trust=0.60 pipeline=0.94 domain=0.80 bridge=1.00 mem_q=0.06 -> 0.68",
+                "maintenance_daemon",
+            ),
+            memory_map(
+                py,
+                "prefixed_audit",
+                "- [0.70] [maintenance_daemon] AUDIT trust=0.60 pipeline=0.94 domain=0.80 bridge=1.00 mem_q=0.06 -> 0.68",
+                "maintenance_daemon",
+            ),
+            memory_map(
+                py,
+                "useful",
+                "context engine request scope memory recall race isolation",
+                "codex",
+            ),
+        ];
+
+        let pack = engine
+            .supply(
+                "request scope memory recall audit trust".to_string(),
+                vec![0.1; 1024],
+                "debugging".to_string(),
+                "global".to_string(),
+                memories,
+            )
+            .unwrap();
+
+        let all_items = pack
+            .core
+            .iter()
+            .chain(pack.related.iter())
+            .chain(pack.divergent.iter());
+
+        for item in all_items {
+            assert!(
+                !item.content.to_ascii_lowercase().contains("audit trust="),
+                "telemetry leaked into recall layer: {}",
+                item.content
+            );
+        }
+        assert_eq!(pack.pipeline_stats.get("bm25_count"), Some(&"1".to_string()));
+    });
+}

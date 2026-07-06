@@ -20,6 +20,12 @@ memory_recall(query) / context_supply(task, stage_session_id, flow_line_id, requ
 +--------------------------------------------------+
 | Context Engine                                   |
 |                                                  |
+| +----------------+                               |
+| | Recall Noise   |                               |
+| | Guard          |                               |
+| | audit telemetry|                               |
+| +-------+--------+                               |
+|         |                                        |
 | +----------------+   +-------------------------+ |
 | | Vector Search  |   | Symbolic/Graph Search   | |
 | | LanceDB ANN    |   | entities, tags, edges   | |
@@ -29,6 +35,11 @@ memory_recall(query) / context_supply(task, stage_session_id, flow_line_id, requ
 | +------------------------------------------------+ |
 | | Rank Fusion / Rerank                           | |
 | | ANN + FTS + symbolic + worth + decay           | |
+| +----------------------+-------------------------+ |
+|                        |                           |
+| +----------------------+-------------------------+ |
+| | Rust/Python Result Boundary Guard              | |
+| | drops stale native AUDIT trust telemetry        | |
 | +----------------------+-------------------------+ |
 |                        |                           |
 +------------------------+---------------------------+
@@ -64,4 +75,4 @@ memory_store(content)
 Legend:
   ->  synchronous in-process call or data pipeline step
   Context Engine Python path is the canonical full pipeline.
-  Rust context-engine-core is optional and still converging toward parity.
+  Rust context-engine-core is optional and guarded at snapshot ingestion plus Python conversion.

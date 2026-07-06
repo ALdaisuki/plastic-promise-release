@@ -39,11 +39,13 @@ from mcp.types import (
     Tool,
 )
 
+from plastic_promise import __version__
 from plastic_promise.core.constants import (
     CORE_PRINCIPLES,
 )
 from plastic_promise.launcher.runtime_mode import RUNTIME_MODE_KEYS
 
+PLASTIC_PROMISE_VERSION = __version__
 _engine = None  # 延迟初始化
 _skill_engine = None  # 延迟初始化 — SkillEngine 单例
 _closure_history: deque = deque(maxlen=5)  # 滑动窗口: 最近5次闭环 {scarf, trust, cei}
@@ -109,7 +111,7 @@ def get_skill_engine():
 # MCP Server 实例
 # ---------------------------------------------------------------------------
 
-server = Server("plastic-promise", version="0.1.0")
+server = Server("plastic-promise", version=PLASTIC_PROMISE_VERSION)
 
 _CODEX_DISCOVERY_HINTS = {
     "session-init": (
@@ -2323,7 +2325,7 @@ async def run_sse(port: int = 9020):
             {
                 "status": "ok",
                 "uptime": round(_time.time() - start_time, 1),
-                "version": "0.1.0",
+                "version": PLASTIC_PROMISE_VERSION,
                 "pid": os.getpid(),
             }
         )
@@ -2351,7 +2353,7 @@ async def run_sse(port: int = 9020):
                     "memory": stats,
                     "body_systems": systems,
                     "uptime": round(_time.time() - start_time, 1),
-                    "version": "0.1.0",
+                    "version": PLASTIC_PROMISE_VERSION,
                 }
             )
         except Exception as e:
@@ -2453,7 +2455,7 @@ th{color:#8b949e}
 </style>
 </head>
 <body>
-<h1><span class="status status-ok" id="status-dot"></span>Plastic Promise Dashboard <small style="color:#8b949e">v0.1.0</small></h1>
+<h1><span class="status status-ok" id="status-dot"></span>Plastic Promise Dashboard <small style="color:#8b949e">v__PLASTIC_PROMISE_VERSION__</small></h1>
 
 <div class="grid" id="stats-grid">
   <div class="card"><h3>Memories</h3><div class="value" id="mem-total">-</div></div>
@@ -2534,7 +2536,9 @@ setInterval(refresh, 5000);
 </script>
 </body>
 </html>"""
-        return HTMLResponse(html)
+        return HTMLResponse(
+            html.replace("__PLASTIC_PROMISE_VERSION__", PLASTIC_PROMISE_VERSION)
+        )
 
     async def shutdown():
         logger.info("Shutting down Plastic Promise SSE server...")
@@ -2581,7 +2585,7 @@ setInterval(refresh, 5000);
         lifespan=lifespan,
     )
 
-    logger.info("Plastic Promise MCP Server v0.1.0")
+    logger.info("Plastic Promise MCP Server v%s", PLASTIC_PROMISE_VERSION)
     logger.info(f"Streamable HTTP endpoint: http://127.0.0.1:{port}/mcp")
     logger.info(f"SSE endpoint: http://127.0.0.1:{port}/sse")
     logger.info(f"Health:      http://127.0.0.1:{port}/health")

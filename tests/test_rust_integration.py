@@ -1,8 +1,6 @@
 """Integration tests for Rust engine degradation and health check."""
 
 import os
-import time
-import pytest
 
 # Use in-memory mode (no SQLite) for test isolation
 os.environ["AGENT_USE_SQLITE"] = "0"
@@ -146,6 +144,53 @@ def test_convert_rust_pack_preserves_pipeline_metadata():
     assert pack.pipeline_stats["bm25_hits"] == "3"
     assert pack.pipeline_stats["mmr_demoted"] == "1"
     assert pack.per_item_stats[0]["final_score"] == "0.9000"
+
+
+def test_convert_rust_pack_filters_audit_telemetry_from_native_layers():
+    """Python boundary drops telemetry even if a stale/native Rust pack returns it."""
+    from plastic_promise.core.context_engine import ContextEngine
+
+    class FakeItem:
+        def __init__(self, item_id, content, source, layer):
+            self.id = item_id
+            self.content = content
+            self.relevance = 0.9
+            self.source = source
+            self.freshness = "valid"
+            self.layer = layer
+            self.is_principle = False
+            self.worth_score = 0.5
+
+    class FakeRustPack:
+        core = [
+            FakeItem(
+                "daemon_audit",
+                "- [0.70] [maintenance_daemon] AUDIT trust=0.60 pipeline=0.94",
+                "maintenance_daemon",
+                "core",
+            ),
+            FakeItem("useful", "request scope recall isolation works", "codex", "core"),
+        ]
+        related = [
+            FakeItem(
+                "bare_audit",
+                "AUDIT trust=0.60 pipeline=0.85 domain=0.80 bridge=0.00",
+                "maintenance_daemon",
+                "related",
+            )
+        ]
+        divergent = []
+        activated_principles = []
+        audit_metadata = {"engine_version": "0.2.0-rs"}
+        pipeline_stats = {"engine_mode": "snapshot"}
+        per_item_stats = []
+
+    engine = ContextEngine(use_sqlite=False)
+    pack = engine._convert_rust_pack(FakeRustPack())
+
+    recalled = pack.core + pack.related + pack.divergent
+    assert [item.id for item in recalled] == ["useful"]
+    assert all("audit trust=" not in item.content.lower() for item in recalled)
 
 
 def test_concurrent_supply_does_not_crash():
