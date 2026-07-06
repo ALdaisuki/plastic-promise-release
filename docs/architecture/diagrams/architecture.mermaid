@@ -1,19 +1,21 @@
 graph TD
-    Start(["👤 User / AI Agent"]) --> MCP["🔌 MCP Server :9020<br/>41 tools, 11 domains"]
+    Start(["👤 User / AI Agent"]) --> MCP["🔌 MCP Server :9020<br/>56 tools, 14 groups"]
 
-    MCP --> Memory["🧠 Memory Domain (10)<br/>CRUD + GC + Sync"]
-    MCP --> Principles["📜 Principles Domain (4)<br/>Activate/Inherit/Diffuse/Evaluate"]
-    MCP --> Context["🔍 Context Domain (5)<br/>Supply/Inject/Graph/Ready/Auto"]
+    MCP --> Memory["🧠 Memory Domain (9)<br/>Recall/CRUD/GC/Sync"]
+    MCP --> Principles["📜 Principles Domain (2)<br/>Activate/Evaluate"]
+    MCP --> Context["🔍 Context Domain (4)<br/>Supply/Inject/Graph/Auto"]
     MCP --> Audit["🛡️ Audit & Defense (3)<br/>Run/PreCheck/Defense"]
     MCP --> Reflection["🪞 Reflection (2)<br/>SCARF/Feedback"]
-    MCP --> System["⚙️ System (4+3)<br/>Stats/Backup/Migrate/Issues"]
-    MCP --> Pack["📦 Experience Pack (3)<br/>Export/Import/Recall"]
+    MCP --> System["⚙️ System + Runtime (5)<br/>Stats/Backup/Migrate/Issues/Mode"]
+    MCP --> Pack["📦 Experience Pack (2)<br/>Export/Import"]
     MCP --> Domain["🌐 Domain Federation (1)"]
     MCP --> Skill["📊 Skill Track (5)<br/>Start/Complete/Trace/Audit/Auto"]
-    MCP --> Skills["🎯 Programmatic Skills (3)<br/>session-init/smart-remember/step-closure"]
+    MCP --> Skills["🎯 Programmatic Skills + SP<br/>session-init/smart-remember/step-closure/sp-stage"]
     MCP --> Dispatch["🏹 Dispatch (7)<br/>Enqueue/Claim/Complete/Verify/Inbox/Heartbeat/Abandon"]
 
-    Memory --> CE["⚡ ContextEngine<br/>EntityGraph + RRF + Symbolic Rules"]
+    MCP --> Scope["Request Scope<br/>stage_session_id + flow_line_id + request_id"]
+    Scope --> CE["⚡ ContextEngine<br/>EntityGraph + RRF + Symbolic Rules"]
+    Memory --> Scope
     Principles --> CE
     Context --> CE
 
@@ -41,6 +43,7 @@ graph TD
 
     style Start fill:#90EE90,stroke:#2F4F2F,stroke-width:3px,color:#000
     style MCP fill:#87CEEB,stroke:#1E3A5F,stroke-width:3px,color:#000
+    style Scope fill:#E6F7FF,stroke:#1E3A5F,stroke-width:2px,color:#000
     style CE fill:#FFD700,stroke:#8B4513,stroke-width:3px,color:#000
     style SQLite fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000
     style LanceDB fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000

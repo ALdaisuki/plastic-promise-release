@@ -128,12 +128,13 @@ Plastic Promise is local-first by default. Optional external calls depend on con
 ## 11. Operating principles
 
 1. **Context before action** — retrieve relevant memory before major decisions.
-2. **Traceability over speed** — leave a path future agents can audit.
-3. **Small reversible steps** — prefer changes that are easy to review and undo.
-4. **Explicit degradation** — if a subsystem is unavailable, say so and use a safe fallback.
-5. **No blind delegation** — subagents must receive context and principles.
-6. **Verification before completion** — done means checked, not merely edited.
-7. **Reflection after output** — useful lessons should feed the next loop.
+2. **Scoped heavy context** — pass `stage_session_id`, `flow_line_id`, and `request_id` to concurrent `memory_recall` / `context_supply` calls so the derived `request_scope_id` isolates cache and audit state and remains visible in `context_supply` output.
+3. **Traceability over speed** — leave a path future agents can audit.
+4. **Small reversible steps** — prefer changes that are easy to review and undo.
+5. **Explicit degradation** — if a subsystem is unavailable, say so and use a safe fallback.
+6. **No blind delegation** — subagents must receive context and principles.
+7. **Verification before completion** — done means checked, not merely edited.
+8. **Reflection after output** — useful lessons should feed the next loop.
 
 ## 12. Minimal mental model
 

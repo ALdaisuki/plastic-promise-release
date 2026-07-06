@@ -1,12 +1,19 @@
 Title: Plastic Promise C4 Level 3 Component
 Focus: memory_recall/context_supply path
-Last updated: 2026-07-04
+Last updated: 2026-07-06
 
-memory_recall(query) / context_supply(task)
+memory_recall(query) / context_supply(task, stage_session_id, flow_line_id, request_id)
         |
         v
 +--------------------+
 | MCP Tool Handler   |
++---------+----------+
+          |
+          v
++--------------------+
+| Request Scope      |
+| request_scope_id   |
+| cache + audit key  |
 +---------+----------+
           |
           v

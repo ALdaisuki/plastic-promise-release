@@ -76,7 +76,7 @@ class ContextPack:
     related: list[ContextItem] = field(default_factory=list)
     divergent: list[ContextItem] = field(default_factory=list)
     activated_principles: list[str] = field(default_factory=list)
-    audit_metadata: dict[str, str] = field(default_factory=dict)
+    audit_metadata: dict[str, Any] = field(default_factory=dict)
     pipeline_stats: dict[str, Any] = field(default_factory=dict)
     per_item_stats: list[dict[str, Any]] = field(default_factory=list)
     gap_signal: Optional["GapSignal"] = None  # knowledge-gap detection signal
@@ -112,6 +112,15 @@ class ContextPack:
             for item in self.divergent:
                 lines.append(item.to_prompt_line())
             lines.append("")
+        request_scope = self.audit_metadata.get("request_scope")
+        if isinstance(request_scope, dict) and request_scope.get("request_scope_id"):
+            lines.append("## [REQUEST_SCOPE] Audit Trace")
+            lines.append(f"- request_scope_id: {request_scope['request_scope_id']}")
+            lines.append(f"- stage_session_id: {request_scope.get('stage_session_id', '')}")
+            lines.append(f"- flow_line_id: {request_scope.get('flow_line_id', '')}")
+            lines.append(f"- request_id: {request_scope.get('request_id', '')}")
+            lines.append("")
+
         return "\n".join(lines)
 
     @property
@@ -1414,7 +1423,7 @@ class ContextEngine:
         graph_results = self._graph_traversal(task_type)
 
         # 类 (tier): 文本匹配 + L1 工作记忆优先级提升
-        self._domain_hint = scope if scope and scope != "global" else None
+        domain_hint = scope if scope and scope != "global" else None
 
         # Query expansion: inject domain-relevant synonyms for BM25 text search.
         # Vector search uses raw query — semantic models handle synonyms natively.
@@ -1423,15 +1432,17 @@ class ContextEngine:
             try:
                 from plastic_promise.core.query_expander import expand_query
 
-                expanded_query = expand_query(task_description, self._domain_hint)
+                expanded_query = expand_query(task_description, domain_hint)
             except Exception:
                 pass  # expansion failure never blocks retrieval
 
-        text_results = self._text_retrieval(expanded_query, trust_boost)
+        text_results = self._text_retrieval(expanded_query, trust_boost, domain_hint)
 
         # 粗 (vector): 语义向量相关性 (零向量时跳过)
         vector_results = (
-            self._vector_retrieval(task_vector) if any(v != 0.0 for v in task_vector) else []
+            self._vector_retrieval(task_vector, domain_hint)
+            if any(v != 0.0 for v in task_vector)
+            else []
         )
 
         # FTS: LanceDB full-text search as third retrieval channel
@@ -2421,7 +2432,12 @@ class ContextEngine:
             score += idf[term] * numerator / denominator
         return score
 
-    def _text_retrieval(self, task: str, trust_boost: float = 1.0) -> list[tuple]:
+    def _text_retrieval(
+        self,
+        task: str,
+        trust_boost: float = 1.0,
+        domain_hint: str | None = None,
+    ) -> list[tuple]:
         """BM25 text retrieval with IDF weighting (Okapi BM25, k1=1.2, b=0.75).
 
         Replaces the old word-overlap matching. Builds document frequency table
@@ -2433,7 +2449,6 @@ class ContextEngine:
             return results
 
         current_owner = os.environ.get("AGENT_OWNER", "")
-        domain_hint = getattr(self, "_domain_hint", None)
         dm = getattr(self, "_dm", None)
         has_dm = dm is not None and domain_hint and domain_hint != "all"
         hint_dm = dm.domains.get(domain_hint) if has_dm else None
@@ -2515,7 +2530,9 @@ class ContextEngine:
         results.sort(key=lambda x: x[1], reverse=True)
         return results
 
-    def _vector_retrieval(self, task_vector: list[float]) -> list[tuple]:
+    def _vector_retrieval(
+        self, task_vector: list[float], scope: str | None = None
+    ) -> list[tuple]:
         """Semantic vector retrieval via LanceDB ANN search.
 
         Falls back to empty list if LanceDB is unavailable.
@@ -2526,7 +2543,7 @@ class ContextEngine:
             raw_results = self._ldb.search(
                 vector=task_vector,
                 k=20,
-                scope=getattr(self, "_domain_hint", None),
+                scope=scope,
             )
             # Convert LanceDB results to internal tuple format
             return [

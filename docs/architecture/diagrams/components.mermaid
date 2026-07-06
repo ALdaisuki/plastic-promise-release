@@ -9,7 +9,7 @@ graph LR
     end
 
     subgraph "⚡ Context Subsystem"
-        CTX["context_engine.py<br/>3-way retrieval + rerank"]
+        CTX["context_engine.py<br/>3-way retrieval + scoped rerank"]
         EG["entity_graph.rs<br/>Entity relationships (Rust)"]
         RF["rank_fuser.rs<br/>RRF + symbolic rules (Rust)"]
         MW["memory_worth.rs<br/>Dual counters (Rust)"]
@@ -37,8 +37,8 @@ graph LR
     end
 
     subgraph "🔌 MCP Interface"
-        SRV["server.py<br/>41 tool router"]
-        TOOLS["tools/<br/>11 domain handlers"]
+        SRV["server.py<br/>56 tool router"]
+        TOOLS["tools/<br/>14 tool groups + request_scope"]
         RES["resources.py<br/>5 MCP Resources"]
         PROMPTS["prompts.py<br/>3 MCP Prompts"]
     end

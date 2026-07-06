@@ -32,11 +32,17 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
             "include_principles": True,
             "strict": False,
             "debug": False,
+            "stage_session_id": "stage:codex:schema",
+            "flow_line_id": "bug-hunt",
+            "request_id": "req:schema-memory",
         },
         "context_supply": {
             "task_description": "审计 MCP 参数校验失败",
             "task_type": "debugging",
             "scope": "governing",
+            "stage_session_id": "stage:codex:schema",
+            "flow_line_id": "bug-hunt",
+            "request_id": "req:schema-context",
         },
         "defense": {"action": "get"},
         "runtime_mode": {"action": "set", "mode": "rust-full"},
@@ -58,7 +64,18 @@ def test_handler_read_optional_fields_are_declared():
     tools = _tools_by_name()
 
     memory_props = set(tools["memory_recall"].inputSchema["properties"])
-    assert {"scope", "domain_hint", "federation", "pack"}.issubset(memory_props)
+    assert {
+        "scope",
+        "domain_hint",
+        "federation",
+        "pack",
+        "stage_session_id",
+        "flow_line_id",
+        "request_id",
+    }.issubset(memory_props)
+
+    context_props = set(tools["context_supply"].inputSchema["properties"])
+    assert {"stage_session_id", "flow_line_id", "request_id"}.issubset(context_props)
 
     defense_props = set(tools["defense"].inputSchema["properties"])
     assert "target" in defense_props

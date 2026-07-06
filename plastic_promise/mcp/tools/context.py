@@ -28,10 +28,12 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
+        from plastic_promise.mcp.tools.request_scope import build_request_scope
 
         task_description = args["task_description"]
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
+        request_scope = build_request_scope(args, "context_supply")
 
         try:
             embedder = get_embedder(fallback_on_error=False)
@@ -44,6 +46,8 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             task_vector = await embedder.aembed(task_description)
 
         pack = engine.supply(task_description, task_vector, task_type, scope)
+        pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
+        pack.audit_metadata["request_scope"] = request_scope
 
         return [TextContent(type="text", text=pack.to_prompt())]
     except Exception as e:

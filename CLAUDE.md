@@ -136,6 +136,7 @@ MCP:    sp-stage → skill_auto_track → skill_session_start/complete
 ```
 
 > **注**: 完整 `context_supply` 已从 sp-stage 原子和 session-init 默认启动路径中移除。其 `engine.supply()` 三路检索 + Ollama rerank 耗时 5~60s；`session-init(context_mode="light")` 只做有界轻量预览，实质决策前仍需按需显式调用 `context_supply`。
+> **并发隔离**: 重型 `memory_recall` / `context_supply` 调用支持 `stage_session_id`、`flow_line_id`、`request_id`。并行 SuperPowers 流程或子 Agent 派发时应传入这些 ID，服务端会派生 `request_scope_id` 用于缓存隔离、审计追踪，并在 `context_supply` 输出中显示。
 
 ## 记忆质量管道 (方向 A + B)
 

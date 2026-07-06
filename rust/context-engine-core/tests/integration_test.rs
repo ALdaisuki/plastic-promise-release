@@ -3,6 +3,9 @@
 use context_engine_core::storage::sqlite_impl::SqliteStorage;
 use context_engine_core::storage::{ListFilter, StorageBackend, UpdateFields};
 use context_engine_core::domain::Tier;
+use context_engine_core::context_engine::ContextEngine;
+use pyo3::types::PyDict;
+use pyo3::{PyObject, Python};
 
 #[test]
 fn test_full_store_and_list_cycle() {
@@ -99,4 +102,58 @@ fn test_memory_record_worth_integration() {
     r.record_ignored();
     assert_eq!(r.worth_success, 2);
     assert_eq!(r.worth_failure, 2);
+}
+
+#[test]
+fn test_audit_telemetry_is_filtered_from_rust_supply() {
+    pyo3::prepare_freethreaded_python();
+    Python::with_gil(|py| {
+        fn memory_map(py: Python<'_>, id: &str, content: &str, source: &str) -> PyObject {
+            let dict = PyDict::new(py);
+            dict.set_item("id", id).unwrap();
+            dict.set_item("content", content).unwrap();
+            dict.set_item("source", source).unwrap();
+            dict.set_item("memory_type", "reflection").unwrap();
+            dict.set_item("scope", "global").unwrap();
+            dict.set_item("worth_success", 0).unwrap();
+            dict.set_item("worth_failure", 0).unwrap();
+            dict.into()
+        }
+
+        let engine = ContextEngine::new();
+        let memories = vec![
+            memory_map(
+                py,
+                "audit",
+                "AUDIT trust=0.60 pipeline=0.94 domain=0.80 bridge=1.00 mem_q=0.06 -> 0.68",
+                "maintenance_daemon",
+            ),
+            memory_map(
+                py,
+                "useful",
+                "context engine request isolation fixes memory recall race",
+                "codex",
+            ),
+        ];
+
+        let pack = engine
+            .supply(
+                "context engine memory recall isolation".to_string(),
+                vec![0.1; 1024],
+                "debugging".to_string(),
+                "global".to_string(),
+                memories,
+            )
+            .unwrap();
+
+        let all_ids: Vec<String> = pack
+            .core
+            .iter()
+            .chain(pack.related.iter())
+            .chain(pack.divergent.iter())
+            .map(|item| item.id.clone())
+            .collect();
+
+        assert!(!all_ids.contains(&"audit".to_string()));
+    });
 }

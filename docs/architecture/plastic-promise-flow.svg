@@ -60,7 +60,7 @@
   <rect x="316" y="322" width="206" height="96" rx="14" class="entry"/>
   <text x="344" y="356" class="label">Tool Surface</text>
   <text x="344" y="380" class="small">schemas, prompts, health</text>
-  <text x="344" y="398" class="tiny">runtime_mode, context_supply</text>
+  <text x="344" y="398" class="tiny">runtime_mode, request_scope_id</text>
 
   <text x="584" y="136" class="layer">GOVERNANCE CORE</text>
   <rect x="584" y="150" width="214" height="82" rx="14" class="core"/>
@@ -124,5 +124,5 @@
   <path class="softArrow" d="M969 502 V604"/>
   <path class="softArrow" d="M743 604 C743 570 742 552 742 538"/>
 
-  <text x="64" y="692" class="tiny">Flow: clients call MCP tools, governance modules retrieve context and enforce agreements, automation loops close work, local stores keep state inspectable.</text>
+  <text x="64" y="692" class="tiny">Flow: clients call scoped MCP tools, governance modules retrieve context and enforce agreements, automation loops close work, local stores keep state inspectable.</text>
 </svg>

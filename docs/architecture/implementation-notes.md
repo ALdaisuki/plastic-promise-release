@@ -71,6 +71,7 @@ python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1
 3. Add dispatch logic in the server call handler.
 4. Add tests that exercise validation and handler behavior.
 5. Update README or architecture docs if the public tool surface changes.
+6. Update diagrams when the new behavior changes request flow, data flow, tool groups, or runtime boundaries.
 
 ### Adding a New Domain
 
@@ -141,6 +142,7 @@ make check
 | Trust score stagnates | Ensure `step-closure` runs after substantive work and review outcomes are recorded. |
 | Daemon process drift | Use `scripts/init_and_start.py` so ServiceManager and watchdog own lifecycle. |
 | Optional Rust mismatch | Treat Python context supply as canonical until Rust parity is verified for the specific path. |
+| Context race or cross-talk | Pass `stage_session_id`, `flow_line_id`, and `request_id` to heavy `memory_recall` / `context_supply` calls and check `request_scope_id` in audit metadata or the `context_supply` trace section. |
 
 ## 7. Deployment Checklist
 
@@ -159,5 +161,7 @@ When implementation changes public behavior, update:
 - [../../README.md](../../README.md) for installation, launch, architecture, or public feature changes.
 - [../README.zh-CN.md](../README.zh-CN.md) for Chinese quickstart changes.
 - [architecture.md](architecture.md) for subsystem or data-flow changes.
+- [diagrams/*.txt](diagrams/) and [diagrams/*.mermaid](diagrams/) for request flow, tool surface, or runtime boundary changes.
+- [plastic-promise-flow.svg](plastic-promise-flow.svg) and [plastic-promise-flow.zh-CN.svg](plastic-promise-flow.zh-CN.svg) when README-level architecture changes.
 - [../TODO List/README.md](../TODO%20List/README.md) when roadmap status changes.
 - [../../CHANGELOG.md](../../CHANGELOG.md) before a release.

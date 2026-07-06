@@ -98,6 +98,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | `sp-stage` | SuperPowers 16 阶段统一入口 — 覆盖 using-superpowers、normal-development、review/audit、bug-hunt、parallel dispatch、writing-skills。链校验自动拒绝跳步，hook 自动追踪 |
 
 > **性能**: 热调用 0.2~0.4s，冷启动 ~3s。`context_supply` 已从 `session-init` / `sp-stage` 原子中移除；`session-init(context_mode="light")` 只做 1-2 条轻量记忆预览，`context_mode="full"` 才显式运行完整 `context_supply`，启动后仍按需显式调用。
+> **并发隔离**: 重型 `memory_recall` / `context_supply` 调用支持 `stage_session_id`、`flow_line_id`、`request_id`。并行 SuperPowers 流程或子 Agent 派发时应传入这些 ID，服务端会派生 `request_scope_id` 用于缓存隔离、审计追踪，并在 `context_supply` 输出中显示。
 > **链约束**: `SKILL_CHAIN_MAP` 定义前置/后继，跳步返回 `chain_violation` + 正确下一步提示。
 > **追踪**: Claude Code hook 与 MCP `sp-stage` 统一进入 `skill_auto_track → skill_session_start/complete`。
 

@@ -142,6 +142,21 @@ _CODEX_DISCOVERY_HINTS = {
     ),
 }
 
+_REQUEST_SCOPE_PROPERTIES = {
+    "stage_session_id": {
+        "type": "string",
+        "description": "SuperPowers stage/session scope id for isolating concurrent heavy calls",
+    },
+    "flow_line_id": {
+        "type": "string",
+        "description": "Flow line id within stage_session_id; pairs with stage-style workflow isolation",
+    },
+    "request_id": {
+        "type": "string",
+        "description": "Caller supplied per-call request id; omitted values are generated server-side",
+    },
+}
+
 
 def _with_codex_discovery_hints(tools: list[Tool]) -> list[Tool]:
     """Append English discovery terms for clients that search deferred MCP metadata."""
@@ -212,6 +227,7 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "兼容字段；预留给经验包限定检索",
                         },
+                        **_REQUEST_SCOPE_PROPERTIES,
                     },
                     "required": ["query"],
                     "additionalProperties": False,
@@ -399,6 +415,7 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "检索范围: global (默认) 或 domain 限定",
                         },
+                        **_REQUEST_SCOPE_PROPERTIES,
                     },
                     "required": ["task_description"],
                     "additionalProperties": False,

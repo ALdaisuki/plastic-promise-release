@@ -1,14 +1,3 @@
-
-## [v0.2.2] — 2026-07-04
-
-### Added
-- 
-
-### Changed
-- 
-
-### Fixed
-- 
 # Changelog
 
 All notable changes to Plastic Promise will be documented in this file.
@@ -18,11 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [v0.2.14] - 2026-07-06
+## [0.1.1] - 2026-07-06
+
+### Fixed
+
+- Added request-scope isolation for heavy `memory_recall` and `context_supply` calls using `stage_session_id`, `flow_line_id`, and `request_id`, with derived `request_scope_id` metadata and visible `context_supply` trace output for cache isolation and auditability.
+- Kept Python `ContextEngine` request state local to each supply call to avoid cross-talk between concurrent domain-scoped requests.
+- Brought the Rust context hot path in line with Python recall filtering so `maintenance_daemon` audit telemetry is filtered or penalized before it can dominate core or related context.
+- Exposed the new request-scope fields in the MCP schemas for `memory_recall` and `context_supply`, preventing Codex deferred-tool validation from rejecting isolated heavy requests.
 
 ### Changed
 
-- Synced bilingual README architecture overview and English/Chinese SVG architecture diagrams.
+- Hardened `scripts/release-sync.py` so release synchronization does not duplicate an existing changelog entry for the target version.
+- Added regression coverage for request-scope defaults, cache-key isolation, context audit metadata, MCP schema exposure, and Rust audit-telemetry filtering.
 
 ### Changed
 
@@ -67,4 +64,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.1]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ALdaisuki/plastic-promise-release/releases/tag/v0.1.0

@@ -17,8 +17,8 @@ def _engine_with_result(monkeypatch, result, memory=None, vector_results=None):
     engine._activate_principles = lambda task_type, task_description: []
     engine._inject_activated_to_graph = lambda activated, task_type: 0
     engine._graph_traversal = lambda task_type: []
-    engine._text_retrieval = lambda query, trust_boost=1.0: []
-    engine._vector_retrieval = lambda vector: vector_results or []
+    engine._text_retrieval = lambda query, trust_boost=1.0, domain_hint=None: []
+    engine._vector_retrieval = lambda vector, scope=None: vector_results or []
     engine._fts_retrieval = lambda query, scope="global": []
     engine._layered_fuse = lambda graph, text, vector: [result]
     engine._apply_edge_feedback = lambda: None
@@ -316,6 +316,137 @@ class TestSourceFilter:
         assert pack.per_item_stats[0]["retrieval_source"] == "fts"
 
 
+class TestRequestScope:
+    def test_request_scope_generates_defaults(self):
+        from plastic_promise.mcp.tools.request_scope import build_request_scope
+
+        scope = build_request_scope({}, "memory_recall")
+
+        assert scope["stage_session_id"] == "session:memory_recall:default"
+        assert scope["flow_line_id"] == "default"
+        assert scope["request_id"].startswith("req:")
+        assert scope["request_scope_id"].startswith(
+            "session:memory_recall:default::flow:default::req:"
+        )
+
+    def test_request_scope_preserves_caller_ids(self):
+        from plastic_promise.mcp.tools.request_scope import build_request_scope
+
+        scope = build_request_scope(
+            {
+                "stage_session_id": "stage:codex:test",
+                "flow_line_id": "normal-development",
+                "request_id": "req:fixed",
+            },
+            "context_supply",
+        )
+
+        assert scope == {
+            "stage_session_id": "stage:codex:test",
+            "flow_line_id": "normal-development",
+            "request_id": "req:fixed",
+            "request_scope_id": "stage:codex:test::flow:normal-development::req:req:fixed",
+        }
+
+    def test_memory_recall_cache_key_includes_request_scope(self):
+        from plastic_promise.mcp.tools.memory import _cache_key
+
+        key_a = _cache_key(
+            "same query",
+            "debugging",
+            5,
+            "global",
+            request_scope_id="stage:a::flow:one::req:1",
+        )
+        key_b = _cache_key(
+            "same query",
+            "debugging",
+            5,
+            "global",
+            request_scope_id="stage:a::flow:two::req:1",
+        )
+
+        assert key_a != key_b
+
+    def test_context_supply_adds_request_scope_to_audit_metadata(self, monkeypatch):
+        import asyncio
+
+        import plastic_promise.core.embedder as embedder_mod
+        from plastic_promise.mcp.tools.context import handle_context_supply
+
+        class FakeEmbedder:
+            async def aembed(self, text):
+                return [0.0]
+
+        class FakePack:
+            def __init__(self):
+                self.audit_metadata = {}
+
+            def to_prompt(self):
+                return str(self.audit_metadata)
+
+        class FakeEngine:
+            def supply(self, task_description, task_vector, task_type, scope):
+                return FakePack()
+
+        monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+
+        async def run():
+            result = await handle_context_supply(
+                FakeEngine(),
+                {
+                    "task_description": "debug recall",
+                    "stage_session_id": "stage:x",
+                    "flow_line_id": "flow:y",
+                    "request_id": "req:z",
+                },
+            )
+            return result[0].text
+
+        text = asyncio.run(run())
+        assert "stage:x::flow:flow:y::req:req:z" in text
+
+    def test_context_pack_prompt_renders_request_scope_for_real_pack(self):
+        from plastic_promise.core.context_engine import ContextPack
+
+        pack = ContextPack()
+        pack.audit_metadata["request_scope"] = {
+            "stage_session_id": "stage:codex:visible",
+            "flow_line_id": "audit-review",
+            "request_id": "req:visible",
+            "request_scope_id": "stage:codex:visible::flow:audit-review::req:req:visible",
+        }
+
+        text = pack.to_prompt()
+
+        assert "## [REQUEST_SCOPE] Audit Trace" in text
+        assert "stage:codex:visible::flow:audit-review::req:req:visible" in text
+
+    def test_supply_python_does_not_mutate_shared_domain_hint(self, monkeypatch):
+        engine = ContextEngine(use_sqlite=False)
+        engine._domain_hint = "existing"
+
+        captured = {}
+
+        def fake_text(task, trust_boost=1.0, domain_hint=None):
+            captured["domain_hint"] = domain_hint
+            return []
+
+        monkeypatch.setattr(engine, "_ensure_heavy_init", lambda: None)
+        monkeypatch.setattr(engine, "_activate_principles", lambda task_type, task: [])
+        monkeypatch.setattr(engine, "_inject_activated_to_graph", lambda activated, task_type: 0)
+        monkeypatch.setattr(engine, "_graph_traversal", lambda task_type: [])
+        monkeypatch.setattr(engine, "_text_retrieval", fake_text)
+        monkeypatch.setattr(engine, "_vector_retrieval", lambda task_vector, scope=None: [])
+        monkeypatch.setattr(engine, "_fts_retrieval", lambda query, scope: [])
+        monkeypatch.setattr(engine, "_apply_edge_feedback", lambda: None)
+
+        engine._supply_python("task", [0.0], "general", "building")
+
+        assert captured["domain_hint"] == "building"
+        assert engine._domain_hint == "existing"
+
+
 class TestDebugOutput:
     def test_debug_true_returns_pipeline_stats(self, monkeypatch):
         monkeypatch.setenv("PP_HARD_MIN_SCORE", "0")
@@ -408,7 +539,7 @@ class TestQueryExpansionIntegration:
         engine._activate_principles = lambda task_type, task_description: []
         engine._inject_activated_to_graph = lambda activated, task_type: 0
         engine._graph_traversal = lambda task_type: []
-        engine._vector_retrieval = lambda vector: []
+        engine._vector_retrieval = lambda vector, scope=None: []
         engine._fts_retrieval = lambda query, scope="global": []
         engine._apply_edge_feedback = lambda: None
         engine._apply_decay_awareness = lambda score, mem, current_time, trust_boost: score
@@ -420,7 +551,7 @@ class TestQueryExpansionIntegration:
             "m1": {"source": "user", "memory_type": "experience", "worth_success": 0, "worth_failure": 0}
         }
 
-        def text_retrieval(query, trust_boost=1.0):
+        def text_retrieval(query, trust_boost=1.0, domain_hint=None):
             seen["query"] = query
             return [("m1", 0.9, "useful enough memory retrieval content", "bm25")]
 

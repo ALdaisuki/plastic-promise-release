@@ -60,7 +60,7 @@
   <rect x="316" y="322" width="206" height="96" rx="14" class="entry"/>
   <text x="344" y="356" class="label">工具暴露面</text>
   <text x="344" y="380" class="small">schema、prompt、健康检查</text>
-  <text x="344" y="398" class="tiny">runtime_mode、context_supply</text>
+  <text x="344" y="398" class="tiny">runtime_mode、request_scope_id</text>
 
   <text x="584" y="136" class="layer">治理核心</text>
   <rect x="584" y="150" width="214" height="82" rx="14" class="core"/>
@@ -124,5 +124,5 @@
   <path class="softArrow" d="M969 502 V604"/>
   <path class="softArrow" d="M743 604 C743 570 742 552 742 538"/>
 
-  <text x="64" y="692" class="tiny">流程：客户端调用 MCP 工具，治理核心检索上下文并执行约定，自动化闭环完成任务，本地存储保持状态可审计。</text>
+  <text x="64" y="692" class="tiny">流程：客户端调用带请求作用域的 MCP 工具，治理核心检索上下文并执行约定，自动化闭环完成任务，本地存储保持状态可审计。</text>
 </svg>

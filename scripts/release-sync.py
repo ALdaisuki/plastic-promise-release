@@ -287,6 +287,10 @@ def apply_transform(filepath: str, version: str, dev_root: Path) -> str | None:
             flags=re.MULTILINE,
         )
     elif transform_type == "prepend_entry":
+        new_ver = version.lstrip("v")
+        if re.search(rf"^## \[v?{re.escape(new_ver)}\](?:\s|$)", content, flags=re.MULTILINE):
+            return content
+        version = new_ver
         today = datetime.now().strftime("%Y-%m-%d")
         entry = f"\n## [{version}] — {today}\n\n### Added\n- \n\n### Changed\n- \n\n### Fixed\n- \n"
         content = entry + content

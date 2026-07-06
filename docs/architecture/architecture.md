@@ -1,7 +1,7 @@
 # Plastic Promise — Architecture Reference
 
 > Release-facing architecture reference.
-> Last updated: 2026-07-04.
+> Last updated: 2026-07-06.
 
 ## 1. System Overview
 
@@ -9,7 +9,7 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 
 - **Purpose**: Help AI agents act with memory, principles, verification, and traceable autonomy.
 - **Primary users**: Claude Code, MCP clients, agent teams, and maintainers operating local governance workflows.
-- **Current tool surface**: 51 MCP tools declared in `plastic_promise/mcp/server.py`.
+- **Current tool surface**: 56 MCP tools declared in `plastic_promise/mcp/server.py`, including compatibility aliases.
 - **Primary storage**: SQLite WAL for structured state and LanceDB for vector/text retrieval.
 - **Acceleration path**: optional Rust `context-engine-core`; Python remains the canonical full pipeline.
 
@@ -55,7 +55,7 @@ Human / Agent
     v
 MCP Server (stdio or SSE)
     |
-    +--> memory_recall / context_supply --> Context Engine --> SQLite + LanceDB
+    +--> memory_recall / context_supply --> Request scope --> Context Engine --> SQLite + LanceDB
     |
     +--> audit_pre_check / defense -------> TrustStore + Audit
     |
@@ -82,12 +82,15 @@ memory_store(content)
   -> SQLite + LanceDB write
 
 context_supply(task)
+  -> request_scope_id from stage_session_id + flow_line_id + request_id
   -> principle activation
   -> vector/text/symbolic/graph retrieval
   -> rank fusion and optional rerank
   -> worth/decay adjustment
   -> core, related, divergent context package
 ```
+
+Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flow_line_id`, and `request_id`. The MCP handlers derive `request_scope_id`, attach it to audit metadata, render it in `context_supply` output, and use it to keep overlapping SuperPowers stages, sub-agent dispatches, and recall cache entries isolated.
 
 ## 7. Trust and Error Handling
 
@@ -129,8 +132,8 @@ context_supply(task)
 |---|---|---|
 | MCP server | Active | stdio and SSE modes are implemented. |
 | Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
-| Context supply | Active | Python path is canonical. |
-| Rust context core | Experimental | Optional acceleration path, still converging toward Python parity. |
+| Context supply | Active | Python path is canonical; heavy calls carry request-scope metadata for concurrent flow isolation. |
+| Rust context core | Experimental | Optional acceleration path, with recall-noise filtering kept aligned with Python for the audited hot path. |
 | Hunter Guild | Experimental | Lifecycle tools exist; scanner policy and SNR are evolving. |
 | Skills and SuperPowers | Active | Programmatic tools and stage entrypoint exposed. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |

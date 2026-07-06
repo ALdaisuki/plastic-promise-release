@@ -49,6 +49,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 - 一键启动器 `scripts/init_and_start.py` 可启动 MCP Server、Maintenance Daemon 与 Watchdog，并支持 `light`、`normal`、`rust-normal`、`full`、`rust-full` 五种运行模式。
 - 记忆质量管道已接入提取、分类、向量去重、QualityGate、衰减初始化与 LanceDB 双写。
 - ContextEngine Python 路径是当前权威完整路径。
+- `memory_recall` / `context_supply` 支持 `stage_session_id`、`flow_line_id`、`request_id`，通过 `request_scope_id` 隔离并发重型上下文请求、审计元数据和 `context_supply` 可见 trace。
 - `session-init`、`smart-remember`、`step-closure`、`sp-stage` 已作为程序化技能暴露。
 - TrustStore 将信任分持久化到 SQLite。
 - Hunter Guild 任务生命周期工具已接入 MCP。

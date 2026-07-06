@@ -30,10 +30,12 @@ def _cache_key(
     scope: str,
     debug: bool = False,
     strict: bool = False,
+    request_scope_id: str = "",
 ) -> str:
     raw = (
         f"{query}|{task_type}|{max_results}|{scope}|"
-        f"debug={int(bool(debug))}|strict={int(bool(strict))}"
+        f"debug={int(bool(debug))}|strict={int(bool(strict))}|"
+        f"request_scope={request_scope_id}"
     )
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -45,8 +47,9 @@ def _cache_get(
     scope: str,
     debug: bool = False,
     strict: bool = False,
+    request_scope_id: str = "",
 ) -> str | None:
-    key = _cache_key(query, task_type, max_results, scope, debug, strict)
+    key = _cache_key(query, task_type, max_results, scope, debug, strict, request_scope_id)
     now = time.time()
     with _query_cache_lock:
         if key in _query_cache:
@@ -65,8 +68,9 @@ def _cache_set(
     result: str,
     debug: bool = False,
     strict: bool = False,
+    request_scope_id: str = "",
 ):
-    key = _cache_key(query, task_type, max_results, scope, debug, strict)
+    key = _cache_key(query, task_type, max_results, scope, debug, strict, request_scope_id)
     now = time.time()
     with _query_cache_lock:
         if len(_query_cache) >= _QUERY_CACHE_SIZE:
@@ -118,14 +122,22 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.adaptive_retrieval import should_retrieve
+        from plastic_promise.mcp.tools.request_scope import build_request_scope
 
         query = args["query"]
+        request_scope = build_request_scope(args, "memory_recall")
+        request_scope_id = request_scope["request_scope_id"]
         if not should_retrieve(query):
             return [
                 TextContent(
                     type="text",
                     text=json.dumps(
-                        {"skipped": True, "reason": "adaptive_retrieval", "query": query[:100]},
+                        {
+                            "skipped": True,
+                            "reason": "adaptive_retrieval",
+                            "query": query[:100],
+                            "request_scope": request_scope,
+                        },
                         ensure_ascii=False,
                     ),
                 )
@@ -139,7 +151,9 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         pack = args.get("pack")
 
         # Check query cache
-        cached = _cache_get(query, task_type, max_results, scope, debug, strict)
+        cached = _cache_get(
+            query, task_type, max_results, scope, debug, strict, request_scope_id
+        )
         if cached is not None:
             return [TextContent(type="text", text=cached)]
 
@@ -155,6 +169,9 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             embedder = FallbackEmbedder()
             vec = await embedder.aembed(query)
         pack = engine.supply(query, vec, task_type, scope, debug=debug)
+
+        audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
+        audit_metadata["request_scope"] = request_scope
 
         response_payload = {
             "core": [
@@ -178,11 +195,12 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             ],
             "activated_principles": pack.activated_principles,
             "domain_hint": domain_hint,
+            "request_scope": request_scope,
             "federation_signals": _generate_federation_signals(
                 pack, domain_hint, engine, federation
             ),
             "total_items": pack.total_items,
-            "audit": pack.audit_metadata,
+            "audit": audit_metadata,
         }
         if debug:
             response_payload["pipeline_stats"] = pack.pipeline_stats
@@ -200,14 +218,21 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                 TextContent(
                     type="text",
                     text=json.dumps(
-                        {"strict": True, "core": [], "message": "no matches in strict mode"},
+                        {
+                            "strict": True,
+                            "core": [],
+                            "message": "no matches in strict mode",
+                            "request_scope": request_scope,
+                        },
                         ensure_ascii=False,
                     ),
                 )
             ]
 
         # Cache the result
-        _cache_set(query, task_type, max_results, scope, result_json, debug, strict)
+        _cache_set(
+            query, task_type, max_results, scope, result_json, debug, strict, request_scope_id
+        )
 
         return [TextContent(type="text", text=result_json)]
     except Exception as e:

@@ -14,6 +14,7 @@ use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::env;
 
 use crate::association_feedback::AssociationFeedback;
 use crate::entity_graph::EntityGraph;
@@ -22,6 +23,56 @@ use crate::retrieval::HybridRetriever;
 use crate::source_tracker::SourceTracker;
 use crate::storage::{ListFilter, StorageBackend, UpdateFields};
 use chrono::{DateTime, Utc};
+
+fn env_weight(name: &str, default: f64) -> f64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
+fn source_filter_enabled() -> bool {
+    env::var("PP_SOURCE_FILTER").map(|value| value != "0").unwrap_or(true)
+}
+
+fn is_source_excluded(source: &str) -> bool {
+    env::var("PP_SOURCE_EXCLUDE")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .any(|item| !item.is_empty() && item == source)
+}
+
+fn source_penalty(source: &str) -> Option<f64> {
+    if !source_filter_enabled() || source.is_empty() || source == "unknown" {
+        return Some(1.0);
+    }
+    if is_source_excluded(source) {
+        return None;
+    }
+    match source {
+        "maintenance_daemon" => Some(env_weight("PP_SOURCE_DAEMON_WEIGHT", 0.3)),
+        "superpowers" => Some(env_weight("PP_SOURCE_SUPERPOWERS_WEIGHT", 0.3)),
+        "step-closure" | "step_closure" => Some(env_weight("PP_SOURCE_STEP_CLOSURE_WEIGHT", 0.3)),
+        "step_auditor" => Some(env_weight("PP_SOURCE_STEP_AUDITOR_WEIGHT", 0.3)),
+        "skill_session" => Some(env_weight("PP_SOURCE_SKILL_SESSION_WEIGHT", 0.1)),
+        "auto_context_inject" | "auto_inject" => Some(env_weight("PP_SOURCE_AUTO_INJECT_WEIGHT", 0.3)),
+        _ => Some(1.0),
+    }
+}
+
+fn is_recall_noise(content: &str) -> bool {
+    let normalized = content.trim().to_ascii_lowercase();
+    normalized.starts_with("audit trust=")
+        || normalized.contains("] audit trust=")
+        || normalized.starts_with("[audit trust=")
+        || normalized.starts_with("skill start")
+        || normalized.starts_with("[skill start")
+        || normalized.starts_with("skill complete")
+        || normalized.starts_with("[skill complete")
+        || normalized.starts_with("skill abandoned")
+        || normalized.starts_with("[skill abandoned")
+}
 
 // ============================================================
 // Python-visible ContextPack
@@ -762,6 +813,16 @@ impl ContextEngine {
                     &m.created_at, &self.current_time).as_str().to_string())
                     .unwrap_or_else(|| "valid".to_string());
                 let source = mem.map(|m| m.source.clone()).unwrap_or_else(|| "unknown".to_string());
+                if is_recall_noise(&content) {
+                    continue;
+                }
+                let Some(penalty) = source_penalty(&source) else {
+                    continue;
+                };
+                let score = (score * penalty).clamp(0.0, 1.0);
+                if score < 0.20 {
+                    continue;
+                }
 
                 let mut item = ContextItem::new(id, content, score);
                 item.source = source;
@@ -881,21 +942,31 @@ impl ContextEngine {
                 .map(|m| m.source.clone())
                 .or_else(|| item_lookup.get(item_id).map(|(_, s)| s.clone()))
                 .unwrap_or_else(|| "unknown".into());
+            if is_recall_noise(&content) {
+                continue;
+            }
+            let Some(penalty) = source_penalty(&source) else {
+                continue;
+            };
+            let score = (*score * penalty).clamp(0.0, 1.0);
+            if score < 0.20 {
+                continue;
+            }
 
-            let mut item = ContextItem::new(item_id.clone(), content, *score);
+            let mut item = ContextItem::new(item_id.clone(), content, score);
             item.source = source;
             item.freshness = freshness;
             item.is_principle = is_principle;
             item.worth_score = worth;
 
             // 按 relevance 分层 — 与 Python 对齐: core≥0.70, related≥0.40, divergent≥0.20
-            if *score >= 0.70 {
+            if score >= 0.70 {
                 item.layer = "core".into();
                 pack.core.push(item);
-            } else if *score >= 0.40 {
+            } else if score >= 0.40 {
                 item.layer = "related".into();
                 pack.related.push(item);
-            } else if *score >= 0.20 {
+            } else if score >= 0.20 {
                 item.layer = "divergent".into();
                 pack.divergent.push(item);
             }

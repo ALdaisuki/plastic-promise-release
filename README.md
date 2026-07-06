@@ -301,6 +301,8 @@ Memory is admitted only when it passes quality checks. Reuse increases worth; st
 
 `session-init` stays lightweight and does not run full `context_supply` automatically. Its `context_mode` is `light` by default: it may return a bounded 1-2 item lexical memory preview, but material planning, code edits, reviews, and subagent dispatch still require an explicit `memory_recall` / `context_supply` call. Use `context_mode="none"` for pure bootstrap and `context_mode="full"` only when startup-time full retrieval is intentional.
 
+Concurrent heavy context calls can carry `stage_session_id`, `flow_line_id`, and `request_id`. Plastic Promise derives a `request_scope_id` from those fields, includes it in audit metadata and `context_supply` output, and uses it to isolate `memory_recall` cache entries across overlapping SuperPowers stages or agent flows.
+
 ### Step closure
 
 `step-closure` records what changed, what was learned, why it happened, and what should improve next. That reflection updates memory and trust signals.
