@@ -80,7 +80,7 @@ PARTIAL_URL_PATTERNS = [
 ]
 
 TELEMETRY_PATTERNS = [
-    r"^audit\s+trust=",
+    r"^(?:-\s*)?(?:\[[^\]]+\]\s*)*audit\s+trust=",
     r"^\[?skill (start|complete|abandoned)\]?",
 ]
 

@@ -315,6 +315,25 @@ class TestSourceFilter:
         assert recalled[0].source == "maintenance_daemon"
         assert pack.per_item_stats[0]["retrieval_source"] == "fts"
 
+    def test_prefixed_daemon_audit_telemetry_is_excluded(self, monkeypatch):
+        monkeypatch.setenv("PP_SOURCE_FILTER", "1")
+        monkeypatch.setenv("PP_HARD_MIN_SCORE", "0")
+        engine = _engine_with_result(
+            monkeypatch,
+            (
+                "daemon_audit",
+                1.0,
+                "[maintenance_daemon] AUDIT trust=0.60 pipeline=0.00 domain=0.80 bridge=1.00 mem_q=0.60 -> 0.60 | fixes: recovered stuck tasks",
+                "fts",
+            ),
+            {"source": "maintenance_daemon", "memory_type": "reflection"},
+        )
+
+        pack = engine._supply_python("maintenance daemon audit", [0.0], debug=True)
+
+        assert pack.total_items == 0
+        assert pack.pipeline_stats["after_noise_filter"] == 0
+
 
 class TestRequestScope:
     def test_request_scope_generates_defaults(self):

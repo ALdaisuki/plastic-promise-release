@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-06
+
+### Fixed
+
+- Filtered prefixed daemon audit telemetry such as `[maintenance_daemon] AUDIT trust=...` and `[0.70] [maintenance_daemon] AUDIT trust=...` before Python `context_supply` layering, preventing recovered-task audit rows from reappearing in related or divergent context.
+
 ## [0.1.1] - 2026-07-06
 
 ### Fixed
@@ -64,5 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.2]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ALdaisuki/plastic-promise-release/releases/tag/v0.1.0
