@@ -17,6 +17,7 @@ import sys
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _project_root)
 
+from plastic_promise import __version__
 from plastic_promise.launcher.bootstrap_checker import check_bootstrap, run_bootstrap
 from plastic_promise.launcher.env_checker import run_env_checks
 from plastic_promise.launcher.runtime_mode import (
@@ -67,9 +68,9 @@ LANCEDB_WARMUP_ENV = {
     "LDB_REBUILD_ON_INIT": "1",
 }
 
-BANNER = """\
+BANNER = f"""\
 ==============================================================
-  Plastic Promise -- One-Click Launcher v0.1.0
+  Plastic Promise -- One-Click Launcher v{__version__}
 =============================================================="""
 
 

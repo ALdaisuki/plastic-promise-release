@@ -36,6 +36,8 @@ import time
 from datetime import datetime, timedelta
 
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 _run_dir = os.path.join(_project_root, "var", "run")
 _pid_path = os.path.join(_run_dir, "maintenance_daemon.pid")
 _heartbeat_path = os.path.join(_run_dir, "maintenance_daemon.heartbeat")

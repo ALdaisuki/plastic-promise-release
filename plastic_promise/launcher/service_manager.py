@@ -139,6 +139,11 @@ class ServiceManager:
         # Build environment
         env = os.environ.copy()
         env.update(svc.env)
+        existing_pythonpath = env.get("PYTHONPATH")
+        pythonpath_parts = [self._project_root]
+        if existing_pythonpath:
+            pythonpath_parts.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
         # Launch process
         try:

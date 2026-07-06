@@ -192,6 +192,70 @@ def test_service_manager_reset():
     assert mgr.get_status()["s1"] == ServiceStatus.STOPPED
 
 
+@pytest.mark.asyncio
+async def test_service_manager_adds_project_root_to_child_pythonpath(monkeypatch):
+    from plastic_promise.launcher.service_manager import ServiceManager
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 12345
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        captured["cwd"] = kwargs["cwd"]
+        return FakeProcess()
+
+    async def fake_health_check(_self, _runtime):
+        return True
+
+    project_root = os.getcwd()
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ServiceManager, "_health_check", fake_health_check)
+
+    svc = ServiceDefinition(
+        name="maintenance-daemon",
+        command=[sys.executable, "daemons/maintenance_daemon.py"],
+        startup_timeout=1.0,
+    )
+    mgr = ServiceManager([svc], project_root)
+
+    await mgr._start_service(mgr._runtimes["maintenance-daemon"])
+
+    assert captured["cwd"] == project_root
+    assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == project_root
+
+
+def test_maintenance_daemon_script_bootstraps_project_root_without_pythonpath(tmp_path):
+    script_path = os.path.join(os.getcwd(), "daemons", "maintenance_daemon.py")
+    code = (
+        "import runpy; "
+        f"runpy.run_path({script_path!r}, run_name='not_main'); "
+        "print('daemon imports ok')"
+    )
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["PLASTIC_DB_PATH"] = str(tmp_path / "plastic_memory.db")
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "daemon imports ok" in result.stdout
+
+
 def test_pid_alive_nonexistent():
     from plastic_promise.launcher.service_manager import ServiceManager
 
