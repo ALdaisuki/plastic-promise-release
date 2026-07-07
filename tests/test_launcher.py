@@ -95,6 +95,11 @@ def test_env_checker_port():
     assert any("Port 9020" in m for m in msgs)
 
 
+def test_env_checker_includes_codex_mcp_config_status():
+    ok, msgs = run_env_checks(skip_ollama=True)
+    assert any("Codex MCP config" in m for m in msgs)
+
+
 # -- bootstrap_checker tests -----------------------------------------
 
 
@@ -301,6 +306,86 @@ def test_lancedb_warmup_sets_maintenance_env_only_during_pass(monkeypatch):
     assert "LDB_INIT_ON_HEAVY_INIT" not in os.environ
     assert "LDB_BACKFILL_ON_INIT" not in os.environ
     assert "LDB_REBUILD_ON_INIT" not in os.environ
+
+
+def test_lancedb_warmup_reports_sync_repair_counts(monkeypatch):
+    module = _load_init_and_start()
+
+    class FakeLdb:
+        def count_rows(self):
+            return 4
+
+    class FakeContextEngine:
+        def __init__(self):
+            self._ldb = FakeLdb()
+            self._lancedb_sync_status = {
+                "success": True,
+                "orphan_deleted": 2,
+                "missing_backfilled": 1,
+                "missing_skipped": 0,
+            }
+
+        def _ensure_heavy_init(self):
+            pass
+
+    monkeypatch.setattr(module, "ContextEngine", FakeContextEngine)
+
+    ok, msg = module.run_lancedb_warmup_maintenance()
+
+    assert ok is True
+    assert msg == "ready (4 rows, sync=orphans:2 missing:1 skipped:0)"
+
+
+def test_lancedb_warmup_reports_sync_degraded(monkeypatch):
+    module = _load_init_and_start()
+
+    class FakeLdb:
+        def count_rows(self):
+            return 4
+
+    class FakeContextEngine:
+        def __init__(self):
+            self._ldb = FakeLdb()
+            self._lancedb_sync_status = {"success": False, "error": "lancedb locked"}
+
+        def _ensure_heavy_init(self):
+            pass
+
+    monkeypatch.setattr(module, "ContextEngine", FakeContextEngine)
+
+    ok, msg = module.run_lancedb_warmup_maintenance()
+
+    assert ok is True
+    assert msg == "ready (4 rows, sync=degraded:lancedb locked)"
+
+
+def test_startup_recovery_reports_released_stale_claims(monkeypatch):
+    module = _load_init_and_start()
+
+    monkeypatch.setattr(
+        module,
+        "release_stale_claims",
+        lambda: {"released_count": 2, "escalated_count": 1},
+    )
+
+    ok, msg = module.run_startup_recovery()
+
+    assert ok is True
+    assert msg == "stale_claims_released=2, escalated=1"
+
+
+def test_startup_recovery_degrades_without_blocking(monkeypatch):
+    module = _load_init_and_start()
+
+    def fail_recovery():
+        raise RuntimeError("database locked")
+
+    monkeypatch.setattr(module, "release_stale_claims", fail_recovery)
+
+    ok, msg = module.run_startup_recovery()
+
+    assert ok is False
+    assert "database locked" in msg
 
 
 @pytest.mark.asyncio

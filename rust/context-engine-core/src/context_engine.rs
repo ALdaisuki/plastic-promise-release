@@ -74,6 +74,68 @@ fn is_recall_noise(content: &str) -> bool {
         || normalized.starts_with("[skill abandoned")
 }
 
+#[derive(Clone, Debug)]
+struct ProjectMemoryMeta {
+    project_id: String,
+    visibility: String,
+    source_class: String,
+}
+
+impl ProjectMemoryMeta {
+    fn from_py(obj: &pyo3::types::PyAny) -> Self {
+        Self {
+            project_id: obj
+                .get_item("project_id")
+                .ok()
+                .and_then(|value| value.extract().ok())
+                .unwrap_or_else(|| "project:legacy-global".to_string()),
+            visibility: obj
+                .get_item("visibility")
+                .ok()
+                .and_then(|value| value.extract().ok())
+                .unwrap_or_else(|| "project".to_string()),
+            source_class: obj
+                .get_item("source_class")
+                .ok()
+                .and_then(|value| value.extract().ok())
+                .unwrap_or_else(|| "experience".to_string()),
+        }
+    }
+}
+
+fn project_allowed_for_layer(
+    meta: &ProjectMemoryMeta,
+    project_id: &str,
+    project_policy: &str,
+    degraded: bool,
+    layer: &str,
+) -> bool {
+    if matches!(meta.source_class.as_str(), "telemetry" | "prompt")
+        && matches!(layer, "core" | "related")
+    {
+        return false;
+    }
+    if degraded && matches!(layer, "core" | "related") {
+        return meta.visibility == "global";
+    }
+    if layer == "divergent" && project_policy != "strict" {
+        return matches!(meta.visibility.as_str(), "shared" | "global")
+            || meta.project_id == project_id;
+    }
+    meta.project_id == project_id || meta.visibility == "global"
+}
+
+fn project_allowed_for_candidate(
+    meta: &ProjectMemoryMeta,
+    project_id: &str,
+    project_policy: &str,
+    degraded: bool,
+) -> bool {
+    ["core", "related", "divergent"]
+        .iter()
+        .any(|layer| project_allowed_for_layer(meta, project_id, project_policy, degraded, layer))
+}
+
 // ============================================================
 // Python-visible ContextPack
 // ============================================================
@@ -1036,6 +1098,114 @@ impl ContextEngine {
             row.insert("category".into(), mem.map(|m| m.category.clone()).unwrap_or_else(|| "other".into()));
             pack.per_item_stats.push(row);
         }
+
+        Ok(pack)
+    }
+
+    #[pyo3(signature = (
+        task_description,
+        task_vector,
+        task_type,
+        scope,
+        memories,
+        project_id,
+        project_policy,
+        project_degraded
+    ))]
+    pub fn supply_with_project_context(
+        &self,
+        task_description: String,
+        task_vector: Vec<f32>,
+        task_type: String,
+        scope: String,
+        memories: Vec<PyObject>,
+        project_id: String,
+        project_policy: String,
+        project_degraded: bool,
+    ) -> PyResult<ContextPack> {
+        let (metadata_by_id, filtered_memories) = Python::with_gil(|py| -> PyResult<_> {
+            let mut metadata_by_id: HashMap<String, ProjectMemoryMeta> = HashMap::new();
+            let mut filtered_memories: Vec<PyObject> = Vec::new();
+
+            for py_mem in memories {
+                let obj = py_mem.as_ref(py);
+                let id: String = obj
+                    .get_item("id")
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("missing id: {}", e)))?
+                    .extract()
+                    .map_err(|e| pyo3::exceptions::PyTypeError::new_err(format!("id not a string: {}", e)))?;
+                let meta = ProjectMemoryMeta::from_py(obj);
+                if project_allowed_for_candidate(
+                    &meta,
+                    &project_id,
+                    &project_policy,
+                    project_degraded,
+                ) {
+                    filtered_memories.push(py_mem);
+                }
+                metadata_by_id.insert(id, meta);
+            }
+
+            Ok((metadata_by_id, filtered_memories))
+        })?;
+
+        let mut pack = self.supply(
+            task_description,
+            task_vector,
+            task_type,
+            scope,
+            filtered_memories,
+        )?;
+
+        pack.core.retain(|item| {
+            metadata_by_id
+                .get(&item.id)
+                .map(|meta| {
+                    project_allowed_for_layer(
+                        meta,
+                        &project_id,
+                        &project_policy,
+                        project_degraded,
+                        "core",
+                    )
+                })
+                .unwrap_or(true)
+        });
+        pack.related.retain(|item| {
+            metadata_by_id
+                .get(&item.id)
+                .map(|meta| {
+                    project_allowed_for_layer(
+                        meta,
+                        &project_id,
+                        &project_policy,
+                        project_degraded,
+                        "related",
+                    )
+                })
+                .unwrap_or(true)
+        });
+        pack.divergent.retain(|item| {
+            metadata_by_id
+                .get(&item.id)
+                .map(|meta| {
+                    project_allowed_for_layer(
+                        meta,
+                        &project_id,
+                        &project_policy,
+                        project_degraded,
+                        "divergent",
+                    )
+                })
+                .unwrap_or(true)
+        });
+        pack.pipeline_stats.insert("project_filter".into(), "active".into());
+        pack.pipeline_stats.insert("project_id".into(), project_id.clone());
+        pack.pipeline_stats.insert("project_policy".into(), project_policy.clone());
+        pack.audit_metadata.insert("project_id".into(), project_id);
+        pack.audit_metadata.insert("project_policy".into(), project_policy);
+        pack.audit_metadata
+            .insert("project_degraded".into(), project_degraded.to_string());
 
         Ok(pack)
     }

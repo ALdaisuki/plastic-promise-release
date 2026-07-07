@@ -16,6 +16,15 @@ from typing import Any
 
 from mcp.types import TextContent
 
+from plastic_promise.core.project_context import infer_project_context
+from plastic_promise.core.traceability import (
+    build_envelope,
+    new_call_id,
+    record_outbox_event,
+    safe_record_call_span,
+    safe_record_degradation_event,
+)
+
 # ---- Query result cache for memory_recall ----
 _query_cache: dict[str, tuple[str, float]] = {}  # hash -> (json_result, timestamp)
 _query_cache_lock = threading.Lock()
@@ -31,11 +40,14 @@ def _cache_key(
     debug: bool = False,
     strict: bool = False,
     request_scope_id: str = "",
+    project_id: str = "",
+    project_policy: str = "",
 ) -> str:
     raw = (
         f"{query}|{task_type}|{max_results}|{scope}|"
         f"debug={int(bool(debug))}|strict={int(bool(strict))}|"
-        f"request_scope={request_scope_id}"
+        f"request_scope={request_scope_id}|project_id={project_id}|"
+        f"project_policy={project_policy}"
     )
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -48,8 +60,20 @@ def _cache_get(
     debug: bool = False,
     strict: bool = False,
     request_scope_id: str = "",
+    project_id: str = "",
+    project_policy: str = "",
 ) -> str | None:
-    key = _cache_key(query, task_type, max_results, scope, debug, strict, request_scope_id)
+    key = _cache_key(
+        query,
+        task_type,
+        max_results,
+        scope,
+        debug,
+        strict,
+        request_scope_id,
+        project_id,
+        project_policy,
+    )
     now = time.time()
     with _query_cache_lock:
         if key in _query_cache:
@@ -69,8 +93,20 @@ def _cache_set(
     debug: bool = False,
     strict: bool = False,
     request_scope_id: str = "",
+    project_id: str = "",
+    project_policy: str = "",
 ):
-    key = _cache_key(query, task_type, max_results, scope, debug, strict, request_scope_id)
+    key = _cache_key(
+        query,
+        task_type,
+        max_results,
+        scope,
+        debug,
+        strict,
+        request_scope_id,
+        project_id,
+        project_policy,
+    )
     now = time.time()
     with _query_cache_lock:
         if len(_query_cache) >= _QUERY_CACHE_SIZE:
@@ -108,6 +144,49 @@ def _generate_federation_signals(pack, domain_hint, engine, federation):
                     }
                 )
     return signals
+
+
+def _item_meta(item, engine=None) -> dict:
+    meta = getattr(item, "metadata", None)
+    if isinstance(meta, dict):
+        return meta
+
+    memory = None
+    memories = getattr(engine, "_memories", None) if engine is not None else None
+    if isinstance(memories, dict):
+        memory = memories.get(getattr(item, "id", ""))
+    if isinstance(memory, dict):
+        memory_meta = memory.get("metadata")
+        if isinstance(memory_meta, dict):
+            merged = dict(memory)
+            merged.update(memory_meta)
+            return merged
+        return memory
+
+    return {
+        key: getattr(item, key)
+        for key in ("project_id", "visibility", "source_class")
+        if hasattr(item, key)
+    }
+
+
+def _project_allowed(item, project_ctx, layer: str, engine=None) -> bool:
+    meta = _item_meta(item, engine)
+    item_project = meta.get("project_id", "project:legacy-global")
+    visibility = meta.get("visibility", "project")
+    source_class = meta.get("source_class", "experience")
+
+    if source_class in {"telemetry", "prompt"} and layer in {"core", "related"}:
+        return False
+    if project_ctx.degraded and layer in {"core", "related"}:
+        return visibility == "global"
+    if layer == "divergent" and project_ctx.project_policy != "strict":
+        return visibility in {"shared", "global"} or item_project == project_ctx.project_id
+    return item_project == project_ctx.project_id or visibility == "global"
+
+
+def _parent_call_id(args: dict) -> str:
+    return str(args.get("parent_call_id") or args.get("parent_call") or "")
 
 
 # ---- memory_recall ----
@@ -148,13 +227,46 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         scope = args.get("scope", "global")
         strict = args.get("strict", False)
         debug = bool(args.get("debug", False))
+        project_ctx = infer_project_context(args)
+        call_id = args.get("call_id") or new_call_id()
         pack = args.get("pack")
 
         # Check query cache
         cached = _cache_get(
-            query, task_type, max_results, scope, debug, strict, request_scope_id
+            query,
+            task_type,
+            max_results,
+            scope,
+            debug,
+            strict,
+            request_scope_id,
+            project_ctx.project_id,
+            project_ctx.project_policy,
         )
         if cached is not None:
+            degraded = False
+            try:
+                degraded = bool(json.loads(cached).get("degraded", False))
+            except Exception:
+                degraded = False
+            safe_record_call_span(
+                engine,
+                call_id=call_id,
+                parent_call_id=_parent_call_id(args),
+                request_scope_id=request_scope_id,
+                stage_session_id=request_scope["stage_session_id"],
+                flow_line_id=request_scope["flow_line_id"],
+                project_id=project_ctx.project_id,
+                tool_name="memory_recall",
+                status="success",
+                degraded=degraded,
+                metadata={
+                    "cache_hit": True,
+                    "task_type": task_type,
+                    "scope": scope,
+                    "project_policy": project_ctx.project_policy,
+                },
+            )
             return [TextContent(type="text", text=cached)]
 
         from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
@@ -168,10 +280,40 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         except Exception:
             embedder = FallbackEmbedder()
             vec = await embedder.aembed(query)
-        pack = engine.supply(query, vec, task_type, scope, debug=debug)
+        try:
+            pack = engine.supply(
+                query,
+                vec,
+                task_type,
+                scope,
+                debug=debug,
+                project_id=project_ctx.project_id,
+                project_policy=project_ctx.project_policy,
+                project_degraded=project_ctx.degraded,
+            )
+        except TypeError:
+            pack = engine.supply(query, vec, task_type, scope, debug=debug)
 
         audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
         audit_metadata["request_scope"] = request_scope
+        trace = {
+            "call_id": call_id,
+            "request_scope_id": request_scope_id,
+            "project_id": project_ctx.project_id,
+        }
+        core_items = [
+            item for item in pack.core if _project_allowed(item, project_ctx, "core", engine)
+        ]
+        related_items = [
+            item
+            for item in pack.related
+            if _project_allowed(item, project_ctx, "related", engine)
+        ]
+        divergent_items = [
+            item
+            for item in pack.divergent
+            if _project_allowed(item, project_ctx, "divergent", engine)
+        ]
 
         response_payload = {
             "core": [
@@ -183,18 +325,22 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                     "freshness": i.freshness,
                     "worth_score": i.worth_score,
                 }
-                for i in pack.core[:max_results]
+                for i in core_items[:max_results]
             ],
             "related": [
                 {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
-                for i in pack.related[:max_results]
+                for i in related_items[:max_results]
             ],
             "divergent": [
                 {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
-                for i in pack.divergent[:max_results]
+                for i in divergent_items[:max_results]
             ],
             "activated_principles": pack.activated_principles,
             "domain_hint": domain_hint,
+            "project_id": project_ctx.project_id,
+            "project_policy": project_ctx.project_policy,
+            "project_context": project_ctx.to_dict(),
+            "trace": trace,
             "request_scope": request_scope,
             "federation_signals": _generate_federation_signals(
                 pack, domain_hint, engine, federation
@@ -206,32 +352,82 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             response_payload["pipeline_stats"] = pack.pipeline_stats
             response_payload["per_item_stats"] = pack.per_item_stats[:max_results]
 
+        project_warnings = project_ctx.warning_list()
+        envelope = build_envelope(
+            data=dict(response_payload),
+            trace=trace,
+            warnings=project_warnings,
+            minimum_result="project_restricted_context" if project_ctx.degraded else "",
+        )
+        response_payload.update(envelope)
+        if strict and not core_items:
+            response_payload.update(
+                {
+                    "strict": True,
+                    "core": [],
+                    "data": {
+                        **response_payload["data"],
+                        "core": [],
+                    },
+                    "message": "no matches in strict mode",
+                }
+            )
+
         result_json = json.dumps(
             response_payload,
             ensure_ascii=False,
             indent=2,
         )
 
-        # strict mode: return empty on no core matches
-        if strict and not pack.core:
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "strict": True,
-                            "core": [],
-                            "message": "no matches in strict mode",
-                            "request_scope": request_scope,
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
-            ]
+        safe_record_call_span(
+            engine,
+            call_id=call_id,
+            parent_call_id=_parent_call_id(args),
+            request_scope_id=request_scope_id,
+            stage_session_id=request_scope["stage_session_id"],
+            flow_line_id=request_scope["flow_line_id"],
+            project_id=project_ctx.project_id,
+            tool_name="memory_recall",
+            status="success",
+            degraded=bool(response_payload.get("degraded", False)),
+            metadata={
+                "cache_hit": False,
+                "task_type": task_type,
+                "scope": scope,
+                "strict": bool(strict),
+                "debug": bool(debug),
+                "max_results": max_results,
+                "project_policy": project_ctx.project_policy,
+                "warnings": project_warnings,
+            },
+        )
+        if project_warnings:
+            safe_record_degradation_event(
+                engine,
+                call_id=call_id,
+                request_scope_id=request_scope_id,
+                project_id=project_ctx.project_id,
+                tool_name="memory_recall",
+                link_name="project_context",
+                policy="project_restricted",
+                level="warning",
+                fallback_used="project_restricted_context",
+                minimum_result="project_restricted_context",
+                metadata={"warnings": project_warnings},
+            )
 
         # Cache the result
         _cache_set(
-            query, task_type, max_results, scope, result_json, debug, strict, request_scope_id
+            query,
+            task_type,
+            max_results,
+            scope,
+            result_json,
+            debug,
+            strict,
+            request_scope_id,
+            project_ctx.project_id,
+            project_ctx.project_policy,
         )
 
         return [TextContent(type="text", text=result_json)]
@@ -258,6 +454,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.core.noise_filter import is_noise
+        from plastic_promise.mcp.tools.request_scope import build_request_scope
 
         content = args.get("content", "")
         if not content or (isinstance(content, str) and not content.strip()):
@@ -296,6 +493,9 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         source = args.get("source", "user")
         scope = args.get("scope", "global")
         entity_ids = args.get("entity_ids", [])
+        project_ctx = infer_project_context(args)
+        call_id = args.get("call_id") or new_call_id()
+        request_scope = build_request_scope(args, "memory_store")
         custom_tags = args.get("tags", [])  # 用户指定的标签 (task:pending 等)
 
         # Auto-extract entity links from content (原则 #6 数据流驱动)
@@ -315,6 +515,16 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
             custom_tags=custom_tags,
             max_llm_calls=_max_llm,
             skip_embed=(_max_llm == 0),
+            project_id=project_ctx.project_id,
+            visibility=project_ctx.visibility,
+            source_class=project_ctx.source_class,
+            created_by_call_id=call_id,
+            origin_kind=args.get("origin_kind", "tool_call"),
+            origin_uri=args.get("origin_uri", "mcp://memory_store"),
+            origin_ref=args.get("origin_ref", ""),
+            origin_hash=args.get("origin_hash", ""),
+            parent_memory_ids=args.get("parent_memory_ids", []),
+            metadata_json=args.get("metadata_json", {}),
         )
 
         # Auto-link extracted entities to graph immediately
@@ -323,6 +533,15 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
 
         # Process through pipeline immediately (同步处理——大类分完就入池)
         result = fb.process_pipeline()
+        pipeline_counts = result.get("pipeline", {}) if isinstance(result, dict) else {}
+        migrated_count = int(pipeline_counts.get("embedded→migrated", 0) or 0)
+        stored_in_engine = bool(
+            fuzzy_id
+            and (
+                (hasattr(engine, "memory_exists") and engine.memory_exists(fuzzy_id))
+                or fuzzy_id in getattr(engine, "_memories", {})
+            )
+        )
 
         # Push SSE notification for real-time multi-agent awareness
         try:
@@ -341,6 +560,93 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         except Exception:
             pass
 
+        if migrated_count == 0 and not stored_in_engine:
+            warnings = project_ctx.warning_list() + [
+                "memory_store pipeline completed without durable migration"
+            ]
+            trace = {"call_id": call_id, "project_id": project_ctx.project_id}
+            safe_record_call_span(
+                engine,
+                call_id=call_id,
+                parent_call_id=_parent_call_id(args),
+                request_scope_id=request_scope["request_scope_id"],
+                stage_session_id=request_scope["stage_session_id"],
+                flow_line_id=request_scope["flow_line_id"],
+                project_id=project_ctx.project_id,
+                tool_name="memory_store",
+                status="degraded",
+                degraded=True,
+                metadata={
+                    "memory_type": memory_type,
+                    "scope": scope,
+                    "source": source,
+                    "project_policy": project_ctx.project_policy,
+                    "visibility": project_ctx.visibility,
+                    "source_class": project_ctx.source_class,
+                    "pipeline": pipeline_counts,
+                },
+            )
+            safe_record_degradation_event(
+                engine,
+                call_id=call_id,
+                request_scope_id=request_scope["request_scope_id"],
+                project_id=project_ctx.project_id,
+                tool_name="memory_store",
+                link_name="memory_pipeline",
+                policy="required",
+                level="warning",
+                error_class="QualityGate",
+                error_message="pipeline produced no durable memory",
+                fallback_used="none",
+                minimum_result="quality_filtered",
+                metadata={"pipeline": pipeline_counts},
+            )
+            payload = {
+                "stored": False,
+                "memory_id": fuzzy_id,
+                "content_preview": content[:200],
+                "memory_type": memory_type,
+                "scope": scope,
+                "project_id": project_ctx.project_id,
+                "visibility": project_ctx.visibility,
+                "source_class": project_ctx.source_class,
+                "trace": trace,
+                "warnings": warnings,
+                "entity_ids": all_entities,
+                "pipeline": pipeline_counts,
+            }
+            payload.update(
+                build_envelope(
+                    data=dict(payload),
+                    trace=trace,
+                    warnings=warnings,
+                    fallback_used=[],
+                    minimum_result="quality_filtered",
+                )
+            )
+            return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+
+        safe_record_call_span(
+            engine,
+            call_id=call_id,
+            parent_call_id=_parent_call_id(args),
+            request_scope_id=request_scope["request_scope_id"],
+            stage_session_id=request_scope["stage_session_id"],
+            flow_line_id=request_scope["flow_line_id"],
+            project_id=project_ctx.project_id,
+            tool_name="memory_store",
+            status="success",
+            degraded=bool(project_ctx.warning_list()),
+            metadata={
+                "memory_type": memory_type,
+                "scope": scope,
+                "source": source,
+                "project_policy": project_ctx.project_policy,
+                "visibility": project_ctx.visibility,
+                "source_class": project_ctx.source_class,
+            },
+        )
+
         return [
             TextContent(
                 type="text",
@@ -351,8 +657,13 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
                         "content_preview": content[:200],
                         "memory_type": memory_type,
                         "scope": scope,
+                        "project_id": project_ctx.project_id,
+                        "visibility": project_ctx.visibility,
+                        "source_class": project_ctx.source_class,
+                        "trace": {"call_id": call_id, "project_id": project_ctx.project_id},
+                        "warnings": project_ctx.warning_list(),
                         "entity_ids": all_entities,
-                        "pipeline": result["pipeline"],
+                        "pipeline": pipeline_counts,
                         "note": "必经流水线: raw→tagged→classified(大类)→embedded(细分)→主池",
                         "server_ok": server_ok,
                     },
@@ -361,12 +672,122 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
             )
         ]
     except Exception as e:
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps({"error": str(e), "tool": "memory_store"}, ensure_ascii=False),
+        try:
+            from plastic_promise.mcp.tools.request_scope import build_request_scope
+
+            project_ctx = infer_project_context(args)
+            call_id = args.get("call_id") or new_call_id()
+            request_scope = build_request_scope(args, "memory_store")
+            request_scope_id = request_scope["request_scope_id"]
+            trace = {
+                "call_id": call_id,
+                "request_scope_id": request_scope_id,
+                "project_id": project_ctx.project_id,
+            }
+            payload = {
+                "content": args.get("content", ""),
+                "memory_type": args.get("memory_type", "experience"),
+                "source": args.get("source", "user"),
+                "scope": args.get("scope", "global"),
+                "entity_ids": args.get("entity_ids", []),
+                "tags": args.get("tags", []),
+                "visibility": project_ctx.visibility,
+                "source_class": project_ctx.source_class,
+                "origin_kind": args.get("origin_kind", "tool_call"),
+                "origin_uri": args.get("origin_uri", "mcp://memory_store"),
+                "origin_ref": args.get("origin_ref", ""),
+                "origin_hash": args.get("origin_hash", ""),
+                "parent_memory_ids": args.get("parent_memory_ids", []),
+                "metadata_json": args.get("metadata_json", {}),
+            }
+            sqlite = getattr(engine, "_sqlite", None)
+            conn = getattr(sqlite, "_conn", None)
+            outbox_id = record_outbox_event(
+                conn,
+                tool_name="memory_store",
+                project_id=project_ctx.project_id,
+                call_id=call_id,
+                status="pending",
+                payload=payload,
+                error_class=e.__class__.__name__,
+                error_message=str(e),
+                metadata={"fallback": "store_outbox"},
             )
-        ]
+            warnings = project_ctx.warning_list() + [
+                "memory_store failed; payload persisted to store_outbox"
+            ]
+            response_payload = {
+                "stored": False,
+                "tool": "memory_store",
+                "outbox_id": outbox_id,
+                "content_preview": str(args.get("content", ""))[:200],
+                "memory_type": args.get("memory_type", "experience"),
+                "project_id": project_ctx.project_id,
+                "visibility": project_ctx.visibility,
+                "source_class": project_ctx.source_class,
+                "trace": trace,
+                "warnings": warnings,
+                "error_class": e.__class__.__name__,
+                "error": str(e),
+            }
+            envelope = build_envelope(
+                data=dict(response_payload),
+                trace=trace,
+                warnings=warnings,
+                fallback_used=["store_outbox"],
+                minimum_result="outbox_record",
+            )
+            response_payload.update(envelope)
+            safe_record_call_span(
+                engine,
+                call_id=call_id,
+                parent_call_id=_parent_call_id(args),
+                request_scope_id=request_scope_id,
+                stage_session_id=request_scope["stage_session_id"],
+                flow_line_id=request_scope["flow_line_id"],
+                project_id=project_ctx.project_id,
+                tool_name="memory_store",
+                status="degraded",
+                degraded=True,
+                metadata={
+                    "memory_type": args.get("memory_type", "experience"),
+                    "scope": args.get("scope", "global"),
+                    "project_policy": project_ctx.project_policy,
+                    "visibility": project_ctx.visibility,
+                    "source_class": project_ctx.source_class,
+                    "outbox_id": outbox_id,
+                },
+            )
+            safe_record_degradation_event(
+                engine,
+                call_id=call_id,
+                request_scope_id=request_scope_id,
+                project_id=project_ctx.project_id,
+                tool_name="memory_store",
+                link_name="store_outbox",
+                policy="best_effort",
+                level="warning",
+                error_class=e.__class__.__name__,
+                error_message=str(e),
+                fallback_used="store_outbox",
+                minimum_result="outbox_record",
+                metadata={"outbox_id": outbox_id},
+            )
+            return [TextContent(type="text", text=json.dumps(response_payload, ensure_ascii=False))]
+        except Exception as fallback_error:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "error": str(e),
+                            "fallback_error": str(fallback_error),
+                            "tool": "memory_store",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
 
 
 # ---- memory_update ----
@@ -1129,6 +1550,7 @@ async def handle_memory_sync_files(engine: Any, args: dict) -> list[TextContent]
                     "source": "file_sync",
                     "entity_ids": [entity_id],
                     "tags": tags,
+                    "max_llm_calls": args.get("max_llm_calls", 0),
                 },
             )
             data = json.loads(result[0].text)

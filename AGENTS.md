@@ -13,7 +13,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 - **审计同步**: 11 维审计结果所有 Agent 可见
 - **自治流水线**: 标签驱动、零 Token Daemon、自动衔接
 
-## MCP 工具目录 (56 暴露工具, 以源码 `plastic_promise/mcp/server.py` 为准)
+## MCP 工具目录 (57 暴露工具, 以源码 `plastic_promise/mcp/server.py` 为准)
 
 > 计数包含 `session_init` / `sp_stage` 等兼容别名。下方按主工具面分组列出；兼容别名只用于客户端命名差异，不另列业务域。
 
@@ -123,6 +123,11 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | 工具 | 用途 |
 |------|------|
 | `review_run` | 结构化代码审查：prepare/evaluate/apply/full 管线 |
+
+### Commercial Audit 域 (1)
+| 工具 | 用途 |
+|------|------|
+| `commercial_audit_export` | 导出商业审计包：按 project_id/since/until 过滤 call_spans、degradation_events，可选包含 store_outbox |
 
 ### Market 域 (7)
 | 工具 | 用途 |
@@ -438,7 +443,7 @@ Claude Code / Pi Agent / 外部 Agent
         │
         ▼ MCP (stdio | SSE)
 ┌──────────────────────────────────────┐
-│ Plastic Promise MCP Server (56工具)   │
+│ Plastic Promise MCP Server (57工具)   │
 │  ┌────┐┌────┐┌────┐┌────┐┌────┐┌────┐│
 │  │记忆││原则││上下文││审计││技能││SP  ││  14 组
 │  │ 9  ││ 2  ││ 4  ││ 3  ││ 5  ││ 1  ││

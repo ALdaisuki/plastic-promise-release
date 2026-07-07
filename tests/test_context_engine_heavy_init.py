@@ -19,6 +19,7 @@ class FakeLanceDBStore:
         self.embedder = embedder
         self.backfill_calls = 0
         self.rebuild_calls = 0
+        self.sync_calls = 0
         self.row_count = 999
         FakeLanceDBStore.instances.append(self)
 
@@ -29,6 +30,10 @@ class FakeLanceDBStore:
     def rebuild_all(self, engine):
         self.rebuild_calls += 1
         return 1
+
+    def sync_with_engine(self, engine):
+        self.sync_calls += 1
+        return {"orphan_deleted": 1, "missing_backfilled": 1, "missing_skipped": 0}
 
     def count_rows(self):
         return self.row_count
@@ -91,4 +96,5 @@ def test_heavy_init_runs_lancedb_maintenance_when_explicitly_enabled(monkeypatch
 
     store = FakeLanceDBStore.instances[0]
     assert store.backfill_calls == 1
+    assert store.sync_calls == 1
     assert store.rebuild_calls == 1

@@ -1,10 +1,5 @@
 """Integration tests for Rust engine degradation and health check."""
 
-import os
-
-# Use in-memory mode (no SQLite) for test isolation
-os.environ["AGENT_USE_SQLITE"] = "0"
-
 
 def test_python_fallback_works_without_rust():
     """Python supply() works when Rust .pyd is unavailable."""
@@ -205,7 +200,7 @@ def test_debug_supply_uses_rust_path_when_rust_is_preferred(monkeypatch):
 
     calls = {"rust": 0, "python": 0}
 
-    def fake_rust(task_description, task_vector, task_type, scope):
+    def fake_rust(task_description, task_vector, task_type, scope, **_kwargs):
         calls["rust"] += 1
         pack = ContextPack()
         pack.audit_metadata = {"engine_version": "0.2.0-rs"}

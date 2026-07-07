@@ -167,6 +167,16 @@ class MemoryRecord:
         domain: str = "uncategorized",
         category: str = "other",
         entity_ids: list[str] | None = None,
+        project_id: str = "project:legacy-global",
+        visibility: str = "project",
+        source_class: str = "experience",
+        created_by_call_id: str = "",
+        origin_kind: str = "",
+        origin_uri: str = "",
+        origin_ref: str = "",
+        origin_hash: str = "",
+        parent_memory_ids: list[str] | None = None,
+        metadata_json: dict[str, Any] | None = None,
         decay_multiplier: float = 1.0,
         effective_half_life: float | None = None,
     ) -> None:
@@ -202,6 +212,26 @@ class MemoryRecord:
         self.domain = domain
         self.category = category
         self.entity_ids = entity_ids if entity_ids is not None else []
+        self.project_id = project_id
+        self.visibility = visibility
+        self.source_class = source_class
+        self.created_by_call_id = created_by_call_id
+        self.origin_kind = origin_kind
+        self.origin_uri = origin_uri
+        self.origin_ref = origin_ref
+        self.origin_hash = origin_hash
+        self.parent_memory_ids = parent_memory_ids if parent_memory_ids is not None else []
+        self.metadata_json = metadata_json if metadata_json is not None else {}
+        self.metadata.setdefault("project_id", self.project_id)
+        self.metadata.setdefault("visibility", self.visibility)
+        self.metadata.setdefault("source_class", self.source_class)
+        self.metadata.setdefault("created_by_call_id", self.created_by_call_id)
+        self.metadata.setdefault("origin_kind", self.origin_kind)
+        self.metadata.setdefault("origin_uri", self.origin_uri)
+        self.metadata.setdefault("origin_ref", self.origin_ref)
+        self.metadata.setdefault("origin_hash", self.origin_hash)
+        self.metadata.setdefault("parent_memory_ids", list(self.parent_memory_ids))
+        self.metadata.setdefault("metadata_json", dict(self.metadata_json))
         self.created_at = datetime.datetime.now().isoformat()
         self.last_accessed = self.created_at
         self.access_count = 0
@@ -248,6 +278,16 @@ class MemoryRecord:
             "domain": self.domain,
             "category": self.category,
             "entity_ids": list(self.entity_ids),
+            "project_id": self.project_id,
+            "visibility": self.visibility,
+            "source_class": self.source_class,
+            "created_by_call_id": self.created_by_call_id,
+            "origin_kind": self.origin_kind,
+            "origin_uri": self.origin_uri,
+            "origin_ref": self.origin_ref,
+            "origin_hash": self.origin_hash,
+            "parent_memory_ids": list(self.parent_memory_ids),
+            "metadata_json": dict(self.metadata_json),
             "created_at": self.created_at,
             "last_accessed": self.last_accessed,
             "access_count": self.access_count,
@@ -266,26 +306,55 @@ class MemoryRecord:
         Returns:
             新创建的 MemoryRecord 实例。
         """
+        metadata = data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata = dict(metadata)
+        for key in (
+            "project_id",
+            "visibility",
+            "source_class",
+            "created_by_call_id",
+            "origin_kind",
+            "origin_uri",
+            "origin_ref",
+            "origin_hash",
+            "parent_memory_ids",
+            "metadata_json",
+        ):
+            if key in data:
+                metadata[key] = data[key]
+
         record = cls(
             content=data.get("content", ""),
             memory_type=data.get("memory_type", "experience"),
             source=data.get("source", "user"),
-            memory_id=data.get("memory_id"),
+            memory_id=data.get("memory_id") or data.get("id"),
             worth_success=data.get("worth_success", 0),
             worth_failure=data.get("worth_failure", 0),
             activation_weight=data.get("activation_weight", 0.5),
             tier=data.get("tier", "L1"),
-            metadata=data.get("metadata", {}),
+            metadata=metadata,
             tags=data.get("tags", []),
             domain=data.get("domain", "uncategorized"),
             category=data.get("category", "other"),
+            entity_ids=data.get("entity_ids", []),
+            project_id=metadata.get("project_id", "project:legacy-global"),
+            visibility=metadata.get("visibility", "project"),
+            source_class=metadata.get("source_class", "experience"),
+            created_by_call_id=metadata.get("created_by_call_id", ""),
+            origin_kind=metadata.get("origin_kind", ""),
+            origin_uri=metadata.get("origin_uri", ""),
+            origin_ref=metadata.get("origin_ref", ""),
+            origin_hash=metadata.get("origin_hash", ""),
+            parent_memory_ids=metadata.get("parent_memory_ids", []),
+            metadata_json=metadata.get("metadata_json", {}),
             decay_multiplier=data.get("decay_multiplier", 1.0),
             effective_half_life=data.get("effective_half_life"),
         )
         record.created_at = data.get("created_at", record.created_at)
         record.last_accessed = data.get("last_accessed", record.last_accessed)
         record.access_count = data.get("access_count", 0)
-        record.entity_ids = data.get("entity_ids", [])
         return record
 
 
@@ -491,8 +560,8 @@ class RecMem:
         if not hasattr(self._engine, "_memories"):
             return
         try:
-            first_mem = next(iter(self._engine._memories.values()), {})
-            if "decay_multiplier" not in first_mem:
+            first_mem = next(iter(self._engine._memories.values()), None)
+            if first_mem is not None and "decay_multiplier" not in first_mem:
                 self._engine.ensure_heavy_init()
         except Exception:
             pass
@@ -514,6 +583,17 @@ class RecMem:
         tags: list[str] | None = None,
         domain: str = "uncategorized",
         category: str = "other",
+        memory_id: str | None = None,
+        project_id: str = "project:legacy-global",
+        visibility: str = "project",
+        source_class: str = "experience",
+        created_by_call_id: str = "",
+        origin_kind: str = "",
+        origin_uri: str = "",
+        origin_ref: str = "",
+        origin_hash: str = "",
+        parent_memory_ids: list[str] | None = None,
+        metadata_json: dict | None = None,
     ) -> MemoryRecord:
         """存储一条新记忆。
 
@@ -535,7 +615,7 @@ class RecMem:
             新创建的 MemoryRecord 实例。
         """
         try:
-            memory_id = str(uuid.uuid4())
+            memory_id = memory_id or str(uuid.uuid4())
             try:
                 from context_engine_core import MemoryRecord as RustMemoryRecord
 
@@ -547,6 +627,18 @@ class RecMem:
                 rust_record.entity_ids = entity_ids or []
                 rust_record.domain = domain
                 rust_record.tags = tags or []
+                rust_record.metadata = {
+                    "project_id": project_id,
+                    "visibility": visibility,
+                    "source_class": source_class,
+                    "created_by_call_id": created_by_call_id,
+                    "origin_kind": origin_kind,
+                    "origin_uri": origin_uri,
+                    "origin_ref": origin_ref,
+                    "origin_hash": origin_hash,
+                    "parent_memory_ids": parent_memory_ids or [],
+                    "metadata_json": metadata_json or {},
+                }
                 self._engine.store_memory(rust_record)
             except (ImportError, AttributeError):
                 # Fallback: Python engine
@@ -563,6 +655,16 @@ class RecMem:
                     "domain": domain,
                     "tags": tags or [],
                     "entity_ids": entity_ids or [],
+                    "project_id": project_id,
+                    "visibility": visibility,
+                    "source_class": source_class,
+                    "created_by_call_id": created_by_call_id,
+                    "origin_kind": origin_kind,
+                    "origin_uri": origin_uri,
+                    "origin_ref": origin_ref,
+                    "origin_hash": origin_hash,
+                    "parent_memory_ids": parent_memory_ids or [],
+                    "metadata_json": metadata_json or {},
                 }
                 self._engine.register_memory(record_dict)
 
@@ -587,6 +689,28 @@ class RecMem:
                 domain=domain or "uncategorized",
                 category=category,
                 entity_ids=entity_ids or [],
+                project_id=project_id,
+                visibility=visibility,
+                source_class=source_class,
+                created_by_call_id=created_by_call_id,
+                origin_kind=origin_kind,
+                origin_uri=origin_uri,
+                origin_ref=origin_ref,
+                origin_hash=origin_hash,
+                parent_memory_ids=parent_memory_ids or [],
+                metadata_json=metadata_json or {},
+                metadata={
+                    "project_id": project_id,
+                    "visibility": visibility,
+                    "source_class": source_class,
+                    "created_by_call_id": created_by_call_id,
+                    "origin_kind": origin_kind,
+                    "origin_uri": origin_uri,
+                    "origin_ref": origin_ref,
+                    "origin_hash": origin_hash,
+                    "parent_memory_ids": parent_memory_ids or [],
+                    "metadata_json": metadata_json or {},
+                },
             )
             self._records[memory_id] = record
             return record
@@ -601,6 +725,28 @@ class RecMem:
                 domain=domain or "uncategorized",
                 category=category,
                 entity_ids=entity_ids or [],
+                project_id=project_id,
+                visibility=visibility,
+                source_class=source_class,
+                created_by_call_id=created_by_call_id,
+                origin_kind=origin_kind,
+                origin_uri=origin_uri,
+                origin_ref=origin_ref,
+                origin_hash=origin_hash,
+                parent_memory_ids=parent_memory_ids or [],
+                metadata_json=metadata_json or {},
+                metadata={
+                    "project_id": project_id,
+                    "visibility": visibility,
+                    "source_class": source_class,
+                    "created_by_call_id": created_by_call_id,
+                    "origin_kind": origin_kind,
+                    "origin_uri": origin_uri,
+                    "origin_ref": origin_ref,
+                    "origin_hash": origin_hash,
+                    "parent_memory_ids": parent_memory_ids or [],
+                    "metadata_json": metadata_json or {},
+                },
             )
             self._records[record.memory_id] = record
             return record

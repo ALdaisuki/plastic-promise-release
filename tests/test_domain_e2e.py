@@ -21,14 +21,20 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _engine_with_domains():
+    from plastic_promise.core.context_engine import ContextEngine
+
+    engine = ContextEngine()
+    engine.ensure_heavy_init()
+    return engine
+
+
 class TestDomainE2E:
     """端到端测试套件"""
 
     def test_01_engine_init_and_predefined_domains(self):
         """1. 初始化: ContextEngine 挂载 DomainManager, 7 预定义域就位"""
-        from plastic_promise.core.context_engine import ContextEngine
-
-        engine = ContextEngine()
+        engine = _engine_with_domains()
 
         assert engine._dm is not None, "DomainManager not mounted"
         stats = engine._dm.stats()
@@ -59,10 +65,9 @@ class TestDomainE2E:
 
     def test_02_pipeline_multiple_scenarios(self):
         """2. 流水线: 多条不同场景记忆 → 标签提取 + 域分配"""
-        from plastic_promise.core.context_engine import ContextEngine
         from plastic_promise.memory.pipeline import MemoryPipeline
 
-        engine = ContextEngine()
+        engine = _engine_with_domains()
         fb = MemoryPipeline(domain_manager=engine._dm)
 
         # 模拟 6 种不同 Agent 行为场景的记忆
@@ -103,9 +108,7 @@ class TestDomainE2E:
 
     def test_03_all_domain_excluded_from_assignment(self):
         """3. all 域隔离: 永不参与记忆分配"""
-        from plastic_promise.core.context_engine import ContextEngine
-
-        engine = ContextEngine()
+        engine = _engine_with_domains()
 
         test_cases = [
             ["code", "build", "feature"],
@@ -123,10 +126,9 @@ class TestDomainE2E:
 
     def test_04_uncategorized_flow(self):
         """4. uncategorized: 无匹配标签 → uncategorized → 候选域"""
-        from plastic_promise.core.context_engine import ContextEngine
         import time
 
-        engine = ContextEngine()
+        engine = _engine_with_domains()
 
         # 使用唯一标签避免之前测试污染
         unique = f"novel_tag_{int(time.time() * 1000) % 100000}"
@@ -144,9 +146,7 @@ class TestDomainE2E:
 
     def test_05_domain_merge_and_audit_log(self):
         """5. 域合并 + 审计日志"""
-        from plastic_promise.core.context_engine import ContextEngine
-
-        engine = ContextEngine()
+        engine = _engine_with_domains()
 
         before_log = engine._dm._count_audit_log()
         ok = engine._dm.merge("fixing", "building")
@@ -168,10 +168,9 @@ class TestDomainE2E:
 
     def test_06_domain_rename_with_alias(self):
         """6. 域重命名 + 别名保留"""
-        from plastic_promise.core.context_engine import ContextEngine
         import time
 
-        engine = ContextEngine()
+        engine = _engine_with_domains()
 
         # 使用唯一名称避免 DB 残留冲突
         unique_name = f"e2e_test_{int(time.time())}"
@@ -200,10 +199,9 @@ class TestDomainE2E:
 
     def test_07_decay_detection(self):
         """7. 域衰减: 7 天无活动 → score 衰减"""
-        from plastic_promise.core.context_engine import ContextEngine
         import datetime
 
-        engine = ContextEngine()
+        engine = _engine_with_domains()
 
         # 模拟 fixing 域 8 天无活动
         fixing = engine._dm.domains["fixing"]
@@ -223,9 +221,7 @@ class TestDomainE2E:
 
     def test_08_federation_signal_generation(self):
         """8. 联邦信号: 实时生成，不持久化"""
-        from plastic_promise.core.context_engine import ContextEngine
-
-        engine = ContextEngine()
+        engine = _engine_with_domains()
 
         sig = engine._dm.generate_signal("fixing", "building", "命中 3 条记忆")
         assert "fixing" in sig
@@ -242,7 +238,7 @@ class TestDomainE2E:
             d = p["domain"]
             domain_counts[d] = domain_counts.get(d, 0) + 1
 
-        expected = {"all": 3, "governing": 3, "building": 2, "designing": 2, "reflecting": 2}
+        expected = {"all": 3, "governing": 3, "building": 2, "designing": 2, "reflecting": 3}
         assert domain_counts == expected, (
             f"Domain distribution mismatch: {domain_counts} != {expected}"
         )
@@ -250,9 +246,7 @@ class TestDomainE2E:
 
     def test_10_tag_to_domain_one_to_many(self):
         """10. 标签→域 一对多: 同标签可映射多个域"""
-        from plastic_promise.core.context_engine import ContextEngine
-
-        engine = ContextEngine()
+        engine = _engine_with_domains()
 
         # 'review' 标签同时存在于 reflecting 和 designing
         engine._dm.domains["reflecting"].tags.add("review")

@@ -28,12 +28,20 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
     """
     try:
         from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
+        from plastic_promise.core.project_context import infer_project_context
+        from plastic_promise.core.traceability import (
+            new_call_id,
+            safe_record_call_span,
+            safe_record_degradation_event,
+        )
         from plastic_promise.mcp.tools.request_scope import build_request_scope
 
         task_description = args["task_description"]
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
         request_scope = build_request_scope(args, "context_supply")
+        project_ctx = infer_project_context(args)
+        call_id = args.get("call_id") or new_call_id()
 
         try:
             embedder = get_embedder(fallback_on_error=False)
@@ -45,9 +53,79 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             embedder = FallbackEmbedder()
             task_vector = await embedder.aembed(task_description)
 
-        pack = engine.supply(task_description, task_vector, task_type, scope)
+        try:
+            pack = engine.supply(
+                task_description,
+                task_vector,
+                task_type,
+                scope,
+                project_id=project_ctx.project_id,
+                project_policy=project_ctx.project_policy,
+                project_degraded=project_ctx.degraded,
+            )
+        except TypeError:
+            pack = engine.supply(task_description, task_vector, task_type, scope)
+        from plastic_promise.mcp.tools.memory import _project_allowed
+
+        if all(hasattr(pack, layer) for layer in ("core", "related", "divergent")):
+            pack.core = [
+                item for item in pack.core if _project_allowed(item, project_ctx, "core", engine)
+            ]
+            pack.related = [
+                item
+                for item in pack.related
+                if _project_allowed(item, project_ctx, "related", engine)
+            ]
+            pack.divergent = [
+                item
+                for item in pack.divergent
+                if _project_allowed(item, project_ctx, "divergent", engine)
+            ]
         pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
         pack.audit_metadata["request_scope"] = request_scope
+        pack.audit_metadata["project_context"] = project_ctx.to_dict()
+        pack.audit_metadata["trace"] = {
+            "call_id": call_id,
+            "request_scope_id": request_scope["request_scope_id"],
+            "project_id": project_ctx.project_id,
+        }
+        project_warnings = project_ctx.warning_list()
+        if project_warnings:
+            pack.audit_metadata["warnings"] = project_warnings
+            pack.audit_metadata["minimum_result"] = "project_restricted_context"
+
+        safe_record_call_span(
+            engine,
+            call_id=call_id,
+            parent_call_id=str(args.get("parent_call_id") or args.get("parent_call") or ""),
+            request_scope_id=request_scope["request_scope_id"],
+            stage_session_id=request_scope["stage_session_id"],
+            flow_line_id=request_scope["flow_line_id"],
+            project_id=project_ctx.project_id,
+            tool_name="context_supply",
+            status="success",
+            degraded=bool(project_warnings),
+            metadata={
+                "task_type": task_type,
+                "scope": scope,
+                "project_policy": project_ctx.project_policy,
+                "warnings": project_warnings,
+            },
+        )
+        if project_warnings:
+            safe_record_degradation_event(
+                engine,
+                call_id=call_id,
+                request_scope_id=request_scope["request_scope_id"],
+                project_id=project_ctx.project_id,
+                tool_name="context_supply",
+                link_name="project_context",
+                policy="project_restricted",
+                level="warning",
+                fallback_used="project_restricted_context",
+                minimum_result="project_restricted_context",
+                metadata={"warnings": project_warnings},
+            )
 
         return [TextContent(type="text", text=pack.to_prompt())]
     except Exception as e:

@@ -8,8 +8,6 @@ from pathlib import Path
 
 import pytest
 
-os.environ["AGENT_USE_SQLITE"] = "0"
-
 slow_benchmark = pytest.mark.skipif(
     os.environ.get("PP_RUN_SLOW_BENCHMARKS") != "1",
     reason="Set PP_RUN_SLOW_BENCHMARKS=1 to run slow Python supply benchmarks.",

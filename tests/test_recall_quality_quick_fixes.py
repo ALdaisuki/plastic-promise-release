@@ -34,6 +34,14 @@ def test_noise_filter_rejects_low_information_and_partial_urls():
     )
 
 
+def test_noise_filter_rejects_emoji_reactions_but_keeps_meaningful_text():
+    assert is_noise("👍")
+    assert is_noise("  👍 👍 \n")
+    assert is_noise("[reaction: 👍]")
+    assert is_noise("[like: shipped]")
+    assert not is_noise("release sync passed 👍 next verify startup recovery")
+
+
 def test_context_item_defaults_to_nonzero_worth_when_supplied():
     item = ContextItem(
         id="m1",

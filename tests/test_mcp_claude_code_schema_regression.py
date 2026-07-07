@@ -23,6 +23,7 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
             "task_description": "Git 仓库治理：补充 .gitignore 黑名单并清理不必要测试文件",
             "max_principles": 5,
             "domain_hint": "governing",
+            "project_id": "project:test-app",
         },
         "memory_recall": {
             "query": "Git 仓库治理 .gitignore 黑名单 测试文件 清理",
@@ -46,6 +47,14 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
         },
         "defense": {"action": "get"},
         "runtime_mode": {"action": "set", "mode": "rust-full"},
+        "system": {
+            "action": "benchmark",
+            "run": False,
+            "limit": 5,
+            "gate": True,
+            "baseline_name": "release",
+            "max_p95_ms": 1000.0,
+        },
         "audit_pre_check": {
             "action_description": "写入 MCP schema validation hardening spec/plan",
             "action_type": "write",
@@ -53,6 +62,10 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
         "session-init": {
             "task_description": "会话启动",
             "task_type": "debugging",
+        },
+        "commercial_audit_export": {
+            "project_id": "project:test-app",
+            "include_outbox": True,
         },
     }
 
@@ -72,10 +85,58 @@ def test_handler_read_optional_fields_are_declared():
         "stage_session_id",
         "flow_line_id",
         "request_id",
+        "project_id",
+        "project_policy",
     }.issubset(memory_props)
 
     context_props = set(tools["context_supply"].inputSchema["properties"])
-    assert {"stage_session_id", "flow_line_id", "request_id"}.issubset(context_props)
+    assert {
+        "stage_session_id",
+        "flow_line_id",
+        "request_id",
+        "project_id",
+        "project_policy",
+    }.issubset(context_props)
+
+    memory_store_props = set(tools["memory_store"].inputSchema["properties"])
+    assert {
+        "project_id",
+        "project_policy",
+        "visibility",
+        "source_class",
+        "origin_kind",
+        "origin_uri",
+        "parent_memory_ids",
+    }.issubset(memory_store_props)
+
+    review_props = set(tools["review_run"].inputSchema["properties"])
+    assert {"project_id", "project_policy"}.issubset(review_props)
+
+    commercial_audit_props = set(tools["commercial_audit_export"].inputSchema["properties"])
+    assert {"project_id", "since", "until", "include_outbox", "export_otlp", "otlp_endpoint"}.issubset(
+        commercial_audit_props
+    )
+
+    principle_props = set(tools["principle_activate"].inputSchema["properties"])
+    assert "project_id" in principle_props
+
+    system_props = set(tools["system"].inputSchema["properties"])
+    assert {
+        "action",
+        "run",
+        "queries",
+        "repeat",
+        "benchmark_name",
+        "limit",
+        "baseline_name",
+        "set_baseline",
+        "gate",
+        "tolerance_ratio",
+        "max_p50_ms",
+        "max_p95_ms",
+        "max_p99_ms",
+    }.issubset(system_props)
+    assert "benchmark" in tools["system"].inputSchema["properties"]["action"]["enum"]
 
     defense_props = set(tools["defense"].inputSchema["properties"])
     assert "target" in defense_props
@@ -133,6 +194,12 @@ def test_codex_deferred_tool_discovery_keywords_are_exposed():
         "context_supply": ["Plastic Promise MCP", "Codex", "tool_search", "context supply"],
         "defense": ["Plastic Promise MCP", "Codex", "tool_search", "trust"],
         "runtime_mode": ["Plastic Promise MCP", "Codex", "tool_search", "runtime mode"],
+        "commercial_audit_export": [
+            "Plastic Promise MCP",
+            "Codex",
+            "tool_search",
+            "commercial audit export",
+        ],
         "session_init": ["Plastic Promise MCP", "Codex", "tool_search", "bootstrap"],
         "sp_stage": ["Plastic Promise MCP", "Codex", "tool_search", "SuperPowers"],
         "step_closure": ["Plastic Promise MCP", "Codex", "tool_search", "step closure"],

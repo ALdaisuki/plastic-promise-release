@@ -30,7 +30,7 @@ This folder now separates dated research from current roadmap status. Older comp
 | R9 | Memory compaction | Planned | `MemoryGC.merge_similar()` exists, but progressive LLM compaction/cooldown/archive is not verified. | Add compaction design and conservative rollout gate. |
 | R10 | Extraction throttling | Planned | No verified sliding-window throttle in docs pass. | Add rate limiter around LLM fallback extraction. |
 | R11 | Session recovery | Planned | Launcher cleans stale PID files; no full SQLite/LanceDB recovery pass verified. | Add startup recovery for orphan vectors, missing vectors, and stale claims. |
-| R12 | Performance benchmarking | Planned | No benchmark history command verified. | Add opt-in timing and baseline fixtures. |
+| R12 | Performance benchmarking | Done | `plastic_promise/core/benchmark.py`, `system(action=benchmark)`, `tests/test_performance_benchmark.py` | Wire release-specific baselines into CI as needed. |
 | R13 | Emoji-only noise detection | Needs verification | `plastic_promise/core/noise_filter.py` exists; specific emoji-only behavior was not verified in this pass. | Add explicit tests if missing. |
 | R14 | Dual-layer iron rules | Planned | Step closure exists; derived principle extraction is not verified. | Add optional derived-principle layer. |
 | R15 | Obsidian vault export | Planned | `pack_export` exists for JSON; markdown vault export not verified. | Design markdown/YAML export command. |

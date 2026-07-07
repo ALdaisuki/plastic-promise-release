@@ -41,6 +41,29 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
     reviewer_target = args.get("reviewer_target", "pi_reviewer")
     spec_path = args.get("spec_path")
 
+    if action in {"prepare", "full"} and not args.get("project_id") and not args.get(
+        "allow_project_unknown"
+    ):
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": "project_id is required for review prepare",
+                        "tool": "review_run",
+                        "degraded": True,
+                        "degrade_level": "warning",
+                        "warnings": [
+                            "review/diff workflows require project_id to prevent cross-project recall"
+                        ],
+                        "fallback_used": [],
+                        "minimum_result": "review_project_guard",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
     # Lazy import ReviewEngine
     from plastic_promise.core.review_engine import ReviewEngine
 

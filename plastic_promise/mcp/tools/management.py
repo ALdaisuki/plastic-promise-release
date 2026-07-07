@@ -1,6 +1,8 @@
 """MCP Management + Domain 工具 — 管理域"""
 
 import json
+import sqlite3
+from pathlib import Path
 from typing import Any
 
 from mcp.types import TextContent
@@ -106,8 +108,10 @@ def _get_fuzzy_buffer(engine: Any):
 
 
 async def handle_system(engine: Any, args: dict) -> list[TextContent]:
-    """系统工具统一入口。action: stats|backup|migrate"""
+    """系统工具统一入口。action: stats|backup|migrate|benchmark"""
     action = args.get("action", "stats")
+    if action == "benchmark":
+        return await handle_system_benchmark(engine, args)
     if action in ("backup", "migrate"):
         try:
             engine.ensure_heavy_init()  # heavyweight actions need full components
@@ -138,6 +142,95 @@ async def handle_system(engine: Any, args: dict) -> list[TextContent]:
         except Exception:
             pass
         return result
+
+
+async def handle_system_benchmark(engine: Any, args: dict) -> list[TextContent]:
+    """Run or summarize retrieval benchmarks without forcing heavy init for history."""
+    try:
+        from plastic_promise.core.benchmark import (
+            evaluate_benchmark_gate,
+            ensure_benchmark_schema,
+            load_benchmark_baseline,
+            run_retrieval_benchmark,
+            save_benchmark_baseline,
+            summarize_benchmark_history,
+        )
+        from plastic_promise.core.paths import get_db_path
+
+        db_path = Path(get_db_path())
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        try:
+            benchmark_name = args.get("benchmark_name") or "retrieval"
+            baseline_name = args.get("baseline_name") or "default"
+            limit = int(args.get("limit", 50) or 50)
+            ensure_benchmark_schema(conn)
+
+            if args.get("run", False):
+                payload = run_retrieval_benchmark(
+                    engine,
+                    queries=args.get("queries"),
+                    repeat=args.get("repeat", 1),
+                    conn=conn,
+                    benchmark_name=benchmark_name,
+                )
+                payload["tool"] = "system_benchmark"
+            else:
+                payload = {
+                    "tool": "system_benchmark",
+                    "mode": "history",
+                    "benchmark_name": benchmark_name,
+                    "summary": summarize_benchmark_history(
+                        conn,
+                        benchmark_name=benchmark_name,
+                        limit=limit,
+                    ),
+                }
+
+            summary = payload.get("summary", {})
+            tolerance_ratio = _optional_float_arg(args.get("tolerance_ratio"))
+            if args.get("set_baseline", False):
+                payload["baseline"] = save_benchmark_baseline(
+                    conn,
+                    benchmark_name=benchmark_name,
+                    baseline_name=baseline_name,
+                    summary=summary,
+                    tolerance_ratio=tolerance_ratio if tolerance_ratio is not None else 0.20,
+                )
+            if args.get("gate", False):
+                baseline = load_benchmark_baseline(
+                    conn,
+                    benchmark_name=benchmark_name,
+                    baseline_name=baseline_name,
+                )
+                payload["gate"] = evaluate_benchmark_gate(
+                    summary,
+                    baseline=baseline,
+                    tolerance_ratio=tolerance_ratio,
+                    max_p50_ms=_optional_float_arg(args.get("max_p50_ms")),
+                    max_p95_ms=_optional_float_arg(args.get("max_p95_ms")),
+                    max_p99_ms=_optional_float_arg(args.get("max_p99_ms")),
+                )
+        finally:
+            conn.close()
+
+        return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=2))]
+    except Exception as e:
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": str(e), "tool": "system_benchmark"}, ensure_ascii=False),
+            )
+        ]
+
+
+def _optional_float_arg(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------

@@ -412,6 +412,22 @@ class ContextEngine:
                             "ContextEngine: LanceDB backfill deferred "
                             "(set LDB_BACKFILL_ON_INIT=1 to run during init)"
                         )
+                    if rebuild_on_init and hasattr(self._ldb, "sync_with_engine"):
+                        try:
+                            sync_result = self._ldb.sync_with_engine(self)
+                            self._lancedb_sync_status = {"success": True, **sync_result}
+                            logging.info(
+                                "ContextEngine: LanceDB sync repaired orphans=%s, missing=%s, skipped=%s",
+                                sync_result.get("orphan_deleted", 0),
+                                sync_result.get("missing_backfilled", 0),
+                                sync_result.get("missing_skipped", 0),
+                            )
+                        except Exception as e:
+                            self._lancedb_sync_status = {"success": False, "error": str(e)}
+                            logging.warning(
+                                "ContextEngine: LanceDB sync degraded; continuing startup: %s",
+                                e,
+                            )
                     # Ghost-vector detection: if LanceDB has more rows than SQLite,
                     # there are stale test/pollution vectors — rebuild from SQLite
                     ldb_count = self._ldb.count_rows()
@@ -473,6 +489,16 @@ class ContextEngine:
             "decay_multiplier": record.get("decay_multiplier", 1.0),
             "effective_half_life": record.get("effective_half_life", 3.0),
             "last_accessed": record.get("last_accessed", datetime.datetime.now().isoformat()),
+            "project_id": record.get("project_id", "project:legacy-global"),
+            "visibility": record.get("visibility", "project"),
+            "source_class": record.get("source_class", "experience"),
+            "created_by_call_id": record.get("created_by_call_id", ""),
+            "origin_kind": record.get("origin_kind", ""),
+            "origin_uri": record.get("origin_uri", ""),
+            "origin_ref": record.get("origin_ref", ""),
+            "origin_hash": record.get("origin_hash", ""),
+            "parent_memory_ids": record.get("parent_memory_ids", []),
+            "metadata_json": record.get("metadata_json", {}),
         }
         self._memories[mid] = data
         if self._sqlite:
@@ -757,6 +783,7 @@ class ContextEngine:
         """
         mid = record.id or f"mem_{len(self._memories):08d}"
         record.id = mid
+        meta = getattr(record, "metadata", {}) or {}
         data = {
             "id": mid,
             "content": record.content,
@@ -777,6 +804,16 @@ class ContextEngine:
             "decay_multiplier": getattr(record, "decay_multiplier", 1.0),
             "effective_half_life": getattr(record, "effective_half_life", 3.0),
             "last_accessed": getattr(record, "last_accessed", datetime.datetime.now().isoformat()),
+            "project_id": meta.get("project_id", "project:legacy-global"),
+            "visibility": meta.get("visibility", "project"),
+            "source_class": meta.get("source_class", "experience"),
+            "created_by_call_id": meta.get("created_by_call_id", ""),
+            "origin_kind": meta.get("origin_kind", ""),
+            "origin_uri": meta.get("origin_uri", ""),
+            "origin_ref": meta.get("origin_ref", ""),
+            "origin_hash": meta.get("origin_hash", ""),
+            "parent_memory_ids": meta.get("parent_memory_ids", []),
+            "metadata_json": meta.get("metadata_json", {}),
         }
         self._memories[mid] = data
         if self._sqlite:
@@ -1198,6 +1235,9 @@ class ContextEngine:
         task_type: str = "general",
         scope: str = "global",
         debug: bool = False,
+        project_id: str = "project:legacy-global",
+        project_policy: str = "balanced",
+        project_degraded: bool = False,
     ) -> ContextPack:
         """Supply context for a task. Rust-accelerated when available.
 
@@ -1231,7 +1271,15 @@ class ContextEngine:
         # Falls back to Python if Rust engine is unavailable or throws.
         if self._check_rust_health():
             try:
-                return self._supply_rust(task_description, task_vector, task_type, scope)
+                return self._supply_rust(
+                    task_description,
+                    task_vector,
+                    task_type,
+                    scope,
+                    project_id=project_id,
+                    project_policy=project_policy,
+                    project_degraded=project_degraded,
+                )
             except Exception as e:
                 logger.warning("Rust supply failed, falling back to Python: %s", e)
                 with self._rust_lock:
@@ -2072,7 +2120,15 @@ class ContextEngine:
         return pack
 
     def _supply_rust(
-        self, task_description: str, task_vector: list, task_type: str, scope: str
+        self,
+        task_description: str,
+        task_vector: list,
+        task_type: str,
+        scope: str,
+        *,
+        project_id: str = "project:legacy-global",
+        project_policy: str = "balanced",
+        project_degraded: bool = False,
     ) -> ContextPack:
         """Rust-accelerated supply path.
 
@@ -2112,7 +2168,19 @@ class ContextEngine:
                 mem["_vector"] = vector_lookup.get(mid, [])
                 memories.append(mem)
 
-        rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
+        if hasattr(rust, "supply_with_project_context"):
+            rust_pack = rust.supply_with_project_context(
+                task_description,
+                task_vector,
+                task_type,
+                scope,
+                memories,
+                project_id,
+                project_policy,
+                project_degraded,
+            )
+        else:
+            rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
         return self._convert_rust_pack(rust_pack)
 
     # ========== 内部方法 ==========
@@ -3096,6 +3164,37 @@ class _SQLiteStorage:
             )
         except Exception:
             pass  # 列已存在
+        def add_column(name: str, ddl: str) -> None:
+            try:
+                self._conn.execute(f"ALTER TABLE memories ADD COLUMN {name} {ddl}")
+            except Exception:
+                pass
+
+        add_column("project_id", "TEXT NOT NULL DEFAULT 'project:legacy-global'")
+        add_column("visibility", "TEXT NOT NULL DEFAULT 'project'")
+        add_column("source_class", "TEXT NOT NULL DEFAULT 'experience'")
+        add_column("created_by_call_id", "TEXT NOT NULL DEFAULT ''")
+        add_column("origin_kind", "TEXT NOT NULL DEFAULT ''")
+        add_column("origin_uri", "TEXT NOT NULL DEFAULT ''")
+        add_column("origin_ref", "TEXT NOT NULL DEFAULT ''")
+        add_column("origin_hash", "TEXT NOT NULL DEFAULT ''")
+        add_column("parent_memory_ids", "TEXT NOT NULL DEFAULT '[]'")
+        add_column("metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS projects ("
+            "project_id TEXT PRIMARY KEY,"
+            "display_name TEXT NOT NULL,"
+            "root_uri TEXT,"
+            "aliases_json TEXT NOT NULL DEFAULT '[]',"
+            "default_visibility TEXT NOT NULL DEFAULT 'project',"
+            "created_at TEXT NOT NULL,"
+            "updated_at TEXT NOT NULL,"
+            "metadata_json TEXT NOT NULL DEFAULT '{}'"
+            ")"
+        )
+        from plastic_promise.core.traceability import ensure_traceability_schema
+
+        ensure_traceability_schema(self._conn)
         # 迁移: memory_version 表 — Rust 引擎用版本号检测 BM25 索引是否需要刷新
         self._conn.execute("CREATE TABLE IF NOT EXISTS memory_version (version INTEGER DEFAULT 0)")
         self._conn.execute("INSERT OR IGNORE INTO memory_version (version) VALUES (0)")
@@ -3134,8 +3233,9 @@ class _SQLiteStorage:
             "INSERT OR REPLACE INTO memories (id, content, memory_type, source, owner, "
             "tier, scope, category, tags, domain, importance, entity_ids, created_at, access_count, "
             "worth_success, worth_failure, activation_weight, decay_multiplier, effective_half_life, "
-            "last_accessed) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "last_accessed, project_id, visibility, source_class, created_by_call_id, origin_kind, "
+            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 data.get("content", ""),
@@ -3157,6 +3257,16 @@ class _SQLiteStorage:
                 data.get("decay_multiplier", 1.0),
                 data.get("effective_half_life", 3.0),
                 data.get("last_accessed", ""),
+                data.get("project_id", "project:legacy-global"),
+                data.get("visibility", "project"),
+                data.get("source_class", "experience"),
+                data.get("created_by_call_id", ""),
+                data.get("origin_kind", ""),
+                data.get("origin_uri", ""),
+                data.get("origin_ref", ""),
+                data.get("origin_hash", ""),
+                json.dumps(data.get("parent_memory_ids", []), ensure_ascii=False),
+                json.dumps(data.get("metadata_json", {}), ensure_ascii=False),
             ),
         )
         if self._batch_depth <= 0:
@@ -3171,7 +3281,9 @@ class _SQLiteStorage:
             "SELECT id, content, memory_type, source, owner, tier, scope, category, "
             "tags, domain, importance, entity_ids, created_at, access_count, "
             "worth_success, worth_failure, activation_weight, "
-            "decay_multiplier, effective_half_life, last_accessed "
+            "decay_multiplier, effective_half_life, last_accessed, "
+            "project_id, visibility, source_class, created_by_call_id, origin_kind, "
+            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json "
             "FROM memories WHERE id = ?",
             (mid,),
         ).fetchone()
@@ -3193,7 +3305,9 @@ class _SQLiteStorage:
             "SELECT id, content, memory_type, source, owner, tier, scope, category, "
             "tags, domain, importance, entity_ids, created_at, access_count, "
             "worth_success, worth_failure, activation_weight, "
-            "decay_multiplier, effective_half_life, last_accessed FROM memories"
+            "decay_multiplier, effective_half_life, last_accessed, "
+            "project_id, visibility, source_class, created_by_call_id, origin_kind, "
+            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json FROM memories"
         ).fetchall()
         for row in rows:
             d = self._row_to_dict(row)
@@ -3231,6 +3345,30 @@ class _SQLiteStorage:
         """
         return self._BatchContext(self)
 
+    @staticmethod
+    def _json_list_or_empty(value) -> list:
+        import json
+
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    @staticmethod
+    def _json_dict_or_empty(value) -> dict:
+        import json
+
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
     def _row_to_dict(self, row) -> dict:
         """Convert a SQLite row to a dict matching the in-memory format."""
         import json
@@ -3256,4 +3394,17 @@ class _SQLiteStorage:
             "decay_multiplier": row[17] if len(row) > 17 else 1.0,
             "effective_half_life": row[18] if len(row) > 18 else 3.0,
             "last_accessed": row[19] if len(row) > 19 else "",
+            "project_id": row[20] if len(row) > 20 else "project:legacy-global",
+            "visibility": row[21] if len(row) > 21 else "project",
+            "source_class": row[22] if len(row) > 22 else "experience",
+            "created_by_call_id": row[23] if len(row) > 23 else "",
+            "origin_kind": row[24] if len(row) > 24 else "",
+            "origin_uri": row[25] if len(row) > 25 else "",
+            "origin_ref": row[26] if len(row) > 26 else "",
+            "origin_hash": row[27] if len(row) > 27 else "",
+            "parent_memory_ids": self._json_list_or_empty(row[28]) if len(row) > 28 else [],
+            "metadata_json": self._json_dict_or_empty(row[29]) if len(row) > 29 else {},
         }
+
+
+_SQLiteMemoryStore = _SQLiteStorage

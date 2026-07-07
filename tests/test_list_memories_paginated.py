@@ -1,9 +1,5 @@
 """Quick smoke test for list_memories_paginated."""
 
-import os
-
-os.environ["AGENT_USE_SQLITE"] = "0"
-
 from plastic_promise.core.context_engine import ContextEngine
 
 engine = ContextEngine(use_sqlite=False)

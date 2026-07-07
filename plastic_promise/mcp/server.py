@@ -142,6 +142,10 @@ _CODEX_DISCOVERY_HINTS = {
         "Plastic Promise MCP; Codex tool_search discovery; runtime mode; hot update; "
         "launcher mode; Rust acceleration; light normal full."
     ),
+    "commercial_audit_export": (
+        "Plastic Promise MCP; Codex tool_search discovery; commercial audit export; "
+        "call spans; degradation events; store outbox; traceability bundle."
+    ),
 }
 
 _REQUEST_SCOPE_PROPERTIES = {
@@ -157,6 +161,42 @@ _REQUEST_SCOPE_PROPERTIES = {
         "type": "string",
         "description": "Caller supplied per-call request id; omitted values are generated server-side",
     },
+}
+
+_PROJECT_CONTEXT_PROPERTIES = {
+    "project_id": {
+        "type": "string",
+        "description": "Canonical project identity, e.g. project:plastic-promise",
+    },
+    "project_policy": {
+        "type": "string",
+        "enum": ["strict", "balanced", "open"],
+        "description": "Project isolation policy for recall/context layers",
+    },
+}
+
+_PROVENANCE_PROPERTIES = {
+    "visibility": {
+        "type": "string",
+        "enum": ["project", "global", "shared", "private"],
+        "description": "Memory visibility boundary",
+    },
+    "source_class": {
+        "type": "string",
+        "description": "Memory source class such as user_fact, code_fact, experience, prompt, telemetry",
+    },
+    "origin_kind": {"type": "string", "description": "Origin kind for provenance"},
+    "origin_uri": {"type": "string", "description": "Origin URI for provenance"},
+    "origin_ref": {"type": "string", "description": "Origin reference for provenance"},
+    "origin_hash": {"type": "string", "description": "Origin content hash for provenance"},
+    "parent_memory_ids": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Parent memory ids used to derive this memory",
+    },
+    "metadata_json": {"type": "object", "description": "Structured provenance metadata"},
+    "call_id": {"type": "string", "description": "Trace call id"},
+    "parent_call_id": {"type": "string", "description": "Parent trace call id"},
 }
 
 
@@ -229,6 +269,7 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "兼容字段；预留给经验包限定检索",
                         },
+                        **_PROJECT_CONTEXT_PROPERTIES,
                         **_REQUEST_SCOPE_PROPERTIES,
                     },
                     "required": ["query"],
@@ -260,6 +301,8 @@ async def list_tools() -> list[Tool]:
                             "items": {"type": "string"},
                             "description": "自定义标签 (task:pending, assignee:pi_builder 等)",
                         },
+                        **_PROJECT_CONTEXT_PROPERTIES,
+                        **_PROVENANCE_PROPERTIES,
                     },
                     "required": ["content", "memory_type"],
                 },
@@ -379,6 +422,10 @@ async def list_tools() -> list[Tool]:
                                 "all",
                             ],
                         },
+                        "project_id": {
+                            "type": "string",
+                            "description": "Optional project id for project-level principle overlays",
+                        },
                     },
                     "required": ["task_type"],
                     "additionalProperties": False,
@@ -417,6 +464,7 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "检索范围: global (默认) 或 domain 限定",
                         },
+                        **_PROJECT_CONTEXT_PROPERTIES,
                         **_REQUEST_SCOPE_PROPERTIES,
                     },
                     "required": ["task_description"],
@@ -600,11 +648,18 @@ async def list_tools() -> list[Tool]:
         [
             Tool(
                 name="system",
-                description="系统工具: action=stats|backup|migrate。stats 含模糊缓存积压计数。",
+                description=(
+                    "系统工具: action=stats|backup|migrate|benchmark。stats 含模糊缓存"
+                    "积压计数；benchmark 提供检索性能历史/显式运行。"
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "stats|backup|migrate"},
+                        "action": {
+                            "type": "string",
+                            "enum": ["stats", "backup", "migrate", "benchmark"],
+                            "description": "stats|backup|migrate|benchmark",
+                        },
                         "format": {"type": "string", "description": "导出格式: json/sqlite"},
                         "source_path": {"type": "string", "description": "源数据路径"},
                         "source_type": {
@@ -613,6 +668,61 @@ async def list_tools() -> list[Tool]:
                         },
                         "include_audit_history": {"type": "boolean"},
                         "dry_run": {"type": "boolean", "description": "仅预览，不实际导入"},
+                        "run": {
+                            "type": "boolean",
+                            "description": "benchmark: true 执行检索探针，false 仅读历史",
+                        },
+                        "queries": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "benchmark: 检索探针查询列表",
+                        },
+                        "repeat": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "benchmark: 每条查询重复次数",
+                        },
+                        "benchmark_name": {
+                            "type": "string",
+                            "description": "benchmark: 历史分组名称，默认 retrieval",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "benchmark: 历史汇总最多读取的近期样本数",
+                        },
+                        "baseline_name": {
+                            "type": "string",
+                            "description": "benchmark: baseline 名称，默认 default",
+                        },
+                        "set_baseline": {
+                            "type": "boolean",
+                            "description": "benchmark: 将当前摘要保存为 baseline",
+                        },
+                        "gate": {
+                            "type": "boolean",
+                            "description": "benchmark: 对当前摘要执行回归门禁",
+                        },
+                        "tolerance_ratio": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "benchmark: baseline 允许退化比例，默认 0.20",
+                        },
+                        "max_p50_ms": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "benchmark: p50 绝对上限",
+                        },
+                        "max_p95_ms": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "benchmark: p95 绝对上限",
+                        },
+                        "max_p99_ms": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "benchmark: p99 绝对上限",
+                        },
                     },
                     "required": ["action"],
                 },
@@ -1149,6 +1259,41 @@ async def list_tools() -> list[Tool]:
                     "required": ["action"],
                 },
             ),
+            # === 商业审计域 ===
+            Tool(
+                name="commercial_audit_export",
+                description="Export a project-filterable commercial audit bundle from persisted call spans, degradation events, and optional store outbox records.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Optional canonical project id filter, e.g. project:plastic-promise",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "Optional inclusive ISO-8601 lower time bound",
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "Optional inclusive ISO-8601 upper time bound",
+                        },
+                        "include_outbox": {
+                            "type": "boolean",
+                            "description": "Include durable memory_store outbox records in the export",
+                        },
+                        "export_otlp": {
+                            "type": "boolean",
+                            "description": "Best-effort export of matching trace rows to an OTLP/HTTP JSON endpoint",
+                        },
+                        "otlp_endpoint": {
+                            "type": "string",
+                            "description": "Optional OTLP HTTP base URL or /v1/traces endpoint",
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            ),
             # === 插件市场域 (市场管理) ===
             Tool(
                 name="market_list",
@@ -1303,6 +1448,18 @@ async def list_tools() -> list[Tool]:
                     inputSchema=original.inputSchema,
                 )
             )
+
+    # Project/provenance schema fields are added by name to avoid widening
+    # unrelated action schemas that share the same local shape.
+    by_name = {tool.name: tool for tool in tools}
+    for tool_name in ("memory_recall", "context_supply", "memory_store", "review_run"):
+        schema = by_name[tool_name].inputSchema
+        schema.setdefault("properties", {}).update(_PROJECT_CONTEXT_PROPERTIES)
+    by_name["memory_store"].inputSchema["properties"].update(_PROVENANCE_PROPERTIES)
+    by_name["review_run"].inputSchema["properties"]["allow_project_unknown"] = {
+        "type": "boolean",
+        "description": "Allow prepare/full without project_id and accept degraded review guard behavior",
+    }
 
     return tools
 
@@ -1777,6 +1934,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=dashboard)]
 
         # === 审查域 ===
+        elif name == "commercial_audit_export":
+            from plastic_promise.mcp.tools.commercial_audit import handle_commercial_audit_export
+
+            return await handle_commercial_audit_export(engine, arguments)
+
         elif name == "review_run":
             from plastic_promise.mcp.tools.review import handle_review_run
 

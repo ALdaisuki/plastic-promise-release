@@ -97,6 +97,7 @@ async def scan_memory_decay(engine) -> dict:
         # 4. Routine maintenance: decay recalculation + lifecycle evolution
         routine = {}
         if os.environ.get("PP_PERIODIC_MAINTENANCE", "1") == "1":
+            rm = None
             try:
                 from plastic_promise.memory.soul_memory import EvolveR, RecMem
 
@@ -113,6 +114,14 @@ async def scan_memory_decay(engine) -> dict:
                 }
             except Exception as e:
                 routine["error"] = str(e)
+            finally:
+                sqlite = getattr(getattr(rm, "_engine", None), "_sqlite", None)
+                rm_conn = getattr(sqlite, "_conn", None)
+                if rm_conn is not None:
+                    try:
+                        rm_conn.close()
+                    except Exception:
+                        pass
 
         # 5. Decay anomaly detection: frequently accessed but heavily decayed
         anomalies = conn.execute(

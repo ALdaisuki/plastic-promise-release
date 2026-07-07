@@ -74,6 +74,10 @@ LOW_INFORMATION_SNIPPETS = {
     "read-only",
 }
 
+REACTION_PATTERNS = [
+    r"^\[\s*(reaction|reacted|like|thumbs up|\+1)\s*:?\s*.+\]$",
+]
+
 PARTIAL_URL_PATTERNS = [
     r"^https?://[^\s./]+$",
     r"^(com|org|net|io|dev|cn|ai)/[\w./-]+$",
@@ -111,6 +115,10 @@ def is_noise(text: str) -> bool:
 
     if t_lower in LOW_INFORMATION_SNIPPETS:
         return True
+
+    for pattern in REACTION_PATTERNS:
+        if re.search(pattern, t_lower):
+            return True
 
     for pattern in PARTIAL_URL_PATTERNS:
         if re.search(pattern, t_lower):

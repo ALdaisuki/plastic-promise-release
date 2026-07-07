@@ -17,6 +17,7 @@ import urllib.request
 from typing import overload
 
 from plastic_promise.core.paths import get_db_path
+from plastic_promise.launcher.codex_config import check_project_codex_mcp_config
 
 
 @overload
@@ -101,6 +102,10 @@ def run_env_checks(
         messages.append(f"[ENV]   {db_path} ................. [OK] found")
     else:
         messages.append(f"[ENV]   {db_path} ................. [WARN] not found (first run)")
+
+    codex_ok, codex_messages = check_project_codex_mcp_config(os.getcwd())
+    messages.extend(codex_messages)
+    all_ok = all_ok and codex_ok
 
     if include_mcp_status:
         return all_ok, messages, mcp_already_running

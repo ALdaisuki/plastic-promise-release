@@ -9,7 +9,7 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 
 - **Purpose**: Help AI agents act with memory, principles, verification, and traceable autonomy.
 - **Primary users**: Claude Code, MCP clients, agent teams, and maintainers operating local governance workflows.
-- **Current tool surface**: 56 MCP tools declared in `plastic_promise/mcp/server.py`, including compatibility aliases.
+- **Current tool surface**: 57 MCP tools declared in `plastic_promise/mcp/server.py`, including compatibility aliases.
 - **Primary storage**: SQLite WAL for structured state and LanceDB for vector/text retrieval.
 - **Acceleration path**: optional Rust `context-engine-core`; Python remains the canonical write/full fallback pipeline and applies a final recall-noise guard to Rust results. In `rust-full`, normal recall and `memory_recall(debug=true)` stay on the Rust snapshot hot path while Rust is healthy.
 

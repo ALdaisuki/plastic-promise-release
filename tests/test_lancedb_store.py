@@ -10,6 +10,17 @@ from plastic_promise.core.embedder import FallbackEmbedder
 from plastic_promise.core.lancedb_store import LanceDBStore, EMB_DIM
 
 
+class VectorTestEmbedder:
+    model_name = "vector-test"
+    dim = EMB_DIM
+
+    def embed(self, text):
+        return [0.1] * EMB_DIM
+
+    def embed_batch(self, texts):
+        return [[0.1] * EMB_DIM for _ in texts]
+
+
 class TestLanceDBStore:
     """Full test suite for LanceDBStore."""
 
@@ -209,6 +220,48 @@ class TestLanceDBStore:
         count = self.store.backfill(MockEngine())
         assert count == 3  # 5 sqlite - 2 already in lancedb
         assert self.store.count_rows() == 5
+
+    def test_list_memory_ids_returns_all_ids(self):
+        """list_memory_ids should expose the vector table truth set."""
+        store = LanceDBStore(self._db_path, VectorTestEmbedder())
+        store.insert("mem_keep", [0.1] * EMB_DIM, "keep")
+        store.insert("mem_other", [0.2] * EMB_DIM, "other")
+
+        assert store.list_memory_ids() == {"mem_keep", "mem_other"}
+
+    def test_sync_with_engine_repairs_same_count_id_mismatch(self):
+        """sync_with_engine should handle orphan+missing rows even when counts match."""
+        store = LanceDBStore(self._db_path, VectorTestEmbedder())
+        store.insert("mem_keep", [0.1] * EMB_DIM, "keep")
+        store.insert("mem_orphan", [0.2] * EMB_DIM, "orphan")
+
+        class MockEngine:
+            memory_count = 2
+            _memories = {
+                "mem_keep": {
+                    "content": "keep",
+                    "tier": "L1",
+                    "category": "other",
+                    "scope": "global",
+                },
+                "mem_missing": {
+                    "content": "missing",
+                    "tier": "L1",
+                    "category": "other",
+                    "scope": "global",
+                },
+            }
+
+        result = store.sync_with_engine(MockEngine())
+
+        assert result == {
+            "orphan_deleted": 1,
+            "missing_backfilled": 1,
+            "missing_skipped": 0,
+            "orphan_ids": ["mem_orphan"],
+            "missing_ids": ["mem_missing"],
+        }
+        assert store.list_memory_ids() == {"mem_keep", "mem_missing"}
 
     def test_reopen_persists_data(self):
         """Data should persist across LanceDBStore instances on the same path."""

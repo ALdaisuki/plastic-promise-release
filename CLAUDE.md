@@ -29,7 +29,7 @@
 >
 > `principle_activate` 使用 `domain_hint` 参数限定原则域: `building` | `fixing` | `designing` | `reflecting` | `governing` | `connecting` | `all`
 
-## MCP 工具 (56 个暴露工具, 以源码为准)
+## MCP 工具 (57 个暴露工具, 以源码为准)
 
 | 域 | 工具 |
 |------|------|
@@ -46,6 +46,7 @@
 | **Domain (1)** | **domain(action=stats\|merge\|unmerge\|rename\|rebuild)** |
 | **Dispatch (7)** | **task_enqueue, task_claim, task_complete, task_verify, task_inbox, task_heartbeat, task_abandon** |
 | **Review (1)** | **review_run(action=prepare\|evaluate\|apply\|full)** |
+| **Commercial Audit (1)** | **commercial_audit_export(project_id, since, until, include_outbox)** |
 | **Market (7)** | **market_list, market_install, market_upgrade, market_remove, market_enable, market_disable, market_status** |
 | **SuperPowers (1)** | **sp-stage(stage, task_description) — 12 阶段统一入口** |
 | Compatibility aliases (4) | session_init, smart_remember, step_closure, sp_stage |

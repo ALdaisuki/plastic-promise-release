@@ -358,6 +358,49 @@ class LanceDBStore:
         except Exception:
             return 0
 
+    def list_memory_ids(self) -> set[str]:
+        """Return memory IDs currently present in LanceDB."""
+        if self._table is None:
+            return set()
+        try:
+            table = self._table.to_arrow()
+            if "memory_id" not in table.column_names:
+                return set()
+            return {str(mid) for mid in table.column("memory_id").to_pylist() if mid}
+        except Exception as e:
+            logger.warning("LanceDB list_memory_ids failed: %s", e)
+            return set()
+
+    def sync_with_engine(self, engine: object) -> dict:
+        """Repair ID-level drift between SQLite memories and LanceDB rows."""
+        memories = getattr(engine, "_memories", {}) or {}
+        sqlite_ids = set(memories.keys())
+        ldb_ids = self.list_memory_ids()
+
+        orphan_ids = sorted(ldb_ids - sqlite_ids)
+        missing_ids = sorted(sqlite_ids - ldb_ids)
+
+        orphan_deleted = 0
+        for mid in orphan_ids:
+            self.delete(mid)
+            orphan_deleted += 1
+
+        missing_backfilled = 0
+        missing_skipped = 0
+        for mid in missing_ids:
+            if self._insert_engine_memory(mid, memories.get(mid, {})):
+                missing_backfilled += 1
+            else:
+                missing_skipped += 1
+
+        return {
+            "orphan_deleted": orphan_deleted,
+            "missing_backfilled": missing_backfilled,
+            "missing_skipped": missing_skipped,
+            "orphan_ids": orphan_ids,
+            "missing_ids": missing_ids,
+        }
+
     def clear_all(self) -> int:
         """Delete all rows from the table and return the count that was removed.
 
@@ -437,6 +480,25 @@ class LanceDBStore:
 
         logger.info("LanceDB rebuild: complete — %d memories re-indexed", rebuilt)
         return rebuilt
+
+    def _insert_engine_memory(self, mid: str, mem_data: dict) -> bool:
+        content = mem_data.get("content", "")
+        if not content or not content.strip():
+            return False
+        try:
+            vector = self._embedder.embed(content)
+            self.insert(
+                memory_id=mid,
+                vector=vector,
+                text=content,
+                tier=mem_data.get("tier", "L1"),
+                category=mem_data.get("category", "other"),
+                scope=mem_data.get("scope", "global"),
+            )
+            return True
+        except Exception as e:
+            logger.warning("LanceDB sync: failed to backfill %s: %s", mid, e)
+            return False
 
     def backfill(self, engine: object) -> int:
         """Backfill LanceDB from SQLite for memories missing vectors.

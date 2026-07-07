@@ -1,6 +1,7 @@
 """Tests for pipeline quality features — extraction, dedup, QualityGate integration."""
 
 import pytest
+import datetime
 from unittest.mock import MagicMock, patch
 from plastic_promise.memory.pipeline import MemoryPipeline
 from plastic_promise.memory.soul_memory import MemoryRecord, RecMem
@@ -90,7 +91,7 @@ class TestPipelineQuality:
             "vector": [0.5] * 1024,
             "extracted": {"category": "fact", "confidence": 0.8},
             "entity_ids": [],
-            "created_at": "2026-06-30T12:00:00",
+            "created_at": datetime.datetime.now().isoformat(),
         }
         # Mock engine internals
         self.pipeline.rec_mem._engine = MagicMock()
@@ -150,7 +151,7 @@ class TestPipelineQuality:
             "vector": [0.5] * 1024,
             "entity_ids": [],
             "extracted": {"category": "fact", "confidence": 0.8},
-            "created_at": "2026-06-30T12:00:00",
+            "created_at": datetime.datetime.now().isoformat(),
         }
 
         # Create a Python-side record with known tier and baseline half-life
@@ -215,7 +216,7 @@ class TestPipelineQuality:
                 "l1_summary": "[fact] Test memory should get decay fields set",
                 "l2_content": "A sufficiently long content string that provides enough information density to pass the quality gate threshold comfortably.",
             },
-            "created_at": "2026-06-30T12:00:00",
+            "created_at": datetime.datetime.now().isoformat(),
         }
 
         # Mock RecMem.store to return a real-like record and track it
@@ -245,7 +246,7 @@ class TestPipelineQuality:
         # The stored record should have decay_multiplier set (not default 1.0 for old dates)
         stored = stored_records.get("stored_decay_init")
         assert stored is not None
-        # For a just-created memory (created_at = 2026-06-30), decay_multiplier should be close to 1.0
+        # For a just-created memory, decay_multiplier should be close to 1.0
         assert stored.decay_multiplier > 0.9
         # effective_half_life should be the L3 base (90 days), not the default 3.0
         assert stored.effective_half_life > 3.0

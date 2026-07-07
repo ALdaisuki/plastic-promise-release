@@ -15,8 +15,9 @@ class TestCommitmentIntegration:
         assert "alignment" in result
         assert "error" not in str(result.get("alignment", {}))
         assert result.get("issue_id") == "issue_12"
-        # light mode 不应执行 SCARF
-        assert result.get("scarf") is None
+        # light mode does not execute SCARF, but returns empty minimum-result
+        # envelopes so downstream `.get()` chains remain safe.
+        assert result.get("scarf") == {}
 
     def test_post_task_full_mode_backward_compat(self):
         """post_task(mode='full') 保持现有六联闭环行为"""

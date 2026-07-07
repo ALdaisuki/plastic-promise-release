@@ -36,6 +36,7 @@ from plastic_promise.launcher.watchdog import (
     setup_signal_handlers,
     watchdog_loop,
 )
+from plastic_promise.core.task_recovery import release_stale_claims
 from plastic_promise.core.context_engine import ContextEngine
 
 # Service definitions
@@ -102,7 +103,18 @@ def run_lancedb_warmup_maintenance():
         engine = ContextEngine()
         engine._ensure_heavy_init()
         row_count = engine._ldb.count_rows() if getattr(engine, "_ldb", None) is not None else 0
-        return True, f"ready ({row_count} rows)"
+        sync_status = getattr(engine, "_lancedb_sync_status", None)
+        sync_msg = ""
+        if isinstance(sync_status, dict):
+            if sync_status.get("success") is False:
+                sync_msg = f", sync=degraded:{sync_status.get('error', 'unknown')}"
+            else:
+                sync_msg = (
+                    f", sync=orphans:{sync_status.get('orphan_deleted', 0)}"
+                    f" missing:{sync_status.get('missing_backfilled', 0)}"
+                    f" skipped:{sync_status.get('missing_skipped', 0)}"
+                )
+        return True, f"ready ({row_count} rows{sync_msg})"
     except Exception as exc:
         return False, str(exc)
     finally:
@@ -111,6 +123,17 @@ def run_lancedb_warmup_maintenance():
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def run_startup_recovery():
+    """Run best-effort storage/task recovery before services start."""
+    try:
+        result = release_stale_claims()
+        released = result.get("released_count", 0)
+        escalated = result.get("escalated_count", 0)
+        return True, f"stale_claims_released={released}, escalated={escalated}"
+    except Exception as exc:
+        return False, str(exc)
 
 
 def do_stop():
@@ -277,6 +300,10 @@ async def main():
             sys.exit(1)
     else:
         print(f"\n[INIT]  Bootstrap ..................... {bootstrap_msg}")
+
+    recovery_ok, recovery_msg = run_startup_recovery()
+    recovery_status = "ready" if recovery_ok else "degraded"
+    print(f"[INIT]  Startup recovery .............. {recovery_status} ({recovery_msg})")
 
     # LanceDB warmup / maintenance
     if args.skip_lancedb_warmup or os.environ.get("PLASTIC_SKIP_LANCEDB_WARMUP") == "1":

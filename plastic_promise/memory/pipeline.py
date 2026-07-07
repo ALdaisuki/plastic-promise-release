@@ -50,6 +50,16 @@ class MemoryPipeline:
         domain_hint: str = None,
         max_llm_calls: int = 3,
         skip_embed: bool = False,
+        project_id: str = "project:legacy-global",
+        visibility: str = "project",
+        source_class: str = "experience",
+        created_by_call_id: str = "",
+        origin_kind: str = "",
+        origin_uri: str = "",
+        origin_ref: str = "",
+        origin_hash: str = "",
+        parent_memory_ids: list[str] | None = None,
+        metadata_json: dict | None = None,
     ) -> str | None:
         """Store a memory with smart extraction, then through pipeline.
 
@@ -115,6 +125,16 @@ class MemoryPipeline:
                 "created_at": datetime.datetime.now().isoformat(),
                 "processed_at": None,
                 "skip_embed": skip_embed,
+                "project_id": project_id,
+                "visibility": visibility,
+                "source_class": source_class,
+                "created_by_call_id": created_by_call_id,
+                "origin_kind": origin_kind,
+                "origin_uri": origin_uri,
+                "origin_ref": origin_ref,
+                "origin_hash": origin_hash,
+                "parent_memory_ids": parent_memory_ids or [],
+                "metadata_json": metadata_json or {},
             }
 
             # Attach extraction metadata if available
@@ -196,6 +216,10 @@ class MemoryPipeline:
             "oldest_pending": oldest,
             "last_process": self._last_process,
         }
+
+    @staticmethod
+    def _has_nonzero_vector(vec: Any) -> bool:
+        return bool(vec) and any(v != 0.0 for v in vec)
 
     # ================================================================
     # Internal: Tag Extraction
@@ -406,9 +430,10 @@ class MemoryPipeline:
 
                 engine = getattr(self.rec_mem, "_engine", None)
                 vec = record.get("vector")
+                has_nonzero_vector = self._has_nonzero_vector(vec)
 
                 # ---- Zero-vector guard: reject fallback embeddings ----
-                if vec and not any(v != 0.0 for v in vec):
+                if vec and not has_nonzero_vector and not record.get("skip_embed"):
                     logging.warning(
                         "Zero vector detected for %s, deferring back to classified",
                         mid,
@@ -420,7 +445,7 @@ class MemoryPipeline:
                     continue
 
                 # ---- Step 4a: Vector dedup ----
-                if vec and self._lancedb is not None:
+                if has_nonzero_vector and self._lancedb is not None:
                     try:
                         dup_id = self._lancedb.check_duplicate(
                             vec, threshold=DEDUP_SIMILARITY_THRESHOLD
@@ -574,6 +599,17 @@ class MemoryPipeline:
                     tags=tags,
                     domain=domain_hint,
                     category=extracted_category,
+                    memory_id=record.get("memory_id"),
+                    project_id=record.get("project_id", "project:legacy-global"),
+                    visibility=record.get("visibility", "project"),
+                    source_class=record.get("source_class", "experience"),
+                    created_by_call_id=record.get("created_by_call_id", ""),
+                    origin_kind=record.get("origin_kind", ""),
+                    origin_uri=record.get("origin_uri", ""),
+                    origin_ref=record.get("origin_ref", ""),
+                    origin_hash=record.get("origin_hash", ""),
+                    parent_memory_ids=record.get("parent_memory_ids", []),
+                    metadata_json=record.get("metadata_json", {}),
                 )
 
                 # Attach quality metadata
@@ -624,7 +660,7 @@ class MemoryPipeline:
 
                 # ---- Existing: vector + tags + domain persistence ----
                 if engine is not None:
-                    if vec:
+                    if has_nonzero_vector:
                         engine.update_memory_fields(stored.memory_id, _vector=vec)
                         ldb = getattr(engine, "_ldb", None)
                         if ldb is not None:
@@ -641,14 +677,45 @@ class MemoryPipeline:
                                 logging.warning(
                                     "LanceDB dual-write failed for %s: %s", stored.memory_id, e
                                 )
-                    engine.update_memory_fields(stored.memory_id, tags=tags, domain=domain_hint)
+                    engine.update_memory_fields(
+                        stored.memory_id,
+                        tags=tags,
+                        domain=domain_hint,
+                        project_id=record.get("project_id", "project:legacy-global"),
+                        visibility=record.get("visibility", "project"),
+                        source_class=record.get("source_class", "experience"),
+                        created_by_call_id=record.get("created_by_call_id", ""),
+                        origin_kind=record.get("origin_kind", ""),
+                        origin_uri=record.get("origin_uri", ""),
+                        origin_ref=record.get("origin_ref", ""),
+                        origin_hash=record.get("origin_hash", ""),
+                        parent_memory_ids=record.get("parent_memory_ids", []),
+                        metadata_json=record.get("metadata_json", {}),
+                    )
                     sqlite = getattr(engine, "_sqlite", None)
                     if sqlite is not None:
                         import json
 
                         sqlite._conn.execute(
-                            "UPDATE memories SET tags = ?, domain = ? WHERE id = ?",
-                            (json.dumps(tags), domain_hint, stored.memory_id),
+                            "UPDATE memories SET tags = ?, domain = ?, project_id = ?, "
+                            "visibility = ?, source_class = ?, created_by_call_id = ?, "
+                            "origin_kind = ?, origin_uri = ?, origin_ref = ?, origin_hash = ?, "
+                            "parent_memory_ids = ?, metadata_json = ? WHERE id = ?",
+                            (
+                                json.dumps(tags),
+                                domain_hint,
+                                record.get("project_id", "project:legacy-global"),
+                                record.get("visibility", "project"),
+                                record.get("source_class", "experience"),
+                                record.get("created_by_call_id", ""),
+                                record.get("origin_kind", ""),
+                                record.get("origin_uri", ""),
+                                record.get("origin_ref", ""),
+                                record.get("origin_hash", ""),
+                                json.dumps(record.get("parent_memory_ids", []), ensure_ascii=False),
+                                json.dumps(record.get("metadata_json", {}), ensure_ascii=False),
+                                stored.memory_id,
+                            ),
                         )
                         sqlite._conn.commit()
 

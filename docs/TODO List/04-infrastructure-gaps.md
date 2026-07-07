@@ -7,7 +7,7 @@
 | Area | Status | Evidence | Remaining work |
 |---|---|---|---|
 | Session recovery | Planned | Launcher cleans stale PID files, but full storage recovery was not verified. | Add SQLite/LanceDB consistency recovery and stale task release. |
-| Performance benchmarking | Planned | No benchmark history command verified. | Add opt-in timing and regression baselines. |
+| Performance benchmarking | Done | `system(action=benchmark)` records retrieval history, baselines, and regression gate results in SQLite. | Wire release-specific baselines into CI as needed. |
 | Emoji-only noise detection | Needs verification | `noise_filter.py` exists. | Add explicit emoji-only tests and implementation if missing. |
 | Dual-layer iron rules | Planned | Step closure exists; derived principles not verified. | Store technical lesson and decision principle as linked outputs. |
 | Obsidian vault sync | Planned | `pack_export` JSON exists; markdown export not verified. | Add markdown/YAML export command. |

@@ -252,7 +252,7 @@ This module map follows a capability-first layout so readers can understand the 
 
 ## MCP Tool Surface
 
-The current source exposes **56 MCP tools** in `plastic_promise/mcp/server.py`, including compatibility aliases such as `session_init` for `session-init`. Older documents may mention 48 or 51; those counts predate the runtime mode tool, market tools, review tools, and alias surface.
+The current source exposes **57 MCP tools** in `plastic_promise/mcp/server.py`, including compatibility aliases such as `session_init` for `session-init`. Older documents may mention 48 or 51; those counts predate the runtime mode tool, market tools, review tools, commercial audit export, and alias surface.
 
 | Group | Tools |
 |---|---|
@@ -268,6 +268,7 @@ The current source exposes **56 MCP tools** in `plastic_promise/mcp/server.py`, 
 | Skill tracking | `skill_session_start`, `skill_session_complete`, `skill_session_trace`, `skill_session_audit`, `skill_auto_track` |
 | Programmatic skills | `session-init`, `smart-remember`, `step-closure` |
 | Review | `review_run` |
+| Commercial audit | `commercial_audit_export` |
 | Market | `market_list`, `market_install`, `market_upgrade`, `market_remove`, `market_enable`, `market_disable`, `market_status` |
 | SuperPowers | `sp-stage` |
 

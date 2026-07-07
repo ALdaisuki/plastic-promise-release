@@ -64,7 +64,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 
 ### 当前 MCP 工具面
 
-当前 `plastic_promise/mcp/server.py` 中暴露 56 个 MCP 工具，其中包含 `session_init` / `sp_stage` 等兼容别名。旧文档中的 40、41、48、51 等数字是阶段性历史记录，发行版文档以后以源码声明为准。
+当前 `plastic_promise/mcp/server.py` 中暴露 57 个 MCP 工具，其中包含 `session_init` / `sp_stage` 等兼容别名。旧文档中的 40、41、48、51、56 等数字是阶段性历史记录，发行版文档以后以源码声明为准。
 
 主要分组：
 
@@ -74,6 +74,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 | Principles | 原则激活与反事实评估 |
 | Context | 上下文供给、图谱、注入与自动上下文注入 |
 | Audit/Defense | 审计、防线、信任分 |
+| Commercial Audit | 商业审计导出：call spans、降级事件、store outbox |
 | Reflection | SCARF 自省与反馈应用 |
 | System/Runtime | 系统状态、运行模式热更新、Issue 生命周期 |
 | Pack | 经验包导入导出 |

@@ -222,3 +222,111 @@ fn test_audit_telemetry_is_excluded_from_rust_snapshot_indexes() {
         assert_eq!(pack.pipeline_stats.get("bm25_count"), Some(&"1".to_string()));
     });
 }
+
+#[test]
+fn test_project_metadata_filtering_in_rust_snapshot_supply() {
+    pyo3::prepare_freethreaded_python();
+    Python::with_gil(|py| {
+        fn memory_map(
+            py: Python<'_>,
+            id: &str,
+            content: &str,
+            project_id: &str,
+            visibility: &str,
+            source_class: &str,
+        ) -> PyObject {
+            let dict = PyDict::new(py);
+            dict.set_item("id", id).unwrap();
+            dict.set_item("content", content).unwrap();
+            dict.set_item("source", "codex").unwrap();
+            dict.set_item("memory_type", "experience").unwrap();
+            dict.set_item("scope", "global").unwrap();
+            dict.set_item("project_id", project_id).unwrap();
+            dict.set_item("visibility", visibility).unwrap();
+            dict.set_item("source_class", source_class).unwrap();
+            dict.set_item("worth_success", 0).unwrap();
+            dict.set_item("worth_failure", 0).unwrap();
+            dict.into()
+        }
+
+        let engine = ContextEngine::new();
+        let memories = vec![
+            memory_map(
+                py,
+                "same_core",
+                "billing service release memory api router",
+                "project:app",
+                "project",
+                "experience",
+            ),
+            memory_map(
+                py,
+                "other_core",
+                "billing service release memory api router",
+                "project:other",
+                "project",
+                "experience",
+            ),
+            memory_map(
+                py,
+                "global_core",
+                "billing service release memory api router",
+                "project:legacy-global",
+                "global",
+                "experience",
+            ),
+            memory_map(
+                py,
+                "telemetry_core",
+                "billing service release memory api router",
+                "project:app",
+                "project",
+                "telemetry",
+            ),
+            memory_map(
+                py,
+                "prompt_core",
+                "billing service release memory api router",
+                "project:app",
+                "project",
+                "prompt",
+            ),
+            memory_map(
+                py,
+                "shared_divergent",
+                "unrelated inspiration pattern",
+                "project:other",
+                "shared",
+                "experience",
+            ),
+        ];
+
+        let pack = engine
+            .supply_with_project_context(
+                "billing service release memory api router".to_string(),
+                vec![0.1; 1024],
+                "debugging".to_string(),
+                "global".to_string(),
+                memories,
+                "project:app".to_string(),
+                "strict".to_string(),
+                false,
+            )
+            .unwrap();
+
+        let all_ids: Vec<String> = pack
+            .core
+            .iter()
+            .chain(pack.related.iter())
+            .chain(pack.divergent.iter())
+            .map(|item| item.id.clone())
+            .collect();
+
+        assert!(all_ids.contains(&"same_core".to_string()));
+        assert!(all_ids.contains(&"global_core".to_string()));
+        assert!(!all_ids.contains(&"other_core".to_string()));
+        assert!(!all_ids.contains(&"telemetry_core".to_string()));
+        assert!(!all_ids.contains(&"prompt_core".to_string()));
+        assert!(!all_ids.contains(&"shared_divergent".to_string()));
+    });
+}

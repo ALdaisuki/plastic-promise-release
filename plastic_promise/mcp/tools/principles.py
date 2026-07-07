@@ -6,6 +6,11 @@ from typing import Any
 from mcp.types import TextContent
 
 
+def _engine_conn(engine: Any):
+    sqlite = getattr(engine, "_sqlite", None)
+    return getattr(sqlite, "_conn", None)
+
+
 async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent]:
     """Activate core principles based on task type + keyword matching.
 
@@ -26,6 +31,7 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
 
         task_type = args["task_type"]
         task_description = args.get("task_description", "")
+        project_id = str(args.get("project_id") or "")
 
         # Task type -> principle ID mapping
         recommendations: dict[str, list[int]] = {
@@ -48,15 +54,54 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
                         ids.append(p["id"])
                         break
 
-        max_p = args.get("max_principles", 5)
-        ids = list(dict.fromkeys(ids))[:max_p]  # deduplicate, limit
+        base_ids = list(dict.fromkeys(ids))
+        overlays: dict[int, dict[str, Any]] = {}
+        conn = _engine_conn(engine)
+        if conn is not None and project_id:
+            try:
+                from plastic_promise.core.principle_overlays import (
+                    load_project_principle_overlays,
+                )
+
+                overlays = load_project_principle_overlays(conn, project_id)
+            except Exception:
+                overlays = {}
+
+        candidate_ids = list(base_ids)
+        for pid, overlay in overlays.items():
+            if overlay.get("boost", 0.0) != 0.0 and pid not in candidate_ids:
+                candidate_ids.append(pid)
+
+        indexed = {pid: idx for idx, pid in enumerate(candidate_ids)}
+        base_size = max(len(candidate_ids), 1)
+        scored_ids = []
+        for pid in candidate_ids:
+            overlay = overlays.get(pid, {})
+            if overlay.get("suppress", False):
+                continue
+            base_score = float(base_size - indexed.get(pid, base_size))
+            scored_ids.append((pid, base_score + float(overlay.get("boost", 0.0))))
+        scored_ids.sort(key=lambda item: (-item[1], indexed.get(item[0], base_size)))
+        ids = [pid for pid, _score in scored_ids]
         principles = [p for p in CORE_PRINCIPLES if p["id"] in ids]
+        principles.sort(key=lambda p: ids.index(p["id"]))
 
         # domain_hint filter — optionally narrow to a behavior domain
         # All-domain principles are always included regardless of hint.
         domain_hint = args.get("domain_hint")
         if domain_hint and domain_hint != "all":
             principles = [p for p in principles if p["domain"] in (domain_hint, "all")]
+        max_p = args.get("max_principles", 5)
+        principles = principles[:max_p]
+        overlay_summary = {
+            str(pid): {
+                "actions": overlay.get("actions", []),
+                "tags": overlay.get("tags", []),
+                "boost": overlay.get("boost", 0.0),
+                "suppress": overlay.get("suppress", False),
+            }
+            for pid, overlay in overlays.items()
+        }
 
         # consequences and recommendations now come from CORE_PRINCIPLES fields
         return [
@@ -65,6 +110,9 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
                 text=json.dumps(
                     {
                         "task_type": task_type,
+                        "project_id": project_id,
+                        "overlay_applied": bool(overlays),
+                        "overlay_summary": overlay_summary,
                         "activated": [
                             {
                                 "id": p["id"],
@@ -73,6 +121,8 @@ async def handle_principle_activate(engine: Any, args: dict) -> list[TextContent
                                 "consequence": p.get("consequence", ""),
                                 "recommendation": p.get("recommendation", ""),
                                 "domain": p["domain"],
+                                "project_tags": overlays.get(p["id"], {}).get("tags", []),
+                                "overlay_actions": overlays.get(p["id"], {}).get("actions", []),
                             }
                             for p in principles
                         ],

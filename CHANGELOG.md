@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-07
+
+### Added
+
+- Added project-aware memory metadata, recall filtering, and request-scope trace fields so multi-project diffs can keep project context separate while retaining global divergent context.
+- Added traceability and degradation helpers that expose call provenance, warning envelopes, fallback paths, and minimum runnable results across MCP memory/context flows.
+- Added release-grade resilience coverage for project memory schema, recall isolation, traceability degradation, commercial audit export, task recovery, and launcher startup behavior.
+
+### Changed
+
+- Extended principle activation with project overlay metadata while keeping global principles immutable.
+- Hardened launcher startup, maintenance daemon recovery, and release sync validation paths for commercial release handoff.
+
+### Fixed
+
+- Preserved legacy `memory_reclassify` and `memory_sync_files` wrapper imports for older clients.
+- Kept `memory_store` responses explicit when durable storage degrades or produces no persisted memory.
+
 ## [0.1.5] - 2026-07-06
 
 ### Fixed
@@ -93,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.6]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.2...v0.1.3

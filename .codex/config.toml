@@ -4,7 +4,7 @@ startup_timeout_sec = 120
 tool_timeout_sec = 120
 
 [profiles.stdio-fallback.mcp_servers.plastic_promise]
-command = ".venv\\Scripts\\python.exe"
+command = "python"
 args = ["-m", "plastic_promise"]
 startup_timeout_sec = 120
 tool_timeout_sec = 120

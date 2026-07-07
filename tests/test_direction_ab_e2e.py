@@ -22,10 +22,19 @@ from plastic_promise.core.lancedb_store import LanceDBStore
 class TestDirectionABIntegration:
     """Full A+B lifecycle E2E tests."""
 
+    class NonZeroEmbedder:
+        dim = 1024
+
+        def embed(self, _text):
+            return [0.1] * self.dim
+
+        def embed_batch(self, texts):
+            return [[0.1] * self.dim for _ in texts]
+
     @pytest.fixture(autouse=True)
     def setup(self):
         self.rec_mem = RecMem()
-        self.embedder = FallbackEmbedder(dim=1024)
+        self.embedder = self.NonZeroEmbedder()
         self.pipeline = MemoryPipeline(
             rec_mem=self.rec_mem,
             embedder=self.embedder,

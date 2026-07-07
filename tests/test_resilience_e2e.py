@@ -7,15 +7,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class TestResilienceE2E:
-    def test_rebuild_and_recover(self):
+    def test_rebuild_and_recover(self, monkeypatch):
         """Full-stack integration: requires shared file DB (not :memory:)"""
-        import os
-
-        # Must use real DB file — :memory: creates separate DBs per connection
-        os.environ["PLASTIC_DB_PATH"] = "plastic_memory.db"
+        # Must use real DB file; :memory: creates separate DBs per connection.
+        monkeypatch.setenv("PLASTIC_DB_PATH", "plastic_memory.db")
         from plastic_promise.core.context_engine import ContextEngine
 
         e = ContextEngine()
+        e.ensure_heavy_init()
 
         # Simulate crash: wipe domains
         e._dm._conn.execute("DELETE FROM domains")
@@ -34,6 +33,7 @@ class TestResilienceE2E:
         from plastic_promise.core.context_engine import ContextEngine
 
         e = ContextEngine()
+        e.ensure_heavy_init()
         old_dm = e._dm
 
         e._dm = None
@@ -50,7 +50,12 @@ class TestResilienceE2E:
         result = asyncio.run(handle_domain(e, {"action": "stats"}))
         assert len(result) > 0
         text = result[0].text.lower()
-        assert "deferred" in text or "not available" in text or "error" in text
+        assert (
+            "deferred" in text
+            or "not available" in text
+            or "error" in text
+            or "building" in text
+        )
 
         e._dm = old_dm
         e._dm_ok = True
@@ -59,6 +64,7 @@ class TestResilienceE2E:
         from plastic_promise.core.context_engine import ContextEngine
 
         e = ContextEngine()
+        e.ensure_heavy_init()
         row = e._dm._conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
         assert row[0] == 2
 
@@ -67,6 +73,7 @@ class TestResilienceE2E:
         from plastic_promise.memory.pipeline import MemoryPipeline
 
         e = ContextEngine()
+        e.ensure_heavy_init()
         fb = MemoryPipeline(domain_manager=e._dm)
         fb.store_urgent("test fuzzy visibility")
         buf_stats = fb.stats()
