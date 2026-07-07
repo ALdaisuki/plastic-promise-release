@@ -4,8 +4,36 @@ use context_engine_core::storage::sqlite_impl::SqliteStorage;
 use context_engine_core::storage::{ListFilter, StorageBackend, UpdateFields};
 use context_engine_core::domain::Tier;
 use context_engine_core::context_engine::ContextEngine;
+use context_engine_core::memory_worth::MemoryRecord;
 use pyo3::types::PyDict;
 use pyo3::{PyObject, Python};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn unique_sqlite_path(test_name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "plastic_promise_{}_{}_{}.db",
+        test_name,
+        std::process::id(),
+        nanos
+    ))
+}
+
+fn cleanup_sqlite_files(db_path: &Path) {
+    for path in [
+        db_path.to_path_buf(),
+        PathBuf::from(format!("{}-wal", db_path.display())),
+        PathBuf::from(format!("{}-shm", db_path.display())),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+}
 
 #[test]
 fn test_full_store_and_list_cycle() {
@@ -102,6 +130,98 @@ fn test_memory_record_worth_integration() {
     r.record_ignored();
     assert_eq!(r.worth_success, 2);
     assert_eq!(r.worth_failure, 2);
+}
+
+#[test]
+fn test_new_with_backends_reads_existing_sqlite_path() {
+    let db_path = unique_sqlite_path("new_with_backends_reads_existing_sqlite_path");
+    cleanup_sqlite_files(&db_path);
+    let db_path_string = db_path.to_string_lossy().into_owned();
+
+    {
+        let mut db = SqliteStorage::open(&db_path_string).unwrap();
+        let record = MemoryRecord::new(
+            "backend-row".into(),
+            "new_with_backends must read this row from the provided sqlite path".into(),
+            "experience".into(),
+            "codex".into(),
+        );
+        db.store(&record).unwrap();
+    }
+
+    {
+        let engine = ContextEngine::new_with_backends(db_path_string.clone(), "unused-lancedb".into())
+            .unwrap();
+        let retrieved = engine.get_memory("backend-row".into()).unwrap().unwrap();
+
+        assert_eq!(
+            retrieved.content,
+            "new_with_backends must read this row from the provided sqlite path"
+        );
+    }
+
+    cleanup_sqlite_files(&db_path);
+}
+
+#[test]
+fn test_new_with_backends_missing_sqlite_path_returns_error() {
+    let db_path = unique_sqlite_path("new_with_backends_missing_sqlite_path_returns_error");
+    let _ = std::fs::remove_file(&db_path);
+    let db_path_string = db_path.to_string_lossy().into_owned();
+
+    let result = ContextEngine::new_with_backends(db_path_string, "unused-lancedb".into());
+
+    assert!(
+        result.is_err(),
+        "missing sqlite path should not silently fall back to :memory:"
+    );
+}
+
+#[test]
+fn test_new_with_backends_memory_sqlite_path_still_works() {
+    let mut engine = ContextEngine::new_with_backends(":memory:".into(), "unused-lancedb".into())
+        .unwrap();
+    let record = MemoryRecord::new(
+        "memory-row".into(),
+        ":memory: backend remains writable".into(),
+        "experience".into(),
+        "codex".into(),
+    );
+
+    engine.store_memory(record).unwrap();
+    let retrieved = engine.get_memory("memory-row".into()).unwrap().unwrap();
+
+    assert_eq!(retrieved.content, ":memory: backend remains writable");
+}
+
+#[test]
+fn test_rust_supply_principle_injection_audit_count() {
+    pyo3::prepare_freethreaded_python();
+    Python::with_gil(|_| {
+        let engine = ContextEngine::new();
+        let pack = engine
+            .supply(
+                "generate code with context supply contracts".to_string(),
+                vec![0.1; 1024],
+                "code_generation".to_string(),
+                "global".to_string(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        assert!(
+            !pack.activated_principles.is_empty(),
+            "code_generation should activate principles"
+        );
+
+        let audit_count = pack
+            .audit_metadata
+            .get("principle_injection_count")
+            .expect("audit metadata should include principle_injection_count")
+            .parse::<usize>()
+            .unwrap();
+        assert_eq!(audit_count, pack.activated_principles.len());
+    });
 }
 
 #[test]

@@ -426,7 +426,7 @@ impl ContextEngine {
     /// (retrieval/mod.rs:131-147) provides text-based retrieval when
     /// vector indices are unavailable.
     #[staticmethod]
-    pub fn new_with_backends(_sqlite_path: String, _lancedb_path: String) -> PyResult<Self> {
+    pub fn new_with_backends(sqlite_path: String, _lancedb_path: String) -> PyResult<Self> {
         use crate::domain::decay::WeibullDecay;
         use crate::domain::worth::WilsonWorthCalculator;
         use crate::domain::tier::DefaultTierManager;
@@ -435,8 +435,12 @@ impl ContextEngine {
         use crate::retrieval::NoopFtsIndex;
         use crate::retrieval::NoopConsolidator;
 
-        let storage = crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        let storage = if sqlite_path == ":memory:" {
+            crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
+        } else {
+            crate::storage::sqlite_impl::SqliteStorage::open_readonly(&sqlite_path)
+        }
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
         let retriever = HybridRetriever::new(
             Box::new(NoopVectorIndex),                  // vector search: Python-side
@@ -593,12 +597,23 @@ impl ContextEngine {
                 task_keywords,
             );
 
-            if injected > 0 {
-                activated_principle_names = self.graph.borrow().get_activated_principles(&task_type)
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect();
+            if injected == 0 {
+                let recommended = principles::recommended_principles(&task_type);
+                let mut graph = self.graph.borrow_mut();
+                for principle_id in recommended {
+                    graph.add_edge(
+                        format!("task_type:{}", task_type),
+                        principle_id.to_string(),
+                        "activates".to_string(),
+                        1.0,
+                    );
+                }
             }
+
+            activated_principle_names = self.graph.borrow().get_activated_principles(&task_type)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
         }
 
         // ============================================================

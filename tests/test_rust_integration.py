@@ -221,6 +221,153 @@ def test_debug_supply_uses_rust_path_when_rust_is_preferred(monkeypatch):
     assert pack.pipeline_stats["engine_mode"] == "snapshot"
 
 
+def test_supply_rust_uses_new_with_backends_and_project_context(monkeypatch, tmp_path):
+    """_supply_rust should use the explicit backend constructor when available."""
+    import sys
+    import types
+
+    from plastic_promise.core.context_engine import ContextEngine, ContextPack
+
+    calls = {"new_with_backends": [], "supply_with_project_context": []}
+
+    class FakeRustPack:
+        core = []
+        related = []
+        divergent = []
+        activated_principles = ["tools are senses"]
+        audit_metadata = {"engine_version": "0.2.0-rs"}
+        pipeline_stats = {"engine_mode": "snapshot"}
+        per_item_stats = []
+
+    class FakeRustEngine:
+        @staticmethod
+        def new_with_backends(sqlite_path, lancedb_path):
+            calls["new_with_backends"].append((sqlite_path, lancedb_path))
+            return FakeRustEngine()
+
+        def set_current_time(self, _timestamp):
+            return None
+
+        def supply_with_project_context(
+            self,
+            task_description,
+            task_vector,
+            task_type,
+            scope,
+            memories,
+            project_id,
+            project_policy,
+            project_degraded,
+        ):
+            calls["supply_with_project_context"].append(
+                {
+                    "task_description": task_description,
+                    "task_vector": task_vector,
+                    "task_type": task_type,
+                    "scope": scope,
+                    "memories": memories,
+                    "project_id": project_id,
+                    "project_policy": project_policy,
+                    "project_degraded": project_degraded,
+                }
+            )
+            return FakeRustPack()
+
+    fake_module = types.SimpleNamespace(ContextEngine=FakeRustEngine)
+    monkeypatch.setitem(sys.modules, "context_engine_core", fake_module)
+    monkeypatch.setenv("PLASTIC_LANCEDB_PATH", str(tmp_path / "vectors.lancedb"))
+    db_path = tmp_path / "plastic_memory.db"
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(db_path))
+
+    engine = ContextEngine(use_sqlite=False)
+    engine.register_memory(
+        {
+            "id": "boundary_memory",
+            "content": "rust boundary project context",
+            "memory_type": "experience",
+            "source": "test",
+            "project_id": "project:plastic-promise",
+            "visibility": "project",
+            "source_class": "experience",
+        }
+    )
+
+    pack = engine._supply_rust(
+        "rust boundary",
+        [0.0] * 1024,
+        "code_generation",
+        "global",
+        project_id="project:plastic-promise",
+        project_policy="strict",
+        project_degraded=False,
+    )
+
+    assert isinstance(pack, ContextPack)
+    assert calls["new_with_backends"], "expected _supply_rust to call new_with_backends"
+    sqlite_path, lancedb_path = calls["new_with_backends"][0]
+    assert sqlite_path == str(db_path)
+    assert lancedb_path == str(tmp_path / "vectors.lancedb")
+    supply_call = calls["supply_with_project_context"][0]
+    assert supply_call["project_id"] == "project:plastic-promise"
+    assert supply_call["project_policy"] == "strict"
+    assert supply_call["project_degraded"] is False
+    assert supply_call["memories"][0]["id"] == "boundary_memory"
+
+
+def test_supply_rust_preserves_memory_db_path_for_new_with_backends(monkeypatch, tmp_path):
+    """_supply_rust should pass the literal in-memory SQLite sentinel to Rust."""
+    import sys
+    import types
+
+    from plastic_promise.core.context_engine import ContextEngine
+
+    calls = {"new_with_backends": []}
+
+    class FakeRustPack:
+        core = []
+        related = []
+        divergent = []
+        activated_principles = []
+        audit_metadata = {"engine_version": "0.2.0-rs"}
+        pipeline_stats = {"engine_mode": "snapshot"}
+        per_item_stats = []
+
+    class FakeRustEngine:
+        @staticmethod
+        def new_with_backends(sqlite_path, lancedb_path):
+            calls["new_with_backends"].append((sqlite_path, lancedb_path))
+            return FakeRustEngine()
+
+        def set_current_time(self, _timestamp):
+            return None
+
+        def supply_with_project_context(
+            self,
+            task_description,
+            task_vector,
+            task_type,
+            scope,
+            memories,
+            project_id,
+            project_policy,
+            project_degraded,
+        ):
+            return FakeRustPack()
+
+    fake_module = types.SimpleNamespace(ContextEngine=FakeRustEngine)
+    monkeypatch.setitem(sys.modules, "context_engine_core", fake_module)
+    monkeypatch.setenv("PLASTIC_DB_PATH", ":memory:")
+    monkeypatch.setenv("PLASTIC_LANCEDB_PATH", str(tmp_path / "vectors.lancedb"))
+
+    engine = ContextEngine(use_sqlite=False)
+    engine._supply_rust("rust memory sentinel", [0.0] * 1024, "code_generation", "global")
+
+    assert calls["new_with_backends"], "expected _supply_rust to call new_with_backends"
+    sqlite_path, lancedb_path = calls["new_with_backends"][0]
+    assert sqlite_path == ":memory:"
+    assert lancedb_path == str(tmp_path / "vectors.lancedb")
+
+
 def test_concurrent_supply_does_not_crash():
     """Multiple concurrent supply() calls don't crash or corrupt state."""
     import threading

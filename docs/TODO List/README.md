@@ -31,14 +31,14 @@ This folder now separates dated research from current roadmap status. Older comp
 | R10 | Extraction throttling | Planned | No verified sliding-window throttle in docs pass. | Add rate limiter around LLM fallback extraction. |
 | R11 | Session recovery | Planned | Launcher cleans stale PID files; no full SQLite/LanceDB recovery pass verified. | Add startup recovery for orphan vectors, missing vectors, and stale claims. |
 | R12 | Performance benchmarking | Done | `plastic_promise/core/benchmark.py`, `system(action=benchmark)`, `tests/test_performance_benchmark.py` | Wire release-specific baselines into CI as needed. |
-| R13 | Emoji-only noise detection | Needs verification | `plastic_promise/core/noise_filter.py` exists; specific emoji-only behavior was not verified in this pass. | Add explicit tests if missing. |
+| R13 | Emoji-only noise detection | Done | `plastic_promise/core/noise_filter.py`, `tests/test_recall_quality_quick_fixes.py`, `tests/test_vertical_slice_units.py` | Verified emoji-only, emoji+whitespace, reaction wrapper, and mixed meaningful text behavior. |
 | R14 | Dual-layer iron rules | Planned | Step closure exists; derived principle extraction is not verified. | Add optional derived-principle layer. |
 | R15 | Obsidian vault export | Planned | `pack_export` exists for JSON; markdown vault export not verified. | Design markdown/YAML export command. |
 | R16 | Config-driven tier/decay | Planned | Decay constants appear code-based. | Add schema-validated config and env overrides. |
 | R17 | Multi-provider embedding and key rotation | Planned | Default local Ollama/fallback path exists; provider/key rotation not verified. | Research provider abstraction without breaking vector dimensions. |
-| R18 | Rust principle injection parity | Needs verification | Rust roadmap notes claim worktree fixes; current source not re-verified here. | Verify current Rust path against Python context package. |
+| R18 | Rust principle injection parity | Partial | Verified by `cargo test --manifest-path rust/context-engine-core/Cargo.toml` and `python -B -m pytest -p no:cacheprovider tests/test_rust_release_import.py::test_release_context_engine_core_import_contract -q`; evidence shows non-empty activated principles and matching `principle_injection_count`, not full principle set/content parity. | Compare Rust activation against the canonical Python task-type mapping before closing R18. |
 | R19 | Rust graph traversal parity | Planned | Rust graph loading parity not verified. | Serialize/load graph or query SQLite from Rust. |
-| R20 | Rust backend path handling | Needs verification | Roadmap says fixes existed in a worktree; current source must be checked before closing. | Verify `new_with_backends` and `_supply_rust` current code. |
+| R20 | Rust backend path handling | Done | Verified by `cargo test --manifest-path rust/context-engine-core/Cargo.toml` and `python -B -m pytest -p no:cacheprovider tests/test_rust_integration.py::test_supply_rust_preserves_memory_db_path_for_new_with_backends tests/test_rust_integration.py::test_supply_rust_uses_new_with_backends_and_project_context tests/test_rust_integration.py::test_debug_supply_uses_rust_path_when_rust_is_preferred -q`; evidence covers `new_with_backends` path handling, `_supply_rust` preserving `:memory:`, and project-aware snapshot context. | None. |
 | R21 | Rust persistent LanceDB backend | Planned | Rust LanceDbStore described as HashMap-backed in roadmap. | Replace placeholder when dependency constraints allow. |
 | R22 | Causal world model foundation | Planned | Strategic roadmap only. | Start with event memory and causal graph for internal PR/CI/task events. |
 
@@ -66,8 +66,8 @@ This folder now separates dated research from current roadmap status. Older comp
 3. Add infrastructure safety
    -> session recovery, benchmarks, trace output, config-driven decay
 
-4. Close Rust parity gaps
-   -> backend path handling, principle injection, graph traversal, LanceDB persistence
+4. Close remaining Rust parity gaps
+   -> graph traversal, LanceDB persistence
 
 5. Start causal foundation
    -> event memory, causal graph, replay, trust attribution

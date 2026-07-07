@@ -7,13 +7,20 @@
 
 | Area | Status | Evidence | Remaining work |
 |---|---|---|---|
-| Principle injection | Needs verification | Rust source contains principles support, but parity was not verified in this docs pass. | Compare Rust context package with Python package for same query. |
-| Graph traversal | Planned | Rust graph parity with Python graph was not verified. | Load graph from Python serialization or SQLite. |
-| `new_with_backends` path handling | Needs verification | Prior roadmap claimed worktree fixes. | Verify current `rust/context-engine-core/src/context_engine.rs`. |
-| `_supply_rust` contract | Needs verification | Prior roadmap claimed worktree fixes. | Verify docstring and actual call arguments in `context_engine.py`. |
+| Principle injection | Partial | `cargo test --manifest-path rust/context-engine-core/Cargo.toml` and `python -B -m pytest -p no:cacheprovider tests/test_rust_release_import.py::test_release_context_engine_core_import_contract -q` verify non-empty activated principles and matching `principle_injection_count`, but not full Python/Rust principle set parity. | Compare Rust activation against the canonical Python task-type mapping before closing R18. |
+| Graph traversal | Planned | Rust has `load_graph()` / traversal hooks, but full Python/Rust graph parity remains out of this slice. | Add serialized graph parity tests in a separate R19 task. |
+| `new_with_backends` path handling | Done | `cargo test --manifest-path rust/context-engine-core/Cargo.toml` verifies valid paths are read, `:memory:` still works, and missing explicit paths error. | None. |
+| `_supply_rust` contract | Done | `python -B -m pytest -p no:cacheprovider tests/test_rust_integration.py::test_supply_rust_preserves_memory_db_path_for_new_with_backends tests/test_rust_integration.py::test_supply_rust_uses_new_with_backends_and_project_context tests/test_rust_integration.py::test_debug_supply_uses_rust_path_when_rust_is_preferred -q` verifies `_supply_rust` preserves the `:memory:` SQLite sentinel, uses `new_with_backends`, and passes project-aware snapshot context. | None. |
 | Persistent LanceDB backend | Planned | Roadmap notes describe Rust store as HashMap-backed. | Replace placeholder when dependency constraints allow. |
 
 ## 1. Principle Injection
+
+Status: Partial for R18. Evidence: `rust/context-engine-core/tests/integration_test.rs` verifies Rust principle injection audit count, and `tests/test_rust_release_import.py` verifies the same contract through the release PyO3 artifact. This proves the activation/audit-count contract, not full principle set/content parity; Python currently maps `code_generation` differently from Rust.
+
+Verification commands:
+
+- `cargo test --manifest-path rust/context-engine-core/Cargo.toml`
+- `python -B -m pytest -p no:cacheprovider tests/test_rust_release_import.py::test_release_context_engine_core_import_contract -q`
 
 ### Goal
 
@@ -29,6 +36,8 @@ Rust context supply should activate the same relevant principles as the Python c
 
 ## 2. Graph Traversal
 
+Status: Planned. R19 remains a separate graph traversal parity task; this R18/R20 slice does not close serialized graph parity.
+
 ### Goal
 
 Rust context supply should use the same meaningful entity/principle/memory graph signals as Python, or explicitly report degraded graph mode.
@@ -42,6 +51,12 @@ Rust context supply should use the same meaningful entity/principle/memory graph
 
 ## 3. Backend Path Handling
 
+Status: Done for R20 constructor handling. Evidence: Rust source tests cover valid SQLite paths, missing explicit paths, and `:memory:` behavior for `ContextEngine::new_with_backends`.
+
+Verification command:
+
+- `cargo test --manifest-path rust/context-engine-core/Cargo.toml`
+
 ### Goal
 
 Rust constructors should not silently fall back to `:memory:` when callers expect a real database path.
@@ -53,6 +68,12 @@ Rust constructors should not silently fall back to `:memory:` when callers expec
 - Add regression tests for missing path, valid path, and invalid path behavior.
 
 ## 4. Python/Rust Supply Contract
+
+Status: Done for R20 Python boundary handling. Evidence: `tests/test_rust_integration.py::test_supply_rust_preserves_memory_db_path_for_new_with_backends` verifies `:memory:` is preserved at the Python-to-Rust boundary, and `tests/test_rust_integration.py::test_supply_rust_uses_new_with_backends_and_project_context` verifies constructor selection and project-aware snapshot arguments.
+
+Verification command:
+
+- `python -B -m pytest -p no:cacheprovider tests/test_rust_integration.py::test_supply_rust_preserves_memory_db_path_for_new_with_backends tests/test_rust_integration.py::test_supply_rust_uses_new_with_backends_and_project_context tests/test_rust_integration.py::test_debug_supply_uses_rust_path_when_rust_is_preferred -q`
 
 ### Goal
 

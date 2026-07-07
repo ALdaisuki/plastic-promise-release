@@ -2141,11 +2141,21 @@ class ContextEngine:
 
         # Ensure Rust engine finds the real database
         db_path = get_db_path()
-        if not os.path.isabs(db_path):
+        if db_path != ":memory:" and not os.path.isabs(db_path):
             db_path = os.path.abspath(db_path)
         os.environ["PLASTIC_DB_PATH"] = db_path
 
-        rust = RustEngine()
+        lancedb_path = os.environ.get(
+            "PLASTIC_LANCEDB_PATH",
+            os.path.join(
+                os.path.dirname(db_path or "plastic_memory.db"),
+                "plastic_memory.lancedb",
+            ),
+        )
+        if hasattr(RustEngine, "new_with_backends"):
+            rust = RustEngine.new_with_backends(db_path, lancedb_path)
+        else:
+            rust = RustEngine()
         rust.set_current_time(datetime.datetime.now().isoformat())
 
         # Load all vectors from LanceDB at once for Rust enrichment

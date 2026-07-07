@@ -8,7 +8,7 @@
 |---|---|---|---|
 | Session recovery | Planned | Launcher cleans stale PID files, but full storage recovery was not verified. | Add SQLite/LanceDB consistency recovery and stale task release. |
 | Performance benchmarking | Done | `system(action=benchmark)` records retrieval history, baselines, and regression gate results in SQLite. | Wire release-specific baselines into CI as needed. |
-| Emoji-only noise detection | Needs verification | `noise_filter.py` exists. | Add explicit emoji-only tests and implementation if missing. |
+| Emoji-only noise detection | Done | `noise_filter.py`, `tests/test_recall_quality_quick_fixes.py`, `tests/test_vertical_slice_units.py`. | Verified on 2026-07-07; keep behavior conservative. |
 | Dual-layer iron rules | Planned | Step closure exists; derived principles not verified. | Store technical lesson and decision principle as linked outputs. |
 | Obsidian vault sync | Planned | `pack_export` JSON exists; markdown export not verified. | Add markdown/YAML export command. |
 | Config-driven tier/decay | Planned | Decay constants appear code-based. | Move thresholds to validated config with env overrides. |
@@ -50,6 +50,9 @@ Make performance claims measurable rather than anecdotal.
 - Add regression gates for representative queries.
 
 ## 3. Emoji-Only Noise Detection
+
+Status: Done. Verified on 2026-07-07 with explicit tests for pure emoji,
+emoji plus whitespace, bracketed reaction text, and mixed meaningful text.
 
 ### Goal
 

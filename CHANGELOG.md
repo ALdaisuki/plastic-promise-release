@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-08
+
+### Fixed
+
+- Honored explicit SQLite paths in the Rust `ContextEngine::new_with_backends` constructor while preserving `:memory:` for isolated tests and release smoke checks.
+- Preserved `PLASTIC_DB_PATH=":memory:"` across the Python `_supply_rust` boundary before dispatching to the Rust backend constructor.
+
+### Changed
+
+- Clarified Rust parity roadmap status: R18 remains partial for principle set/content parity, R19 remains planned, and R20 backend path handling is done with source, Python boundary, and release import evidence.
+
 ## [0.1.6] - 2026-07-07
 
 ### Added
