@@ -128,6 +128,13 @@ For `full` and `rust-full`, LanceDB backfill/rebuild is startup warmup owned by 
 
 Plastic Promise is local-first by default. Optional external calls depend on configured agents, embedding providers, rerankers, or LLM integrations. If optional services are unavailable, the runtime should explicitly label degraded behavior and continue through safe fallback paths when possible.
 
+The default vector model and the default rerank model serve different roles.
+Ollama `mxbai-embed-large` is used for local embeddings; long memory text is
+chunked, mean-pooled, and normalized before indexing so launcher warmup can keep
+SQLite and LanceDB in sync without exceeding the embedding context window.
+Local reranking uses a generation-capable Ollama model (`qwen2.5:3b`) and falls
+back to cosine/original ordering when model output is unavailable or invalid.
+
 ## 11. Operating principles
 
 1. **Context before action** — retrieve relevant memory before major decisions.

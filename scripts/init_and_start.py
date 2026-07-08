@@ -44,7 +44,7 @@ from plastic_promise.core.context_engine import ContextEngine
 SERVICES = [
     ServiceDefinition(
         name="mcp-server",
-        command=[sys.executable, "-m", "plastic_promise", "--sse", "9020"],
+        command=[sys.executable, "-m", "plastic_promise", "--streamable-http", "9020"],
         health_url="http://127.0.0.1:9020/health",
         startup_timeout=15.0,
         health_check_interval=5.0,
@@ -64,7 +64,7 @@ SERVICES = [
 LOG_FILE = os.path.join(_project_root, "var", "log", "init_and_start.log")
 PID_FILE = os.path.join(_project_root, "var", "run", "maintenance_daemon.pid")
 LANCEDB_WARMUP_ENV = {
-    "PLASTIC_MCP_TRANSPORT": "sse",
+    "PLASTIC_MCP_TRANSPORT": "streamable_http",
     "LDB_INIT_ON_HEAVY_INIT": "1",
     "LDB_BACKFILL_ON_INIT": "1",
     "LDB_REBUILD_ON_INIT": "1",

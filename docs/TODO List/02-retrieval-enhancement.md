@@ -7,7 +7,7 @@
 | Area | Status | Evidence | Remaining work |
 |---|---|---|---|
 | Query expansion | Done | `plastic_promise/core/query_expander.py` | Keep tests and docs aligned. |
-| Reranker upgrade | Partial | `plastic_promise/core/reranker.py` | Verify providers, fallback order, timeout behavior, and privacy docs. |
+| Reranker upgrade | Partial | `plastic_promise/core/reranker.py`, `tests/test_vertical_slice_units.py` | Local fallback order, default generation model, host normalization, and score parsing are verified; hosted-provider privacy docs remain. |
 | Decay-aware ranking | Partial | `plastic_promise/core/context_engine.py`, `plastic_promise/core/decay_engine.py` | Verify additive recency boost and multiplicative time decay both affect retrieval ranking. |
 | Vector MMR diversity | Partial | `plastic_promise/core/context_engine.py`, `plastic_promise/core/lancedb_store.py` | Verify real vector lookup path and add tests for near-duplicate demotion. |
 | Pipeline trace | Planned | No verified public trace object in this docs pass. | Add optional trace/score history gated by env var. |
@@ -27,6 +27,10 @@ configured hosted reranker -> local Ollama reranker -> original score / cosine f
 ```
 
 External providers can send task text or memory snippets over the network. Documentation and configuration should make this explicit.
+
+Local Ollama reranking must use a generation-capable model. The default is
+`qwen2.5:3b`; `mxbai-embed-large` remains the embedding model and must not be
+sent to `/api/generate`.
 
 ### Decay-aware ranking
 

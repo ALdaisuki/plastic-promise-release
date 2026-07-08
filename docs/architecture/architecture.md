@@ -129,10 +129,11 @@ Context recommendation metadata is advisory. It explains why already-eligible me
 | Layer | Technology |
 |---|---|
 | Language | Python 3.10+, optional Rust PyO3 core |
-| Protocol | Model Context Protocol over stdio and SSE |
+| Protocol | Model Context Protocol over stdio and Streamable HTTP |
 | Vector store | LanceDB |
 | Structured database | SQLite WAL |
-| Default local embedding | Ollama `mxbai-embed-large`, with fallback embedder path |
+| Default local embedding | Ollama `mxbai-embed-large`, with chunked long-text pooling and fallback embedder path |
+| Default local reranker | Ollama `qwen2.5:3b`, with cosine/original-order fallback |
 | Web runtime | Starlette + uvicorn |
 | Tests and quality | pytest, ruff, mypy, pre-commit |
 | Packaging | setuptools, PyPI metadata in `pyproject.toml` |
@@ -141,7 +142,7 @@ Context recommendation metadata is advisory. It explains why already-eligible me
 
 | Area | Status | Notes |
 |---|---|---|
-| MCP server | Active | stdio and SSE modes are implemented. |
+| MCP server | Active | stdio and Streamable HTTP modes are implemented; legacy SSE endpoints remain available. |
 | Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
 | Context supply | Active | Python remains full fallback and write-side authority; heavy calls carry request-scope metadata for concurrent flow isolation. |
 | Rust context core | Experimental | Optional acceleration path; `rust-full` keeps normal and debug recall on Rust snapshot while Rust is healthy, with audit-telemetry filtering at snapshot ingestion and Python conversion. |

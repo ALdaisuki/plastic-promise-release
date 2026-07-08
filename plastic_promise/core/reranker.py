@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.request
@@ -162,15 +163,17 @@ class MultiProviderReranker:
 
     def _rerank_ollama(self, query, candidates, deadline):
         """Local Ollama LLM via /api/generate (zero network, always available locally)."""
-        host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-        model = os.environ.get("PP_RERANK_MODEL", "mxbai-embed-large")
+        host = _normalize_ollama_host(os.environ.get("OLLAMA_HOST"))
+        model = os.environ.get("PP_RERANK_MODEL", "qwen2.5:3b")
+        limited_candidates = candidates[:30]
         passages = "\n\n".join(
-            f"[{i}] {_candidate_content(c)[:300]}" for i, c in enumerate(candidates[:30])
+            f"[{i}] {_candidate_content(c)[:300]}" for i, c in enumerate(limited_candidates)
         )
         prompt = (
             f"Query: {query[:200]}\n\n"
-            f"Rate relevance 0-100:\n\n{passages}\n\n"
-            f'Return JSON: {{"scores": [0, 50, 80, ...]}}'
+            f"Rate each passage relevance from 0 to 100:\n\n{passages}\n\n"
+            f"Return only valid JSON with exactly {len(limited_candidates)} numeric scores, "
+            f'one per passage, no markdown and no ellipsis: {{"scores":[0]}}'
         )
         payload = json.dumps(
             {
@@ -184,21 +187,7 @@ class MultiProviderReranker:
         timeout = max(1.0, min(_PROVIDER_TIMEOUT, deadline - time.time()))
         resp = urllib.request.urlopen(req, timeout=timeout)
         raw = json.loads(resp.read().decode("utf-8")).get("response", "")
-        scores = {}
-        if "scores" in raw or "[" in raw:
-            try:
-                # Try "scores" key first
-                if "scores" in raw:
-                    arr = json.loads(raw).get("scores", [])
-                else:
-                    start = raw.index("[")
-                    arr = json.loads(raw[start : raw.rindex("]") + 1])
-                for i, s in enumerate(arr):
-                    if i < len(candidates):
-                        scores[i] = float(s) / 100.0
-            except (json.JSONDecodeError, ValueError, IndexError):
-                pass
-        return scores
+        return _parse_ollama_score_response(raw, len(limited_candidates))
 
     def _rerank_cosine(self, query, candidates, deadline):
         """Pure cosine similarity fallback (always available, zero network).
@@ -318,6 +307,56 @@ def _tuple_scores(candidates, ce_scores, top_k):
         result.append((cid, final))
     result.sort(key=lambda x: x[1], reverse=True)
     return result[:top_k]
+
+
+def _normalize_ollama_host(host: str | None) -> str:
+    raw = (host or "http://127.0.0.1:11434").strip().rstrip("/")
+    raw = raw.replace("0.0.0.0", "127.0.0.1")
+    if "://" in raw:
+        return raw
+    if ":" in raw:
+        return f"http://{raw}"
+    return f"http://{raw}:11434"
+
+
+def _parse_ollama_score_response(raw: str, expected_count: int) -> dict[int, float]:
+    arr = _extract_json_score_array(raw)
+    if arr is None:
+        target = raw.split("scores", 1)[1] if "scores" in raw else raw
+        arr = re.findall(r"-?\d+(?:\.\d+)?", target)
+
+    scores: dict[int, float] = {}
+    for i, value in enumerate(arr[:expected_count]):
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            continue
+        scores[i] = max(0.0, min(1.0, score / 100.0))
+    return scores
+
+
+def _extract_json_score_array(raw: str) -> list | None:
+    for candidate in _json_candidates(raw):
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            scores = parsed.get("scores")
+            if isinstance(scores, list):
+                return scores
+        if isinstance(parsed, list):
+            return parsed
+    return None
+
+
+def _json_candidates(raw: str) -> list[str]:
+    candidates = [raw]
+    if "{" in raw and "}" in raw:
+        candidates.append(raw[raw.index("{") : raw.rindex("}") + 1])
+    if "[" in raw and "]" in raw:
+        candidates.append(raw[raw.index("[") : raw.rindex("]") + 1])
+    return candidates
 
 
 # ── Cache helpers ────────────────────────────────────────────────

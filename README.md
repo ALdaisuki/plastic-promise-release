@@ -161,7 +161,10 @@ Run only the MCP server:
 # stdio mode
 python -m plastic_promise
 
-# SSE mode on port 9020
+# Streamable HTTP mode on port 9020
+python -m plastic_promise --streamable-http 9020
+
+# Legacy alias, still supported
 python -m plastic_promise --sse 9020
 ```
 
@@ -309,6 +312,12 @@ capture -> extract -> classify -> embed -> deduplicate -> quality gate -> decay 
 
 Memory is admitted only when it passes quality checks. Reuse increases worth; stale or duplicated memories can decay, merge, or be forgotten.
 
+Long memories are embedded through bounded chunks before they are written to
+LanceDB. The default local embedding model remains Ollama `mxbai-embed-large`,
+but oversized review/audit text is split by `EMBEDDER_CHUNK_CHARS`, capped by
+`EMBEDDER_MAX_CHUNKS`, mean-pooled, and normalized so a single large record does
+not turn into an Ollama 500 during launcher warmup or backfill.
+
 ### Context supply
 
 `context_supply` produces a layered context package for a task. It combines semantic search, text search, graph links, principles, and ranking signals into core, related, and divergent context.
@@ -349,22 +358,27 @@ Tool calls and Hunter Guild task transitions are recorded as `runtime_events` wi
 
 Local storage is the default. Optional external calls depend on configured agents, embedding providers, rerankers, or LLM integrations. If optional services are unavailable, Plastic Promise uses degraded mode and should label uncertainty instead of silently pretending the full path ran.
 
+Embedding and reranking are separate local model roles. `mxbai-embed-large` is an
+embedding-only model used for vectors; the default local Ollama reranker uses a
+generation-capable model (`qwen2.5:3b`) before falling back to cosine/original
+ordering. Hosted rerankers remain opt-in through `PP_RERANK_PROVIDERS`.
+
 ---
 
 ## Configuration Notes
 
 | Area | Default |
 |---|---|
-| MCP server port | `9020` for SSE mode |
+| MCP server port | `9020` for Streamable HTTP mode (`/mcp`) |
 | Server entrypoint | `python -m plastic_promise` |
 | One-click launcher | `python scripts/init_and_start.py` |
 | Launcher modes | `light`, `normal`, `rust-normal`, `full`, `rust-full`; non-interactive default is `rust-full` |
 | Maintenance daemon | `daemons/maintenance_daemon.py` |
-| Default local embedding path | Ollama `mxbai-embed-large`, with fallback embedder when configured |
+| Default local embedding path | Ollama `mxbai-embed-large`, with chunked long-text pooling and fallback embedder when configured |
 | Structured database | `data/db/plastic_memory.db` unless `PLASTIC_DB_PATH` overrides it |
 | Vector database | `data/lancedb` unless `PLASTIC_LANCEDB_PATH` overrides it |
 | Codex repo skills | `.agents/skills/*/SKILL.md` |
-| Reranker providers | Local Ollama plus cosine fallback by default; hosted providers require `PP_RERANK_PROVIDERS` opt-in |
+| Reranker providers | Local Ollama generation model `qwen2.5:3b` plus cosine fallback by default; hosted providers require `PP_RERANK_PROVIDERS` opt-in |
 | Runtime logs and PIDs | `var/log/`, `var/run/` |
 
 Service subprocesses inherit the launcher's runtime-mode environment and receive the project root at the front of `PYTHONPATH`; this keeps direct script entrypoints and hidden Windows subprocesses aligned with source-checkout execution.
@@ -427,7 +441,7 @@ Conventions:
 
 | Area | Status | Notes |
 |---|---|---|
-| MCP server | Active | stdio and SSE modes are implemented. |
+| MCP server | Active | stdio and Streamable HTTP modes are implemented; legacy SSE endpoints remain available. |
 | Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
 | Context supply | Active | Python remains full fallback and write-side authority; Rust snapshot is optional, request-scoped, used for normal and debug recall in `rust-full`, and guarded against daemon audit telemetry at snapshot ingestion plus native-result conversion. |
 | Hunter Guild | Experimental | Task lifecycle is wired; policy and scanner quality are still evolving. |

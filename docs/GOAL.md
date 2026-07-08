@@ -37,7 +37,8 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 基础设施
   SQLite WAL 结构化状态
   LanceDB 向量存储
-  Ollama mxbai-embed-large 默认本地 embedding，可降级 fallback embedder
+  Ollama mxbai-embed-large 默认本地 embedding，长文本切块池化，可降级 fallback embedder
+  Ollama qwen2.5:3b 默认本地 reranker，失败时回退 cosine/original 排序
   Rust context-engine-core 可选加速路径，Python 管线仍是权威完整路径；Rust snapshot 入口过滤 audit telemetry，Python 转换边界保留最终防线
 ```
 

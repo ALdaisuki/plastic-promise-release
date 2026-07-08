@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-07-08
+
+### Changed
+
+- Added chunked Ollama embedding for long memory text, controlled by
+  `EMBEDDER_CHUNK_CHARS` and `EMBEDDER_MAX_CHUNKS`, then mean-pooled and
+  normalized so review/audit records can be indexed without exceeding the
+  local embedding context window.
+- Changed the default local Ollama rerank model to `qwen2.5:3b`, keeping
+  `mxbai-embed-large` as the default embedding model instead of using it for
+  `/api/generate`.
+
+### Fixed
+
+- Prevented launcher warmup and LanceDB backfill from surfacing Ollama 500
+  errors for long review memories that exceeded `/api/embeddings` input limits.
+- Normalized `OLLAMA_HOST=0.0.0.0` to `127.0.0.1` for local rerank client calls.
+- Hardened local rerank parsing when small generation models return score arrays
+  with non-strict JSON such as ellipses.
+
 ## [0.1.9] - 2026-07-08
 
 ### Added
@@ -167,6 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.10]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.6...v0.1.7

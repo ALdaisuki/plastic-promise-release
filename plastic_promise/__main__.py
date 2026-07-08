@@ -4,8 +4,9 @@
     # 本地 stdio 模式 (Claude Code / IDE)
     python -m plastic_promise
 
-    # SSE 多 Agent 共享模式
-    python -m plastic_promise --sse 9020
+    # Streamable HTTP 多 Agent 共享模式
+    python -m plastic_promise --streamable-http 9020
+    python -m plastic_promise --sse 9020  # legacy alias
 """
 
 import asyncio
@@ -13,16 +14,27 @@ import logging
 import sys
 
 
+_STREAMABLE_HTTP_FLAGS = {"--streamable-http", "--http", "--sse"}
+
+
+def _extract_streamable_http_port(argv: list[str]) -> tuple[bool, int]:
+    for flag in _STREAMABLE_HTTP_FLAGS:
+        if flag not in argv:
+            continue
+        try:
+            idx = argv.index(flag)
+            return True, int(argv[idx + 1]) if idx + 1 < len(argv) else 9020
+        except (ValueError, IndexError):
+            return True, 9020
+    return False, 9020
+
+
 def main():
     # 转发到 MCP Server
-    if "--sse" in sys.argv:
-        try:
-            idx = sys.argv.index("--sse")
-            port = int(sys.argv[idx + 1]) if idx + 1 < len(sys.argv) else 9020
-        except (ValueError, IndexError):
-            port = 9020
-        # 注入参数到 server 模块
-        sys.argv = [sys.argv[0], "--sse", str(port)]
+    use_http, port = _extract_streamable_http_port(sys.argv)
+    if use_http:
+        # 注入 canonical 参数到 server 模块；--sse 在 server 层仍保留兼容。
+        sys.argv = [sys.argv[0], "--streamable-http", str(port)]
     else:
         sys.argv = [sys.argv[0]]
 

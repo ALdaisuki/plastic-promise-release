@@ -9,7 +9,7 @@
 - Python 3.10+
 - Git
 - Optional Rust toolchain for `rust/context-engine-core`
-- Optional Ollama for local `mxbai-embed-large` embeddings
+- Optional Ollama for local `mxbai-embed-large` embeddings and `qwen2.5:3b` reranking
 
 ### Install
 
@@ -50,7 +50,7 @@ Manual mode:
 
 ```bash
 # Terminal 1: MCP Server
-python -m plastic_promise --sse 9020
+python -m plastic_promise --streamable-http 9020
 
 # Terminal 2: Maintenance daemon
 python daemons/maintenance_daemon.py
@@ -153,7 +153,7 @@ make check
 
 - `.env` or environment variables point to the intended SQLite and LanceDB paths.
 - `python scripts/init_and_start.py --check-only` passes or known degradations are accepted.
-- MCP health endpoint responds on `http://127.0.0.1:9020/health` when SSE mode is used.
+- MCP health endpoint responds on `http://127.0.0.1:9020/health` when Streamable HTTP mode is used.
 - Maintenance daemon is running if task lifecycle scans are required.
 - Runtime directories `var/log/` and `var/run/` are writable.
 - Trust scores initialize as expected.

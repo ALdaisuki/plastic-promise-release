@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 import pytest
 
@@ -25,6 +26,8 @@ def _restore_plastic_environment():
         "PLASTIC_DB_PATH",
         "PLASTIC_LANCEDB_PATH",
         "PLASTIC_PROJECT_ID",
+        "PLASTIC_MCP_TRANSPORT",
+        "PLASTIC_MCP_LEGACY_TRANSPORT_ALIAS",
         "PP_PROJECT_ID",
     )
     original = {key: os.environ.get(key) for key in keys}
@@ -311,29 +314,83 @@ def test_launcher_preserves_pp_project_id_fallback(monkeypatch, tmp_path):
     assert os.environ["PP_PROJECT_ID"] == "project:custom"
 
 
-def test_direct_mcp_server_configures_default_project_identity(monkeypatch):
+def test_direct_mcp_server_streamable_http_configures_default_project_identity(monkeypatch):
     from plastic_promise.mcp import server as mcp_server
 
     captured = {}
 
-    async def fake_run_sse(port):
+    async def fake_run_streamable_http(port):
         captured["port"] = port
 
     monkeypatch.delenv("PLASTIC_DB_PATH", raising=False)
     monkeypatch.delenv("PLASTIC_LANCEDB_PATH", raising=False)
     monkeypatch.delenv("PLASTIC_PROJECT_ID", raising=False)
     monkeypatch.delenv("PP_PROJECT_ID", raising=False)
-    monkeypatch.setattr(sys, "argv", ["server.py", "--sse", "9020"])
-    monkeypatch.setattr(mcp_server, "run_sse", fake_run_sse)
+    monkeypatch.setattr(sys, "argv", ["server.py", "--streamable-http", "9020"])
+    monkeypatch.setattr(mcp_server, "run_streamable_http", fake_run_streamable_http)
 
     asyncio.run(mcp_server.main())
 
     assert captured["port"] == 9020
+    assert os.environ["PLASTIC_MCP_TRANSPORT"] == "streamable_http"
     assert os.environ["PLASTIC_PROJECT_ID"] == "project:plastic-promise"
     assert os.environ["PLASTIC_DB_PATH"].endswith(
         os.path.join("data", "db", "plastic_memory.db")
     )
     assert os.environ["PLASTIC_LANCEDB_PATH"].endswith(os.path.join("data", "lancedb"))
+
+
+def test_direct_mcp_server_legacy_sse_alias_still_routes_to_streamable_http(monkeypatch):
+    from plastic_promise.mcp import server as mcp_server
+
+    captured = {}
+
+    async def fake_run_streamable_http(port):
+        captured["port"] = port
+
+    monkeypatch.delenv("PLASTIC_MCP_TRANSPORT", raising=False)
+    monkeypatch.delenv("PLASTIC_MCP_LEGACY_TRANSPORT_ALIAS", raising=False)
+    monkeypatch.setattr(sys, "argv", ["server.py", "--sse", "9020"])
+    monkeypatch.setattr(mcp_server, "run_streamable_http", fake_run_streamable_http)
+
+    asyncio.run(mcp_server.main())
+
+    assert captured["port"] == 9020
+    assert os.environ["PLASTIC_MCP_TRANSPORT"] == "streamable_http"
+    assert os.environ["PLASTIC_MCP_LEGACY_TRANSPORT_ALIAS"] == "sse"
+
+
+def test_packaged_streamable_http_entrypoints_resolve():
+    data = tomllib.loads(open("pyproject.toml", encoding="utf-8").read())
+    scripts = data["project"]["scripts"]
+
+    assert scripts["plastic-promise-streamable-http"] == "plastic_promise:main_streamable_http"
+    assert scripts["plastic-promise-http"] == "plastic_promise:main_http"
+    assert scripts["plastic-promise-sse"] == "plastic_promise:main_sse"
+
+    import plastic_promise
+
+    assert callable(plastic_promise.main_streamable_http)
+    assert callable(plastic_promise.main_http)
+    assert callable(plastic_promise.main_sse)
+
+
+def test_top_level_module_accepts_streamable_http_and_legacy_sse_flags():
+    import plastic_promise.__main__ as top_level
+
+    assert top_level._extract_streamable_http_port(["plastic_promise", "--streamable-http", "9021"]) == (
+        True,
+        9021,
+    )
+    assert top_level._extract_streamable_http_port(["plastic_promise", "--http", "9022"]) == (
+        True,
+        9022,
+    )
+    assert top_level._extract_streamable_http_port(["plastic_promise", "--sse", "9023"]) == (
+        True,
+        9023,
+    )
+    assert top_level._extract_streamable_http_port(["plastic_promise"]) == (False, 9020)
 
 
 def test_pid_alive_nonexistent():
@@ -371,7 +428,7 @@ def test_lancedb_warmup_sets_maintenance_env_only_during_pass(monkeypatch):
     assert "ready" in msg
     assert calls == [
         {
-            "transport": "sse",
+            "transport": "streamable_http",
             "init": "1",
             "backfill": "1",
             "rebuild": "1",

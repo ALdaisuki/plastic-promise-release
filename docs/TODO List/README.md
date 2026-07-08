@@ -20,13 +20,13 @@ This folder now separates dated research from current roadmap status. Older comp
 | ID | Area | Status | Source evidence | Next action |
 |---|---|---|---|---|
 | R1 | Query expansion | Done | `plastic_promise/core/query_expander.py` | Keep tests and docs aligned. |
-| R2 | Multi-provider reranker | Partial | `plastic_promise/core/reranker.py` | Verify provider behavior, defaults, timeouts, and privacy wording. |
+| R2 | Multi-provider reranker | Partial | `plastic_promise/core/reranker.py`, `tests/test_vertical_slice_units.py` | Provider order, local default model, host normalization, and fallback parsing are covered; continue privacy/docs work for hosted providers. |
 | R3 | Decay-aware retrieval ranking | Partial | `plastic_promise/core/context_engine.py`, `plastic_promise/core/decay_engine.py` | Verify additive recency and multiplicative decay are both applied in ranking. |
 | R4 | Vector MMR diversity | Partial | `plastic_promise/core/context_engine.py`, `plastic_promise/core/lancedb_store.py` | Verify real vector lookup path and chunk interaction. |
 | R5 | Pipeline trace / score history | Planned | No verified public trace object in docs pass. | Design low-overhead trace gated by env var. |
 | R6 | Real-time tier promotion/demotion | Partial | Context/tier logic exists, but complete demotion/config behavior needs verification. | Confirm thresholds and add tests. |
 | R7 | Category-aware merge rules | Planned | No verified category rule engine in docs pass. | Implement merge/update/append rules per memory category. |
-| R8 | Content chunking for long memories | Planned | No verified chunk schema migration in docs pass. | Design LanceDB schema migration and parent-memory result mapping. |
+| R8 | Content chunking for long memories | Partial | `plastic_promise/core/embedder.py`, `tests/test_embedder.py` | Embedding-request chunking is implemented; LanceDB parent/child chunk schema migration remains planned. |
 | R9 | Memory compaction | Planned | `MemoryGC.merge_similar()` exists, but progressive LLM compaction/cooldown/archive is not verified. | Add compaction design and conservative rollout gate. |
 | R10 | Extraction throttling | Planned | No verified sliding-window throttle in docs pass. | Add rate limiter around LLM fallback extraction. |
 | R11 | Session recovery | Planned | Launcher cleans stale PID files; no full SQLite/LanceDB recovery pass verified. | Add startup recovery for orphan vectors, missing vectors, and stale claims. |

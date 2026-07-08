@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plastic-promise"
-version = "0.1.9"
+version = "0.1.10"
 description = "AI 行为治理系统 — 以约定工程替代约束工程"
 readme = "README.md"
 license = { text = "MIT" }
@@ -67,6 +67,8 @@ Issues = "https://github.com/ALdaisuki/plastic-promise-release/issues"
 
 [project.scripts]
 plastic-promise = "plastic_promise.cli:main"
+plastic-promise-http = "plastic_promise:main_http"
+plastic-promise-streamable-http = "plastic_promise:main_streamable_http"
 plastic-promise-sse = "plastic_promise:main_sse"
 
 [tool.setuptools.packages.find]

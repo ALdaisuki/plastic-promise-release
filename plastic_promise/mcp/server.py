@@ -2,7 +2,8 @@
 
 启动方式:
     python -m plastic_promise.mcp.server              # stdio 模式 (Claude Code 直接调用)
-    python -m plastic_promise.mcp.server --sse 9020   # SSE 模式 (多 Agent 共享)
+    python -m plastic_promise.mcp.server --streamable-http 9020
+    python -m plastic_promise.mcp.server --sse 9020   # legacy alias
 
 架构:
     MCP Server
@@ -2500,17 +2501,34 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
 # ===================================================================
 
 
+_STREAMABLE_HTTP_FLAGS = {"--streamable-http", "--http", "--sse"}
+
+
+def _parse_streamable_http_port(argv: list[str]) -> tuple[str | None, int]:
+    for flag in _STREAMABLE_HTTP_FLAGS:
+        if flag not in argv:
+            continue
+        try:
+            idx = argv.index(flag)
+            return flag, int(argv[idx + 1]) if idx + 1 < len(argv) else 9020
+        except (ValueError, IndexError):
+            return flag, 9020
+    return None, 9020
+
+
 async def main():
-    """MCP Server 启动入口 — 支持 stdio 和 SSE 双模式"""
+    """MCP Server 启动入口 — 支持 stdio 和 Streamable HTTP 双模式。"""
     import sys
 
     configure_default_environment(_PROJECT_ROOT)
 
-    if len(sys.argv) >= 3 and sys.argv[1] == "--sse":
-        # SSE 模式 — 供 Pi 和其他 Agent 通过 HTTP 连接
-        os.environ.setdefault("PLASTIC_MCP_TRANSPORT", "sse")
-        port = int(sys.argv[2])
-        await run_sse(port)
+    transport_flag, port = _parse_streamable_http_port(sys.argv)
+    if transport_flag:
+        # Streamable HTTP mode — Codex and modern MCP clients use /mcp.
+        os.environ.setdefault("PLASTIC_MCP_TRANSPORT", "streamable_http")
+        if transport_flag == "--sse":
+            os.environ.setdefault("PLASTIC_MCP_LEGACY_TRANSPORT_ALIAS", "sse")
+        await run_streamable_http(port)
     else:
         # stdio 模式 — 供 Claude Code 本地调用
         os.environ.setdefault("PLASTIC_MCP_TRANSPORT", "stdio")
@@ -2524,11 +2542,11 @@ async def main():
             )
 
 
-async def run_sse(port: int = 9020):
-    """启动 SSE (Server-Sent Events) 传输 — 多 Agent 共享记忆入口。
+async def run_streamable_http(port: int = 9020):
+    """启动 Streamable HTTP MCP 传输 — 多 Agent 共享记忆入口。
 
-    Pi、N.E.K.O 等外部 Agent 通过 HTTP SSE 连接到这个端口，
-    共享同一个 Plastic Promise 记忆池。
+    Codex 和现代 MCP 客户端使用 /mcp。旧 /sse 和 /messages 端点保留为
+    legacy 兼容入口，供尚未迁移的外部 Agent 继续连接。
     """
     import uvicorn
     from mcp.server.sse import SseServerTransport
@@ -2538,7 +2556,7 @@ async def run_sse(port: int = 9020):
     from starlette.responses import Response
     from starlette.routing import Route
 
-    logger = logging.getLogger("plastic-promise-sse")
+    logger = logging.getLogger("plastic-promise-streamable-http")
     import time as _time
 
     start_time = _time.time()
@@ -2909,7 +2927,7 @@ setInterval(refresh, 5000);
         )
 
     async def shutdown():
-        logger.info("Shutting down Plastic Promise SSE server...")
+        logger.info("Shutting down Plastic Promise Streamable HTTP server...")
 
     from contextlib import asynccontextmanager
 
@@ -2960,6 +2978,14 @@ setInterval(refresh, 5000);
     logger.info(f"PID: {os.getpid()}")
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info")
     await uvicorn.Server(config).serve()
+
+
+async def run_sse(port: int = 9020):
+    """Legacy alias for run_streamable_http(); prefer Streamable HTTP naming."""
+    logging.getLogger("plastic-promise-streamable-http").warning(
+        "run_sse() is deprecated; use run_streamable_http() instead."
+    )
+    await run_streamable_http(port)
 
 
 if __name__ == "__main__":

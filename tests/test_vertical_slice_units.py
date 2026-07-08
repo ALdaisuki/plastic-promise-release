@@ -136,6 +136,41 @@ class TestReranker:
         scores = mp._rerank_cosine("q", items, 999)
         assert scores[0] > scores[1]  # first item gets higher score
 
+    def test_ollama_reranker_default_uses_generation_model(self, monkeypatch):
+        import json
+        import urllib.request
+
+        from plastic_promise.core.reranker import MultiProviderReranker
+
+        seen = {}
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps({"response": '{"scores": [100]}'}).encode()
+
+        def fake_urlopen(req, timeout):
+            seen["url"] = req.full_url
+            payload = json.loads(req.data.decode("utf-8"))
+            seen["model"] = payload["model"]
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0")
+        monkeypatch.delenv("PP_RERANK_MODEL", raising=False)
+
+        scores = MultiProviderReranker()._rerank_ollama("q", [("id", "content", 0.5)], 9999999999)
+
+        assert seen["url"] == "http://127.0.0.1:11434/api/generate"
+        assert seen["model"] == "qwen2.5:3b"
+        assert scores == {0: 1.0}
+
+    def test_ollama_reranker_parses_qwen_ellipsis_response(self):
+        from plastic_promise.core.reranker import _parse_ollama_score_response
+
+        raw = '{"scores": [0, 50, 80, 90, 100, ...]}'
+
+        assert _parse_ollama_score_response(raw, 3) == {0: 0.0, 1: 0.5, 2: 0.8}
+
     def test_jina_auth_header_is_optional(self, monkeypatch):
         import json
         import urllib.request

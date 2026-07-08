@@ -23,6 +23,7 @@ Environment variables:
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import threading
 import time
@@ -235,8 +236,16 @@ class OllamaEmbedder(Embedder):
             else:
                 self._host = f"http://{raw}:11434"
         self._model = model or os.getenv("EMBEDDER_MODEL", "mxbai-embed-large")
+        self._chunk_chars = _int_env("EMBEDDER_CHUNK_CHARS", 512, minimum=1)
+        self._max_chunks = _int_env("EMBEDDER_MAX_CHUNKS", 8, minimum=1)
 
     def embed(self, text: str) -> list[float]:
+        chunks = _embedding_chunks(text, self._chunk_chars, self._max_chunks)
+        if len(chunks) == 1:
+            return self._embed_chunk(chunks[0])
+        return _mean_pool_vectors([self._embed_chunk(chunk) for chunk in chunks])
+
+    def _embed_chunk(self, text: str) -> list[float]:
         resp = requests.post(
             f"{self._host}/api/embeddings",
             json={"model": self._model, "prompt": text},
@@ -255,6 +264,50 @@ class OllamaEmbedder(Embedder):
     @property
     def model_name(self) -> str:
         return self._model
+
+
+def _int_env(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(int(os.environ.get(name, str(default))), minimum)
+    except (TypeError, ValueError):
+        return max(default, minimum)
+
+
+def _embedding_chunks(text: str, chunk_chars: int, max_chunks: int) -> list[str]:
+    text = text or ""
+    if len(text) <= chunk_chars:
+        return [text]
+    chunks = []
+    for start in range(0, len(text), chunk_chars):
+        if len(chunks) >= max_chunks:
+            break
+        chunk = text[start : start + chunk_chars]
+        if chunk:
+            chunks.append(chunk)
+    return chunks or [""]
+
+
+def _mean_pool_vectors(vectors: list[list[float]]) -> list[float]:
+    if not vectors:
+        return []
+    dim = len(vectors[0])
+    if dim == 0:
+        return []
+    totals = [0.0] * dim
+    count = 0
+    for vec in vectors:
+        if len(vec) != dim:
+            continue
+        count += 1
+        for i, value in enumerate(vec):
+            totals[i] += float(value)
+    if count == 0:
+        return []
+    pooled = [value / count for value in totals]
+    norm = math.sqrt(sum(value * value for value in pooled))
+    if norm <= 0.0:
+        return pooled
+    return [value / norm for value in pooled]
 
 
 class OpenAIEmbedder(Embedder):
