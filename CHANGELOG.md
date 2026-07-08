@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-07-08
+
+### Added
+
+- Added debug-only canonical hot lookup and ContextGate telemetry for the Python
+  context supply path behind feature flags, including audit metadata and per-item
+  gate stats without changing prompt layers unless explicit enforcement flags are
+  enabled.
+- Added Codex MCP schema/encoding exemplar research and release planning docs for
+  the Engram hot-memory and MCP debug contract slice.
+
+### Changed
+
+- `context_supply(debug=true)` now follows the same MCP schema/handler contract
+  pattern as `memory_recall(debug=true)`: normal calls keep prompt output, while
+  debug calls return structured prompt, layer, audit, pipeline, and per-item data.
+- Canonical hot lookup now respects `PP_CODE_MEMORY_ENABLED=0` before consulting
+  the code-memory index and safely falls back to the default hot lookup limit when
+  `PP_CANONICAL_HOT_LIMIT` is invalid.
+
+### Fixed
+
+- Exposed `debug` and `retrieval_mode` in the MCP `context_supply` schema so
+  Codex deferred-tool validation no longer rejects diagnostic calls.
+- Added UTF-8-clean MCP initialization instructions with the Codex bootstrap
+  contract, matching the official server-wide guidance path.
+- Added a public MCP description regression guard for common mojibake markers,
+  confirming that observed event-stream mojibake was a probe display issue rather
+  than corrupted source metadata.
+
 ## [0.1.8] - 2026-07-08
 
 ### Fixed
@@ -137,6 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.9]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.3...v0.1.4

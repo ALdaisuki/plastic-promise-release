@@ -41,6 +41,8 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
             "task_description": "审计 MCP 参数校验失败",
             "task_type": "debugging",
             "scope": "governing",
+            "retrieval_mode": "mix",
+            "debug": True,
             "stage_session_id": "stage:codex:schema",
             "flow_line_id": "bug-hunt",
             "request_id": "req:schema-context",
@@ -96,6 +98,8 @@ def test_handler_read_optional_fields_are_declared():
         "request_id",
         "project_id",
         "project_policy",
+        "retrieval_mode",
+        "debug",
     }.issubset(context_props)
 
     memory_store_props = set(tools["memory_store"].inputSchema["properties"])
@@ -151,6 +155,139 @@ def test_handler_read_optional_fields_are_declared():
     assert {"context_mode", "context_timeout_s", "scope", "route", "flow_line_id"}.issubset(
         session_props
     )
+
+
+def test_context_supply_debug_returns_structured_metadata(monkeypatch):
+    from plastic_promise.core.context_engine import ContextItem, ContextPack
+    import plastic_promise.core.embedder as embedder_mod
+    from plastic_promise.mcp.tools.context import handle_context_supply
+
+    class FakeEmbedder:
+        async def aembed(self, _text):
+            return [0.0] * 1024
+
+    class FakeEngine:
+        def __init__(self):
+            self.kwargs = {}
+
+        def supply(self, *_args, **kwargs):
+            self.kwargs = kwargs
+            return ContextPack(
+                core=[
+                    ContextItem(
+                        id="m1",
+                        content="debug context item",
+                        relevance=0.9,
+                        source="test",
+                        layer="core",
+                    )
+                ],
+                audit_metadata={"canonical_hot": {"enabled": True}},
+                pipeline_stats={"canonical_hot_count": 1},
+                per_item_stats=[{"id": "m1", "gate_decision": "core"}],
+            )
+
+    monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+    engine = FakeEngine()
+
+    result = asyncio.run(
+        handle_context_supply(
+            engine,
+            {
+                "task_description": "debug context supply",
+                "task_type": "debugging",
+                "retrieval_mode": "mix",
+                "debug": True,
+            },
+        )
+    )
+
+    data = json.loads(result[0].text)
+    assert engine.kwargs["debug"] is True
+    assert engine.kwargs["retrieval_mode"] == "mix"
+    assert data["pipeline_stats"]["canonical_hot_count"] == 1
+    assert data["per_item_stats"][0]["gate_decision"] == "core"
+    assert data["audit_metadata"]["canonical_hot"]["enabled"] is True
+    assert data["prompt"]
+
+
+def test_context_supply_debug_tolerates_pack_without_audit_metadata(monkeypatch):
+    from plastic_promise.core.context_engine import ContextItem
+    import plastic_promise.core.embedder as embedder_mod
+    from plastic_promise.mcp.tools.context import handle_context_supply
+
+    class FakeEmbedder:
+        async def aembed(self, _text):
+            return [0.0] * 1024
+
+    class MinimalPack:
+        core = [
+            ContextItem(
+                id="m1",
+                content="minimal debug context item",
+                relevance=0.8,
+                source="test",
+                layer="core",
+            )
+        ]
+        related = []
+        divergent = []
+        activated_principles = []
+        pipeline_stats = {}
+        per_item_stats = []
+
+        def to_prompt(self):
+            return "minimal prompt"
+
+    class FakeEngine:
+        def supply(self, *_args, **_kwargs):
+            return MinimalPack()
+
+    monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+
+    result = asyncio.run(
+        handle_context_supply(
+            FakeEngine(),
+            {
+                "task_description": "debug context supply",
+                "task_type": "debugging",
+                "debug": True,
+            },
+        )
+    )
+
+    data = json.loads(result[0].text)
+    assert data["audit_metadata"]["trace"]["call_id"]
+    assert data["trace"]["request_scope_id"]
+    assert data["prompt"] == "minimal prompt"
+
+
+def test_public_tool_descriptions_do_not_expose_mojibake_markers():
+    markers = ["\u951b", "\u9225", "\u00c3", "\u00e6", "\ufffd"]
+
+    offenders = []
+    for tool in _tools_by_name().values():
+        haystack = " ".join(
+            [
+                tool.description or "",
+                json.dumps(tool.inputSchema, ensure_ascii=False),
+            ]
+        )
+        if any(marker in haystack for marker in markers):
+            offenders.append(tool.name)
+
+    assert offenders == []
+
+
+def test_server_initialization_instructions_expose_codex_bootstrap_contract():
+    instructions = mcp_server.server.create_initialization_options().instructions or ""
+
+    assert "Plastic Promise MCP" in instructions
+    assert "session-init" in instructions
+    assert "sp-stage" in instructions
+    assert "context_supply" in instructions
+    assert "debug=true only for diagnostics" in instructions
+    assert len(instructions[:512]) == len(instructions)
 
 
 def test_hyphenated_skill_aliases_are_exposed_with_matching_required_fields():

@@ -98,3 +98,110 @@ def test_context_supply_includes_read_only_code_memory_evidence(tmp_path, monkey
     assert any(edge.get("source_kind") == "code_memory" for edge in graph["edges"])
     assert pack.audit_metadata["code_memory"]["enabled"] is True
     assert pack.audit_metadata["code_memory"]["node_count"] >= 5
+
+
+def test_context_supply_reports_canonical_hot_and_gate_debug_without_enforcement(
+    tmp_path, monkeypatch
+):
+    tool_dir = tmp_path / "plastic_promise" / "mcp" / "tools"
+    tool_dir.mkdir(parents=True)
+    (tool_dir / "context.py").write_text(
+        """
+async def handle_context_supply(engine, args):
+    '''Return task context.'''
+    return []
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PP_CODE_MEMORY_ROOT", str(tmp_path))
+    monkeypatch.setenv("PP_CODE_MEMORY_MAX_FILES", "20")
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "1")
+    monkeypatch.setenv("PP_RERANK_DISABLED", "1")
+    monkeypatch.setenv("PP_QUERY_EXPANSION", "0")
+    monkeypatch.setenv("PP_CANONICAL_HOT_LOOKUP", "1")
+    monkeypatch.setenv("PP_CANONICAL_HOT_ENFORCE", "0")
+    monkeypatch.setenv("PP_CONTEXT_GATE", "1")
+    monkeypatch.setenv("PP_CONTEXT_GATE_ENFORCE", "0")
+
+    engine = ContextEngine(use_sqlite=False)
+    pack = engine.supply(
+        "call context_supply before acting",
+        [0.0] * 1024,
+        task_type="general",
+        scope="global",
+        debug=True,
+    )
+    all_items = pack.core + pack.related + pack.divergent
+
+    assert pack.audit_metadata["canonical_hot"]["enabled"] is True
+    assert "mcp_tool:context_supply" in pack.audit_metadata["canonical_hot"]["keys"]
+    assert pack.audit_metadata["context_gate"]["enabled"] is True
+    assert pack.pipeline_stats["canonical_hot_count"] >= 1
+    assert not any(item.id == "mcp_tool:context_supply" for item in all_items)
+
+
+def test_context_supply_canonical_hot_respects_code_memory_disabled(
+    tmp_path, monkeypatch
+):
+    tool_dir = tmp_path / "plastic_promise" / "mcp" / "tools"
+    tool_dir.mkdir(parents=True)
+    (tool_dir / "context.py").write_text(
+        """
+async def handle_context_supply(engine, args):
+    '''Return task context.'''
+    return []
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PP_CODE_MEMORY_ROOT", str(tmp_path))
+    monkeypatch.setenv("PP_CODE_MEMORY_MAX_FILES", "20")
+    monkeypatch.setenv("PP_CODE_MEMORY_ENABLED", "0")
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "1")
+    monkeypatch.setenv("PP_RERANK_DISABLED", "1")
+    monkeypatch.setenv("PP_QUERY_EXPANSION", "0")
+    monkeypatch.setenv("PP_CANONICAL_HOT_LOOKUP", "1")
+    monkeypatch.setenv("PP_CANONICAL_HOT_ENFORCE", "0")
+    monkeypatch.setenv("PP_CANONICAL_HOT_LIMIT", "not-an-int")
+
+    engine = ContextEngine(use_sqlite=False)
+    pack = engine.supply(
+        "please call context_supply before acting",
+        [0.0] * 1024,
+        task_type="general",
+        scope="global",
+        debug=True,
+    )
+
+    assert pack.audit_metadata["code_memory"]["enabled"] is False
+    assert pack.audit_metadata["canonical_hot"]["limit"] == 12
+    assert "mcp_tool:context_supply" not in pack.audit_metadata["canonical_hot"]["keys"]
+
+
+def test_context_supply_reports_gate_per_item_stats_for_layered_code_items(
+    tmp_path, monkeypatch
+):
+    _write_sample_repo(tmp_path)
+    monkeypatch.setenv("PP_CODE_MEMORY_ROOT", str(tmp_path))
+    monkeypatch.setenv("PP_CODE_MEMORY_MAX_FILES", "20")
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "1")
+    monkeypatch.setenv("PP_RERANK_DISABLED", "1")
+    monkeypatch.setenv("PP_QUERY_EXPANSION", "0")
+    monkeypatch.setenv("PP_CONTEXT_GATE", "1")
+    monkeypatch.setenv("PP_CONTEXT_GATE_ENFORCE", "0")
+
+    engine = ContextEngine(use_sqlite=False)
+    pack = engine.supply(
+        "debug Service.run helper behavior",
+        [0.0] * 1024,
+        task_type="debugging",
+        scope="global",
+        debug=True,
+    )
+
+    gate_stats = [
+        item for item in pack.per_item_stats if item.get("retrieval_source") == "code_memory"
+    ]
+    assert gate_stats
+    assert all("gate_score" in item for item in gate_stats)
+    assert all("gate_decision" in item for item in gate_stats)
+    assert all("gate_reasons" in item for item in gate_stats)

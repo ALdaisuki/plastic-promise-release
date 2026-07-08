@@ -47,6 +47,13 @@ from plastic_promise.launcher.default_environment import configure_default_envir
 from plastic_promise.launcher.runtime_mode import RUNTIME_MODE_KEYS
 
 PLASTIC_PROMISE_VERSION = __version__
+SERVER_INSTRUCTIONS = (
+    "Plastic Promise MCP provides shared memory, principles, context_supply, "
+    "memory_recall, defense, runtime_mode, session-init, sp-stage, and "
+    "step-closure for Codex. Start tasks with session-init(context_mode='light'), "
+    "then sp-stage(stage='brainstorming'); call memory_recall/context_supply as "
+    "needed. Use debug=true only for diagnostics."
+)
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _engine = None  # 延迟初始化
 _skill_engine = None  # 延迟初始化 — SkillEngine 单例
@@ -113,7 +120,11 @@ def get_skill_engine():
 # MCP Server 实例
 # ---------------------------------------------------------------------------
 
-server = Server("plastic-promise", version=PLASTIC_PROMISE_VERSION)
+server = Server(
+    "plastic-promise",
+    version=PLASTIC_PROMISE_VERSION,
+    instructions=SERVER_INSTRUCTIONS,
+)
 
 _CODEX_DISCOVERY_HINTS = {
     "session-init": (
@@ -516,6 +527,11 @@ async def list_tools() -> list[Tool]:
                         "scope": {
                             "type": "string",
                             "description": "检索范围: global (默认) 或 domain 限定",
+                        },
+                        **_RETRIEVAL_MODE_PROPERTY,
+                        "debug": {
+                            "type": "boolean",
+                            "description": "Return audit_metadata, pipeline_stats, and per_item_stats for diagnostics",
                         },
                         **_PROJECT_CONTEXT_PROPERTIES,
                         **_REQUEST_SCOPE_PROPERTIES,

@@ -321,6 +321,14 @@ Concurrent heavy context calls can carry `stage_session_id`, `flow_line_id`, and
 
 In `rust-full`, `memory_recall(debug=true)` stays on the Rust snapshot hot path when Rust is healthy and preferred. Debug recall still returns Rust `pipeline_stats` and `per_item_stats`, and only falls back to Python if the Rust path is unavailable or throws. When LanceDB rows exist, debug `pipeline_stats` should report a nonzero `vector_count`; `vector_hits` may be zero only when the query has no vector match.
 
+`context_supply(debug=true)` is the MCP-facing diagnostic path for context
+pack construction. Normal `context_supply` calls still return prompt text, while
+debug calls return structured JSON containing the prompt, selected layers,
+`audit_metadata`, `pipeline_stats`, and `per_item_stats`. The Engram-inspired
+canonical hot lookup and ContextGate instrumentation are off by default and can
+be observed with `PP_CANONICAL_HOT_LOOKUP=1` and `PP_CONTEXT_GATE=1`; prompt
+layers only change when the separate enforcement flags are explicitly enabled.
+
 ### Step closure
 
 `step-closure` records what changed, what was learned, why it happened, and what should improve next. That reflection updates memory and trust signals.

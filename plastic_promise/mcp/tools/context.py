@@ -40,6 +40,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
         retrieval_mode = str(args.get("retrieval_mode") or "")
+        debug = bool(args.get("debug", False))
         request_scope = build_request_scope(args, "context_supply")
         project_ctx = infer_project_context(args)
         call_id = args.get("call_id") or new_call_id()
@@ -64,9 +65,13 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 project_policy=project_ctx.project_policy,
                 project_degraded=project_ctx.degraded,
                 retrieval_mode=retrieval_mode or None,
+                debug=debug,
             )
         except TypeError:
-            pack = engine.supply(task_description, task_vector, task_type, scope)
+            try:
+                pack = engine.supply(task_description, task_vector, task_type, scope, debug=debug)
+            except TypeError:
+                pack = engine.supply(task_description, task_vector, task_type, scope)
         from plastic_promise.mcp.tools.memory import _project_allowed
 
         if all(hasattr(pack, layer) for layer in ("core", "related", "divergent")):
@@ -115,6 +120,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 "scope": scope,
                 "project_policy": project_ctx.project_policy,
                 "retrieval_mode": retrieval_mode,
+                "debug": debug,
                 "warnings": project_warnings,
             },
         )
@@ -133,7 +139,42 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 metadata={"warnings": project_warnings},
             )
 
-        return [TextContent(type="text", text=pack.to_prompt())]
+        prompt = pack.to_prompt()
+        if debug:
+            def _item_to_dict(item: Any) -> dict:
+                return {
+                    "id": getattr(item, "id", ""),
+                    "content": getattr(item, "content", ""),
+                    "relevance": getattr(item, "relevance", 0.0),
+                    "source": getattr(item, "source", ""),
+                    "freshness": getattr(item, "freshness", ""),
+                    "layer": getattr(item, "layer", ""),
+                    "is_principle": getattr(item, "is_principle", False),
+                    "worth_score": getattr(item, "worth_score", 0.0),
+                    "decay_status": getattr(item, "decay_status", ""),
+                }
+
+            audit_metadata = getattr(pack, "audit_metadata", {}) or {}
+            payload = {
+                "prompt": prompt,
+                "core": [_item_to_dict(item) for item in getattr(pack, "core", [])],
+                "related": [_item_to_dict(item) for item in getattr(pack, "related", [])],
+                "divergent": [_item_to_dict(item) for item in getattr(pack, "divergent", [])],
+                "activated_principles": getattr(pack, "activated_principles", []),
+                "audit_metadata": audit_metadata,
+                "pipeline_stats": getattr(pack, "pipeline_stats", {}),
+                "per_item_stats": getattr(pack, "per_item_stats", []),
+                "request_scope": request_scope,
+                "project_context": project_ctx.to_dict(),
+                "trace": audit_metadata.get("trace", {}),
+            }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(payload, ensure_ascii=False, indent=2),
+                )
+            ]
+        return [TextContent(type="text", text=prompt)]
     except Exception as e:
         return [
             TextContent(

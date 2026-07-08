@@ -1355,6 +1355,9 @@ class ContextEngine:
                 scope,
                 debug=debug,
                 retrieval_plan=retrieval_plan,
+                project_id=project_id,
+                project_policy=project_policy,
+                project_degraded=project_degraded,
             )
 
         # Rust accelerator — enabled via PP_PREFER_RUST_SUPPLY=1.
@@ -1397,6 +1400,9 @@ class ContextEngine:
             scope,
             debug=debug,
             retrieval_plan=retrieval_plan,
+            project_id=project_id,
+            project_policy=project_policy,
+            project_degraded=project_degraded,
         )
 
     @staticmethod
@@ -1696,6 +1702,9 @@ class ContextEngine:
         scope: str = "global",
         debug: bool = False,
         retrieval_plan: RetrievalPlan | None = None,
+        project_id: str = "project:legacy-global",
+        project_policy: str = "balanced",
+        project_degraded: bool = False,
     ) -> ContextPack:
         """供应上下文
 
@@ -1766,6 +1775,37 @@ class ContextEngine:
                 has_fts=bool(fts_results),
             )
 
+        canonical_hot_enabled = os.environ.get("PP_CANONICAL_HOT_LOOKUP", "0") == "1"
+        canonical_hot_enforce = os.environ.get("PP_CANONICAL_HOT_ENFORCE", "0") == "1"
+        try:
+            canonical_hot_limit = int(os.environ.get("PP_CANONICAL_HOT_LIMIT", "12"))
+        except (TypeError, ValueError):
+            canonical_hot_limit = 12
+        canonical_hot_hits = []
+        canonical_hot_results: list[tuple[str, float, str, str]] = []
+        if canonical_hot_enabled:
+            try:
+                from plastic_promise.core.canonical_hot_memory import (
+                    canonical_hits_to_results,
+                    lookup_canonical_hot,
+                )
+
+                hot_code_index = None
+                if (
+                    os.environ.get("PP_CANONICAL_HOT_CODE_INDEX", "1") == "1"
+                    and os.environ.get("PP_CODE_MEMORY_ENABLED", "1") == "1"
+                ):
+                    hot_code_index = self._ensure_code_memory_index()
+                canonical_hot_hits = lookup_canonical_hot(
+                    task_description,
+                    code_index=hot_code_index,
+                    domain_hint=domain_hint,
+                    limit=canonical_hot_limit,
+                )
+                canonical_hot_results = canonical_hits_to_results(canonical_hot_hits)
+            except Exception as exc:
+                logger.warning("canonical_hot lookup skipped: %s", exc)
+
         code_results = self._code_memory_retrieval(task_description, retrieval_plan)
 
         # Phase 2: Hybrid fusion (vector + text + fts) then layer with graph
@@ -1799,8 +1839,17 @@ class ContextEngine:
             ]
         all_results = self._layered_fuse(graph_results, fused_results, [])
         all_results = self._merge_ranked_results(all_results, code_results)
+        if canonical_hot_enforce:
+            all_results = self._merge_ranked_results(all_results, canonical_hot_results)
         raw_evidence = ContextEngine._raw_evidence_from_results(
-            [graph_results, vector_results, text_results, fts_results, code_results],
+            [
+                graph_results,
+                vector_results,
+                text_results,
+                fts_results,
+                code_results,
+                canonical_hot_results if canonical_hot_enforce else [],
+            ],
             retrieval_plan.budget.get("raw_evidence", 10),
         )
 
@@ -1822,6 +1871,23 @@ class ContextEngine:
         after_noise_filter = 0
         after_source_filter = 0
         after_hard_score_filter = 0
+        context_gate_enabled = os.environ.get("PP_CONTEXT_GATE", "0") == "1"
+        context_gate_enforce = os.environ.get("PP_CONTEXT_GATE_ENFORCE", "0") == "1"
+        context_gate_summary: dict[str, Any] = {
+            "enabled": context_gate_enabled,
+            "enforce": context_gate_enforce,
+            "items_evaluated": 0,
+            "decisions": {},
+        }
+        candidate_evidence_cls = None
+        evaluate_context_gate = None
+        if context_gate_enabled:
+            from plastic_promise.core.context_gate import (
+                CandidateEvidence as CandidateEvidenceClass,
+                evaluate_context_gate,
+            )
+
+            candidate_evidence_cls = CandidateEvidenceClass
 
         pack = ContextPack(activated_principles=activated)
         current_time_str = datetime.datetime.now().isoformat()  # single timestamp for decay calc
@@ -1889,6 +1955,78 @@ class ContextEngine:
             is_principle = item_id.startswith("principle:")
             worth_score = ContextEngine._calc_worth_score_from_memory(mem) if mem else 0.0
             freshness = self._calc_freshness(item_id)
+            gate_result = None
+            if context_gate_enabled and candidate_evidence_cls and evaluate_context_gate:
+                source_class = (
+                    mem.get("source_class")
+                    or ("code" if source == "code_memory" else "")
+                    or ("principle" if is_principle else "")
+                    or memory_source
+                    or "experience"
+                )
+                candidate_kind = (
+                    "principle"
+                    if is_principle
+                    else "mcp_tool"
+                    if item_id.startswith("mcp_tool:")
+                    else "code_symbol"
+                    if item_id.startswith("code:")
+                    else mem.get("memory_type", "memory")
+                    if mem
+                    else "memory"
+                )
+                decay_status = self._calc_decay_status(item_id, mem) if mem else "healthy"
+                freshness_score = {
+                    "fresh": 1.0,
+                    "valid": 0.85,
+                    "healthy": 0.85,
+                    "stale": 0.55,
+                    "decaying": 0.30,
+                    "expired": 0.0,
+                }.get(decay_status if mem else freshness, 0.75)
+                status = str(mem.get("status", mem.get("correction_status", ""))) if mem else ""
+                conflict_score = 0.0
+                status_lower = status.lower()
+                if status_lower in {"obsolete", "corrected", "deprecated", "rejected"}:
+                    conflict_score = 1.0
+                elif mem and mem.get("project_id") not in {
+                    "",
+                    None,
+                    project_id,
+                    "project:legacy-global",
+                }:
+                    conflict_score = 0.5
+
+                gate_result = evaluate_context_gate(
+                    candidate_evidence_cls(
+                        id=item_id,
+                        content=content,
+                        source=memory_source,
+                        retrieval_source=source,
+                        base_score=score,
+                        kind=candidate_kind,
+                        project_id=mem.get("project_id", "project:legacy-global")
+                        if mem
+                        else "project:legacy-global",
+                        visibility=mem.get("visibility", "project") if mem else "global",
+                        source_class=source_class,
+                        worth_score=worth if mem else worth_score or 0.5,
+                        freshness_score=freshness_score,
+                        conflict_score=conflict_score,
+                        canonical_key=item_id if source == "canonical_hot" else None,
+                        status=status,
+                    ),
+                    task_type=task_type,
+                    retrieval_mode=retrieval_plan.mode,
+                    project_id=project_id,
+                    project_policy=project_policy,
+                    project_degraded=project_degraded,
+                )
+                context_gate_summary["items_evaluated"] += 1
+                decisions = context_gate_summary["decisions"]
+                decisions[gate_result.decision] = decisions.get(gate_result.decision, 0) + 1
+                if context_gate_enforce and gate_result.decision in {"block", "raw_only"}:
+                    continue
 
             debug_items_by_id[item_id] = {
                 "id": item_id,
@@ -1909,6 +2047,10 @@ class ContextEngine:
                 "tier": mem.get("tier", "") if mem else "",
                 "category": mem.get("category", mem.get("domain", "")) if mem else "",
             }
+            if gate_result is not None:
+                debug_items_by_id[item_id]["gate_score"] = gate_result.gate_score
+                debug_items_by_id[item_id]["gate_decision"] = gate_result.decision
+                debug_items_by_id[item_id]["gate_reasons"] = list(gate_result.reasons)
 
             item = ContextItem(
                 id=item_id,
@@ -1987,6 +2129,8 @@ class ContextEngine:
                 "core_count": len(pack.core),
                 "related_count": len(pack.related),
                 "divergent_count": len(pack.divergent),
+                "canonical_hot_count": len(canonical_hot_hits),
+                "context_gate_evaluated": context_gate_summary["items_evaluated"],
             }
             pack.per_item_stats = []
             for item in final_items:
@@ -2011,6 +2155,14 @@ class ContextEngine:
             "code_memory": self._code_index.to_audit()
             if self._code_index is not None
             else {"enabled": False},
+            "canonical_hot": {
+                "enabled": canonical_hot_enabled,
+                "enforce": canonical_hot_enforce,
+                "hits": len(canonical_hot_hits),
+                "keys": [hit.key for hit in canonical_hot_hits],
+                "limit": canonical_hot_limit,
+            },
+            "context_gate": context_gate_summary,
         }
         ContextEngine._attach_retrieval_plan(pack, retrieval_plan, raw_evidence=raw_evidence)
 
@@ -2359,6 +2511,7 @@ class ContextEngine:
         Preserves audit_metadata from Rust (engine_version, timings,
         graph stats, etc.) for observability.
         """
+
         def convert_item(item):
             if ContextEngine._is_recall_noise(getattr(item, "content", "")):
                 return None
@@ -2876,9 +3029,7 @@ class ContextEngine:
         results.sort(key=lambda x: x[1], reverse=True)
         return results
 
-    def _vector_retrieval(
-        self, task_vector: list[float], scope: str | None = None
-    ) -> list[tuple]:
+    def _vector_retrieval(self, task_vector: list[float], scope: str | None = None) -> list[tuple]:
         """Semantic vector retrieval via LanceDB ANN search.
 
         Falls back to empty list if LanceDB is unavailable.
@@ -3460,6 +3611,7 @@ class _SQLiteStorage:
             )
         except Exception:
             pass  # 列已存在
+
         def add_column(name: str, ddl: str) -> None:
             try:
                 self._conn.execute(f"ALTER TABLE memories ADD COLUMN {name} {ddl}")
@@ -3692,14 +3844,17 @@ class _SQLiteStorage:
             "FROM behavior_graph_nodes"
         ).fetchall()
         for row in rows:
-            yield row[0], {
-                "type": row[1],
-                "name": row[2],
-                "description": row[3],
-                "source_kind": row[4],
-                "metadata": self._json_dict_or_empty(row[5]),
-                "schema_version": row[6],
-            }
+            yield (
+                row[0],
+                {
+                    "type": row[1],
+                    "name": row[2],
+                    "description": row[3],
+                    "source_kind": row[4],
+                    "metadata": self._json_dict_or_empty(row[5]),
+                    "schema_version": row[6],
+                },
+            )
 
     def iter_graph_edges(self):
         rows = self._conn.execute(
