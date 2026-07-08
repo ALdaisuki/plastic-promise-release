@@ -1,12 +1,12 @@
 """Tests for Hunter Guild Discovery Scanners (Task 8)."""
 
-import pytest
-import sqlite3
-import os
 import json
+import os
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta
 
+import pytest
 
 # ═══════════════════════════════════════════════════════════════
 # Helpers
@@ -284,6 +284,103 @@ async def test_scan_memory_decay_domain_imbalance(monkeypatch):
         assert result["findings"] >= 1
         # Verify one finding is domain_imbalance
         assert result["scanner"] == "scan_memory_decay"
+    finally:
+        os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_scan_memory_decay_marks_stale_low_worth_without_hard_delete(monkeypatch):
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+
+    try:
+        create_test_db(db_path)
+        stale_date = (datetime.now() - timedelta(days=90)).isoformat()
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO memories (id, content, memory_type, tier, created_at, last_accessed, "
+            "access_count, worth_success, worth_failure, tags, decay_multiplier) "
+            "VALUES ('stale_low', 'stale low worth memory', 'experience', 'L1', ?, ?, "
+            "0, 0, 5, '[]', 0.1)",
+            (stale_date, stale_date),
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
+        monkeypatch.setattr(
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
+            lambda *args, **kwargs: [],
+        )
+
+        from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+
+        result = await scan_memory_decay(MockEngine())
+
+        conn = sqlite3.connect(db_path)
+        tags_raw = conn.execute("SELECT tags FROM memories WHERE id='stale_low'").fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM memories WHERE id='stale_low'").fetchone()[0]
+        conn.close()
+        tags = json.loads(tags_raw)
+
+        assert result["lifecycle"]["stale_marked"] == 1
+        assert count == 1
+        assert "status:forgotten" in tags
+        assert "lifecycle:stale" in tags
+
+    finally:
+        os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_scan_memory_decay_marks_duplicate_conflict_replacement(monkeypatch):
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+
+    try:
+        create_test_db(db_path)
+        now = datetime.now().isoformat()
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO memories (id, content, memory_type, tier, created_at, last_accessed, "
+            "access_count, worth_success, worth_failure, tags) "
+            "VALUES ('dup_winner', 'same durable content', 'experience', 'L3', ?, ?, "
+            "3, 5, 0, '[]')",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO memories (id, content, memory_type, tier, created_at, last_accessed, "
+            "access_count, worth_success, worth_failure, tags) "
+            "VALUES ('dup_loser', 'same durable content', 'experience', 'L1', ?, ?, "
+            "0, 0, 4, '[]')",
+            (now, now),
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
+        monkeypatch.setattr(
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
+            lambda *args, **kwargs: [],
+        )
+
+        from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+
+        result = await scan_memory_decay(MockEngine())
+
+        conn = sqlite3.connect(db_path)
+        tags_raw = conn.execute("SELECT tags FROM memories WHERE id='dup_loser'").fetchone()[0]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE content='same durable content'"
+        ).fetchone()[0]
+        conn.close()
+        tags = json.loads(tags_raw)
+
+        assert result["lifecycle"]["conflicts_marked"] == 1
+        assert count == 2
+        assert "status:replaced" in tags
+        assert "lifecycle:conflict" in tags
+
     finally:
         os.unlink(db_path)
 

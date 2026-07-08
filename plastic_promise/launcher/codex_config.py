@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
-import tomllib
+from pathlib import Path
 
+import tomllib
 
 EXPECTED_STREAMABLE_HTTP_URL = "http://127.0.0.1:9020/mcp"
 
@@ -69,5 +69,8 @@ def _resolve_command(command: str, project_root: Path) -> str | None:
     project_command = project_root / command_path
     if project_command.exists():
         return str(project_command)
+
+    if len(command_path.parts) > 1:
+        return None
 
     return shutil.which(command)

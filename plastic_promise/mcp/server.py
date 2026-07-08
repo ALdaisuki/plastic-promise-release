@@ -177,6 +177,43 @@ _PROJECT_CONTEXT_PROPERTIES = {
     },
 }
 
+_RETRIEVAL_MODE_PROPERTY = {
+    "retrieval_mode": {
+        "type": "string",
+        "enum": [
+            "local",
+            "global",
+            "hybrid",
+            "mix",
+            "project",
+            "code",
+            "audit",
+            "principle",
+        ],
+        "description": "Optional explicit retrieval strategy mode",
+    }
+}
+
+_BEHAVIOR_GRAPH_NODE_TYPES = [
+    "memory",
+    "principle",
+    "tool",
+    "task",
+    "audit_span",
+    "code_symbol",
+    "file",
+    "class",
+    "function",
+    "method",
+    "test",
+    "doc",
+    "mcp_tool",
+    "evidence",
+    "document_chunk",
+    "skill_session",
+    "code_module",
+]
+
 _PROVENANCE_PROPERTIES = {
     "visibility": {
         "type": "string",
@@ -270,6 +307,20 @@ async def list_tools() -> list[Tool]:
                         "pack": {
                             "type": "string",
                             "description": "兼容字段；预留给经验包限定检索",
+                        },
+                        "retrieval_mode": {
+                            "type": "string",
+                            "description": "Optional explicit retrieval strategy mode",
+                            "enum": [
+                                "local",
+                                "global",
+                                "hybrid",
+                                "mix",
+                                "project",
+                                "code",
+                                "audit",
+                                "principle",
+                            ],
                         },
                         **_PROJECT_CONTEXT_PROPERTIES,
                         **_REQUEST_SCOPE_PROPERTIES,
@@ -481,6 +532,7 @@ async def list_tools() -> list[Tool]:
                     "properties": {
                         "entity_type": {
                             "type": "string",
+                            "enum": _BEHAVIOR_GRAPH_NODE_TYPES,
                             "description": "实体类型: task/principle/code_module/memory",
                         },
                         "entity_id": {"type": "string"},
@@ -490,6 +542,10 @@ async def list_tools() -> list[Tool]:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "关联实体 ID",
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "description": "Optional typed behavior graph metadata",
                         },
                     },
                     "required": ["entity_type", "entity_id", "entity_name"],
@@ -1457,6 +1513,10 @@ async def list_tools() -> list[Tool]:
     for tool_name in ("memory_recall", "context_supply", "memory_store", "review_run"):
         schema = by_name[tool_name].inputSchema
         schema.setdefault("properties", {}).update(_PROJECT_CONTEXT_PROPERTIES)
+    for tool_name in ("memory_recall", "context_supply"):
+        by_name[tool_name].inputSchema.setdefault("properties", {}).update(
+            _RETRIEVAL_MODE_PROPERTY
+        )
     by_name["memory_store"].inputSchema["properties"].update(_PROVENANCE_PROPERTIES)
     by_name["review_run"].inputSchema["properties"]["allow_project_unknown"] = {
         "type": "boolean",

@@ -1,10 +1,128 @@
 """Memory pool health scanner — zombie memories, influx, distribution imbalance."""
 
+import json
 import os
 import sqlite3
+from contextlib import suppress
 from datetime import datetime, timedelta
 
 from plastic_promise.core.paths import get_db_path
+
+
+def _load_tags(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        tags = json.loads(raw)
+    except Exception:
+        return []
+    return tags if isinstance(tags, list) else []
+
+
+def _store_tags(conn: sqlite3.Connection, memory_id: str, tags: list[str]) -> None:
+    conn.execute(
+        "UPDATE memories SET tags = ? WHERE id = ?",
+        (json.dumps(sorted(set(tags)), ensure_ascii=False), memory_id),
+    )
+
+
+def _worth(success: int | None, failure: int | None) -> float:
+    ws = int(success or 0)
+    wf = int(failure or 0)
+    total = ws + wf
+    return (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
+
+
+def _run_lifecycle_maintenance(conn: sqlite3.Connection) -> dict:
+    """Mark lifecycle state transitions without hard-deleting memories."""
+    lifecycle = {
+        "stale_marked": 0,
+        "conflicts_marked": 0,
+        "forgotten_candidates": 0,
+    }
+
+    stale_rows = conn.execute(
+        """
+        SELECT id, tags, worth_success, worth_failure
+        FROM memories
+        WHERE decay_multiplier < 0.2
+          AND COALESCE(worth_failure, 0) >= COALESCE(worth_success, 0)
+          AND tags NOT LIKE '%status:forgotten%'
+          AND tags NOT LIKE '%status:replaced%'
+        LIMIT 50
+        """
+    ).fetchall()
+    for row in stale_rows:
+        tags = _load_tags(row["tags"])
+        tags.extend(["status:forgotten", "decay:pending", "lifecycle:stale"])
+        _store_tags(conn, row["id"], tags)
+        conn.execute(
+            """
+            UPDATE memories
+            SET importance = 0.0,
+                activation_weight = 0.0,
+                worth_success = 0,
+                worth_failure = MAX(COALESCE(worth_failure, 0), 10),
+                decay_multiplier = 0.0,
+                last_accessed = ?
+            WHERE id = ?
+            """,
+            (datetime.now().isoformat(), row["id"]),
+        )
+        lifecycle["stale_marked"] += 1
+
+    duplicate_contents = conn.execute(
+        """
+        SELECT content
+        FROM memories
+        WHERE content IS NOT NULL
+          AND TRIM(content) != ''
+          AND tags NOT LIKE '%status:replaced%'
+          AND tags NOT LIKE '%status:forgotten%'
+        GROUP BY content
+        HAVING COUNT(*) > 1
+        LIMIT 20
+        """
+    ).fetchall()
+    for duplicate in duplicate_contents:
+        rows = conn.execute(
+            """
+            SELECT id, tags, worth_success, worth_failure, access_count, created_at
+            FROM memories
+            WHERE content = ?
+              AND tags NOT LIKE '%status:replaced%'
+              AND tags NOT LIKE '%status:forgotten%'
+            """,
+            (duplicate["content"],),
+        ).fetchall()
+        if len(rows) < 2:
+            continue
+        ranked = sorted(
+            rows,
+            key=lambda row: (
+                _worth(row["worth_success"], row["worth_failure"]),
+                int(row["access_count"] or 0),
+                row["created_at"] or "",
+            ),
+            reverse=True,
+        )
+        survivor_id = ranked[0]["id"]
+        for loser in ranked[1:]:
+            tags = _load_tags(loser["tags"])
+            tags.extend(["status:replaced", "lifecycle:conflict", f"replaced_by:{survivor_id}"])
+            _store_tags(conn, loser["id"], tags)
+            conn.execute(
+                "UPDATE memories SET worth_failure = MAX(COALESCE(worth_failure, 0), 10) "
+                "WHERE id = ?",
+                (loser["id"],),
+            )
+            lifecycle["conflicts_marked"] += 1
+
+    lifecycle["forgotten_candidates"] = conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE tags LIKE '%status:forgotten%'"
+    ).fetchone()[0]
+    conn.commit()
+    return lifecycle
 
 
 async def scan_memory_decay(engine) -> dict:
@@ -17,6 +135,7 @@ async def scan_memory_decay(engine) -> dict:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     findings = []
+    lifecycle = {"stale_marked": 0, "conflicts_marked": 0, "forgotten_candidates": 0}
 
     try:
         # 1. Zombie detection: L3 tier, 30+ days no access
@@ -118,10 +237,11 @@ async def scan_memory_decay(engine) -> dict:
                 sqlite = getattr(getattr(rm, "_engine", None), "_sqlite", None)
                 rm_conn = getattr(sqlite, "_conn", None)
                 if rm_conn is not None:
-                    try:
+                    with suppress(Exception):
                         rm_conn.close()
-                    except Exception:
-                        pass
+
+        # 4b. Lifecycle state transitions: stale/conflict marking only.
+        lifecycle = _run_lifecycle_maintenance(conn)
 
         # 5. Decay anomaly detection: frequently accessed but heavily decayed
         anomalies = conn.execute(
@@ -172,4 +292,9 @@ async def scan_memory_decay(engine) -> dict:
         except Exception:
             pass
 
-    return {"scanner": "scan_memory_decay", "findings": len(findings), "dispatched": dispatched}
+    return {
+        "scanner": "scan_memory_decay",
+        "findings": len(findings),
+        "dispatched": dispatched,
+        "lifecycle": lifecycle,
+    }

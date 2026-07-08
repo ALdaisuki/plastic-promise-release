@@ -39,6 +39,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         task_description = args["task_description"]
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
+        retrieval_mode = str(args.get("retrieval_mode") or "")
         request_scope = build_request_scope(args, "context_supply")
         project_ctx = infer_project_context(args)
         call_id = args.get("call_id") or new_call_id()
@@ -62,6 +63,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 project_id=project_ctx.project_id,
                 project_policy=project_ctx.project_policy,
                 project_degraded=project_ctx.degraded,
+                retrieval_mode=retrieval_mode or None,
             )
         except TypeError:
             pack = engine.supply(task_description, task_vector, task_type, scope)
@@ -109,6 +111,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 "task_type": task_type,
                 "scope": scope,
                 "project_policy": project_ctx.project_policy,
+                "retrieval_mode": retrieval_mode,
                 "warnings": project_warnings,
             },
         )
@@ -157,6 +160,7 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
         entity_name = args.get("entity_name", "")
         entity_description = args.get("entity_description", "")
         related_entities = args.get("related_entities", [])
+        metadata = args.get("metadata", {})
 
         # Validate required fields
         if not entity_type:
@@ -164,9 +168,7 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
                 TextContent(
                     type="text",
                     text=json.dumps(
-                        {
-                            "error": "entity_type is required. Valid: principle, task, memory, code_module"
-                        },
+                        {"error": "entity_type is required"},
                         ensure_ascii=False,
                     ),
                 )
@@ -179,7 +181,9 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
                 )
             ]
 
-        valid_types = {"principle", "task", "memory", "code_module"}
+        from plastic_promise.core.behavior_graph import VALID_NODE_TYPES
+
+        valid_types = VALID_NODE_TYPES
         if entity_type not in valid_types:
             return [
                 TextContent(
@@ -201,6 +205,7 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
                 entity_name=entity_name,
                 entity_description=entity_description,
                 related_entities=related_entities,
+                metadata=metadata if isinstance(metadata, dict) else {},
             )
 
             return [
@@ -230,6 +235,7 @@ async def handle_context_inject(engine: Any, args: dict) -> list[TextContent]:
                 entity_name=entity_name,
                 entity_description=entity_description,
                 related_entities=related_entities,
+                metadata=metadata if isinstance(metadata, dict) else {},
             )
         except ValueError as ve:
             return [
@@ -334,7 +340,6 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
     task_description = args.get("task_description", "")
     task_type = args.get("task_type", "general")
     source = args.get("source", "manual")
-    scope = args.get("scope", "global")
 
     skill_name = f"auto_inject:{source}"
     entity_id = None

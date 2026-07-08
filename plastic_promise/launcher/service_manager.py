@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from contextlib import suppress
 from datetime import datetime
 
 from plastic_promise.launcher.service_definition import (
@@ -30,6 +31,7 @@ class ServiceRuntime:
         self.pid: int | None = None
         self.restart_timestamps: list[float] = []
         self.consecutive_failures = 0
+        self.first_unhealthy_at: float | None = None
 
     def record_restart(self):
         now = time.time()
@@ -69,29 +71,29 @@ class ServiceManager:
         """Return runtimes in dependency order (dependencies first).
         Raises ValueError if a dependency cycle is detected.
         """
-        WHITE, GRAY, BLACK = 0, 1, 2
-        color = dict.fromkeys(self._runtimes, WHITE)
+        white, gray, black = 0, 1, 2
+        color = dict.fromkeys(self._runtimes, white)
         order = []
 
         def visit(name: str, path: list[str]):
-            color[name] = GRAY
+            color[name] = gray
             path.append(name)
             rt = self._runtimes[name]
             for dep in rt.definition.depends_on:
                 if dep not in self._runtimes:
                     continue
-                if color[dep] == GRAY:
+                if color[dep] == gray:
                     cycle_start = path.index(dep)
                     cycle = " -> ".join(path[cycle_start:] + [dep])
                     raise ValueError(f"Circular dependency detected: {cycle}")
-                if color[dep] == WHITE:
+                if color[dep] == white:
                     visit(dep, path)
             path.pop()
-            color[name] = BLACK
+            color[name] = black
             order.append(rt)
 
         for name in self._runtimes:
-            if color[name] == WHITE:
+            if color[name] == white:
                 visit(name, [])
 
         return order  # post-order = dependencies before dependents
@@ -102,15 +104,17 @@ class ServiceManager:
             await self._start_service(rt, log_file)
             # Cascade failure
             if rt.status == ServiceStatus.FAILED:
-                for name, other_rt in self._runtimes.items():
-                    if rt.definition.name in other_rt.definition.depends_on:
-                        if other_rt.status == ServiceStatus.PENDING:
-                            other_rt.status = ServiceStatus.FAILED
-                            self._log(
-                                f"[START] {other_rt.definition.name} ..... FAILED"
-                                f" (dependency {rt.definition.name} failed)",
-                                log_file,
-                            )
+                for other_rt in self._runtimes.values():
+                    if (
+                        rt.definition.name in other_rt.definition.depends_on
+                        and other_rt.status == ServiceStatus.PENDING
+                    ):
+                        other_rt.status = ServiceStatus.FAILED
+                        self._log(
+                            f"[START] {other_rt.definition.name} ..... FAILED"
+                            f" (dependency {rt.definition.name} failed)",
+                            log_file,
+                        )
 
     async def _start_service(self, rt: ServiceRuntime, log_file: str | None = None):
         """Start a single service and wait for health check."""
@@ -281,15 +285,11 @@ class ServiceManager:
                 rt.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 rt.process.kill()
-                try:
+                with suppress(subprocess.TimeoutExpired):
                     rt.process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
         except Exception:
-            try:
+            with suppress(Exception):
                 rt.process.kill()
-            except Exception:
-                pass
 
         rt.status = ServiceStatus.STOPPED
         rt.pid = None

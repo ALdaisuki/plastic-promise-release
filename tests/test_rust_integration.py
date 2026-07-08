@@ -88,10 +88,12 @@ def test_reset_rust_health():
     assert engine._rust_engine_instance is None  # cleared
 
 
-def test_empty_memories_supply():
+def test_empty_memories_supply(monkeypatch, tmp_path):
     """supply() with empty memory pool doesn't crash."""
     from plastic_promise.core.context_engine import ContextEngine
 
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "1")
+    monkeypatch.setenv("PLASTIC_LANCEDB_PATH", str(tmp_path / "lancedb"))
     engine = ContextEngine(use_sqlite=False)
 
     pack = engine.supply("test with empty pool", task_type="general", scope="global")
@@ -219,6 +221,57 @@ def test_debug_supply_uses_rust_path_when_rust_is_preferred(monkeypatch):
     assert calls == {"rust": 1, "python": 0}
     assert pack.audit_metadata["engine_version"] == "0.2.0-rs"
     assert pack.pipeline_stats["engine_mode"] == "snapshot"
+
+
+def test_rust_supply_enriches_code_memory_evidence(monkeypatch, tmp_path):
+    """Rust primary path still needs Python-side read-only code evidence."""
+    from plastic_promise.core.context_engine import ContextEngine, ContextPack
+
+    pkg = tmp_path / "sample_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "service.py").write_text(
+        """
+class Service:
+    def run(self, payload):
+        return payload
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("PP_PREFER_RUST_SUPPLY", "1")
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "0")
+    monkeypatch.setenv("PP_CODE_MEMORY_ROOT", str(tmp_path))
+    monkeypatch.setenv("PP_CODE_MEMORY_MAX_FILES", "20")
+
+    engine = ContextEngine(use_sqlite=False)
+    engine._check_rust_health = lambda: True
+
+    def fake_rust(task_description, task_vector, task_type, scope, **_kwargs):
+        pack = ContextPack()
+        pack.audit_metadata = {"engine_version": "0.2.0-rs"}
+        pack.pipeline_stats = {"engine_mode": "snapshot"}
+        return pack
+
+    engine._supply_rust = fake_rust
+    engine._supply_python = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("expected Rust primary path")
+    )
+
+    pack = engine.supply(
+        "review Service.run code_memory behavior",
+        [0.1] * 1024,
+        "code_review",
+        "global",
+    )
+    all_items = pack.core + pack.related + pack.divergent
+
+    assert any(item.source == "code_memory" and "Service.run" in item.content for item in all_items)
+    assert any(
+        evidence["source"] == "code_memory"
+        for evidence in pack.audit_metadata.get("raw_evidence", [])
+    )
+    assert pack.audit_metadata["code_memory"]["enabled"] is True
 
 
 def test_supply_with_precomputed_vector_runs_heavy_init_before_rust(monkeypatch):
@@ -412,6 +465,7 @@ def test_supply_rust_preserves_memory_db_path_for_new_with_backends(monkeypatch,
 def test_concurrent_supply_does_not_crash():
     """Multiple concurrent supply() calls don't crash or corrupt state."""
     import threading
+
     from plastic_promise.core.context_engine import ContextEngine
 
     engine = ContextEngine(use_sqlite=False)

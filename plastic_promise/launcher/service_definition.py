@@ -29,6 +29,7 @@ class ServiceDefinition:
     health_url: str | None = None
     startup_timeout: float = 30.0
     health_check_interval: float = 5.0
+    unhealthy_restart_grace_seconds: float = 180.0
     depends_on: list[str] = field(default_factory=list)
     pre_start: list[str] = field(default_factory=list)
     restart_policy: RestartPolicy = field(default_factory=RestartPolicy)

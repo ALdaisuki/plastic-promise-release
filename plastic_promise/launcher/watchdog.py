@@ -7,6 +7,8 @@ and provides graceful shutdown via signal handlers.
 import asyncio
 import signal
 import sys
+import time
+from contextlib import suppress
 from datetime import datetime
 
 from plastic_promise.launcher.service_definition import ServiceStatus
@@ -26,10 +28,8 @@ def setup_signal_handlers(manager: ServiceManager, log_file: str | None = None):
     signal.signal(signal.SIGINT, _handle_shutdown)
     signal.signal(signal.SIGTERM, _handle_shutdown)
     if sys.platform == "win32":
-        try:
+        with suppress(AttributeError):
             signal.signal(signal.SIGBREAK, _handle_shutdown)
-        except AttributeError:
-            pass
 
 
 async def watchdog_loop(manager: ServiceManager, log_file: str | None = None):
@@ -38,18 +38,22 @@ async def watchdog_loop(manager: ServiceManager, log_file: str | None = None):
 
     while not _shutdown_flag:
         # Check each service
-        for name, rt in list(manager._runtimes.items()):
+        for rt in list(manager._runtimes.values()):
             if _shutdown_flag:
                 break
 
             if rt.status == ServiceStatus.HEALTHY:
                 healthy = await manager._health_check(rt)
                 if not healthy:
+                    now = time.monotonic()
+                    if rt.first_unhealthy_at is None:
+                        rt.first_unhealthy_at = now
                     rt.consecutive_failures += 1
-                    if rt.consecutive_failures >= 3:
+                    if _should_restart_unhealthy_service(rt, now=now):
                         await _handle_crash(manager, rt, log_file)
                 else:
                     rt.consecutive_failures = 0
+                    rt.first_unhealthy_at = None
 
             elif rt.status == ServiceStatus.FAILED:
                 await _handle_crash(manager, rt, log_file)
@@ -97,6 +101,27 @@ async def _handle_crash(manager: ServiceManager, rt, log_file: str | None = None
 
     await asyncio.sleep(backoff)
     await manager._start_service(rt, log_file)
+
+
+def _should_restart_unhealthy_service(rt, now: float | None = None) -> bool:
+    """Return true when failed health checks justify a restart.
+
+    A long-running MCP tool call can temporarily block the HTTP health endpoint
+    while the child process is still alive. Treat that as unhealthy, not crashed,
+    until the grace window expires.
+    """
+    if rt.process is not None and rt.process.poll() is not None:
+        return True
+
+    if rt.consecutive_failures < 3:
+        return False
+
+    first_unhealthy_at = getattr(rt, "first_unhealthy_at", None)
+    if first_unhealthy_at is None:
+        return False
+
+    grace = getattr(rt.definition, "unhealthy_restart_grace_seconds", 180.0)
+    return (time.monotonic() if now is None else now) - first_unhealthy_at >= grace
 
 
 def _log_watchdog_heartbeat(manager: ServiceManager, log_file: str | None = None):

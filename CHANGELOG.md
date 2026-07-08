@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Enriched Rust-primary `context_supply` results with read-only `code_memory` evidence and excluded local worktrees from the code index.
+- Added a launcher watchdog grace window so long MCP tool calls do not get mistaken for crashed child processes while preserving immediate restart for exited processes.
 - Initialized LanceDB/domain heavy backends at the `ContextEngine.supply()` boundary before Rust snapshot retrieval, even when MCP callers provide a precomputed task vector.
 - Resolved implicit project-context degradation by inferring `PLASTIC_PROJECT_ID` / `PP_PROJECT_ID` and setting `project:plastic-promise` defaults for both launcher-managed and direct MCP starts.
 - Kept `rust-full` request-process startup responsive by leaving LanceDB backfill/rebuild to launcher warmup maintenance instead of per-process runtime mode env.

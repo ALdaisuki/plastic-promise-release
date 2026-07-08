@@ -1,21 +1,39 @@
 """Tests for One-Click Launcher components."""
 
-import os
-import importlib.util
 import asyncio
+import importlib.util
+import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
+
 import pytest
 
+from plastic_promise.launcher.bootstrap_checker import check_bootstrap
+from plastic_promise.launcher.env_checker import run_env_checks
 from plastic_promise.launcher.service_definition import (
+    RestartPolicy,
     ServiceDefinition,
     ServiceStatus,
-    RestartPolicy,
 )
-from plastic_promise.launcher.env_checker import run_env_checks
-from plastic_promise.launcher.bootstrap_checker import check_bootstrap
+
+
+@pytest.fixture(autouse=True)
+def _restore_plastic_environment():
+    keys = (
+        "PLASTIC_DB_PATH",
+        "PLASTIC_LANCEDB_PATH",
+        "PLASTIC_PROJECT_ID",
+        "PP_PROJECT_ID",
+    )
+    original = {key: os.environ.get(key) for key in keys}
+    yield
+    for key, value in original.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 def _load_init_and_start():
@@ -508,3 +526,41 @@ def test_service_runtime_unrecoverable():
         rt.record_restart()
 
     assert rt.is_unrecoverable()
+
+
+# -- Watchdog long-call health tolerance tests ------------------------
+
+
+def test_watchdog_does_not_restart_alive_process_during_health_grace():
+    from plastic_promise.launcher.service_manager import ServiceRuntime
+    from plastic_promise.launcher.watchdog import _should_restart_unhealthy_service
+
+    class AliveProcess:
+        def poll(self):
+            return None
+
+    svc = ServiceDefinition(name="mcp-server", command=["python"], health_url="http://health")
+    rt = ServiceRuntime(svc)
+    rt.process = AliveProcess()
+    rt.consecutive_failures = 3
+    rt.first_unhealthy_at = 100.0
+
+    assert _should_restart_unhealthy_service(rt, now=120.0) is False
+    assert _should_restart_unhealthy_service(rt, now=281.0) is True
+
+
+def test_watchdog_restarts_dead_process_without_health_grace():
+    from plastic_promise.launcher.service_manager import ServiceRuntime
+    from plastic_promise.launcher.watchdog import _should_restart_unhealthy_service
+
+    class DeadProcess:
+        def poll(self):
+            return 1
+
+    svc = ServiceDefinition(name="mcp-server", command=["python"], health_url="http://health")
+    rt = ServiceRuntime(svc)
+    rt.process = DeadProcess()
+    rt.consecutive_failures = 1
+    rt.first_unhealthy_at = 100.0
+
+    assert _should_restart_unhealthy_service(rt, now=101.0) is True

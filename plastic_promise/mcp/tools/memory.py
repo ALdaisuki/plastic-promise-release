@@ -12,6 +12,7 @@ import json
 import os
 import threading
 import time
+from contextlib import suppress
 from typing import Any
 
 from mcp.types import TextContent
@@ -42,12 +43,13 @@ def _cache_key(
     request_scope_id: str = "",
     project_id: str = "",
     project_policy: str = "",
+    retrieval_mode: str = "",
 ) -> str:
     raw = (
         f"{query}|{task_type}|{max_results}|{scope}|"
         f"debug={int(bool(debug))}|strict={int(bool(strict))}|"
         f"request_scope={request_scope_id}|project_id={project_id}|"
-        f"project_policy={project_policy}"
+        f"project_policy={project_policy}|retrieval_mode={retrieval_mode}"
     )
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -62,6 +64,7 @@ def _cache_get(
     request_scope_id: str = "",
     project_id: str = "",
     project_policy: str = "",
+    retrieval_mode: str = "",
 ) -> str | None:
     key = _cache_key(
         query,
@@ -73,6 +76,7 @@ def _cache_get(
         request_scope_id,
         project_id,
         project_policy,
+        retrieval_mode,
     )
     now = time.time()
     with _query_cache_lock:
@@ -95,6 +99,7 @@ def _cache_set(
     request_scope_id: str = "",
     project_id: str = "",
     project_policy: str = "",
+    retrieval_mode: str = "",
 ):
     key = _cache_key(
         query,
@@ -106,6 +111,7 @@ def _cache_set(
         request_scope_id,
         project_id,
         project_policy,
+        retrieval_mode,
     )
     now = time.time()
     with _query_cache_lock:
@@ -161,6 +167,11 @@ def _item_meta(item, engine=None) -> dict:
             merged = dict(memory)
             merged.update(memory_meta)
             return merged
+        metadata_json = memory.get("metadata_json")
+        if isinstance(metadata_json, dict):
+            merged = dict(memory)
+            merged.update(metadata_json)
+            return merged
         return memory
 
     return {
@@ -183,6 +194,39 @@ def _project_allowed(item, project_ctx, layer: str, engine=None) -> bool:
     if layer == "divergent" and project_ctx.project_policy != "strict":
         return visibility in {"shared", "global"} or item_project == project_ctx.project_id
     return item_project == project_ctx.project_id or visibility == "global"
+
+
+def _origin_scope(meta: dict, project_ctx) -> str:
+    item_project = meta.get("project_id", "project:legacy-global")
+    visibility = meta.get("visibility", "project")
+    if visibility == "global":
+        return "global"
+    if visibility == "shared":
+        return "shared"
+    if item_project == project_ctx.project_id:
+        return "project"
+    return "cross_project"
+
+
+def _serialize_context_item(item, project_ctx, engine=None, include_life: bool = False) -> dict:
+    meta = _item_meta(item, engine)
+    payload = {
+        "id": item.id,
+        "content": item.content[:500],
+        "relevance": item.relevance,
+        "source": getattr(item, "source", ""),
+        "project_id": meta.get("project_id", "project:legacy-global"),
+        "visibility": meta.get("visibility", "project"),
+        "origin_scope": _origin_scope(meta, project_ctx),
+    }
+    if include_life:
+        payload.update(
+            {
+                "freshness": getattr(item, "freshness", "valid"),
+                "worth_score": getattr(item, "worth_score", 0.0),
+            }
+        )
+    return payload
 
 
 def _parent_call_id(args: dict) -> str:
@@ -227,6 +271,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         scope = args.get("scope", "global")
         strict = args.get("strict", False)
         debug = bool(args.get("debug", False))
+        retrieval_mode = str(args.get("retrieval_mode") or "")
         project_ctx = infer_project_context(args)
         call_id = args.get("call_id") or new_call_id()
         pack = args.get("pack")
@@ -242,6 +287,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             request_scope_id,
             project_ctx.project_id,
             project_ctx.project_policy,
+            retrieval_mode,
         )
         if cached is not None:
             degraded = False
@@ -290,6 +336,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                 project_id=project_ctx.project_id,
                 project_policy=project_ctx.project_policy,
                 project_degraded=project_ctx.degraded,
+                retrieval_mode=retrieval_mode or None,
             )
         except TypeError:
             pack = engine.supply(query, vec, task_type, scope, debug=debug)
@@ -317,22 +364,15 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
 
         response_payload = {
             "core": [
-                {
-                    "id": i.id,
-                    "content": i.content[:500],
-                    "relevance": i.relevance,
-                    "source": i.source,
-                    "freshness": i.freshness,
-                    "worth_score": i.worth_score,
-                }
+                _serialize_context_item(i, project_ctx, engine, include_life=True)
                 for i in core_items[:max_results]
             ],
             "related": [
-                {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
+                _serialize_context_item(i, project_ctx, engine)
                 for i in related_items[:max_results]
             ],
             "divergent": [
-                {"id": i.id, "content": i.content[:500], "relevance": i.relevance}
+                _serialize_context_item(i, project_ctx, engine)
                 for i in divergent_items[:max_results]
             ],
             "activated_principles": pack.activated_principles,
@@ -341,7 +381,13 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             "project_policy": project_ctx.project_policy,
             "project_context": project_ctx.to_dict(),
             "trace": trace,
+            "request_scope_id": request_scope_id,
             "request_scope": request_scope,
+            "mode": audit_metadata.get("mode")
+            or (audit_metadata.get("retrieval_plan") or {}).get("mode"),
+            "budget": audit_metadata.get("budget")
+            or (audit_metadata.get("retrieval_plan") or {}).get("budget", {}),
+            "raw_evidence": audit_metadata.get("raw_evidence", []),
             "federation_signals": _generate_federation_signals(
                 pack, domain_hint, engine, federation
             ),
@@ -398,6 +444,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                 "debug": bool(debug),
                 "max_results": max_results,
                 "project_policy": project_ctx.project_policy,
+                "retrieval_mode": retrieval_mode,
                 "warnings": project_warnings,
             },
         )
@@ -428,6 +475,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             request_scope_id,
             project_ctx.project_id,
             project_ctx.project_policy,
+            retrieval_mode,
         )
 
         return [TextContent(type="text", text=result_json)]
@@ -922,10 +970,8 @@ async def handle_memory_forget(engine: Any, args: dict) -> list[TextContent]:
             # Remove vector entry to prevent ANN recall while preserving SQLite audit data.
             ldb = getattr(engine, "_ldb", None)
             if ldb is not None:
-                try:
+                with suppress(Exception):
                     ldb.delete(memory_id)
-                except Exception:
-                    pass
 
         return [
             TextContent(
@@ -1153,9 +1199,8 @@ def _extract_entity_ids(content: str, engine: Any) -> list[str]:
         for node in engine.list_graph_nodes():
             nid = node.get("id", "")
             name = node.get("name", "")
-            if name and len(name) >= 3 and name in content:
-                if nid not in entity_ids:
-                    entity_ids.append(nid)
+            if name and len(name) >= 3 and name in content and nid not in entity_ids:
+                entity_ids.append(nid)
     except Exception:
         pass
     return entity_ids

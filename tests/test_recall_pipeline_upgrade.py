@@ -552,6 +552,7 @@ class TestQueryExpansionIntegration:
         monkeypatch.setenv("PP_QUERY_EXPANSION", "1")
         monkeypatch.setenv("PP_HARD_MIN_SCORE", "0")
         monkeypatch.setenv("PP_RERANK_DISABLED", "1")
+        monkeypatch.setenv("PP_CODE_MEMORY_ENABLED", "0")
         seen = {}
         engine = ContextEngine(use_sqlite=False)
         engine._ensure_heavy_init = lambda: None

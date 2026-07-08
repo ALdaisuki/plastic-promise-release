@@ -17,6 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from plastic_promise.core.behavior_graph import graph_edge, graph_node, validate_node_type
 from plastic_promise.core.constants import (
     CONTEXT_LAYERS,
     PP_SOURCE_FILTER,
@@ -26,6 +27,7 @@ from plastic_promise.core.constants import (
     SYMBOL_RULE_KEYWORDS,
 )
 from plastic_promise.core.paths import get_db_path
+from plastic_promise.core.retrieval_planner import RetrievalPlan, plan_retrieval
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,26 @@ class ContextPack:
             for item in self.divergent:
                 lines.append(item.to_prompt_line())
             lines.append("")
+        mode = self.audit_metadata.get("mode")
+        budget = self.audit_metadata.get("budget")
+        raw_evidence = self.audit_metadata.get("raw_evidence")
+        if mode or budget or raw_evidence:
+            lines.append("## [RETRIEVAL_PLAN]")
+            if mode:
+                lines.append(f"- mode: {mode}")
+            if isinstance(budget, dict):
+                lines.append(f"- budget: {json.dumps(budget, ensure_ascii=False)}")
+                lines.append(f"- raw_evidence_budget: {budget.get('raw_evidence', 0)}")
+            if isinstance(raw_evidence, list) and raw_evidence:
+                lines.append("- raw_evidence:")
+                for evidence in raw_evidence[:5]:
+                    source = evidence.get("source", "?")
+                    item_id = evidence.get("id", "?")
+                    score = evidence.get("score", 0.0)
+                    content = str(evidence.get("content", ""))[:120]
+                    lines.append(f"  - [{source}] {item_id} score={score:.3f} {content}")
+            lines.append("")
+
         request_scope = self.audit_metadata.get("request_scope")
         if isinstance(request_scope, dict) and request_scope.get("request_scope_id"):
             lines.append("## [REQUEST_SCOPE] Audit Trace")
@@ -242,6 +264,8 @@ class ContextEngine:
         self._domain_hint: str | None = None
         self._embedder: Any = None
         self._ldb: Any = None
+        self._code_index: Any = None
+        self._code_index_root: str = ""
 
         # SQLite write-through — persists every mutation to disk (default ON)
         if use_sqlite is None:
@@ -251,6 +275,13 @@ class ContextEngine:
             # Load existing from disk
             for mid, data in self._sqlite.iter_all():
                 self._memories[mid] = data
+            if hasattr(self._sqlite, "iter_graph_nodes"):
+                for node_id, node in self._sqlite.iter_graph_nodes():
+                    self._graph_nodes[node_id] = node
+            if hasattr(self._sqlite, "iter_graph_edges"):
+                for edge in self._sqlite.iter_graph_edges():
+                    if not self.has_graph_edge(edge):
+                        self._graph_edges.append(edge)
 
         # P0: Rebuild principle↔memory graph edges from persisted memories
         self._rebuild_graph_from_memories()
@@ -711,20 +742,32 @@ class ContextEngine:
     # ========== Graph CRUD (6 methods, added by Task 4) ==========
 
     def add_graph_edge(
-        self, source: str, target: str, relation: str = "references", weight: float = 0.5
+        self,
+        source: str,
+        target: str,
+        relation: str = "references",
+        weight: float = 0.5,
+        metadata: dict[str, Any] | None = None,
+        source_kind: str = "",
+        evidence_id: str = "",
     ) -> bool:
         """Add an edge to the entity graph. No-op if duplicate exists.
 
         Returns True if the edge was added, False if it already existed.
         """
-        edge = {
-            "from": source,
-            "to": target,
-            "relation": relation,
-            "weight": weight,
-        }
-        if edge not in self._graph_edges:
+        edge = graph_edge(
+            source,
+            target,
+            relation,
+            weight,
+            metadata=metadata,
+            source_kind=source_kind,
+            evidence_id=evidence_id,
+        )
+        if not self.has_graph_edge(edge):
             self._graph_edges.append(edge)
+            if self._sqlite and hasattr(self._sqlite, "upsert_graph_edge"):
+                self._sqlite.upsert_graph_edge(edge)
             return True
         return False
 
@@ -744,7 +787,17 @@ class ContextEngine:
 
     def has_graph_edge(self, edge_dict: dict) -> bool:
         """Check if an exact edge dict exists in the graph."""
-        return edge_dict in self._graph_edges
+        if edge_dict in self._graph_edges:
+            return True
+        source = edge_dict.get("from")
+        target = edge_dict.get("to")
+        relation = edge_dict.get("relation")
+        return any(
+            edge.get("from") == source
+            and edge.get("to") == target
+            and edge.get("relation") == relation
+            for edge in self._graph_edges
+        )
 
     def get_graph_node(self, node_id: str) -> dict | None:
         """Get a graph node by id. Returns a deep copy."""
@@ -1238,6 +1291,7 @@ class ContextEngine:
         project_id: str = "project:legacy-global",
         project_policy: str = "balanced",
         project_degraded: bool = False,
+        retrieval_mode: str | None = None,
     ) -> ContextPack:
         """Supply context for a task. Rust-accelerated when available.
 
@@ -1260,6 +1314,16 @@ class ContextEngine:
         if task_vector is None or len(task_vector) == 0:
             task_vector = [0.0] * 1024  # fallback: mxbai-embed-large dim
 
+        retrieval_plan = plan_retrieval(
+            task_type=task_type,
+            scope=scope,
+            project_policy=project_policy,
+            retrieval_mode=retrieval_mode,
+            has_vector=any(v != 0.0 for v in task_vector),
+            has_graph=bool(self._graph_edges),
+            has_fts=self._ldb is not None,
+        )
+
         # PP_FORCE_PYTHON_SUPPLY=1 bypasses Rust entirely.
         # PP_PREFER_RUST_SUPPLY=0 disables Rust primary; default is Rust-first
         # with automatic Python fallback if the extension is unavailable.
@@ -1267,13 +1331,20 @@ class ContextEngine:
         force_python = os.environ.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1"
 
         if force_python or not prefer_rust:
-            return self._supply_python(task_description, task_vector, task_type, scope, debug=debug)
+            return self._supply_python(
+                task_description,
+                task_vector,
+                task_type,
+                scope,
+                debug=debug,
+                retrieval_plan=retrieval_plan,
+            )
 
         # Rust accelerator — enabled via PP_PREFER_RUST_SUPPLY=1.
         # Falls back to Python if Rust engine is unavailable or throws.
         if self._check_rust_health():
             try:
-                return self._supply_rust(
+                pack = self._supply_rust(
                     task_description,
                     task_vector,
                     task_type,
@@ -1282,13 +1353,187 @@ class ContextEngine:
                     project_policy=project_policy,
                     project_degraded=project_degraded,
                 )
+                self._enrich_pack_with_code_memory(
+                    pack,
+                    task_description,
+                    retrieval_plan,
+                )
+                self._attach_retrieval_plan(
+                    pack,
+                    retrieval_plan,
+                    raw_evidence=self._raw_evidence_from_items(
+                        pack.core + pack.related + pack.divergent,
+                        retrieval_plan.budget.get("raw_evidence", 10),
+                    ),
+                )
+                return pack
             except Exception as e:
                 logger.warning("Rust supply failed, falling back to Python: %s", e)
                 with self._rust_lock:
                     self._rust_healthy = None
                     self._rust_engine_instance = None
 
-        return self._supply_python(task_description, task_vector, task_type, scope, debug=debug)
+        return self._supply_python(
+            task_description,
+            task_vector,
+            task_type,
+            scope,
+            debug=debug,
+            retrieval_plan=retrieval_plan,
+        )
+
+    @staticmethod
+    def _raw_evidence_from_results(
+        result_sets: list[list[tuple[str, float, str, str]]],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for result_set in result_sets:
+            for item_id, score, content, source in result_set:
+                key = (item_id, source)
+                if key in seen:
+                    continue
+                seen.add(key)
+                evidence.append(
+                    {
+                        "id": item_id,
+                        "source": source,
+                        "score": round(float(score), 6),
+                        "content": str(content)[:300],
+                    }
+                )
+        evidence.sort(key=lambda item: item["score"], reverse=True)
+        return evidence[:limit]
+
+    @staticmethod
+    def _raw_evidence_from_items(items: list[ContextItem], limit: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": item.id,
+                "source": item.source,
+                "score": round(float(item.relevance), 6),
+                "content": item.content[:300],
+            }
+            for item in sorted(items, key=lambda item: item.relevance, reverse=True)[:limit]
+        ]
+
+    @staticmethod
+    def _attach_retrieval_plan(
+        pack: ContextPack,
+        retrieval_plan: RetrievalPlan,
+        raw_evidence: list[dict[str, Any]] | None = None,
+    ) -> None:
+        pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
+        pack.audit_metadata["retrieval_plan"] = retrieval_plan.to_dict()
+        pack.audit_metadata["mode"] = retrieval_plan.mode
+        pack.audit_metadata["budget"] = dict(retrieval_plan.budget)
+        pack.audit_metadata["raw_evidence"] = list(raw_evidence or [])
+
+    @staticmethod
+    def _merge_ranked_results(
+        primary: list[tuple[str, float, str, str]],
+        extra: list[tuple[str, float, str, str]],
+    ) -> list[tuple[str, float, str, str]]:
+        combined: dict[str, tuple[float, str, str]] = {
+            item_id: (score, content, source) for item_id, score, content, source in primary
+        }
+        for item_id, score, content, source in extra:
+            existing = combined.get(item_id)
+            if existing is None or score > existing[0]:
+                combined[item_id] = (score, content, source)
+        return [
+            (item_id, score, content, source)
+            for item_id, (score, content, source) in sorted(
+                combined.items(), key=lambda item: item[1][0], reverse=True
+            )
+        ]
+
+    def _code_memory_retrieval(
+        self, task_description: str, retrieval_plan: RetrievalPlan
+    ) -> list[tuple[str, float, str, str]]:
+        if os.environ.get("PP_CODE_MEMORY_ENABLED", "1") != "1":
+            return []
+        if retrieval_plan.mode not in {"code", "mix", "audit"}:
+            return []
+        try:
+            from plastic_promise.core.code_memory import search_code_index
+
+            index = self._ensure_code_memory_index()
+            return search_code_index(
+                index,
+                task_description,
+                limit=retrieval_plan.budget.get("raw_evidence", 12),
+            )
+        except Exception as exc:
+            logger.warning("code_memory retrieval skipped: %s", exc)
+            return []
+
+    def _enrich_pack_with_code_memory(
+        self,
+        pack: ContextPack,
+        task_description: str,
+        retrieval_plan: RetrievalPlan,
+    ) -> None:
+        code_results = self._code_memory_retrieval(task_description, retrieval_plan)
+        if self._code_index is not None:
+            pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
+            pack.audit_metadata["code_memory"] = self._code_index.to_audit()
+        if not code_results:
+            return
+
+        code_items = [
+            ContextItem(
+                id=item_id,
+                content=content,
+                relevance=float(score),
+                source=source,
+                freshness="fresh",
+                layer="related",
+                worth_score=1.0,
+                confidence=0.8,
+            )
+            for item_id, score, content, source in code_results
+        ]
+        related_budget = int(
+            retrieval_plan.budget.get("related", len(pack.related) + len(code_items))
+        )
+        pack.related = sorted(
+            [*pack.related, *code_items],
+            key=lambda item: item.relevance,
+            reverse=True,
+        )[:related_budget]
+
+    def _ensure_code_memory_index(self):
+        from pathlib import Path
+
+        from plastic_promise.core.code_memory import build_code_index
+
+        root = str(Path(os.environ.get("PP_CODE_MEMORY_ROOT", os.getcwd())).resolve())
+        max_files = int(os.environ.get("PP_CODE_MEMORY_MAX_FILES", "400"))
+        if self._code_index is not None and self._code_index_root == f"{root}:{max_files}":
+            return self._code_index
+
+        index = build_code_index(root, max_files=max_files)
+        self._code_index = index
+        self._code_index_root = f"{root}:{max_files}"
+        self._register_code_memory_graph(index)
+        return index
+
+    def _register_code_memory_graph(self, index) -> None:
+        for node in index.nodes:
+            node_id = node.get("id", "")
+            if not node_id:
+                continue
+            node_data = {k: v for k, v in node.items() if k != "id"}
+            self._graph_nodes[node_id] = node_data
+            if self._sqlite and hasattr(self._sqlite, "upsert_graph_node"):
+                self._sqlite.upsert_graph_node(node_id, node_data)
+        for edge in index.edges:
+            if not self.has_graph_edge(edge):
+                self._graph_edges.append(edge)
+                if self._sqlite and hasattr(self._sqlite, "upsert_graph_edge"):
+                    self._sqlite.upsert_graph_edge(edge)
 
     @staticmethod
     def _apply_decay_awareness(
@@ -1433,6 +1678,7 @@ class ContextEngine:
         task_type: str = "general",
         scope: str = "global",
         debug: bool = False,
+        retrieval_plan: RetrievalPlan | None = None,
     ) -> ContextPack:
         """供应上下文
 
@@ -1494,6 +1740,17 @@ class ContextEngine:
         # FTS: LanceDB full-text search as third retrieval channel
         fts_results = self._fts_retrieval(task_description, scope)
 
+        if retrieval_plan is None:
+            retrieval_plan = plan_retrieval(
+                task_type=task_type,
+                scope=scope,
+                has_vector=bool(vector_results),
+                has_graph=bool(graph_results),
+                has_fts=bool(fts_results),
+            )
+
+        code_results = self._code_memory_retrieval(task_description, retrieval_plan)
+
         # Phase 2: Hybrid fusion (vector + text + fts) then layer with graph
         if vector_results:
             vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
@@ -1524,6 +1781,11 @@ class ContextEngine:
                 )
             ]
         all_results = self._layered_fuse(graph_results, fused_results, [])
+        all_results = self._merge_ranked_results(all_results, code_results)
+        raw_evidence = ContextEngine._raw_evidence_from_results(
+            [graph_results, vector_results, text_results, fts_results, code_results],
+            retrieval_plan.budget.get("raw_evidence", 10),
+        )
 
         # P2: Evolve edge weights based on feedback patterns
         self._apply_edge_feedback()
@@ -1729,7 +1991,11 @@ class ContextEngine:
             "fts_search": "active" if fts_results else "inactive",
             "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
             "rerank_status": "multi-provider",
+            "code_memory": self._code_index.to_audit()
+            if self._code_index is not None
+            else {"enabled": False},
         }
+        ContextEngine._attach_retrieval_plan(pack, retrieval_plan, raw_evidence=raw_evidence)
 
         # ── Exemplar gap detection ─────────────────────────
         # Middleware: detect knowledge gaps before returning.
@@ -1753,6 +2019,8 @@ class ContextEngine:
         entity_name: str,
         entity_description: str = "",
         related_entities: list[str] = None,
+        metadata: dict[str, Any] | None = None,
+        source_kind: str = "",
     ) -> dict:
         """Register an entity node and optionally create edges to related entities.
 
@@ -1766,36 +2034,35 @@ class ContextEngine:
         Returns:
             dict with keys: node_id, type, edges_created
         """
-        # Validate entity_type
-        valid_types = {"principle", "task", "memory", "code_module", "skill_session"}
-        if entity_type not in valid_types:
-            raise ValueError(
-                f"Unknown entity_type '{entity_type}'. Valid: {', '.join(sorted(valid_types))}"
-            )
+        validate_node_type(entity_type)
 
         node_id = f"{entity_type}:{entity_id}"
         is_new = node_id not in self._graph_nodes
 
         # Create or update node
-        self._graph_nodes[node_id] = {
-            "type": entity_type,
-            "name": entity_name,
-            "description": entity_description or "",
-        }
+        node = graph_node(
+            node_id,
+            entity_type,
+            entity_name,
+            entity_description or "",
+            source_kind=source_kind,
+            metadata=metadata,
+        )
+        self._graph_nodes[node_id] = {k: v for k, v in node.items() if k != "id"}
+        if self._sqlite and hasattr(self._sqlite, "upsert_graph_node"):
+            self._sqlite.upsert_graph_node(node_id, self._graph_nodes[node_id])
 
         # Create edges to related entities
         edges_created = 0
         if related_entities:
             for related_id in related_entities:
-                edge = {
-                    "from": node_id,
-                    "to": related_id,
-                    "relation": "supports",
-                    "weight": PRINCIPLE_INHERITANCE_DECAY,
-                }
-                # Avoid exact duplicate edges
-                if edge not in self._graph_edges:
-                    self._graph_edges.append(edge)
+                if self.add_graph_edge(
+                    node_id,
+                    related_id,
+                    relation="supports",
+                    weight=PRINCIPLE_INHERITANCE_DECAY,
+                    source_kind=source_kind,
+                ):
                     edges_created += 1
 
         return {
@@ -3204,6 +3471,33 @@ class _SQLiteStorage:
             "metadata_json TEXT NOT NULL DEFAULT '{}'"
             ")"
         )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS behavior_graph_nodes ("
+            "id TEXT PRIMARY KEY,"
+            "node_type TEXT NOT NULL,"
+            "name TEXT NOT NULL DEFAULT '',"
+            "description TEXT NOT NULL DEFAULT '',"
+            "source_kind TEXT NOT NULL DEFAULT '',"
+            "metadata_json TEXT NOT NULL DEFAULT '{}',"
+            "schema_version TEXT NOT NULL DEFAULT 'behavior-graph/v1',"
+            "updated_at TEXT NOT NULL"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS behavior_graph_edges ("
+            "id TEXT PRIMARY KEY,"
+            "source TEXT NOT NULL,"
+            "target TEXT NOT NULL,"
+            "relation TEXT NOT NULL,"
+            "weight REAL NOT NULL DEFAULT 0.5,"
+            "source_kind TEXT NOT NULL DEFAULT '',"
+            "evidence_id TEXT NOT NULL DEFAULT '',"
+            "metadata_json TEXT NOT NULL DEFAULT '{}',"
+            "schema_version TEXT NOT NULL DEFAULT 'behavior-graph/v1',"
+            "updated_at TEXT NOT NULL,"
+            "UNIQUE(source, target, relation)"
+            ")"
+        )
         from plastic_promise.core.traceability import ensure_traceability_schema
 
         ensure_traceability_schema(self._conn)
@@ -3328,6 +3622,85 @@ class _SQLiteStorage:
     def commit(self):
         """Explicit commit (useful after batch operations)."""
         self._conn.commit()
+
+    def upsert_graph_node(self, node_id: str, node: dict) -> None:
+        import json
+
+        self._conn.execute(
+            "INSERT OR REPLACE INTO behavior_graph_nodes ("
+            "id, node_type, name, description, source_kind, metadata_json, schema_version, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                node_id,
+                node.get("type", ""),
+                node.get("name", ""),
+                node.get("description", ""),
+                node.get("source_kind", ""),
+                json.dumps(node.get("metadata", {}), ensure_ascii=False),
+                node.get("schema_version", "behavior-graph/v1"),
+                datetime.datetime.now().isoformat(),
+            ),
+        )
+        if self._batch_depth <= 0:
+            self._conn.commit()
+
+    def upsert_graph_edge(self, edge: dict) -> None:
+        import json
+
+        edge_id = edge.get("id") or f"{edge.get('from')}|{edge.get('relation')}|{edge.get('to')}"
+        self._conn.execute(
+            "INSERT OR REPLACE INTO behavior_graph_edges ("
+            "id, source, target, relation, weight, source_kind, evidence_id, metadata_json, "
+            "schema_version, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                edge_id,
+                edge.get("from", ""),
+                edge.get("to", ""),
+                edge.get("relation", ""),
+                float(edge.get("weight", 0.5)),
+                edge.get("source_kind", ""),
+                edge.get("evidence_id", ""),
+                json.dumps(edge.get("metadata", {}), ensure_ascii=False),
+                edge.get("schema_version", "behavior-graph/v1"),
+                datetime.datetime.now().isoformat(),
+            ),
+        )
+        if self._batch_depth <= 0:
+            self._conn.commit()
+
+    def iter_graph_nodes(self):
+        rows = self._conn.execute(
+            "SELECT id, node_type, name, description, source_kind, metadata_json, schema_version "
+            "FROM behavior_graph_nodes"
+        ).fetchall()
+        for row in rows:
+            yield row[0], {
+                "type": row[1],
+                "name": row[2],
+                "description": row[3],
+                "source_kind": row[4],
+                "metadata": self._json_dict_or_empty(row[5]),
+                "schema_version": row[6],
+            }
+
+    def iter_graph_edges(self):
+        rows = self._conn.execute(
+            "SELECT id, source, target, relation, weight, source_kind, evidence_id, "
+            "metadata_json, schema_version FROM behavior_graph_edges"
+        ).fetchall()
+        for row in rows:
+            yield {
+                "id": row[0],
+                "from": row[1],
+                "to": row[2],
+                "relation": row[3],
+                "weight": row[4],
+                "source_kind": row[5],
+                "evidence_id": row[6],
+                "metadata": self._json_dict_or_empty(row[7]),
+                "schema_version": row[8],
+            }
 
     class _BatchContext:
         """Context manager for batch writes — defers commits until exit."""

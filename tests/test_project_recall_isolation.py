@@ -108,6 +108,10 @@ def test_memory_recall_filters_core_and_related_by_project_visibility():
     )
 
     assert [item["id"] for item in payload["core"]] == ["same-core", "global-core"]
+    assert payload["core"][0]["project_id"] == "project:app"
+    assert payload["core"][0]["origin_scope"] == "project"
+    assert payload["core"][1]["visibility"] == "global"
+    assert payload["core"][1]["origin_scope"] == "global"
     assert [item["id"] for item in payload["related"]] == [
         "same-related",
         "global-related",
@@ -134,6 +138,7 @@ def test_memory_recall_preserves_shared_and_global_divergent_for_open_policy():
         "shared-divergent",
         "global-divergent",
     ]
+    assert payload["divergent"][1]["origin_scope"] == "shared"
 
 
 def test_memory_recall_excludes_cross_project_shared_divergent_when_strict():
