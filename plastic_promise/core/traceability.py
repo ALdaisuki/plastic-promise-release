@@ -100,6 +100,27 @@ def ensure_traceability_schema(conn) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_events (
+            event_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            event_kind TEXT NOT NULL,
+            event_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            request_scope_id TEXT NOT NULL DEFAULT '',
+            stage_session_id TEXT NOT NULL DEFAULT '',
+            flow_line_id TEXT NOT NULL DEFAULT '',
+            project_id TEXT NOT NULL DEFAULT '',
+            actor TEXT NOT NULL DEFAULT '',
+            trust_tier TEXT NOT NULL DEFAULT '',
+            defense_decision TEXT NOT NULL DEFAULT '',
+            audit_trace_json TEXT NOT NULL DEFAULT '{}',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
     call_span_columns = _table_columns(conn, "call_spans")
     if "started_at" not in call_span_columns:
         conn.execute(

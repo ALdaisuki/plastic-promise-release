@@ -73,8 +73,8 @@ It is intentionally biased toward operational traceability:
 | Capability | What it provides |
 |---|---|
 | Agent memory | Stores experience, facts, decisions, entities, events, and patterns with quality gates and decay. |
-| Context supply | Builds task-specific context packages from vector, text, symbolic, graph, worth, and recency signals. |
-| Audit and defense | Checks actions against hard boundaries, trust tiers, and audit dimensions before shared-state changes. |
+| Context supply | Builds task-specific context packages from vector, text, symbolic, graph, worth, recency, project policy, and recommendation signals. |
+| Audit and defense | Checks actions against hard boundaries, trust tiers, tool manifests, and audit dimensions before shared-state changes. |
 | Trust-driven autonomy | Maps observed reliability to autonomy, review requirements, and task-claim permissions. |
 | Skills and closure | Tracks reusable workflows and step-closure reflections so lessons feed future work. |
 | Hunter Guild dispatch | Routes work through a claim, heartbeat, completion, and verification lifecycle. |
@@ -245,7 +245,7 @@ This module map follows a capability-first layout so readers can understand the 
 | Memory pipeline | `plastic_promise/memory/`, `plastic_promise/memory/pipeline.py` | Extracts, classifies, deduplicates, quality-scores, embeds, stores, reinforces, merges, and decays memories. |
 | Storage layer | `plastic_promise/core/lancedb_store.py`, SQLite paths | Stores structured state in SQLite and vector/search state in LanceDB. |
 | Principles and graph | `plastic_promise/core/principles.py`, `plastic_promise/principles/` | Activates, evaluates, and links operating principles to memory and context. |
-| Audit, defense, trust | `plastic_promise/defense/`, `plastic_promise/core/step_auditor.py` | Enforces hard boundaries, trust tiers, audit reports, and pre-action checks. |
+| Audit, defense, trust | `plastic_promise/defense/`, `plastic_promise/core/step_auditor.py`, `plastic_promise/core/tool_manifest.py` | Enforces hard boundaries, trust tiers, tool semantic decisions, audit reports, and pre-action checks. |
 | Skills and workflow | `plastic_promise/skills/`, `plastic_promise/loop/` | Implements session lifecycle, smart remembering, step closure, and SuperPowers stage integration. |
 | Hunter Guild dispatch | `plastic_promise/mcp/tools/task_queue.py`, `plastic_promise/core/task_*` | Manages task posting, claiming, heartbeat, completion, verification, and failure penalties. |
 | Daemons and launcher | `scripts/init_and_start.py`, `daemons/maintenance_daemon.py`, `plastic_promise/launcher/` | Starts services, watches health, runs scans, and recovers routine lifecycle issues. |
@@ -256,14 +256,14 @@ This module map follows a capability-first layout so readers can understand the 
 
 ## MCP Tool Surface
 
-The current source exposes **57 MCP tools** in `plastic_promise/mcp/server.py`, including compatibility aliases such as `session_init` for `session-init`. Older documents may mention 48 or 51; those counts predate the runtime mode tool, market tools, review tools, commercial audit export, and alias surface.
+The current source exposes **58 MCP tools** in `plastic_promise/mcp/server.py`, including compatibility aliases such as `session_init` for `session-init`. Older documents may mention 48, 51, 56, or 57; those counts predate the runtime mode tool, market tools, review tools, commercial audit export, MGP shadow bridge, and alias surface.
 
 | Group | Tools |
 |---|---|
 | Memory | `memory_recall`, `memory_store`, `memory_update`, `memory_forget`, `memory_list`, `memory_gc`, `memory_correct`, `memory_reclassify`, `memory_sync_files` |
 | Principles | `principle_activate`, `principle_evaluate` |
 | Context | `context_supply`, `context_inject`, `context_graph`, `auto_context_inject` |
-| Audit and defense | `audit_run`, `audit_pre_check`, `defense` |
+| Audit and defense | `audit_run`, `audit_pre_check`, `defense` (`evaluate_tool` explains `allow`, `ask`, or `deny` from tool manifest metadata) |
 | Reflection | `scarf_reflect`, `feedback_apply` |
 | System and runtime | `system`, `runtime_mode`, `issue_create`, `issue_transition`, `issue_list` |
 | Experience packs | `pack_export`, `pack_import` |
@@ -273,6 +273,7 @@ The current source exposes **57 MCP tools** in `plastic_promise/mcp/server.py`, 
 | Programmatic skills | `session-init`, `smart-remember`, `step-closure` |
 | Review | `review_run` |
 | Commercial audit | `commercial_audit_export` |
+| MGP shadow | `mgp_shadow_bridge` |
 | Market | `market_list`, `market_install`, `market_upgrade`, `market_remove`, `market_enable`, `market_disable`, `market_status` |
 | SuperPowers | `sp-stage` |
 
@@ -316,6 +317,8 @@ Memory is admitted only when it passes quality checks. Reuse increases worth; st
 
 Concurrent heavy context calls can carry `stage_session_id`, `flow_line_id`, and `request_id`. Plastic Promise derives a `request_scope_id` from those fields, includes it in audit metadata and `context_supply` output, and uses it to isolate `memory_recall` cache entries across overlapping SuperPowers stages or agent flows.
 
+`memory_recall` and `context_supply` also return context recommender metadata. Recommendations include stable reasons and ranking inputs, but they annotate the selected context instead of bypassing project policy, exclusions, trust boundaries, or explicit retrieval budgets.
+
 In `rust-full`, `memory_recall(debug=true)` stays on the Rust snapshot hot path when Rust is healthy and preferred. Debug recall still returns Rust `pipeline_stats` and `per_item_stats`, and only falls back to Python if the Rust path is unavailable or throws. When LanceDB rows exist, debug `pipeline_stats` should report a nonzero `vector_count`; `vector_hits` may be zero only when the query has no vector match.
 
 ### Step closure
@@ -325,6 +328,14 @@ In `rust-full`, `memory_recall(debug=true)` stays on the Rust snapshot hot path 
 ### Trust-score-driven autonomy
 
 Trust is persisted and changes over time. Higher trust allows more autonomy; lower trust requires more explicit approval or read-only behavior.
+
+### Governance runtime events
+
+Tool calls and Hunter Guild task transitions are recorded as `runtime_events` with `pending`, `running`, `completed`, or `error` status plus request scope, trust tier, defense decision, and audit trace metadata. These events complement span logs by preserving state transitions that can be replayed or audited.
+
+### MGP shadow bridge
+
+`mgp_shadow_bridge` maps MGP-like memory governance operations to Plastic Promise semantics. P1 mode is audit-first: `shadow` records policy decisions without mutating memory, and `inject` is reserved for a later phase.
 
 ### Explicit degraded mode
 

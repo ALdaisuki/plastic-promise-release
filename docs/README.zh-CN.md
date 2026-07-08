@@ -130,17 +130,22 @@ http://127.0.0.1:9020/sse
 | 能力 | 说明 |
 |---|---|
 | 记忆质量管道 | 对经验、事实、决策、实体、事件、模式进行提取、分类、去重、门控、嵌入和衰减。 |
-| 上下文供给 | `context_supply` 根据当前任务生成核心、关联、发散三层上下文。 |
-| 审计与防线 | `audit_pre_check`、`audit_run`、`defense` 在写操作和风险动作前提供检查。 |
+| 上下文供给 | `context_supply` 根据当前任务生成核心、关联、发散三层上下文，并返回推荐原因与 project/global 来源标记。 |
+| 审计与防线 | `audit_pre_check`、`audit_run`、`defense` 在写操作和风险动作前提供检查；`defense(action="evaluate_tool")` 可解释工具语义决策。 |
 | 信任分驱动自治 | 信任分越高，自主权越大；信任分下降时需要更多显式确认。 |
 | Hunter Guild 委托系统 | 通过 `task_enqueue -> task_claim -> task_complete -> task_verify` 管理多 Agent 协作。 |
 | Skills / SuperPowers | `session-init`、`smart-remember`、`step-closure`、16 阶段 `sp-stage` 把工作流变成可追踪工具。 |
 | Maintenance Daemon | 执行扫描、恢复、GC、任务生命周期维护和调度健康检查。 |
+| P1 治理运行时 | 工具清单图、`runtime_events`、`mgp_shadow_bridge`、Context Recommender 为审计和推荐提供可解释元数据。 |
 | 插件与市场 | 通过 pack 元数据加载知识、工作流、能力和适配器扩展。 |
+
+当前 `plastic_promise/mcp/server.py` 暴露 58 个 MCP 工具，包含 `session_init` / `sp_stage` 等兼容别名。`mgp_shadow_bridge` 是 MGP 兼容语义桥；P1 阶段只做 off/shadow/inject 模式管理与审计映射，不直接改写长期记忆。
 
 `sp-stage` 当前覆盖完整 SuperPowers 技能面：`using-superpowers`、`brainstorming`、`exemplar-research`、`using-git-worktrees`、`writing-plans`、`executing-plans`、`subagent-driven-development`、`test-driven-development`、`verification-before-completion`、`finishing-a-development-branch`、`requesting-code-review`、`receiving-code-review`、`audit`、`systematic-debugging`、`dispatching-parallel-agents`、`writing-skills`。其中 `using-superpowers` 和 `writing-skills` 是元技能阶段，用于启动技能选择和技能编写/验证流程。
 
 重型 `memory_recall` / `context_supply` 调用可携带 `stage_session_id`、`flow_line_id` 和 `request_id`。系统会派生 `request_scope_id`，写入审计元数据并显示在 `context_supply` 输出中，同时用它隔离重叠 SuperPowers 阶段或多 Agent 流程中的召回缓存。
+
+`runtime_events` 会记录工具调用和 Hunter Guild 任务流转的 `pending`、`running`、`completed`、`error` 状态，并携带 request scope、trust tier、defense decision 和 audit trace，方便回放与审计。
 
 在 `rust-full` 模式下，`memory_recall(debug=true)` 在 Rust 健康且优先时仍走 Rust snapshot 热路径，并返回 Rust `pipeline_stats` / `per_item_stats`；只有 Rust 不可用或异常时才回退 Python。当 LanceDB 中已有向量行时，debug `pipeline_stats` 应显示非零 `vector_count`；只有查询没有向量命中时，`vector_hits` 才可能为 0。
 

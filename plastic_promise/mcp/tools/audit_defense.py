@@ -12,9 +12,12 @@
 """
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp.types import TextContent
+
+if TYPE_CHECKING:
+    from plastic_promise.defense.soul_enforcer import TrustManager
 
 # ---------------------------------------------------------------------------
 # audit_run (stub)
@@ -332,6 +335,32 @@ async def handle_defense_status(engine: Any, args: dict) -> list[TextContent]:
 async def handle_defense(engine: Any, args: dict) -> list[TextContent]:
     """防线统一入口。action: get|history|adjust|status"""
     action = args.get("action", "get")
+    if action == "evaluate_tool":
+        from plastic_promise.core.tool_manifest import (
+            evaluate_tool_decision,
+            manifest_for_tool,
+        )
+
+        target = args.get("target", "")
+        tm = _get_trust_manager()
+        trust_score = float(args.get("trust_score", tm.get(target)))
+        trust_tier = str(args.get("trust_tier") or tm.tier(target))
+        manifest = manifest_for_tool(str(args.get("tool_name", "")))
+        decision = evaluate_tool_decision(
+            manifest,
+            trust_score,
+            trust_tier=trust_tier,
+        )
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"action": "evaluate_tool", "target": target or "default", **decision},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
     if action == "status":
         return await handle_defense_status(engine, args)
     else:

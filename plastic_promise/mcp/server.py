@@ -594,6 +594,38 @@ async def list_tools() -> list[Tool]:
                     "required": ["task_description"],
                 },
             ),
+            Tool(
+                name="mgp_shadow_bridge",
+                description="MGP-compatible memory governance shadow bridge: status/set_mode/evaluate; P1 is audit-only and does not mutate memory.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "description": "status|set_mode|evaluate",
+                            "enum": ["status", "set_mode", "evaluate"],
+                        },
+                        "mode": {
+                            "type": "string",
+                            "description": "Bridge rollout mode",
+                            "enum": ["off", "shadow", "inject"],
+                        },
+                        "operation": {
+                            "type": "string",
+                            "description": "MGP operation: write/search/get/update/expire/delete/revoke/purge/list",
+                        },
+                        "subject": {"type": "string", "description": "MGP subject or scope"},
+                        "content": {"type": "string", "description": "Candidate memory content"},
+                        "metadata": {"type": "object", "description": "MGP operation metadata"},
+                        "policy_context": {
+                            "type": "object",
+                            "description": "Policy context carrying project_id, trust tier, request scope, source agent, and domain",
+                        },
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            ),
         ]
     )
 
@@ -642,18 +674,30 @@ async def list_tools() -> list[Tool]:
             ),
             Tool(
                 name="defense",
-                description="防线管理: action=get|history|adjust|status",
+                description="防线管理: action=get|history|adjust|status|evaluate_tool",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "description": "get|history|adjust|status",
-                            "enum": ["get", "history", "adjust", "status"],
+                            "description": "get|history|adjust|status|evaluate_tool",
+                            "enum": ["get", "history", "adjust", "status", "evaluate_tool"],
                         },
                         "delta": {"type": "number", "description": "调整量 (±0.01 ~ ±0.10)"},
                         "reason": {"type": "string", "description": "调整原因"},
                         "target": {"type": "string", "description": "信任分目标 (空串=当前 Agent)"},
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Tool name for action=evaluate_tool",
+                        },
+                        "trust_score": {
+                            "type": "number",
+                            "description": "Optional trust score override for tool semantic evaluation",
+                        },
+                        "trust_tier": {
+                            "type": "string",
+                            "description": "Optional trust tier label for tool semantic evaluation",
+                        },
                     },
                     "required": ["action"],
                     "additionalProperties": False,
@@ -1639,6 +1683,76 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _tool_runtime_event_context(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from plastic_promise.core.tool_manifest import (
+            evaluate_tool_decision,
+            manifest_for_tool,
+        )
+        from plastic_promise.mcp.tools.audit_defense import _get_trust_manager
+        from plastic_promise.mcp.tools.request_scope import build_request_scope
+
+        scope = build_request_scope(arguments, name)
+        tm = _get_trust_manager()
+        target = str(arguments.get("target") or "")
+        trust_score = float(arguments.get("trust_score", tm.get(target)))
+        trust_tier = str(arguments.get("trust_tier") or tm.tier(target))
+        manifest = manifest_for_tool(name)
+        decision = evaluate_tool_decision(manifest, trust_score, trust_tier=trust_tier)
+        return {
+            **scope,
+            "tool_name": name,
+            "actor": str(arguments.get("actor") or arguments.get("agent_name") or "mcp"),
+            "trust_tier": trust_tier,
+            "defense_decision": decision["decision"],
+            "audit_trace": {
+                "tool_name": name,
+                "risk_level": manifest.risk_level,
+                "required_trust": manifest.trust_requirement,
+                "trust_score": trust_score,
+            },
+            "metadata": {
+                "side_effects": list(manifest.side_effects),
+                "fallbacks": list(manifest.fallbacks),
+            },
+        }
+    except Exception:
+        return {
+            "tool_name": name,
+            "request_scope_id": "",
+            "stage_session_id": "",
+            "flow_line_id": "",
+            "actor": "mcp",
+            "trust_tier": "",
+            "defense_decision": "",
+            "audit_trace": {},
+            "metadata": {},
+        }
+
+
+def _record_tool_runtime_event(engine: Any, ctx: dict[str, Any], status: str) -> None:
+    try:
+        from plastic_promise.core.event_protocol import safe_record_runtime_event
+
+        safe_record_runtime_event(
+            engine,
+            event_kind="tool",
+            event_name=ctx.get("tool_name", ""),
+            status=status,
+            request_scope_id=ctx.get("request_scope_id", ""),
+            stage_session_id=ctx.get("stage_session_id", ""),
+            flow_line_id=ctx.get("flow_line_id", ""),
+            project_id=str(ctx.get("project_id", "")),
+            actor=ctx.get("actor", "mcp"),
+            trust_tier=ctx.get("trust_tier", ""),
+            defense_decision=ctx.get("defense_decision", ""),
+            audit_trace=ctx.get("audit_trace", {}),
+            metadata=ctx.get("metadata", {}),
+        )
+    except Exception:
+        pass
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Route MCP tool calls to handler modules.
@@ -1648,6 +1762,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     Handlers are lazily imported on first call.
     """
     engine = get_engine()
+    runtime_ctx = _tool_runtime_event_context(name, arguments)
+    runtime_status = "completed"
+    _record_tool_runtime_event(engine, runtime_ctx, "pending")
+    _record_tool_runtime_event(engine, runtime_ctx, "running")
 
     try:
         # Memory domain
@@ -1710,6 +1828,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
             return await handle_auto_context_inject(engine, arguments)
+        elif name == "mgp_shadow_bridge":
+            from plastic_promise.mcp.tools.mgp_shadow import handle_mgp_shadow_bridge
+
+            return await handle_mgp_shadow_bridge(engine, arguments)
 
         # Audit and defense
         elif name == "audit_run":
@@ -2202,6 +2324,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             except Exception:
                 pass
 
+            runtime_status = "error"
             return [
                 TextContent(
                     type="text",
@@ -2209,12 +2332,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 )
             ]
     except Exception as e:
+        runtime_status = "error"
         logging.exception(f"Tool {name} failed")
         return [
             TextContent(
                 type="text", text=json.dumps({"error": str(e), "tool": name}, ensure_ascii=False)
             )
         ]
+    finally:
+        _record_tool_runtime_event(engine, runtime_ctx, runtime_status)
 
 
 # ===================================================================

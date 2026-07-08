@@ -95,6 +95,9 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         if project_warnings:
             pack.audit_metadata["warnings"] = project_warnings
             pack.audit_metadata["minimum_result"] = "project_restricted_context"
+        from plastic_promise.core.context_recommender import attach_context_recommendations
+
+        attach_context_recommendations(pack, task_type=task_type)
 
         safe_record_call_span(
             engine,

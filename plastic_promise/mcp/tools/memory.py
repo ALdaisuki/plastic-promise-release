@@ -361,6 +361,17 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             for item in pack.divergent
             if _project_allowed(item, project_ctx, "divergent", engine)
         ]
+        from plastic_promise.core.context_recommender import recommend_context_items
+
+        context_recommendations = recommend_context_items(
+            [*core_items, *related_items, *divergent_items],
+            task_type=task_type,
+        )
+        audit_metadata["context_recommender"] = {
+            "task_type": task_type,
+            "recommendations": context_recommendations,
+            "hard_constraints": "preserved_before_ranking",
+        }
 
         response_payload = {
             "core": [
@@ -388,6 +399,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             "budget": audit_metadata.get("budget")
             or (audit_metadata.get("retrieval_plan") or {}).get("budget", {}),
             "raw_evidence": audit_metadata.get("raw_evidence", []),
+            "context_recommendations": context_recommendations,
             "federation_signals": _generate_federation_signals(
                 pack, domain_hint, engine, federation
             ),

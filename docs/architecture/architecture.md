@@ -1,7 +1,7 @@
 # Plastic Promise — Architecture Reference
 
 > Release-facing architecture reference.
-> Last updated: 2026-07-06.
+> Last updated: 2026-07-08.
 
 ## 1. System Overview
 
@@ -9,7 +9,7 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 
 - **Purpose**: Help AI agents act with memory, principles, verification, and traceable autonomy.
 - **Primary users**: Claude Code, MCP clients, agent teams, and maintainers operating local governance workflows.
-- **Current tool surface**: 57 MCP tools declared in `plastic_promise/mcp/server.py`, including compatibility aliases.
+- **Current tool surface**: 58 MCP tools declared in `plastic_promise/mcp/server.py`, including compatibility aliases.
 - **Primary storage**: SQLite WAL for structured state and LanceDB for vector/text retrieval.
 - **Acceleration path**: optional Rust `context-engine-core`; Python remains the canonical write/full fallback pipeline and applies a final recall-noise guard to Rust results. In `rust-full`, normal recall and `memory_recall(debug=true)` stay on the Rust snapshot hot path while Rust is healthy.
 
@@ -31,6 +31,7 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 | Memory Pipeline | `plastic_promise/memory/`, `plastic_promise/memory/pipeline.py` | Extracts, classifies, deduplicates, scores, embeds, persists, reinforces, merges, and decays memories. |
 | Storage Layer | SQLite + `plastic_promise/core/lancedb_store.py` | Persists records, tasks, trust, graph metadata, and vector/search indexes. |
 | Trust and Defense | `plastic_promise/defense/`, `plastic_promise/core/step_auditor.py` | Applies hard boundaries, trust tiers, audit reports, and pre-action checks. |
+| Governance Runtime | `plastic_promise/core/tool_manifest.py`, `plastic_promise/core/event_protocol.py`, `plastic_promise/core/mgp_shadow.py`, `plastic_promise/core/context_recommender.py` | Adds explainable tool manifests, unified runtime events, MGP shadow semantics, and recommendation metadata without replacing SQLite truth sources. |
 | Skills | `plastic_promise/skills/`, `plastic_promise/loop/` | Implements session lifecycle, smart remembering, step closure, and SuperPowers stage integration. |
 | Hunter Guild | `plastic_promise/mcp/tools/task_queue.py`, `plastic_promise/core/task_*` | Coordinates task enqueue, claim, heartbeat, completion, verification, and penalties. |
 | Maintenance Daemon | `daemons/maintenance_daemon.py`, `plastic_promise/cron/` | Runs lifecycle scans, scheduler health checks, memory decay scans, trust scans, and quality scans. The script bootstraps the project root for direct execution. |
@@ -57,7 +58,9 @@ MCP Server (stdio or SSE)
     |
     +--> memory_recall / context_supply --> Request scope --> Context Engine --> SQLite + LanceDB
     |
-    +--> audit_pre_check / defense -------> TrustStore + Audit
+    +--> audit_pre_check / defense -------> TrustStore + Audit + Tool Manifest
+    |
+    +--> mgp_shadow_bridge ---------------> MGP policy mapping + runtime_events
     |
     +--> task_enqueue / task_claim --------> Hunter Guild tables
     |
@@ -89,18 +92,21 @@ context_supply(task)
   -> Rust snapshot hot path for rust-full normal and debug recall
   -> recall-noise guard before scoring and at the Rust/Python boundary
   -> rank fusion and optional rerank
+  -> context recommender annotations
   -> worth/decay adjustment
   -> core, related, divergent context package
 ```
 
 Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flow_line_id`, and `request_id`. The MCP handlers derive `request_scope_id`, attach it to audit metadata, render it in `context_supply` output, and use it to keep overlapping SuperPowers stages, sub-agent dispatches, and recall cache entries isolated.
 
+Context recommendation metadata is advisory. It explains why already-eligible memories, tools, or principles were ranked, but it does not reintroduce hard-excluded context or override project policy.
+
 ## 7. Trust and Error Handling
 
 | Layer | Mechanism | Trigger | Action |
 |---|---|---|---|
 | L0 hard boundary | `audit_pre_check` / enforcer | Dangerous or forbidden operation | Block and record trust impact. |
-| L1 trust constraint | `defense(action="get")` | Trust below required tier | Restrict action or require approval. |
+| L1 trust constraint | `defense(action="get")` / `defense(action="evaluate_tool")` | Trust below required tier or tool manifest risk requires review | Restrict action, ask for approval, or explain allow/ask/deny. |
 | L2 immune patrol | Audit and daemon scans | Periodic health or quality issues | Report, enqueue repair, or degrade explicitly. |
 | Task timeout | Hunter Guild heartbeat | Missing heartbeat | Release, escalate, or penalize according to lifecycle rules. |
 | Degraded mode | fallback flags and explicit status | Optional subsystem unavailable | Continue through safe fallback and label uncertainty. |
@@ -112,6 +118,7 @@ Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flo
 | Memories | SQLite + LanceDB | Structured metadata plus vector/text search. |
 | Trust scores | SQLite | Persisted in `trust_scores` and history tables. |
 | Task queue | SQLite | Hunter Guild lifecycle tables. |
+| Runtime events | SQLite `runtime_events` | Unified pending/running/completed/error events for tool calls, task transitions, and MGP shadow evaluations. |
 | Runtime logs | `var/log/` | Local runtime output; not part of public docs. |
 | Runtime PIDs/heartbeats | `var/run/` | Used by launcher and daemon. |
 | Service import path | child-process `PYTHONPATH` + daemon `sys.path` bootstrap | Keeps launcher-managed and direct daemon starts aligned with source checkout imports. |

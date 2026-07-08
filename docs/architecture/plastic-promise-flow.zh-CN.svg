@@ -55,7 +55,7 @@
   <rect x="316" y="176" width="206" height="96" rx="14" class="entry"/>
   <text x="344" y="210" class="label">MCP Server</text>
   <text x="344" y="234" class="small">stdio / SSE / HTTP</text>
-  <text x="344" y="252" class="tiny">56 个工具与兼容别名</text>
+  <text x="344" y="252" class="tiny">58 个工具与兼容别名</text>
 
   <rect x="316" y="322" width="206" height="96" rx="14" class="entry"/>
   <text x="344" y="356" class="label">工具暴露面</text>

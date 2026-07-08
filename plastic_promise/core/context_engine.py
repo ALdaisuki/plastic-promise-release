@@ -13,9 +13,10 @@ import math
 import os
 import threading
 import time
+from collections.abc import Iterator
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from plastic_promise.core.behavior_graph import graph_edge, graph_node, validate_node_type
 from plastic_promise.core.constants import (
@@ -30,6 +31,9 @@ from plastic_promise.core.paths import get_db_path
 from plastic_promise.core.retrieval_planner import RetrievalPlan, plan_retrieval
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from plastic_promise.core.exemplar_gap_detector import GapSignal
 
 # ============================================================
 # 数据模型 (与 Rust 结构体一一对应)
@@ -133,6 +137,19 @@ class ContextPack:
                     content = str(evidence.get("content", ""))[:120]
                     lines.append(f"  - [{source}] {item_id} score={score:.3f} {content}")
             lines.append("")
+
+        recommender = self.audit_metadata.get("context_recommender")
+        if isinstance(recommender, dict):
+            recommendations = recommender.get("recommendations")
+            if isinstance(recommendations, list) and recommendations:
+                lines.append("## [CONTEXT_RECOMMENDER]")
+                for rec in recommendations[:5]:
+                    reasons = ",".join(rec.get("reasons", []))
+                    lines.append(
+                        f"- {rec.get('id', '?')} score={rec.get('score', 0.0):.3f} "
+                        f"layer={rec.get('layer', '')} reasons={reasons}"
+                    )
+                lines.append("")
 
         request_scope = self.audit_metadata.get("request_scope")
         if isinstance(request_scope, dict) and request_scope.get("request_scope_id"):

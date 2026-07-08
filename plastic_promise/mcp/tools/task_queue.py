@@ -65,6 +65,40 @@ def _get_conn():
     return conn
 
 
+def _record_task_runtime_event(
+    conn,
+    *,
+    event_name: str,
+    status: str,
+    args: dict[str, Any],
+    task_id: str,
+    actor: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    try:
+        from plastic_promise.core.event_protocol import record_runtime_event
+        from plastic_promise.mcp.tools.request_scope import build_request_scope
+
+        scope = build_request_scope(args, event_name)
+        record_runtime_event(
+            conn,
+            event_kind="task",
+            event_name=event_name,
+            status=status,
+            request_scope_id=scope["request_scope_id"],
+            stage_session_id=scope["stage_session_id"],
+            flow_line_id=scope["flow_line_id"],
+            project_id=str(args.get("project_id") or ""),
+            actor=actor,
+            trust_tier=str(args.get("trust_tier") or ""),
+            defense_decision=str(args.get("defense_decision") or ""),
+            audit_trace={"task_id": task_id},
+            metadata={"task_id": task_id, **(metadata or {})},
+        )
+    except Exception:
+        pass
+
+
 # ═══════════════════════════════════════════════════════════════
 # task_enqueue
 # ═══════════════════════════════════════════════════════════════
@@ -231,6 +265,19 @@ async def handle_task_enqueue(engine: Any, args: dict) -> list[TextContent]:
         ),
     )
     conn.commit()
+    _record_task_runtime_event(
+        conn,
+        event_name="task_enqueue",
+        status="pending",
+        args=args,
+        task_id=task_id,
+        actor=from_agent,
+        metadata={
+            "task_type": args["task_type"],
+            "to_agent": args["to_agent"],
+            "priority": priority,
+        },
+    )
 
     # Use match_subscribers() for accurate counting (keywords respected)
     try:
@@ -372,6 +419,19 @@ async def handle_task_claim(engine: Any, args: dict) -> list[TextContent]:
             )
         ]
 
+    _record_task_runtime_event(
+        conn,
+        event_name="task_claim",
+        status="running",
+        args=args,
+        task_id=task_id,
+        actor=agent_name,
+        metadata={
+            "task_type": task["task_type"],
+            "priority": task["priority"],
+            "force": force,
+        },
+    )
     conn.close()
 
     # SSE broadcast — notify submitter that task was claimed
@@ -480,6 +540,19 @@ async def handle_task_complete(engine: Any, args: dict) -> list[TextContent]:
         )
         conn.commit()
 
+    _record_task_runtime_event(
+        conn,
+        event_name="task_complete",
+        status="completed",
+        args=args,
+        task_id=task_id,
+        actor=agent_name,
+        metadata={
+            "task_type": task["task_type"],
+            "verification_task_id": verify_task_id,
+            "artifacts": artifacts,
+        },
+    )
     conn.close()
 
     # SSE broadcast — notify submitter that task is done
@@ -594,6 +667,19 @@ async def handle_task_verify(engine: Any, args: dict) -> list[TextContent]:
         except Exception:
             pass
 
+        _record_task_runtime_event(
+            conn,
+            event_name="task_verify",
+            status="completed",
+            args=args,
+            task_id=task_id,
+            actor=verified_by,
+            metadata={
+                "task_type": task["task_type"],
+                "verdict": verdict,
+                "claimed_by": task["claimed_by"],
+            },
+        )
         conn.close()
 
         # SSE broadcast — notify hunter of verification result

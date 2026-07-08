@@ -50,6 +50,10 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 - 记忆质量管道已接入提取、分类、向量去重、QualityGate、衰减初始化与 LanceDB 双写。
 - ContextEngine Python 路径仍是完整回退和写侧权威路径；`rust-full` 下正常召回和 `memory_recall(debug=true)` 在 Rust 健康时走 Rust snapshot 热路径。
 - `memory_recall` / `context_supply` 支持 `stage_session_id`、`flow_line_id`、`request_id`，通过 `request_scope_id` 隔离并发重型上下文请求、审计元数据和 `context_supply` 可见 trace。
+- Context Recommender 已接入 `memory_recall` / `context_supply`，返回推荐原因与排序元数据，但不覆盖 project policy、硬排除或信任边界。
+- Tool Manifest Graph 已覆盖 MCP 工具语义，`defense(action="evaluate_tool")` 可基于能力、风险、副作用、信任要求与 fallback 返回 `allow|ask|deny`。
+- Unified Event Protocol 已落地 `runtime_events`，记录 task/tool/agent 调用的 `pending/running/completed/error` 状态、request scope、trust tier、defense decision 与 audit trace。
+- `mgp_shadow_bridge` 已作为审计优先的 MGP 兼容桥暴露，P1 只映射治理语义并记录审计事件，不改写长期记忆。
 - `session-init`、`smart-remember`、`step-closure`、`sp-stage` 已作为程序化技能暴露。
 - TrustStore 将信任分持久化到 SQLite。
 - Hunter Guild 任务生命周期工具已接入 MCP。
@@ -58,13 +62,14 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 ### 实验/仍需验证
 
 - Rust context-engine-core 是可选加速路径，仍需持续补齐与 Python 管线的语义一致性；当前已对 daemon audit telemetry 建立 Rust snapshot 入口过滤与 Python native-result 边界过滤。
+- MGP Shadow Bridge 的 `inject` 模式仍是后续阶段预留；当前不向 recall/context 请求注入外部治理策略。
 - Hunter Guild 的扫描器信噪比、惩罚策略和任务路由仍在迭代。
 - 插件市场生态处于早期阶段。
 - 发行版文档正在从内部操作手册整理为公开用户文档。
 
 ### 当前 MCP 工具面
 
-当前 `plastic_promise/mcp/server.py` 中暴露 57 个 MCP 工具，其中包含 `session_init` / `sp_stage` 等兼容别名。旧文档中的 40、41、48、51、56 等数字是阶段性历史记录，发行版文档以后以源码声明为准。
+当前 `plastic_promise/mcp/server.py` 中暴露 58 个 MCP 工具，其中包含 `session_init` / `sp_stage` 等兼容别名。旧文档中的 40、41、48、51、56、57 等数字是阶段性历史记录，发行版文档以后以源码声明为准。
 
 主要分组：
 
@@ -72,9 +77,10 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 |---|---|
 | Memory | 记忆检索、存储、更新、纠正、GC、重分类、文件同步 |
 | Principles | 原则激活与反事实评估 |
-| Context | 上下文供给、图谱、注入与自动上下文注入 |
-| Audit/Defense | 审计、防线、信任分 |
+| Context | 上下文供给、图谱、注入、自动上下文注入与推荐元数据 |
+| Audit/Defense | 审计、防线、信任分与工具语义决策 |
 | Commercial Audit | 商业审计导出：call spans、降级事件、store outbox |
+| MGP Shadow | MGP 兼容语义桥：shadow 审计、模式查询与 inject 预留 |
 | Reflection | SCARF 自省与反馈应用 |
 | System/Runtime | 系统状态、运行模式热更新、Issue 生命周期 |
 | Pack | 经验包导入导出 |
