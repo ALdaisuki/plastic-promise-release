@@ -153,7 +153,10 @@ def test_memory_recall_excludes_cross_project_shared_divergent_when_strict():
     ]
 
 
-def test_unknown_project_degrades_visibly_and_restricts_core_related_to_global():
+def test_unknown_project_degrades_visibly_and_restricts_core_related_to_global(monkeypatch):
+    monkeypatch.delenv("PLASTIC_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PP_PROJECT_ID", raising=False)
+
     payload = _recall_payload(
         {
             "query": "diff review",

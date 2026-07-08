@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -7,6 +8,7 @@ from typing import Any
 VALID_PROJECT_POLICIES = {"strict", "balanced", "open"}
 VALID_VISIBILITIES = {"project", "global", "shared", "private"}
 TELEMETRY_SOURCES = {"maintenance_daemon", "skill_session", "step_auditor"}
+PROJECT_ID_ENV_KEYS = ("PLASTIC_PROJECT_ID", "PP_PROJECT_ID")
 
 
 @dataclass
@@ -117,10 +119,23 @@ def _infer_project_id(values: dict[str, Any]) -> str:
     if scope == "global":
         return "project:legacy-global"
 
+    env_project_id = _infer_env_project_id()
+    if env_project_id:
+        return env_project_id
+
     return "project:unknown"
 
 
 def _normalize_project_id(project_id: str) -> str:
+    project_id = project_id.strip()
     if project_id.startswith("project:"):
         return project_id
     return f"project:{project_id}"
+
+
+def _infer_env_project_id() -> str:
+    for key in PROJECT_ID_ENV_KEYS:
+        value = os.environ.get(key, "")
+        if value and value.strip():
+            return _normalize_project_id(value)
+    return ""

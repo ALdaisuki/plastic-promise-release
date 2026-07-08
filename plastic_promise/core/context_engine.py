@@ -1249,6 +1249,8 @@ class ContextEngine:
         IMPORTANT: _supply_python is the ORIGINAL independent Python
         implementation. It does NOT call back into supply() — no recursion.
         """
+        self._ensure_heavy_init()
+
         # Generate embedding if not provided (backward compatibility)
         if task_vector is None:
             task_vector = self._embed(task_description)

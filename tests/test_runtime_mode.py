@@ -33,8 +33,8 @@ def test_runtime_mode_env_for_rust_full():
     assert env["PP_FORCE_PYTHON_SUPPLY"] == "0"
     assert env["PP_PREFER_RUST_SUPPLY"] == "1"
     assert env["LDB_INIT_ON_HEAVY_INIT"] == "1"
-    assert env["LDB_BACKFILL_ON_INIT"] == "1"
-    assert env["LDB_REBUILD_ON_INIT"] == "1"
+    assert env["LDB_BACKFILL_ON_INIT"] == "0"
+    assert env["LDB_REBUILD_ON_INIT"] == "0"
     assert env["PLASTIC_SKIP_LANCEDB_WARMUP"] == "0"
 
 

@@ -221,6 +221,47 @@ def test_debug_supply_uses_rust_path_when_rust_is_preferred(monkeypatch):
     assert pack.pipeline_stats["engine_mode"] == "snapshot"
 
 
+def test_supply_with_precomputed_vector_runs_heavy_init_before_rust(monkeypatch):
+    """Caller-provided vectors must not bypass backend initialization."""
+    from plastic_promise.core.context_engine import ContextEngine, ContextPack
+
+    monkeypatch.setenv("PP_PREFER_RUST_SUPPLY", "1")
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "0")
+
+    engine = ContextEngine(use_sqlite=False)
+    engine._check_rust_health = lambda: True
+
+    calls = {"heavy_init": 0, "rust": 0}
+
+    def fake_heavy_init():
+        calls["heavy_init"] += 1
+        engine._heavy_init_done = True
+
+    def fake_rust(task_description, task_vector, task_type, scope, **_kwargs):
+        calls["rust"] += 1
+        pack = ContextPack()
+        pack.audit_metadata = {"engine_version": "0.2.0-rs"}
+        pack.pipeline_stats = {"engine_mode": "snapshot"}
+        return pack
+
+    engine._ensure_heavy_init = fake_heavy_init
+    engine._supply_rust = fake_rust
+    engine._supply_python = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("expected Rust path")
+    )
+
+    pack = engine.supply(
+        "precomputed vector recall",
+        [0.1] * 1024,
+        "debugging",
+        "global",
+        debug=True,
+    )
+
+    assert calls == {"heavy_init": 1, "rust": 1}
+    assert pack.pipeline_stats["engine_mode"] == "snapshot"
+
+
 def test_supply_rust_uses_new_with_backends_and_project_context(monkeypatch, tmp_path):
     """_supply_rust should use the explicit backend constructor when available."""
     import sys

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-07-08
+
+### Fixed
+
+- Initialized LanceDB/domain heavy backends at the `ContextEngine.supply()` boundary before Rust snapshot retrieval, even when MCP callers provide a precomputed task vector.
+- Resolved implicit project-context degradation by inferring `PLASTIC_PROJECT_ID` / `PP_PROJECT_ID` and setting `project:plastic-promise` defaults for both launcher-managed and direct MCP starts.
+- Kept `rust-full` request-process startup responsive by leaving LanceDB backfill/rebuild to launcher warmup maintenance instead of per-process runtime mode env.
+
+### Changed
+
+- Documented default project identity behavior for launcher and direct MCP starts.
+
 ## [0.1.7] - 2026-07-08
 
 ### Fixed

@@ -43,9 +43,11 @@ from plastic_promise import __version__
 from plastic_promise.core.constants import (
     CORE_PRINCIPLES,
 )
+from plastic_promise.launcher.default_environment import configure_default_environment
 from plastic_promise.launcher.runtime_mode import RUNTIME_MODE_KEYS
 
 PLASTIC_PROMISE_VERSION = __version__
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _engine = None  # 延迟初始化
 _skill_engine = None  # 延迟初始化 — SkillEngine 单例
 _closure_history: deque = deque(maxlen=5)  # 滑动窗口: 最近5次闭环 {scarf, trust, cei}
@@ -2299,6 +2301,8 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
 async def main():
     """MCP Server 启动入口 — 支持 stdio 和 SSE 双模式"""
     import sys
+
+    configure_default_environment(_PROJECT_ROOT)
 
     if len(sys.argv) >= 3 and sys.argv[1] == "--sse":
         # SSE 模式 — 供 Pi 和其他 Agent 通过 HTTP 连接

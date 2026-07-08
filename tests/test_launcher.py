@@ -2,6 +2,7 @@
 
 import os
 import importlib.util
+import asyncio
 import sqlite3
 import subprocess
 import sys
@@ -259,6 +260,62 @@ def test_maintenance_daemon_script_bootstraps_project_root_without_pythonpath(tm
 
     assert result.returncode == 0, result.stderr
     assert "daemon imports ok" in result.stdout
+
+
+def test_launcher_configures_default_project_identity(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    monkeypatch.delenv("PLASTIC_DB_PATH", raising=False)
+    monkeypatch.delenv("PLASTIC_LANCEDB_PATH", raising=False)
+    monkeypatch.delenv("PLASTIC_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PP_PROJECT_ID", raising=False)
+
+    module.configure_default_environment(str(tmp_path))
+
+    assert os.environ["PLASTIC_DB_PATH"] == os.path.join(
+        str(tmp_path), "data", "db", "plastic_memory.db"
+    )
+    assert os.environ["PLASTIC_LANCEDB_PATH"] == os.path.join(
+        str(tmp_path), "data", "lancedb"
+    )
+    assert os.environ["PLASTIC_PROJECT_ID"] == "project:plastic-promise"
+
+
+def test_launcher_preserves_pp_project_id_fallback(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    monkeypatch.delenv("PLASTIC_DB_PATH", raising=False)
+    monkeypatch.delenv("PLASTIC_LANCEDB_PATH", raising=False)
+    monkeypatch.delenv("PLASTIC_PROJECT_ID", raising=False)
+    monkeypatch.setenv("PP_PROJECT_ID", "project:custom")
+
+    module.configure_default_environment(str(tmp_path))
+
+    assert "PLASTIC_PROJECT_ID" not in os.environ
+    assert os.environ["PP_PROJECT_ID"] == "project:custom"
+
+
+def test_direct_mcp_server_configures_default_project_identity(monkeypatch):
+    from plastic_promise.mcp import server as mcp_server
+
+    captured = {}
+
+    async def fake_run_sse(port):
+        captured["port"] = port
+
+    monkeypatch.delenv("PLASTIC_DB_PATH", raising=False)
+    monkeypatch.delenv("PLASTIC_LANCEDB_PATH", raising=False)
+    monkeypatch.delenv("PLASTIC_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PP_PROJECT_ID", raising=False)
+    monkeypatch.setattr(sys, "argv", ["server.py", "--sse", "9020"])
+    monkeypatch.setattr(mcp_server, "run_sse", fake_run_sse)
+
+    asyncio.run(mcp_server.main())
+
+    assert captured["port"] == 9020
+    assert os.environ["PLASTIC_PROJECT_ID"] == "project:plastic-promise"
+    assert os.environ["PLASTIC_DB_PATH"].endswith(
+        os.path.join("data", "db", "plastic_memory.db")
+    )
+    assert os.environ["PLASTIC_LANCEDB_PATH"].endswith(os.path.join("data", "lancedb"))
 
 
 def test_pid_alive_nonexistent():

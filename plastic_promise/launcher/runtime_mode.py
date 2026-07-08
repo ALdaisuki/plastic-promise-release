@@ -137,8 +137,8 @@ def apply_runtime_mode(
         _set_env(target_env, "PLASTIC_SKIP_LANCEDB_WARMUP", "1")
     else:
         _set_env(target_env, "LDB_INIT_ON_HEAVY_INIT", "1")
-        _set_env(target_env, "LDB_BACKFILL_ON_INIT", "1")
-        _set_env(target_env, "LDB_REBUILD_ON_INIT", "1")
+        _set_env(target_env, "LDB_BACKFILL_ON_INIT", "0")
+        _set_env(target_env, "LDB_REBUILD_ON_INIT", "0")
         _set_env(target_env, "PLASTIC_SKIP_LANCEDB_WARMUP", "0")
 
     return resolved

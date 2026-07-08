@@ -139,6 +139,8 @@ python scripts/init_and_start.py --skip-ollama-check
 
 If no mode is provided in an interactive terminal, the launcher asks which runtime mode to use before it starts services. Non-interactive startup defaults to `rust-full` to preserve the Rust-first full warmup path.
 
+The one-click launcher and direct MCP entrypoint set `PLASTIC_PROJECT_ID=project:plastic-promise` unless `PLASTIC_PROJECT_ID` or `PP_PROJECT_ID` is already set. Direct MCP starts can still override either key explicitly so `memory_recall` and `context_supply` keep core and related context in the intended project boundary instead of degrading to `project:unknown`.
+
 | Mode | Rust supply | LanceDB startup warmup | Typical use |
 |---|---:|---:|---|
 | `light` | no | no | Fastest startup; defer LanceDB and use the Python path. |

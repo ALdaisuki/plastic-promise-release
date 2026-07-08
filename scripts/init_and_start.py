@@ -19,6 +19,7 @@ sys.path.insert(0, _project_root)
 
 from plastic_promise import __version__
 from plastic_promise.launcher.bootstrap_checker import check_bootstrap, run_bootstrap
+from plastic_promise.launcher.default_environment import configure_default_environment
 from plastic_promise.launcher.env_checker import run_env_checks
 from plastic_promise.launcher.runtime_mode import (
     RUNTIME_MODE_KEYS,
@@ -191,10 +192,7 @@ async def main():
     print(BANNER)
 
     # Set default paths for subprocess inheritance (overridable by env vars)
-    if "PLASTIC_DB_PATH" not in os.environ:
-        os.environ["PLASTIC_DB_PATH"] = os.path.join(_project_root, "data", "db", "plastic_memory.db")
-    if "PLASTIC_LANCEDB_PATH" not in os.environ:
-        os.environ["PLASTIC_LANCEDB_PATH"] = os.path.join(_project_root, "data", "lancedb")
+    configure_default_environment(_project_root)
 
     args = parse_args()
 
