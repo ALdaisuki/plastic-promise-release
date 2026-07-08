@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Documented default project identity behavior for launcher and direct MCP starts.
+- Clarified release-facing runtime docs so `full` / `rust-full` LanceDB backfill and rebuild are startup warmup work, not request-time heavy initialization.
 
 ## [0.1.7] - 2026-07-08
 

@@ -147,7 +147,9 @@ The one-click launcher and direct MCP entrypoint set `PLASTIC_PROJECT_ID=project
 | `normal` | no | no | Python path with lazy LanceDB init available later. |
 | `rust-normal` | yes | no | Rust-first context supply without startup rebuild. |
 | `full` | no | yes | Python path plus LanceDB init/backfill/rebuild on startup. |
-| `rust-full` | yes | yes | Rust-first context supply plus full LanceDB maintenance. |
+| `rust-full` | yes | yes | Rust-first context supply plus full startup LanceDB maintenance. |
+
+For `full` and `rust-full`, the backfill/rebuild work belongs to launcher startup warmup. Once the MCP process is running, request-time heavy initialization opens the LanceDB/domain backends but should keep `LDB_BACKFILL_ON_INIT=0` and `LDB_REBUILD_ON_INIT=0` so a normal `context_supply` or debug recall cannot rerun maintenance inside the hot request path.
 
 After startup, MCP clients can inspect or hot-switch the process mode with `runtime_mode(action="get")` and `runtime_mode(action="set", mode="rust-normal")`.
 
@@ -314,7 +316,7 @@ Memory is admitted only when it passes quality checks. Reuse increases worth; st
 
 Concurrent heavy context calls can carry `stage_session_id`, `flow_line_id`, and `request_id`. Plastic Promise derives a `request_scope_id` from those fields, includes it in audit metadata and `context_supply` output, and uses it to isolate `memory_recall` cache entries across overlapping SuperPowers stages or agent flows.
 
-In `rust-full`, `memory_recall(debug=true)` stays on the Rust snapshot hot path when Rust is healthy and preferred. Debug recall still returns Rust `pipeline_stats` and `per_item_stats`, and only falls back to Python if the Rust path is unavailable or throws.
+In `rust-full`, `memory_recall(debug=true)` stays on the Rust snapshot hot path when Rust is healthy and preferred. Debug recall still returns Rust `pipeline_stats` and `per_item_stats`, and only falls back to Python if the Rust path is unavailable or throws. When LanceDB rows exist, debug `pipeline_stats` should report a nonzero `vector_count`; `vector_hits` may be zero only when the query has no vector match.
 
 ### Step closure
 

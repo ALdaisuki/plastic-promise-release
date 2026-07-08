@@ -122,6 +122,8 @@ The one-click launcher can start the system in five explicit modes:
 
 Interactive launcher runs ask for the mode when `--mode` is omitted. Non-interactive runs default to `rust-full`, preserving the most complete Rust-first path for automation. A running MCP process can be inspected or changed with `runtime_mode(action="get")` and `runtime_mode(action="set", mode="light")`; the server refreshes Rust health and heavy initialization state after a change.
 
+For `full` and `rust-full`, LanceDB backfill/rebuild is startup warmup owned by the launcher. In the long-running MCP process, request-time heavy initialization should open LanceDB/domain backends while leaving `LDB_BACKFILL_ON_INIT=0` and `LDB_REBUILD_ON_INIT=0`, so `context_supply` and `memory_recall(debug=true)` stay out of maintenance work on the hot path.
+
 ## 10. Degraded-mode boundary
 
 Plastic Promise is local-first by default. Optional external calls depend on configured agents, embedding providers, rerankers, or LLM integrations. If optional services are unavailable, the runtime should explicitly label degraded behavior and continue through safe fallback paths when possible.
@@ -130,7 +132,7 @@ Plastic Promise is local-first by default. Optional external calls depend on con
 
 1. **Context before action** — retrieve relevant memory before major decisions.
 2. **Scoped heavy context** — pass `stage_session_id`, `flow_line_id`, and `request_id` to concurrent `memory_recall` / `context_supply` calls so the derived `request_scope_id` isolates cache and audit state and remains visible in `context_supply` output.
-3. **Debug parity on hot paths** — in `rust-full`, `memory_recall(debug=true)` should keep the Rust snapshot path when Rust is healthy, returning debug counters without forcing a Python full-pipeline detour.
+3. **Debug parity on hot paths** — in `rust-full`, `memory_recall(debug=true)` should keep the Rust snapshot path when Rust is healthy, returning debug counters without forcing a Python full-pipeline detour; when LanceDB rows exist, `pipeline_stats.vector_count` should be nonzero.
 4. **Traceability over speed** — leave a path future agents can audit.
 5. **Small reversible steps** — prefer changes that are easy to review and undo.
 6. **Explicit degradation** — if a subsystem is unavailable, say so and use a safe fallback.

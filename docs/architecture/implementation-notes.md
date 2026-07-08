@@ -145,7 +145,7 @@ make check
 | Daemon process drift | Use `scripts/init_and_start.py` so ServiceManager and watchdog own lifecycle. |
 | Daemon import path drift | Keep launcher child `PYTHONPATH` bootstrap and daemon direct-script `sys.path` bootstrap in sync; verify with `tests/test_launcher.py` daemon path tests. |
 | Optional Rust mismatch | Treat Python context supply as canonical until Rust parity is verified for the specific path. Rebuild and import-test the release PyO3 extension after Rust changes, because `cargo test` alone does not refresh the server's `target/release` module. |
-| Debug recall stalls MCP | Keep `memory_recall(debug=true)` on the Rust snapshot path in `rust-full`; debug counters should come from Rust `pipeline_stats` / `per_item_stats` and Python fallback should only happen after Rust is unavailable or throws. |
+| Debug recall stalls MCP | Keep `memory_recall(debug=true)` on the Rust snapshot path in `rust-full`; debug counters should come from Rust `pipeline_stats` / `per_item_stats`, Python fallback should only happen after Rust is unavailable or throws, and request-time heavy initialization should leave `LDB_BACKFILL_ON_INIT=0` / `LDB_REBUILD_ON_INIT=0`. |
 | Rust audit telemetry leak | Filter telemetry before Rust snapshot indexes are built and keep the Python `ContextPack` conversion guard enabled for stale or mismatched native extensions. |
 | Context race or cross-talk | Pass `stage_session_id`, `flow_line_id`, and `request_id` to heavy `memory_recall` / `context_supply` calls and check `request_scope_id` in audit metadata or the `context_supply` trace section. |
 
