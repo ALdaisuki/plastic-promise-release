@@ -98,7 +98,9 @@ class TestPipelineQuality:
         assert record["l1_summary"] == "- Language: Rust\n- Use: backend"
         assert record["l2_content"] == l2
         assert "L0: User Rust preference" in record["embedding_text"]
-        assert "L2: User likes Rust" in record["embedding_text"]
+        assert "L1: - Language: Rust" in record["embedding_text"]
+        assert "L2:" not in record["embedding_text"]
+        assert "backend development" not in record["embedding_text"]
         assert record["search_text"] == "User Rust preference"
         assert len(record["embedding_hash"]) == 64
         assert record["metadata_json"]["extracted"]["l0_abstract"] == "User Rust preference"
@@ -297,7 +299,7 @@ class TestPipelineQuality:
         # effective_half_life should be the L3 base (90 days), not the default 3.0
         assert stored.effective_half_life > 3.0
 
-    def test_summary_index_gate_embeds_embedding_text_and_lancedb_uses_search_text(
+    def test_summary_index_gate_embeds_summary_only_and_lancedb_uses_search_text(
         self, monkeypatch
     ):
         monkeypatch.setenv("PP_MEMORY_SUMMARY_INDEX", "1")
@@ -346,7 +348,9 @@ class TestPipelineQuality:
 
         assert embedder.texts
         assert embedder.texts[0].startswith("L0: Compact LanceDB index text")
-        assert "PP-12345" in embedder.texts[0]
+        assert "L1: - Full detail preserved in SQL" in embedder.texts[0]
+        assert "L2:" not in embedder.texts[0]
+        assert "PP-12345" not in embedder.texts[0]
         insert_kwargs = engine._ldb.insert.call_args.kwargs
         assert insert_kwargs["text"] == "Compact LanceDB index text"
         assert "PP-12345" not in insert_kwargs["text"]

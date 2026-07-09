@@ -210,6 +210,6 @@ step-closure(
 ## 2026-07-09 Memory Summary Index Note
 
 - `PP_MEMORY_SUMMARY_INDEX=1` enables the feature-gated summary-index write path.
-- SQLite remains the truth source for raw memory text, L0/L1/L2 summary layers, `embedding_text`, and `embedding_hash`.
+- SQLite remains the truth source for raw memory text, L0/L1/L2 summary layers, summary-only `embedding_text`, and `embedding_hash`.
 - LanceDB remains a derived index and receives compact `search_text` instead of raw turns or full L2 narrative while the gate is enabled.
 - With the flag unset, the legacy LanceDB `text=content` behavior is preserved.

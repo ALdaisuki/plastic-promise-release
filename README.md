@@ -344,10 +344,10 @@ not turn into an Ollama 500 during launcher warmup or backfill.
 
 `PP_MEMORY_SUMMARY_INDEX=1` enables the feature-gated summary index write path.
 SQLite remains the truth source for `raw_content`, L0/L1/L2 summary layers, and
-the exact `embedding_text` / `embedding_hash` used for indexing. LanceDB remains
-a derived index: it receives the vector plus compact `search_text`, not the raw
-turn or full L2 narrative. With the flag unset, the legacy LanceDB `text=content`
-behavior is preserved.
+the exact summary-only `embedding_text` / `embedding_hash` used for indexing.
+LanceDB remains a derived index: it receives the vector plus compact
+`search_text`, not the raw turn or full L2 narrative. With the flag unset, the
+legacy LanceDB `text=content` behavior is preserved.
 
 ### Context supply
 

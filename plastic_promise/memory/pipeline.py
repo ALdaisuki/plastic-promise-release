@@ -287,7 +287,6 @@ class MemoryPipeline:
         parts = [
             f"L0: {l0_abstract}" if l0_abstract else "",
             f"L1: {l1_summary}" if l1_summary else "",
-            f"L2: {l2_content}" if l2_content else "",
         ]
         embedding_text = "\n".join(part for part in parts if part).strip()
         model_name = cls._embedding_model_name(embedder)
