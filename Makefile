@@ -1,4 +1,4 @@
-.PHONY: help install dev-install test lint format clean check build run run-sse daemon audit watchdog
+.PHONY: help install dev-install test lint format clean check build run run-http run-sse daemon audit watchdog
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -45,7 +45,10 @@ build: clean  ## Build distribution packages
 run:  ## Start MCP server (stdio mode)
 	python -m plastic_promise
 
-run-sse:  ## Start MCP server with SSE (port 9020)
+run-http:  ## Start MCP server with Streamable HTTP (port 9020)
+	python -m plastic_promise --streamable-http 9020
+
+run-sse:  ## Start MCP server with legacy SSE alias (port 9020)
 	python -m plastic_promise --sse 9020
 
 pre-commit-install:  ## Install pre-commit hooks

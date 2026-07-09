@@ -237,6 +237,6 @@ def _check_mcp_alive(findings: list[dict]):
                 "dimension": "mcp_server_alive",
                 "severity": "critical",
                 "summary": f"MCP server unreachable: {e}",
-                "fix": "Start MCP: python -m plastic_promise.mcp.server --sse 9020",
+                "fix": "Start MCP: python -m plastic_promise.mcp.server --streamable-http 9020",
             }
         )

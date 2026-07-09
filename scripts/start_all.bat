@@ -3,7 +3,7 @@ echo === Plastic Promise — Full System Startup ===
 
 REM Start MCP Server
 echo [1/2] Starting MCP Server on port 9020...
-start /B python -m plastic_promise.mcp.server --sse 9020
+start /B python -m plastic_promise.mcp.server --streamable-http 9020
 
 REM Wait for health endpoint
 echo [*] Waiting for MCP server health check...

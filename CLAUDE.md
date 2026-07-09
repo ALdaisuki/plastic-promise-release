@@ -29,7 +29,7 @@
 >
 > `principle_activate` 使用 `domain_hint` 参数限定原则域: `building` | `fixing` | `designing` | `reflecting` | `governing` | `connecting` | `all`
 
-## MCP 工具 (57 个暴露工具, 以源码为准)
+## MCP 工具 (58 个暴露工具, 以源码为准)
 
 | 域 | 工具 |
 |------|------|
@@ -254,7 +254,7 @@ task_enqueue → pending → task_claim → claimed → executing → task_compl
 ### 启动 Daemon
 
 ```bash
-python -m plastic_promise.mcp.server --sse 9020   # MCP Server（委托板 + SSE 推送）
+python -m plastic_promise.mcp.server --streamable-http 9020   # MCP Server（共享 HTTP /mcp，SSE 兼容）
 python daemons/maintenance_daemon.py                # 全域调度守护进程（扫描 + 心跳 + 惩罚）
 ```
 

@@ -164,7 +164,7 @@ python -m plastic_promise
 # Streamable HTTP mode on port 9020
 python -m plastic_promise --streamable-http 9020
 
-# Legacy alias, still supported
+# Legacy alias, still supported for older scripts
 python -m plastic_promise --sse 9020
 ```
 
@@ -195,22 +195,46 @@ Stdio example:
 }
 ```
 
+Claude Code project config example (`.mcp.json` in a trusted checkout):
+
+```json
+{
+  "mcpServers": {
+    "plastic-promise": {
+      "type": "http",
+      "url": "http://127.0.0.1:9020/mcp"
+    }
+  }
+}
+```
+
 Codex project config example (`.codex/config.toml` in a trusted checkout):
 
 ```toml
 [mcp_servers.plastic_promise]
-command = ".venv\\Scripts\\python.exe"
+url = "http://127.0.0.1:9020/mcp"
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+
+[profiles.stdio-fallback.mcp_servers.plastic_promise]
+command = "python"
 args = ["-m", "plastic_promise"]
 startup_timeout_sec = 120
 tool_timeout_sec = 120
 
-[mcp_servers.plastic_promise.env]
+[profiles.stdio-fallback.mcp_servers.plastic_promise.env]
 PYTHONIOENCODING = "utf-8"
 PLASTIC_DB_PATH = "data\\db\\plastic_memory.db"
 PLASTIC_LANCEDB_PATH = "data\\lancedb"
 ```
 
-SSE clients can connect to:
+Modern shared MCP clients should connect to:
+
+```text
+http://127.0.0.1:9020/mcp
+```
+
+Legacy SSE clients can still connect to:
 
 ```text
 http://127.0.0.1:9020/sse
@@ -243,7 +267,7 @@ This module map follows a capability-first layout so readers can understand the 
 
 | Module group | Source area | Responsibility |
 |---|---|---|
-| MCP server | `plastic_promise/mcp/` | Declares tool schemas, stdio/SSE entrypoints, health endpoints, dashboard, prompts, and resources. |
+| MCP server | `plastic_promise/mcp/` | Declares tool schemas, stdio/Streamable HTTP entrypoints, legacy SSE compatibility, health endpoints, dashboard, prompts, and resources. |
 | Context engine | `plastic_promise/core/context_engine.py` | Supplies layered context by combining retrieval, graph, principle, ranking, and degraded-mode signals. |
 | Memory pipeline | `plastic_promise/memory/`, `plastic_promise/memory/pipeline.py` | Extracts, classifies, deduplicates, quality-scores, embeds, stores, reinforces, merges, and decays memories. |
 | Storage layer | `plastic_promise/core/lancedb_store.py`, SQLite paths | Stores structured state in SQLite and vector/search state in LanceDB. |

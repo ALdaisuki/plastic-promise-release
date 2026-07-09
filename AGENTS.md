@@ -431,8 +431,8 @@ python scripts/init_and_start.py
 # 显式指定启动运行模式
 python scripts/init_and_start.py --mode rust-full
 
-# 仅启动共享 MCP Server
-python -m plastic_promise --sse 9020
+# 仅启动共享 MCP Server（Streamable HTTP /mcp）
+python -m plastic_promise --streamable-http 9020
 
 # 单独启动维护守护进程
 python daemons/maintenance_daemon.py
@@ -446,7 +446,7 @@ task_enqueue(task_type="build_feature", title="...", to_agent="pi_builder")
 ```
 Claude Code / Pi Agent / 外部 Agent
         │
-        ▼ MCP (stdio | SSE)
+        ▼ MCP (stdio | Streamable HTTP)
 ┌──────────────────────────────────────┐
 │ Plastic Promise MCP Server (58工具)   │
 │  ┌────┐┌────┐┌────┐┌────┐┌────┐┌────┐│

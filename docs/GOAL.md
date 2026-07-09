@@ -18,7 +18,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
   原则和记忆的图谱关联
 
 实践层 — 外显于行
-  MCP Server: stdio / SSE 工具入口
+  MCP Server: stdio / Streamable HTTP `/mcp` 工具入口（保留 SSE 兼容）
   ContextEngine: 记忆、文本、向量、图谱、原则融合检索
   Memory Pipeline: 提取、分类、去重、QualityGate、嵌入、衰减、双写
   Trust/Defense: L0 硬边界、L1 信任约束、L2 免疫巡检
@@ -46,7 +46,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 
 ### 稳定/活跃
 
-- MCP Server 支持 stdio 与 SSE 模式。
+- MCP Server 支持 stdio 与 Streamable HTTP `/mcp` 模式，`--sse` 仅作为旧脚本兼容别名保留。
 - 一键启动器 `scripts/init_and_start.py` 可启动 MCP Server、Maintenance Daemon 与 Watchdog，并支持 `light`、`normal`、`rust-normal`、`full`、`rust-full` 五种运行模式。
 - 记忆质量管道已接入提取、分类、向量去重、QualityGate、衰减初始化与 LanceDB 双写。
 - ContextEngine Python 路径仍是完整回退和写侧权威路径；`rust-full` 下正常召回和 `memory_recall(debug=true)` 在 Rust 健康时走 Rust snapshot 热路径。
@@ -152,8 +152,8 @@ python scripts/init_and_start.py --mode rust-full
 # Ollama 不可用时使用 fallback embedder
 python scripts/init_and_start.py --skip-ollama-check
 
-# 仅启动 MCP Server
-python -m plastic_promise --sse 9020
+# 仅启动 MCP Server（Streamable HTTP /mcp）
+python -m plastic_promise --streamable-http 9020
 
 # 单独启动维护守护进程
 python daemons/maintenance_daemon.py
