@@ -28,6 +28,7 @@ def _restore_plastic_environment():
         "PLASTIC_PROJECT_ID",
         "PLASTIC_MCP_TRANSPORT",
         "PLASTIC_MCP_LEGACY_TRANSPORT_ALIAS",
+        "EMBEDDER_TIMEOUT",
         "PP_PROJECT_ID",
     )
     original = {key: os.environ.get(key) for key in keys}
@@ -312,6 +313,95 @@ def test_launcher_preserves_pp_project_id_fallback(monkeypatch, tmp_path):
 
     assert "PLASTIC_PROJECT_ID" not in os.environ
     assert os.environ["PP_PROJECT_ID"] == "project:custom"
+
+
+def test_launcher_configures_stable_embedder_timeout(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    monkeypatch.delenv("EMBEDDER_TIMEOUT", raising=False)
+
+    module.configure_default_environment(str(tmp_path))
+
+    assert os.environ["EMBEDDER_TIMEOUT"] == "30"
+
+
+def test_launcher_preserves_embedder_timeout_override(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    monkeypatch.setenv("EMBEDDER_TIMEOUT", "45")
+
+    module.configure_default_environment(str(tmp_path))
+
+    assert os.environ["EMBEDDER_TIMEOUT"] == "45"
+
+
+def test_stop_service_command_matcher_is_scoped():
+    module = _load_init_and_start()
+
+    assert module._is_managed_service_command_line(
+        r'C:\Python\python.exe -m plastic_promise --streamable-http 9020'
+    )
+    assert module._is_managed_service_command_line(
+        r'C:\Python\python.exe -m plastic_promise.mcp.server --streamable-http 9020'
+    )
+    assert module._is_managed_service_command_line(
+        r'C:\Python\python.exe "F:\Agent\Memory system\daemons\maintenance_daemon.py"'
+    )
+    assert not module._is_managed_service_command_line(
+        r'C:\Python\python.exe unrelated_script.py'
+    )
+    assert not module._is_managed_service_command_line(
+        r'C:\Python\python.exe -m other_package --streamable-http 9020'
+    )
+
+
+def test_stop_on_windows_filters_python_processes_by_command_line(monkeypatch):
+    module = _load_init_and_start()
+    calls = []
+
+    class Result:
+        stdout = (
+            '[{"ProcessId":111,"CommandLine":"python -m plastic_promise --streamable-http 9020"},'
+            '{"ProcessId":222,"CommandLine":"python unrelated_script.py"},'
+            '{"ProcessId":333,"CommandLine":"python daemons/maintenance_daemon.py"}]'
+        )
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module.sys, "argv", ["init_and_start.py", "--stop"])
+    monkeypatch.setattr(module.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module.do_stop() is True
+
+    assert ["taskkill", "/F", "/FI", "IMAGENAME eq python.exe"] not in calls
+    assert ["taskkill", "/F", "/PID", "111"] in calls
+    assert ["taskkill", "/F", "/PID", "333"] in calls
+    assert ["taskkill", "/F", "/PID", "222"] not in calls
+
+
+def test_stop_on_windows_skips_stale_pid_file_for_unrelated_process(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    pid_file = tmp_path / "maintenance_daemon.pid"
+    pid_file.write_text("222", encoding="utf-8")
+    calls = []
+
+    class Result:
+        stdout = '{"ProcessId":222,"CommandLine":"python unrelated_script.py"}'
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module.sys, "argv", ["init_and_start.py", "--stop"])
+    monkeypatch.setattr(module, "PID_FILE", str(pid_file))
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module.do_stop() is True
+
+    assert ["taskkill", "/F", "/PID", "222"] not in calls
 
 
 def test_direct_mcp_server_streamable_http_configures_default_project_identity(monkeypatch):

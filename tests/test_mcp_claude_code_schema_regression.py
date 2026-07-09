@@ -406,7 +406,21 @@ def test_session_init_alias_routes_to_canonical_skill(monkeypatch):
     assert calls == [("session-init", {"task_description": "alias route"}, "claude")]
 
 
-def test_sse_app_constructs_with_installed_starlette(monkeypatch):
+def test_streamable_http_app_constructs_with_installed_starlette(monkeypatch):
+    route_paths = []
+
+    async def fake_serve(self):
+        route_paths.extend(route.path for route in self.config.app.routes)
+        return None
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+    asyncio.run(mcp_server.run_streamable_http(0))
+    assert "/mcp" in route_paths
+
+
+def test_legacy_run_sse_alias_constructs_same_app(monkeypatch):
     route_paths = []
 
     async def fake_serve(self):
@@ -418,3 +432,42 @@ def test_sse_app_constructs_with_installed_starlette(monkeypatch):
     monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
     asyncio.run(mcp_server.run_sse(0))
     assert "/mcp" in route_paths
+    assert "/sse" in route_paths
+
+
+def test_windows_client_disconnect_filter_suppresses_proactor_noise(monkeypatch):
+    class FakeHandle:
+        def __repr__(self):
+            return "<Handle _ProactorBasePipeTransport._call_connection_lost()>"
+
+    async def runner():
+        delegated = []
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _loop, context: delegated.append(context))
+        mcp_server._install_windows_client_disconnect_filter(
+            mcp_server.logging.getLogger("test")
+        )
+        handler = loop.get_exception_handler()
+
+        handler(
+            loop,
+            {
+                "exception": ConnectionResetError(10054, "client closed"),
+                "handle": FakeHandle(),
+            },
+        )
+        handler(loop, {"exception": RuntimeError("real failure"), "message": "boom"})
+
+        assert len(delegated) == 1
+        assert isinstance(delegated[0]["exception"], RuntimeError)
+
+    monkeypatch.setattr(mcp_server.sys, "platform", "win32")
+    asyncio.run(runner())
+
+
+def test_windows_client_disconnect_filter_ignores_non_disconnect(monkeypatch):
+    monkeypatch.setattr(mcp_server.sys, "platform", "win32")
+
+    assert not mcp_server._is_windows_client_disconnect(
+        {"exception": RuntimeError("boom"), "message": "_call_connection_lost"}
+    )

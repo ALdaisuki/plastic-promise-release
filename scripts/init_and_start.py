@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -96,6 +97,121 @@ def _pid_alive(pid: int) -> bool:
             return False
 
 
+def _is_managed_service_command_line(command_line: str | None) -> bool:
+    """Return True for Plastic Promise service processes managed by this launcher."""
+    normalized = (command_line or "").replace("\\", "/").lower()
+    if not normalized:
+        return False
+    normalized_spaced = f" {normalized} "
+
+    starts_streamable_mcp = (
+        (
+            " -m plastic_promise " in normalized_spaced
+            or " -m plastic_promise." in normalized_spaced
+            or "plastic_promise.mcp.server" in normalized
+        )
+        and any(flag in normalized for flag in ("--streamable-http", "--http", "--sse"))
+    )
+    starts_maintenance_daemon = "maintenance_daemon.py" in normalized
+    return starts_streamable_mcp or starts_maintenance_daemon
+
+
+def _windows_python_processes() -> list[dict[str, object]]:
+    """Return Windows python/pythonw processes with command lines, best effort."""
+    command = (
+        "Get-CimInstance Win32_Process "
+        "-Filter \"Name = 'python.exe' OR Name = 'pythonw.exe'\" | "
+        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            **hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        return []
+
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        return []
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    return []
+
+
+def _windows_process_by_pid(pid: int) -> dict[str, object] | None:
+    command = (
+        "Get-CimInstance Win32_Process "
+        f"-Filter \"ProcessId = {pid}\" | "
+        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            **hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        return None
+
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        return None
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _windows_pid_matches_managed_service(pid: int) -> bool:
+    process = _windows_process_by_pid(pid)
+    if not process:
+        return False
+    return _is_managed_service_command_line(str(process.get("CommandLine") or ""))
+
+
+def _stop_windows_pid(pid: int) -> bool:
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            capture_output=True,
+            **hidden_subprocess_kwargs(),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _stop_managed_windows_processes() -> int:
+    """Stop remaining managed services without touching unrelated Python processes."""
+    killed = 0
+    current_pid = os.getpid()
+    for process in _windows_python_processes():
+        try:
+            pid = int(process.get("ProcessId", 0))
+        except (TypeError, ValueError):
+            continue
+        if pid <= 0 or pid == current_pid:
+            continue
+        if not _is_managed_service_command_line(str(process.get("CommandLine") or "")):
+            continue
+        if _stop_windows_pid(pid):
+            killed += 1
+    return killed
+
+
 def run_lancedb_warmup_maintenance():
     """Warm LanceDB and run its existing backfill/rebuild maintenance once."""
     previous = {key: os.environ.get(key) for key in LANCEDB_WARMUP_ENV}
@@ -152,11 +268,13 @@ def do_stop():
                 with open(pid_path) as f:
                     pid = int(f.read().strip())
                 if sys.platform == "win32":
-                    subprocess.run(
-                        ["taskkill", "/F", "/PID", str(pid)],
-                        capture_output=True,
-                        **hidden_subprocess_kwargs(),
-                    )
+                    if not _windows_pid_matches_managed_service(pid):
+                        print(
+                            f"  Skipped PID {pid} (from {os.path.basename(pid_path)}; "
+                            "not a managed Plastic Promise service)"
+                        )
+                        continue
+                    _stop_windows_pid(pid)
                 else:
                     os.kill(pid, 15)
                 killed += 1
@@ -166,13 +284,10 @@ def do_stop():
 
     # Fallback: kill any remaining Python processes matching service names
     if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/FI", "IMAGENAME eq python.exe"],
-            capture_output=True,
-            **hidden_subprocess_kwargs(),
-        )
+        killed += _stop_managed_windows_processes()
     else:
         subprocess.run(["pkill", "-f", "plastic_promise.mcp.server"], capture_output=True)
+        subprocess.run(["pkill", "-f", "python -m plastic_promise"], capture_output=True)
         subprocess.run(["pkill", "-f", "maintenance_daemon.py"], capture_output=True)
 
     # Cleanup files
@@ -184,7 +299,7 @@ def do_stop():
             except OSError:
                 pass
 
-    print(f"All services stopped ({killed} via PID file).")
+    print(f"All services stopped ({killed} matching process(es)).")
     return True
 
 

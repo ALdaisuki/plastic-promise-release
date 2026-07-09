@@ -17,5 +17,6 @@ def configure_default_environment(project_root: str | os.PathLike[str]) -> None:
         str(root / "data" / "db" / "plastic_memory.db"),
     )
     os.environ.setdefault("PLASTIC_LANCEDB_PATH", str(root / "data" / "lancedb"))
+    os.environ.setdefault("EMBEDDER_TIMEOUT", "30")
     if "PLASTIC_PROJECT_ID" not in os.environ and "PP_PROJECT_ID" not in os.environ:
         os.environ["PLASTIC_PROJECT_ID"] = DEFAULT_PROJECT_ID

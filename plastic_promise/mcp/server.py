@@ -61,6 +61,40 @@ _skill_engine = None  # 延迟初始化 — SkillEngine 单例
 _closure_history: deque = deque(maxlen=5)  # 滑动窗口: 最近5次闭环 {scarf, trust, cei}
 
 
+def _is_windows_client_disconnect(context: dict[str, Any]) -> bool:
+    """Identify benign Windows Proactor disconnect noise from closed HTTP clients."""
+    if sys.platform != "win32":
+        return False
+    exc = context.get("exception")
+    if not isinstance(exc, ConnectionResetError):
+        return False
+    handle = repr(context.get("handle") or "")
+    message = str(context.get("message") or "")
+    return "_call_connection_lost" in handle or "_call_connection_lost" in message
+
+
+def _install_windows_client_disconnect_filter(logger: logging.Logger) -> None:
+    """Suppress noisy client-close tracebacks while preserving real loop errors."""
+    if sys.platform != "win32":
+        return
+
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+
+    def handle_exception(loop, context):
+        if _is_windows_client_disconnect(context):
+            logger.debug("Suppressed Windows client disconnect: %s", context.get("exception"))
+            return
+        if previous_handler is not None:
+            previous_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handle_exception)
+
+
 def get_engine():
     """获取 ContextEngine 单例（Python 主引擎，Rust 加速器就绪后切换）
 
@@ -2557,6 +2591,7 @@ async def run_streamable_http(port: int = 9020):
     from starlette.routing import Route
 
     logger = logging.getLogger("plastic-promise-streamable-http")
+    _install_windows_client_disconnect_filter(logger)
     import time as _time
 
     start_time = _time.time()

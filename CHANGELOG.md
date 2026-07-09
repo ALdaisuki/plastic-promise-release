@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-07-09
+
+### Changed
+
+- Defaulted local runtime startup to `EMBEDDER_TIMEOUT=30` unless explicitly
+  overridden, reducing false MCP smoke failures during cold Ollama embedding
+  calls.
+- Documented MCP connection troubleshooting: use `/health` for probes, reserve
+  `/mcp` for MCP clients, and refresh Codex sessions after MCP restarts when
+  dynamic tool handles are stale.
+
+### Fixed
+
+- Scoped Windows `scripts/init_and_start.py --stop` fallback to Plastic Promise
+  MCP and `maintenance_daemon.py` command lines instead of terminating every
+  `python.exe` process.
+- Suppressed benign Windows Proactor `ConnectionResetError [WinError 10054]`
+  tracebacks when MCP HTTP clients close long-lived connections.
+
 ## [0.1.13] - 2026-07-09
 
 ### Added
@@ -236,6 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.14]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.10...v0.1.11

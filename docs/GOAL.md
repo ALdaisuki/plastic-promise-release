@@ -206,6 +206,8 @@ step-closure(
 
 - Launcher-managed services prepend the project root to child-process `PYTHONPATH`.
 - `maintenance_daemon.py` self-bootstraps `_project_root` into `sys.path`, so direct script starts and one-click launcher starts use the same source checkout imports.
+- Shared runtime startup now defaults `EMBEDDER_TIMEOUT=30` unless the operator overrides it, so cold Ollama embedding calls do not make full MCP smoke unstable.
+- On Windows, `scripts/init_and_start.py --stop` must only terminate command lines that match Plastic Promise MCP or `maintenance_daemon.py`; it must not kill every `python.exe` process.
 
 ## 2026-07-09 Memory Summary Index Note
 
@@ -213,3 +215,11 @@ step-closure(
 - SQLite remains the truth source for raw memory text, L0/L1/L2 summary layers, summary-only `embedding_text`, and `embedding_hash`.
 - LanceDB remains a derived index and receives compact `search_text` instead of raw turns or full L2 narrative while the gate is enabled.
 - With the flag unset, the legacy LanceDB `text=content` behavior is preserved.
+
+## 2026-07-09 HTTP MCP Release Smoke Note
+
+- Release verification should exercise the live Streamable HTTP MCP process at `http://127.0.0.1:9020/mcp`, not only the Codex-exposed MCP tool surface.
+- `scripts/smoke_http_mcp.py` verifies `/health`, `runtime_mode`, `memory_store`, `memory_recall(debug=true)`, `context_supply(debug=true)`, and optional SQLite/LanceDB summary-index boundaries.
+- Use `http://127.0.0.1:9020/health` for browser/probe checks. `/mcp` is an MCP protocol endpoint, so plain browser GETs and closed long-poll/SSE clients can produce benign 404 or client-disconnect logs.
+- Windows Proactor client-disconnect tracebacks are filtered at the MCP server event-loop boundary; plain `/mcp` GET 404s remain visible because they identify protocol-mismatched probes.
+- After an MCP process restart, Codex desktop sessions may keep stale dynamic tool handles until the session/tool registry refreshes; the server can be healthy while the current client session still needs reconnect.
