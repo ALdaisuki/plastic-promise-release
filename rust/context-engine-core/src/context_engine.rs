@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::env;
+use std::time::Instant;
 
 use crate::association_feedback::AssociationFeedback;
 use crate::entity_graph::EntityGraph;
@@ -29,6 +30,10 @@ fn env_weight(name: &str, default: f64) -> f64 {
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(default)
+}
+
+fn elapsed_ms(start: Instant) -> String {
+    format!("{:.3}", start.elapsed().as_secs_f64() * 1000.0)
 }
 
 fn source_filter_enabled() -> bool {
@@ -125,15 +130,17 @@ fn project_allowed_for_layer(
     meta.project_id == project_id || meta.visibility == "global"
 }
 
-fn project_allowed_for_candidate(
+fn should_demote_to_project_divergent(
     meta: &ProjectMemoryMeta,
     project_id: &str,
     project_policy: &str,
     degraded: bool,
 ) -> bool {
-    ["core", "related", "divergent"]
-        .iter()
-        .any(|layer| project_allowed_for_layer(meta, project_id, project_policy, degraded, layer))
+    !degraded
+        && project_policy != "strict"
+        && meta.visibility == "shared"
+        && !matches!(meta.source_class.as_str(), "telemetry" | "prompt")
+        && project_allowed_for_layer(meta, project_id, project_policy, degraded, "divergent")
 }
 
 // ============================================================
@@ -416,8 +423,8 @@ impl ContextEngine {
 
     /// Create a ContextEngine with real domain models (not placeholders).
     ///
-    /// Vector + FTS channels use Noop stubs per architecture contract
-    /// (Python owns LanceDB). Domain models use real implementations:
+    /// Vector + FTS channels remain snapshot-fed per architecture contract
+    /// (Python owns persistent LanceDB). Domain models use real implementations:
     /// WeibullDecay for tier-aware decay, WilsonWorthCalculator for
     /// statistically-sound worth scoring, DefaultTierManager for
     /// access-count-based tier promotion.
@@ -577,9 +584,15 @@ impl ContextEngine {
         scope: String,
         memories: Vec<PyObject>,
     ) -> PyResult<ContextPack> {
+        let supply_started = Instant::now();
+        let mut stage_timing_ms: HashMap<String, String> = HashMap::new();
+        let input_memory_count = memories.len();
+        let hard_min_score = env_weight("PP_HARD_MIN_SCORE", 0.20);
+
         // ============================================================
         // Phase 0: 原则注入 (P0 任务)
         // ============================================================
+        let stage_started = Instant::now();
         let mut activated_principle_names = Vec::new();
         if self.enable_principles {
             let core_principles = principles::core_principles();
@@ -615,16 +628,19 @@ impl ContextEngine {
                 .map(|(name, _)| name)
                 .collect();
         }
+        stage_timing_ms.insert("principle_injection".into(), elapsed_ms(stage_started));
 
         // ============================================================
         // Phase 1: 构建 item_lookup + 填充真实检索后端 (from Python objects)
         // ============================================================
-        let (mut item_lookup, memory_index, mut real_vector, mut real_fts) = Python::with_gil(|py| -> PyResult<_> {
+        let stage_started = Instant::now();
+        let (mut item_lookup, memory_index, real_vector, real_fts, parse_debug_rows) = Python::with_gil(|py| -> PyResult<_> {
             let mut item_lookup: HashMap<String, (String, String)> = HashMap::new();
             let mut memory_index: HashMap<String, crate::memory_worth::MemoryRecord> = HashMap::new();
             // Real backends — replace Noop stubs for actual retrieval
             let mut vectors: Vec<(String, Vec<f32>, String, String, String)> = Vec::new();
             let mut texts: Vec<(String, String, String, String, String)> = Vec::new();
+            let mut parse_debug_rows: Vec<HashMap<String, String>> = Vec::new();
 
             for py_mem in &memories {
                 let obj = py_mem.as_ref(py);
@@ -641,6 +657,12 @@ impl ContextEngine {
                     .and_then(|v| v.extract().ok())
                     .unwrap_or_default();
                 if is_recall_noise(&content) {
+                    let mut row = HashMap::new();
+                    row.insert("id".into(), id);
+                    row.insert("source".into(), source);
+                    row.insert("filter_decision".into(), "drop".into());
+                    row.insert("filter_reason".into(), "noise".into());
+                    parse_debug_rows.push(row);
                     continue;
                 }
                 let memory_type: String = obj.get_item("memory_type")
@@ -721,14 +743,16 @@ impl ContextEngine {
                     effective_half_life: effective_half_life_val,
                 });
             }
-            Ok((item_lookup, memory_index, vectors, texts))
+            Ok((item_lookup, memory_index, vectors, texts, parse_debug_rows))
         })?;
+        stage_timing_ms.insert("snapshot_parse".into(), elapsed_ms(stage_started));
 
 
         // DEBUG: count extracted vectors (moved to after ldb_store population)
 
         // Build a real retriever with actual data from Python (replaces Noop placeholders).
         // LanceDbStore implements both VectorIndex and FtsIndex — use a single instance.
+        let stage_started = Instant::now();
         let ldb_tmp = std::env::temp_dir().join("pp_rust_retrieval");
         let mut ldb_store = crate::storage::lancedb_impl::LanceDbStore::open(&ldb_tmp)
             .unwrap_or_else(|_| panic!("LanceDbStore open failed"));
@@ -777,7 +801,6 @@ impl ContextEngine {
                 .collect();
             self.bm25_index.borrow_mut().rebuild(&all_docs, current_version.max(1));
         }
-
         // ============================================================
         // Phase 2: Real retrieval (vector from populated LanceDbStore + BM25 keyword fallback)
         // ============================================================
@@ -835,6 +858,7 @@ impl ContextEngine {
                 }
             })
             .collect();
+        stage_timing_ms.insert("candidate_retrieval".into(), elapsed_ms(stage_started));
 
         // FALLBACK with real scoring: use extracted vectors for ranking
         // (HybridRetriever still uses Noop stubs — but we rank manually here)
@@ -883,6 +907,11 @@ impl ContextEngine {
             );
             let fallback_mmr_demoted = fallback_mmr.demoted_count;
 
+            let fallback_filter_started = Instant::now();
+            let mut after_noise_filter = 0usize;
+            let mut after_source_filter = 0usize;
+            let mut after_hard_score_filter = 0usize;
+            let mut fallback_debug_rows = parse_debug_rows.clone();
             let max_return: usize = 200;
             for (idx, (id, score, content)) in fallback_mmr.items.into_iter().enumerate() {
                 if idx >= max_return { break; }
@@ -893,16 +922,38 @@ impl ContextEngine {
                     &m.created_at, &self.current_time).as_str().to_string())
                     .unwrap_or_else(|| "valid".to_string());
                 let source = mem.map(|m| m.source.clone()).unwrap_or_else(|| "unknown".to_string());
+                let mut row = HashMap::new();
+                row.insert("id".into(), id.clone());
+                row.insert("initial_score".into(), format!("{:.4}", score));
+                row.insert("worth".into(), format!("{:.3}", worth));
+                row.insert("source".into(), source.clone());
+                row.insert("tier".into(), mem.map(|m| m.tier.clone()).unwrap_or_else(|| "L1".into()));
+                row.insert("category".into(), mem.map(|m| m.category.clone()).unwrap_or_else(|| "other".into()));
                 if is_recall_noise(&content) {
+                    row.insert("filter_decision".into(), "drop".into());
+                    row.insert("filter_reason".into(), "noise".into());
+                    fallback_debug_rows.push(row);
                     continue;
                 }
+                after_noise_filter += 1;
                 let Some(penalty) = source_penalty(&source) else {
+                    row.insert("source_penalty".into(), "excluded".into());
+                    row.insert("filter_decision".into(), "drop".into());
+                    row.insert("filter_reason".into(), "source_excluded".into());
+                    fallback_debug_rows.push(row);
                     continue;
                 };
+                after_source_filter += 1;
                 let score = (score * penalty).clamp(0.0, 1.0);
-                if score < 0.20 {
+                row.insert("source_penalty".into(), format!("{:.3}", penalty));
+                row.insert("final_score".into(), format!("{:.4}", score));
+                if hard_min_score > 0.0 && score < hard_min_score {
+                    row.insert("filter_decision".into(), "drop".into());
+                    row.insert("filter_reason".into(), "below_hard_min_score".into());
+                    fallback_debug_rows.push(row);
                     continue;
                 }
+                after_hard_score_filter += 1;
 
                 let mut item = ContextItem::new(id, content, score);
                 item.source = source;
@@ -911,13 +962,29 @@ impl ContextEngine {
                 item.worth_score = worth;
                 if score >= 0.70 {
                     item.layer = "core".into();
+                    row.insert("layer".into(), "core".into());
+                    row.insert("filter_decision".into(), "keep".into());
+                    row.insert("filter_reason".into(), "passed".into());
+                    fallback_debug_rows.push(row);
                     pack.core.push(item);
                 } else if score >= 0.40 {
                     item.layer = "related".into();
+                    row.insert("layer".into(), "related".into());
+                    row.insert("filter_decision".into(), "keep".into());
+                    row.insert("filter_reason".into(), "passed".into());
+                    fallback_debug_rows.push(row);
                     pack.related.push(item);
                 } else if score >= 0.20 {
                     item.layer = "divergent".into();
+                    row.insert("layer".into(), "divergent".into());
+                    row.insert("filter_decision".into(), "keep".into());
+                    row.insert("filter_reason".into(), "passed".into());
+                    fallback_debug_rows.push(row);
                     pack.divergent.push(item);
+                } else {
+                    row.insert("filter_decision".into(), "drop".into());
+                    row.insert("filter_reason".into(), "below_layer_min_score".into());
+                    fallback_debug_rows.push(row);
                 }
             }
 
@@ -930,30 +997,33 @@ impl ContextEngine {
             audit.insert("timestamp".into(), self.current_time.clone());
             audit.insert("engine_mode".into(), "snapshot".into());
             audit.insert("vector_search".into(), "active".into());
+            audit.insert("fallback_reason".into(), "empty_rrf_candidates_manual_rescore".into());
             pack.audit_metadata = audit;
+            stage_timing_ms.insert("fallback_filter_and_layer".into(), elapsed_ms(fallback_filter_started));
+            stage_timing_ms.insert("total".into(), elapsed_ms(supply_started));
+            pack.pipeline_stats.insert("engine_mode".into(), "snapshot".into());
+            pack.pipeline_stats.insert("fallback_reason".into(), "empty_rrf_candidates_manual_rescore".into());
+            pack.pipeline_stats.insert("input_memory_count".into(), input_memory_count.to_string());
+            pack.pipeline_stats.insert("after_input_noise_filter".into(), memory_index.len().to_string());
             pack.pipeline_stats.insert("vector_count".into(), real_vector.len().to_string());
             pack.pipeline_stats.insert("vector_hits".into(), vector_hit_count.to_string());
             pack.pipeline_stats.insert("bm25_hits".into(), bm25_hit_count.to_string());
             pack.pipeline_stats.insert("bm25_count".into(), self.bm25_index.borrow().total_docs().to_string());
             pack.pipeline_stats.insert("fused_count".into(), pack.total_items().to_string());
             pack.pipeline_stats.insert("mmr_demoted".into(), fallback_mmr_demoted.to_string());
-            pack.pipeline_stats.insert("engine_mode".into(), "snapshot".into());
+            pack.pipeline_stats.insert("after_noise_filter".into(), after_noise_filter.to_string());
+            pack.pipeline_stats.insert("after_source_filter".into(), after_source_filter.to_string());
+            pack.pipeline_stats.insert("after_hard_score_filter".into(), after_hard_score_filter.to_string());
             pack.pipeline_stats.insert("core_count".into(), pack.core.len().to_string());
             pack.pipeline_stats.insert("related_count".into(), pack.related.len().to_string());
             pack.pipeline_stats.insert("divergent_count".into(), pack.divergent.len().to_string());
-
-            // Populate per_item_stats for Python parity (debug mode)
-            // ranked was consumed by into_iter above; collect from pack layers
-            for item in pack.core.iter().chain(pack.related.iter()).chain(pack.divergent.iter()) {
-                let mut row = HashMap::new();
-                row.insert("id".into(), item.id.clone());
-                row.insert("final_score".into(), format!("{:.4}", item.relevance));
-                row.insert("worth".into(), format!("{:.3}", item.worth_score));
-                row.insert("source".into(), item.source.clone());
-                row.insert("tier".into(), "L1".into()); // tier not separately tracked in fallback
-                row.insert("category".into(), "other".into());
-                pack.per_item_stats.push(row);
-            }
+            pack.pipeline_stats.insert("after_feedback".into(), "0".into());
+            pack.pipeline_stats.insert("hard_min_score".into(), format!("{:.3}", hard_min_score));
+            pack.pipeline_stats.insert(
+                "stage_timing_ms".into(),
+                serde_json::to_string(&stage_timing_ms).unwrap_or_else(|_| "{}".into()),
+            );
+            pack.per_item_stats = fallback_debug_rows;
 
             return Ok(pack);
         }
@@ -990,6 +1060,12 @@ impl ContextEngine {
         let mut pack = ContextPack::new();
         pack.activated_principles = activated_principle_names;
 
+        let stage_started = Instant::now();
+        let mut after_noise_filter = 0usize;
+        let mut after_source_filter = 0usize;
+        let mut after_hard_score_filter = 0usize;
+        let mut debug_rows = parse_debug_rows.clone();
+
         for (item_id, score) in &adjusted {
             // 构建 ContextItem
             let content = memory_index
@@ -1022,16 +1098,39 @@ impl ContextEngine {
                 .map(|m| m.source.clone())
                 .or_else(|| item_lookup.get(item_id).map(|(_, s)| s.clone()))
                 .unwrap_or_else(|| "unknown".into());
+            let mem = memory_index.get(item_id);
+            let mut row = HashMap::new();
+            row.insert("id".into(), item_id.clone());
+            row.insert("initial_score".into(), format!("{:.4}", score));
+            row.insert("worth".into(), format!("{:.3}", worth));
+            row.insert("source".into(), source.clone());
+            row.insert("tier".into(), mem.map(|m| m.tier.clone()).unwrap_or_else(|| "L1".into()));
+            row.insert("category".into(), mem.map(|m| m.category.clone()).unwrap_or_else(|| "other".into()));
             if is_recall_noise(&content) {
+                row.insert("filter_decision".into(), "drop".into());
+                row.insert("filter_reason".into(), "noise".into());
+                debug_rows.push(row);
                 continue;
             }
+            after_noise_filter += 1;
             let Some(penalty) = source_penalty(&source) else {
+                row.insert("source_penalty".into(), "excluded".into());
+                row.insert("filter_decision".into(), "drop".into());
+                row.insert("filter_reason".into(), "source_excluded".into());
+                debug_rows.push(row);
                 continue;
             };
+            after_source_filter += 1;
             let score = (*score * penalty).clamp(0.0, 1.0);
-            if score < 0.20 {
+            row.insert("source_penalty".into(), format!("{:.3}", penalty));
+            row.insert("final_score".into(), format!("{:.4}", score));
+            if hard_min_score > 0.0 && score < hard_min_score {
+                row.insert("filter_decision".into(), "drop".into());
+                row.insert("filter_reason".into(), "below_hard_min_score".into());
+                debug_rows.push(row);
                 continue;
             }
+            after_hard_score_filter += 1;
 
             let mut item = ContextItem::new(item_id.clone(), content, score);
             item.source = source;
@@ -1042,13 +1141,29 @@ impl ContextEngine {
             // 按 relevance 分层 — 与 Python 对齐: core≥0.70, related≥0.40, divergent≥0.20
             if score >= 0.70 {
                 item.layer = "core".into();
+                row.insert("layer".into(), "core".into());
+                row.insert("filter_decision".into(), "keep".into());
+                row.insert("filter_reason".into(), "passed".into());
+                debug_rows.push(row);
                 pack.core.push(item);
             } else if score >= 0.40 {
                 item.layer = "related".into();
+                row.insert("layer".into(), "related".into());
+                row.insert("filter_decision".into(), "keep".into());
+                row.insert("filter_reason".into(), "passed".into());
+                debug_rows.push(row);
                 pack.related.push(item);
             } else if score >= 0.20 {
                 item.layer = "divergent".into();
+                row.insert("layer".into(), "divergent".into());
+                row.insert("filter_decision".into(), "keep".into());
+                row.insert("filter_reason".into(), "passed".into());
+                debug_rows.push(row);
                 pack.divergent.push(item);
+            } else {
+                row.insert("filter_decision".into(), "drop".into());
+                row.insert("filter_reason".into(), "below_layer_min_score".into());
+                debug_rows.push(row);
             }
             // score < 0.20 丢弃
         }
@@ -1056,6 +1171,8 @@ impl ContextEngine {
         // ============================================================
         // Phase 6: 定期内存合并检查
         // ============================================================
+        stage_timing_ms.insert("filter_and_layer".into(), elapsed_ms(stage_started));
+
         let now = Utc::now();
         let interval_hours = self.retriever.consolidator.interval_hours();
         if interval_hours > 0 {
@@ -1088,31 +1205,34 @@ impl ContextEngine {
         }
         audit.insert("timestamp".into(), self.current_time.clone());
         audit.insert("engine_mode".into(), "snapshot".into());
+        audit.insert("fallback_reason".into(), "none".into());
         pack.audit_metadata = audit;
 
         // Populate pipeline_stats and per_item_stats for Python debug parity
+        stage_timing_ms.insert("total".into(), elapsed_ms(supply_started));
         pack.pipeline_stats.insert("engine_mode".into(), "snapshot".into());
+        pack.pipeline_stats.insert("fallback_reason".into(), "none".into());
+        pack.pipeline_stats.insert("input_memory_count".into(), input_memory_count.to_string());
+        pack.pipeline_stats.insert("after_input_noise_filter".into(), memory_index.len().to_string());
         pack.pipeline_stats.insert("vector_count".into(), real_vector.len().to_string());
         pack.pipeline_stats.insert("bm25_count".into(), self.bm25_index.borrow().total_docs().to_string());
         pack.pipeline_stats.insert("vector_hits".into(), vector_hit_count.to_string());
         pack.pipeline_stats.insert("bm25_hits".into(), bm25_hit_count.to_string());
         pack.pipeline_stats.insert("mmr_demoted".into(), mmr_demoted_count.to_string());
         pack.pipeline_stats.insert("fused_count".into(), format!("{}", scored_items.len()));
+        pack.pipeline_stats.insert("after_noise_filter".into(), after_noise_filter.to_string());
+        pack.pipeline_stats.insert("after_source_filter".into(), after_source_filter.to_string());
+        pack.pipeline_stats.insert("after_hard_score_filter".into(), after_hard_score_filter.to_string());
         pack.pipeline_stats.insert("core_count".into(), pack.core.len().to_string());
         pack.pipeline_stats.insert("related_count".into(), pack.related.len().to_string());
         pack.pipeline_stats.insert("divergent_count".into(), pack.divergent.len().to_string());
         pack.pipeline_stats.insert("after_feedback".into(), adjusted.len().to_string());
-        for (item_id, score) in &adjusted {
-            let mem = memory_index.get(item_id);
-            let mut row = HashMap::new();
-            row.insert("id".into(), item_id.clone());
-            row.insert("final_score".into(), format!("{:.4}", score));
-            row.insert("worth".into(), mem.map(|m| format!("{:.3}", m.worth_score())).unwrap_or_else(|| "0.500".into()));
-            row.insert("source".into(), mem.map(|m| m.source.clone()).unwrap_or_else(|| "unknown".into()));
-            row.insert("tier".into(), mem.map(|m| m.tier.clone()).unwrap_or_else(|| "L1".into()));
-            row.insert("category".into(), mem.map(|m| m.category.clone()).unwrap_or_else(|| "other".into()));
-            pack.per_item_stats.push(row);
-        }
+        pack.pipeline_stats.insert("hard_min_score".into(), format!("{:.3}", hard_min_score));
+        pack.pipeline_stats.insert(
+            "stage_timing_ms".into(),
+            serde_json::to_string(&stage_timing_ms).unwrap_or_else(|_| "{}".into()),
+        );
+        pack.per_item_stats = debug_rows;
 
         Ok(pack)
     }
@@ -1138,11 +1258,10 @@ impl ContextEngine {
         project_policy: String,
         project_degraded: bool,
     ) -> PyResult<ContextPack> {
-        let (metadata_by_id, filtered_memories) = Python::with_gil(|py| -> PyResult<_> {
+        let metadata_by_id = Python::with_gil(|py| -> PyResult<_> {
             let mut metadata_by_id: HashMap<String, ProjectMemoryMeta> = HashMap::new();
-            let mut filtered_memories: Vec<PyObject> = Vec::new();
 
-            for py_mem in memories {
+            for py_mem in &memories {
                 let obj = py_mem.as_ref(py);
                 let id: String = obj
                     .get_item("id")
@@ -1150,18 +1269,10 @@ impl ContextEngine {
                     .extract()
                     .map_err(|e| pyo3::exceptions::PyTypeError::new_err(format!("id not a string: {}", e)))?;
                 let meta = ProjectMemoryMeta::from_py(obj);
-                if project_allowed_for_candidate(
-                    &meta,
-                    &project_id,
-                    &project_policy,
-                    project_degraded,
-                ) {
-                    filtered_memories.push(py_mem);
-                }
                 metadata_by_id.insert(id, meta);
             }
 
-            Ok((metadata_by_id, filtered_memories))
+            Ok(metadata_by_id)
         })?;
 
         let mut pack = self.supply(
@@ -1169,20 +1280,34 @@ impl ContextEngine {
             task_vector,
             task_type,
             scope,
-            filtered_memories,
+            memories,
         )?;
 
+        let mut demoted_divergent: Vec<ContextItem> = Vec::new();
         pack.core.retain(|item| {
             metadata_by_id
                 .get(&item.id)
                 .map(|meta| {
-                    project_allowed_for_layer(
+                    let allowed = project_allowed_for_layer(
                         meta,
                         &project_id,
                         &project_policy,
                         project_degraded,
                         "core",
-                    )
+                    );
+                    if !allowed
+                        && should_demote_to_project_divergent(
+                            meta,
+                            &project_id,
+                            &project_policy,
+                            project_degraded,
+                        )
+                    {
+                        let mut demoted = item.clone();
+                        demoted.layer = "divergent".into();
+                        demoted_divergent.push(demoted);
+                    }
+                    allowed
                 })
                 .unwrap_or(true)
         });
@@ -1190,13 +1315,26 @@ impl ContextEngine {
             metadata_by_id
                 .get(&item.id)
                 .map(|meta| {
-                    project_allowed_for_layer(
+                    let allowed = project_allowed_for_layer(
                         meta,
                         &project_id,
                         &project_policy,
                         project_degraded,
                         "related",
-                    )
+                    );
+                    if !allowed
+                        && should_demote_to_project_divergent(
+                            meta,
+                            &project_id,
+                            &project_policy,
+                            project_degraded,
+                        )
+                    {
+                        let mut demoted = item.clone();
+                        demoted.layer = "divergent".into();
+                        demoted_divergent.push(demoted);
+                    }
+                    allowed
                 })
                 .unwrap_or(true)
         });
@@ -1214,9 +1352,27 @@ impl ContextEngine {
                 })
                 .unwrap_or(true)
         });
+        let demoted_ids: Vec<String> = demoted_divergent.iter().map(|item| item.id.clone()).collect();
+        for row in pack.per_item_stats.iter_mut() {
+            if row
+                .get("id")
+                .map(|id| demoted_ids.iter().any(|demoted_id| demoted_id == id))
+                .unwrap_or(false)
+            {
+                row.insert("layer".into(), "divergent".into());
+                row.insert("filter_reason".into(), "project_demoted_to_divergent".into());
+            }
+        }
+        pack.divergent.extend(demoted_divergent);
         pack.pipeline_stats.insert("project_filter".into(), "active".into());
         pack.pipeline_stats.insert("project_id".into(), project_id.clone());
         pack.pipeline_stats.insert("project_policy".into(), project_policy.clone());
+        pack.pipeline_stats
+            .insert("core_count".into(), pack.core.len().to_string());
+        pack.pipeline_stats
+            .insert("related_count".into(), pack.related.len().to_string());
+        pack.pipeline_stats
+            .insert("divergent_count".into(), pack.divergent.len().to_string());
         pack.audit_metadata.insert("project_id".into(), project_id);
         pack.audit_metadata.insert("project_policy".into(), project_policy);
         pack.audit_metadata

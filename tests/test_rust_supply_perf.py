@@ -3,6 +3,7 @@
 import os
 import statistics
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -27,7 +28,15 @@ def _ensure_rust_extension_importable() -> None:
         if dll_path.exists() and (
             not pyd_path.exists() or dll_path.stat().st_mtime > pyd_path.stat().st_mtime
         ):
-            pyd_path.write_bytes(dll_path.read_bytes())
+            dll_bytes = dll_path.read_bytes()
+            try:
+                pyd_path.write_bytes(dll_bytes)
+            except PermissionError:
+                temp_dir = Path(tempfile.mkdtemp(prefix="context_engine_core_"))
+                temp_pyd = temp_dir / "context_engine_core.pyd"
+                temp_pyd.write_bytes(dll_bytes)
+                sys.path.insert(0, str(temp_dir))
+    sys.modules.pop("context_engine_core", None)
 
 
 def _load_rust_engine():
@@ -202,4 +211,13 @@ def test_pyo3_supply_exposes_pipeline_metadata():
     assert pack.audit_metadata["engine_mode"] == "snapshot"
     assert pack.pipeline_stats["engine_mode"] == "snapshot"
     assert "mmr_demoted" in pack.pipeline_stats
+    assert "after_noise_filter" in pack.pipeline_stats
+    assert "after_source_filter" in pack.pipeline_stats
+    assert "after_hard_score_filter" in pack.pipeline_stats
+    assert "stage_timing_ms" in pack.pipeline_stats
+    assert pack.pipeline_stats["fallback_reason"] in {
+        "none",
+        "empty_rrf_candidates_manual_rescore",
+    }
     assert isinstance(pack.per_item_stats, list)
+    assert all("filter_decision" in row for row in pack.per_item_stats)

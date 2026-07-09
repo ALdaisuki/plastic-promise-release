@@ -1,5 +1,15 @@
 """Integration tests for Rust engine degradation and health check."""
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_rust_integration_env(monkeypatch, tmp_path):
+    """Keep Rust integration tests independent from repo-wide code-memory scans."""
+    monkeypatch.setenv("PP_CODE_MEMORY_ENABLED", "0")
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "plastic_memory.db"))
+    monkeypatch.setenv("PLASTIC_LANCEDB_PATH", str(tmp_path / "plastic_memory.lancedb"))
+
 
 def test_python_fallback_works_without_rust():
     """Python supply() works when Rust .pyd is unavailable."""
@@ -127,9 +137,22 @@ def test_convert_rust_pack_preserves_pipeline_metadata():
             "vector_hits": "2",
             "bm25_hits": "3",
             "mmr_demoted": "1",
+            "after_noise_filter": "2",
+            "after_source_filter": "1",
+            "after_hard_score_filter": "1",
+            "fallback_reason": "none",
+            "stage_timing_ms": '{"total":"1.000"}',
         }
         per_item_stats = [
-            {"id": "mem_1", "final_score": "0.9000", "source": "test"},
+            {
+                "id": "mem_1",
+                "initial_score": "0.9000",
+                "final_score": "0.9000",
+                "source": "test",
+                "source_penalty": "1.000",
+                "filter_decision": "keep",
+                "filter_reason": "passed",
+            },
         ]
 
     engine = ContextEngine(use_sqlite=False)
@@ -140,7 +163,14 @@ def test_convert_rust_pack_preserves_pipeline_metadata():
     assert pack.pipeline_stats["vector_hits"] == "2"
     assert pack.pipeline_stats["bm25_hits"] == "3"
     assert pack.pipeline_stats["mmr_demoted"] == "1"
+    assert pack.pipeline_stats["after_noise_filter"] == "2"
+    assert pack.pipeline_stats["after_source_filter"] == "1"
+    assert pack.pipeline_stats["after_hard_score_filter"] == "1"
+    assert pack.pipeline_stats["fallback_reason"] == "none"
+    assert "total" in pack.pipeline_stats["stage_timing_ms"]
     assert pack.per_item_stats[0]["final_score"] == "0.9000"
+    assert pack.per_item_stats[0]["source_penalty"] == "1.000"
+    assert pack.per_item_stats[0]["filter_decision"] == "keep"
 
 
 def test_convert_rust_pack_filters_audit_telemetry_from_native_layers():
@@ -241,6 +271,7 @@ class Service:
 
     monkeypatch.setenv("PP_PREFER_RUST_SUPPLY", "1")
     monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "0")
+    monkeypatch.setenv("PP_CODE_MEMORY_ENABLED", "1")
     monkeypatch.setenv("PP_CODE_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setenv("PP_CODE_MEMORY_MAX_FILES", "20")
 

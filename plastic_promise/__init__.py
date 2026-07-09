@@ -1,6 +1,6 @@
 """Plastic Promise — AI 行为治理系统"""
 
-__version__ = "0.1.12"
+__version__ = "0.1.13"
 
 
 def main_streamable_http():

@@ -72,6 +72,118 @@ def test_run_retrieval_benchmark_records_samples_with_pipeline_stats(tmp_path):
     conn.close()
 
 
+def test_rust_snapshot_supply_budget_records_metadata_and_absolute_gate(tmp_path):
+    from plastic_promise.core.benchmark import (
+        RUST_SNAPSHOT_SUPPLY_BENCHMARK,
+        ensure_benchmark_schema,
+        run_rust_snapshot_supply_benchmark,
+    )
+
+    class FakeEngine:
+        _ldb = SimpleNamespace(count_rows=lambda: 11)
+
+        def __init__(self):
+            self.calls = []
+
+        def memory_count(self):
+            return 42
+
+        def supply(self, task_description, **kwargs):
+            self.calls.append((task_description, kwargs))
+            return SimpleNamespace(
+                pipeline_stats={
+                    "engine_mode": "snapshot",
+                    "query": task_description,
+                }
+            )
+
+    engine = FakeEngine()
+    ticks = iter([0.00, 0.01, 0.01, 0.03, 0.03, 0.06])
+    conn = sqlite3.connect(tmp_path / "bench.db")
+    ensure_benchmark_schema(conn)
+
+    result = run_rust_snapshot_supply_benchmark(
+        engine,
+        queries=["alpha", "beta", "gamma"],
+        repeat=1,
+        conn=conn,
+        timer=lambda: next(ticks),
+        max_p50_ms=15.0,
+        max_p95_ms=25.0,
+    )
+
+    assert result["benchmark_name"] == RUST_SNAPSHOT_SUPPLY_BENCHMARK
+    assert result["summary"]["p50_ms"] == 20.0
+    assert result["summary"]["p95_ms"] == 30.0
+    assert result["gate"]["status"] == "fail"
+    assert {
+        (regression["metric"], regression["source"])
+        for regression in result["gate"]["regressions"]
+    } == {("p50_ms", "absolute"), ("p95_ms", "absolute")}
+    assert [call[1]["debug"] for call in engine.calls] == [True, True, True]
+
+    rows = conn.execute(
+        """
+        SELECT benchmark_name, query, memory_count, lancedb_rows, pipeline_json
+        FROM benchmark_runs
+        ORDER BY id
+        """
+    ).fetchall()
+    assert [row[0] for row in rows] == [RUST_SNAPSHOT_SUPPLY_BENCHMARK] * 3
+    assert [row[1] for row in rows] == ["alpha", "beta", "gamma"]
+    assert [row[2] for row in rows] == [42, 42, 42]
+    assert [row[3] for row in rows] == [11, 11, 11]
+    assert json.loads(rows[0][4]) == {"engine_mode": "snapshot", "query": "alpha"}
+    conn.close()
+
+
+def test_rust_snapshot_supply_budget_flags_baseline_regression(tmp_path):
+    from plastic_promise.core.benchmark import (
+        ensure_benchmark_schema,
+        run_rust_snapshot_supply_benchmark,
+    )
+
+    class FakeEngine:
+        def supply(self, task_description, **kwargs):
+            return SimpleNamespace(pipeline_stats={"engine_mode": "snapshot"})
+
+    baseline = {
+        "baseline_name": "ci",
+        "sample_count": 3,
+        "p50_ms": 20.0,
+        "p95_ms": 20.0,
+        "p99_ms": 30.0,
+        "tolerance_ratio": 0.10,
+    }
+    ticks = iter([0.00, 0.02, 0.02, 0.04, 0.04, 0.07])
+    conn = sqlite3.connect(tmp_path / "bench.db")
+    ensure_benchmark_schema(conn)
+
+    result = run_rust_snapshot_supply_benchmark(
+        FakeEngine(),
+        queries=["alpha", "beta", "gamma"],
+        conn=conn,
+        timer=lambda: next(ticks),
+        baseline=baseline,
+    )
+
+    assert result["summary"]["p50_ms"] == 20.0
+    assert result["summary"]["p95_ms"] == 30.0
+    assert result["gate"]["status"] == "fail"
+    assert result["gate"]["baseline_name"] == "ci"
+    assert result["gate"]["regressions"] == [
+        {
+            "metric": "p95_ms",
+            "source": "baseline",
+            "current_ms": 30.0,
+            "baseline_ms": 20.0,
+            "limit_ms": 22.0,
+            "status": "fail",
+        }
+    ]
+    conn.close()
+
+
 def test_benchmark_baseline_comparison_flags_regression(tmp_path):
     from plastic_promise.core.benchmark import (
         ensure_benchmark_schema,
@@ -173,6 +285,57 @@ def test_system_benchmark_run_records_history(tmp_path, monkeypatch):
     assert payload["tool"] == "system_benchmark"
     assert payload["mode"] == "run"
     assert payload["summary"]["sample_count"] == 1
+
+
+def test_system_benchmark_run_can_target_rust_snapshot_supply(tmp_path, monkeypatch):
+    from plastic_promise.core import benchmark as benchmark_core
+    from plastic_promise.mcp.tools.management import handle_system
+
+    class FakeEngine:
+        pass
+
+    calls = []
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "bench.db"))
+
+    def fake_rust_snapshot_run(engine, **kwargs):
+        calls.append(kwargs)
+        return {
+            "mode": "run",
+            "benchmark_name": benchmark_core.RUST_SNAPSHOT_SUPPLY_BENCHMARK,
+            "run_id": "bench:rust-snapshot",
+            "summary": {
+                "benchmark_name": benchmark_core.RUST_SNAPSHOT_SUPPLY_BENCHMARK,
+                "sample_count": 1,
+                "p50_ms": 12.0,
+                "p95_ms": 12.0,
+                "p99_ms": 12.0,
+            },
+            "gate": {"status": "missing_baseline", "checks": [], "regressions": []},
+        }
+
+    monkeypatch.setattr(
+        benchmark_core,
+        "run_rust_snapshot_supply_benchmark",
+        fake_rust_snapshot_run,
+    )
+
+    result = asyncio.run(
+        handle_system(
+            FakeEngine(),
+            {
+                "action": "benchmark",
+                "run": True,
+                "benchmark_name": benchmark_core.RUST_SNAPSHOT_SUPPLY_BENCHMARK,
+                "queries": ["snapshot"],
+                "repeat": 1,
+            },
+        )
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["tool"] == "system_benchmark"
+    assert payload["benchmark_name"] == benchmark_core.RUST_SNAPSHOT_SUPPLY_BENCHMARK
+    assert calls[0]["queries"] == ["snapshot"]
 
 
 def test_system_benchmark_can_set_baseline_and_gate(tmp_path, monkeypatch):

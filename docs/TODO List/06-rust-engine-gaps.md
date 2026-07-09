@@ -11,6 +11,10 @@
 | Graph traversal | Planned | Rust has `load_graph()` / traversal hooks, but full Python/Rust graph parity remains out of this slice. | Add serialized graph parity tests in a separate R19 task. |
 | `new_with_backends` path handling | Done | `cargo test --manifest-path rust/context-engine-core/Cargo.toml` verifies valid paths are read, `:memory:` still works, and missing explicit paths error. | None. |
 | `_supply_rust` contract | Done | `python -B -m pytest -p no:cacheprovider tests/test_rust_integration.py::test_supply_rust_preserves_memory_db_path_for_new_with_backends tests/test_rust_integration.py::test_supply_rust_uses_new_with_backends_and_project_context tests/test_rust_integration.py::test_debug_supply_uses_rust_path_when_rust_is_preferred -q` verifies `_supply_rust` preserves the `:memory:` SQLite sentinel, uses `new_with_backends`, and passes project-aware snapshot context. | None. |
+| Integration test isolation | Done | `tests/test_rust_integration.py` disables `PP_CODE_MEMORY_ENABLED` by default, isolates DB/LanceDB paths, and explicitly scopes the positive code-memory test to `tmp_path`. | None. |
+| Snapshot semantic parity | Done | `tests/test_rust_python_parity.py` compares fixed Python/Rust memory snapshots for strict/balanced/degraded project isolation, English/Chinese BM25, source penalty/exclusion, MMR, noise filter, and hard min score. | Keep future parity additions normalized by semantic IDs/layers/reasons rather than exact floating scores. |
+| Rust debug observability | Done | Rust snapshot supply now reports filter-stage counts, hard score floor, fallback reason, stage timing, and per-item keep/drop reasons; Python conversion preserves these fields. | Extend only when new ranking/filter stages are added. |
+| Snapshot supply performance budget | Done | `plastic_promise.core.benchmark.run_rust_snapshot_supply_benchmark` and `system benchmark_name=rust_snapshot_supply` cover p50/p95 gates for the Python-to-Rust boundary. | Add CI thresholds appropriate to production hardware. |
 | Persistent LanceDB backend | Planned | Roadmap notes describe Rust store as HashMap-backed. | Replace placeholder when dependency constraints allow. |
 
 ## 1. Principle Injection
@@ -86,7 +90,30 @@ The Python `_supply_rust` docstring and actual call should match.
 - If Rust reads SQLite directly, remove unnecessary snapshot passing.
 - If Rust still needs snapshots, label that as the current integration mode.
 
-## 5. Persistent LanceDB Backend
+## 5. Snapshot Parity, Debug, and Budget
+
+Status: Done for the current snapshot-fed Rust accelerator boundary. This closes
+the immediate P1/P2 gap around test isolation, semantic parity, debug
+observability, honest boundary naming, and benchmark gating. It does not turn
+Rust into the persistent LanceDB authority.
+
+Verification commands:
+
+- `cargo build --release` in `rust/context-engine-core`
+- `cargo test --quiet` in `rust/context-engine-core`
+- `python -B -m pytest -p no:cacheprovider tests\test_rust_integration.py tests\test_rust_supply_perf.py tests\test_performance_benchmark.py tests\test_rust_python_parity.py tests\test_rust_release_import.py -q`
+- `git diff --check`
+
+### Current boundary
+
+Python remains authoritative for SQLite, LanceDB persistence, code-memory
+enrichment, rerank, and context gate behavior. Rust receives a Python-built
+snapshot and accelerates ranking, fusion, filtering, and layering. The Rust
+`LanceDbStore` name is compatibility surface for vector/FTS traits; the current
+implementation is an in-memory snapshot adapter, not a native persistent LanceDB
+ANN client.
+
+## 6. Persistent LanceDB Backend
 
 ### Goal
 

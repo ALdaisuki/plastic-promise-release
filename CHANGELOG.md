@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-07-09
+
+### Added
+
+- Added deterministic Rust/Python snapshot parity fixtures for project
+  isolation, English and Chinese BM25, source penalty/exclusion, MMR, noise
+  filtering, and hard minimum score behavior.
+- Added a `rust_snapshot_supply` benchmark path with p50/p95 gate coverage for
+  the Python-to-Rust snapshot boundary.
+
+### Changed
+
+- Expanded Rust snapshot debug output with per-stage filter counts, stage timing,
+  fallback reason, hard score floor, and per-item keep/drop reasons.
+- Clarified that the current Rust vector/FTS store is a snapshot-fed in-memory
+  adapter while Python remains the persistent LanceDB authority.
+
+### Fixed
+
+- Isolated Rust integration tests from repository-wide code-memory scans by
+  disabling code-memory by default and using temporary DB/LanceDB roots.
+
 ## [0.1.12] - 2026-07-09
 
 ### Changed
@@ -214,6 +236,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.13]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.9...v0.1.10

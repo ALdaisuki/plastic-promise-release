@@ -2,8 +2,8 @@
 //!
 //! Four traits:
 //! - StorageBackend: CRUD operations on MemoryRecords (SQLite impl)
-//! - VectorIndex: ANN vector search (LanceDB impl)
-//! - FtsIndex: Full-text BM25 search (LanceDB impl)
+//! - VectorIndex: vector search trait (currently snapshot adapter)
+//! - FtsIndex: full-text search trait (currently snapshot adapter)
 //! - Embedder: Text-to-vector (Python-side impl, trait declared here)
 
 pub mod schema;
@@ -70,7 +70,7 @@ pub struct MemoryStats {
     pub average_worth: f64,
 }
 
-/// Metadata written alongside each vector in LanceDB.
+/// Metadata written alongside each vector snapshot entry.
 #[derive(Debug, Clone, Default)]
 pub struct IndexMetadata {
     pub memory_id: String,

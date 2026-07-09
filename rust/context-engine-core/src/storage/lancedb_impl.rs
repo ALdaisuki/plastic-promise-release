@@ -1,6 +1,8 @@
 //! Vector and FTS index — in-memory implementation.
 //!
 //! Currently uses in-memory brute-force search (fast for <10K vectors).
+//! Boundary: this is not a native Rust LanceDB client. Python owns persistent
+//! LanceDB storage and passes per-call vector/text snapshots into Rust.
 //! Upgrade path: swap for lancedb crate when protobuf/tokio deps resolve.
 //! API is identical — callers are insulated.
 
@@ -15,7 +17,8 @@ use crate::storage::{FtsIndex, IndexMetadata, SearchFilter, VectorIndex};
 /// - `metadata`: id → IndexMetadata (for scope/tier/category filtering)
 ///
 /// Search is brute-force over all entries, filtered by SearchFilter.
-/// Suitable for <10K entries. Beyond that, swap in the lancedb crate.
+/// Suitable for small snapshots. Beyond that, use a persistent Rust ANN/cache
+/// backend or keep Python/LanceDB as the vector authority.
 pub struct LanceDbStore {
     vectors: HashMap<String, Vec<f32>>,
     texts: HashMap<String, String>,

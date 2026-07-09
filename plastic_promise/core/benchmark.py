@@ -17,6 +17,12 @@ DEFAULT_RETRIEVAL_QUERIES = (
     "project context",
     "release readiness",
 )
+RUST_SNAPSHOT_SUPPLY_BENCHMARK = "rust_snapshot_supply"
+DEFAULT_RUST_SNAPSHOT_SUPPLY_QUERIES = (
+    "rust snapshot supply boundary",
+    "context supply pipeline stats",
+    "snapshot memory retrieval",
+)
 
 
 def ensure_benchmark_schema(conn: sqlite3.Connection) -> None:
@@ -399,6 +405,40 @@ def run_retrieval_benchmark(
     finally:
         if owned_conn:
             conn.close()
+
+
+def run_rust_snapshot_supply_benchmark(
+    engine: Any,
+    *,
+    queries: Iterable[str] | None = None,
+    repeat: int = 1,
+    conn: sqlite3.Connection | None = None,
+    timer: Callable[[], float] = time.perf_counter,
+    benchmark_name: str = RUST_SNAPSHOT_SUPPLY_BENCHMARK,
+    baseline: dict[str, Any] | None = None,
+    tolerance_ratio: float | None = None,
+    max_p50_ms: float | None = None,
+    max_p95_ms: float | None = None,
+    max_p99_ms: float | None = None,
+) -> dict[str, Any]:
+    """Run the Python->Rust snapshot supply budget benchmark for CI gates."""
+    payload = run_retrieval_benchmark(
+        engine,
+        queries=queries or DEFAULT_RUST_SNAPSHOT_SUPPLY_QUERIES,
+        repeat=repeat,
+        conn=conn,
+        timer=timer,
+        benchmark_name=benchmark_name,
+    )
+    payload["gate"] = evaluate_benchmark_gate(
+        payload.get("summary", {}),
+        baseline=baseline,
+        tolerance_ratio=tolerance_ratio,
+        max_p50_ms=max_p50_ms,
+        max_p95_ms=max_p95_ms,
+        max_p99_ms=max_p99_ms,
+    )
+    return payload
 
 
 def _pipeline_stats(pack: Any) -> dict[str, Any]:

@@ -151,7 +151,9 @@ async def handle_system_benchmark(engine: Any, args: dict) -> list[TextContent]:
             evaluate_benchmark_gate,
             ensure_benchmark_schema,
             load_benchmark_baseline,
+            RUST_SNAPSHOT_SUPPLY_BENCHMARK,
             run_retrieval_benchmark,
+            run_rust_snapshot_supply_benchmark,
             save_benchmark_baseline,
             summarize_benchmark_history,
         )
@@ -167,13 +169,21 @@ async def handle_system_benchmark(engine: Any, args: dict) -> list[TextContent]:
             ensure_benchmark_schema(conn)
 
             if args.get("run", False):
-                payload = run_retrieval_benchmark(
-                    engine,
-                    queries=args.get("queries"),
-                    repeat=args.get("repeat", 1),
-                    conn=conn,
-                    benchmark_name=benchmark_name,
-                )
+                if benchmark_name == RUST_SNAPSHOT_SUPPLY_BENCHMARK:
+                    payload = run_rust_snapshot_supply_benchmark(
+                        engine,
+                        queries=args.get("queries"),
+                        repeat=args.get("repeat", 1),
+                        conn=conn,
+                    )
+                else:
+                    payload = run_retrieval_benchmark(
+                        engine,
+                        queries=args.get("queries"),
+                        repeat=args.get("repeat", 1),
+                        conn=conn,
+                        benchmark_name=benchmark_name,
+                    )
                 payload["tool"] = "system_benchmark"
             else:
                 payload = {
