@@ -342,6 +342,13 @@ but oversized review/audit text is split by `EMBEDDER_CHUNK_CHARS`, capped by
 `EMBEDDER_MAX_CHUNKS`, mean-pooled, and normalized so a single large record does
 not turn into an Ollama 500 during launcher warmup or backfill.
 
+`PP_MEMORY_SUMMARY_INDEX=1` enables the feature-gated summary index write path.
+SQLite remains the truth source for `raw_content`, L0/L1/L2 summary layers, and
+the exact `embedding_text` / `embedding_hash` used for indexing. LanceDB remains
+a derived index: it receives the vector plus compact `search_text`, not the raw
+turn or full L2 narrative. With the flag unset, the legacy LanceDB `text=content`
+behavior is preserved.
+
 ### Context supply
 
 `context_supply` produces a layered context package for a task. It combines semantic search, text search, graph links, principles, and ranking signals into core, related, and divergent context.
@@ -466,7 +473,7 @@ Conventions:
 | Area | Status | Notes |
 |---|---|---|
 | MCP server | Active | stdio and Streamable HTTP modes are implemented; legacy SSE endpoints remain available. |
-| Memory pipeline | Active | Extraction, quality gate, LanceDB write, and decay are implemented. |
+| Memory pipeline | Active | Extraction, quality gate, feature-gated summary index writes, LanceDB dual-write, and decay are implemented. |
 | Context supply | Active | Python remains full fallback and write-side authority; Rust snapshot is optional, request-scoped, used for normal and debug recall in `rust-full`, and guarded against daemon audit telemetry at snapshot ingestion plus native-result conversion. |
 | Hunter Guild | Experimental | Task lifecycle is wired; policy and scanner quality are still evolving. |
 | Skills and SuperPowers | Active | `session-init`, `smart-remember`, `step-closure`, and the 16-stage `sp-stage` surface are exposed. |

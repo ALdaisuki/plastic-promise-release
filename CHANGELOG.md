@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-07-09
+
+### Added
+
+- Added a feature-gated memory summary index layer behind
+  `PP_MEMORY_SUMMARY_INDEX=1`, persisting `raw_content`, `l0_abstract`,
+  `l1_summary`, `l2_content`, `embedding_text`, and `embedding_hash` in SQLite.
+- Added regression coverage for summary-index field construction, gated
+  `embedding_text` usage, compact LanceDB `search_text`, legacy gate-off
+  behavior, and SQLite round-tripping of the new memory index fields.
+- Added design, implementation-plan, and exemplar-research notes for the
+  SQLite-truth / LanceDB-derived-index memory contract.
+
+### Changed
+
+- When `PP_MEMORY_SUMMARY_INDEX=1`, memory pipeline embeddings use deterministic
+  `embedding_text`, while LanceDB stores compact index text instead of raw or
+  L2 memory content. The default gate-off path preserves existing behavior.
+
 ## [0.1.10] - 2026-07-08
 
 ### Changed
@@ -187,6 +206,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.11]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.7...v0.1.8

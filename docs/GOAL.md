@@ -206,3 +206,10 @@ step-closure(
 
 - Launcher-managed services prepend the project root to child-process `PYTHONPATH`.
 - `maintenance_daemon.py` self-bootstraps `_project_root` into `sys.path`, so direct script starts and one-click launcher starts use the same source checkout imports.
+
+## 2026-07-09 Memory Summary Index Note
+
+- `PP_MEMORY_SUMMARY_INDEX=1` enables the feature-gated summary-index write path.
+- SQLite remains the truth source for raw memory text, L0/L1/L2 summary layers, `embedding_text`, and `embedding_hash`.
+- LanceDB remains a derived index and receives compact `search_text` instead of raw turns or full L2 narrative while the gate is enabled.
+- With the flag unset, the legacy LanceDB `text=content` behavior is preserved.

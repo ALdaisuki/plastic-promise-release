@@ -5,8 +5,10 @@ raw → tagged(关键词) → classified(大类L1/L3) → embedded(细分向量)
 """
 
 import datetime
+import hashlib
 import json
 import logging
+import os
 import re
 import uuid
 from typing import Any
@@ -134,7 +136,7 @@ class MemoryPipeline:
                 "origin_ref": origin_ref,
                 "origin_hash": origin_hash,
                 "parent_memory_ids": parent_memory_ids or [],
-                "metadata_json": metadata_json or {},
+                "metadata_json": dict(metadata_json or {}),
             }
 
             # Attach extraction metadata if available
@@ -147,6 +149,31 @@ class MemoryPipeline:
                     "confidence": em.confidence,
                     "importance": em.importance,
                 }
+
+            index_fields = self._build_memory_index_fields(
+                raw_content=content,
+                extracted=record.get("extracted", {}),
+                embedder=self.embedder,
+            )
+            record.update(index_fields)
+            metadata = dict(record.get("metadata_json", {}))
+            metadata_extracted = dict(metadata.get("extracted", {}))
+            metadata_extracted.update(
+                {
+                    "category": record.get("extracted", {}).get("category", "other"),
+                    "l0_abstract": record["l0_abstract"],
+                    "l1_summary": record["l1_summary"],
+                    "l2_content": record["l2_content"],
+                    "confidence": record.get("extracted", {}).get("confidence", 0.5),
+                    "importance": record.get("extracted", {}).get("importance", 0.7),
+                }
+            )
+            metadata["extracted"] = metadata_extracted
+            metadata["memory_index"] = {
+                "embedding_hash": record["embedding_hash"],
+                "summary_index_enabled": self._summary_index_enabled(),
+            }
+            record["metadata_json"] = metadata
 
             self._buffer[mid] = record
             if first_mid is None:
@@ -220,6 +247,63 @@ class MemoryPipeline:
     @staticmethod
     def _has_nonzero_vector(vec: Any) -> bool:
         return bool(vec) and any(v != 0.0 for v in vec)
+
+    @staticmethod
+    def _summary_index_enabled() -> bool:
+        value = os.environ.get("PP_MEMORY_SUMMARY_INDEX", "")
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _safe_summary_text(text: Any, max_chars: int = 180) -> str:
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+        return normalized[:max_chars].strip()
+
+    @staticmethod
+    def _embedding_model_name(embedder: Any) -> str:
+        return str(
+            getattr(embedder, "model_name", None)
+            or getattr(embedder, "model", None)
+            or embedder.__class__.__name__
+            if embedder is not None
+            else "unknown"
+        )
+
+    @classmethod
+    def _build_memory_index_fields(
+        cls,
+        raw_content: str,
+        extracted: dict[str, Any] | None = None,
+        embedder: Any = None,
+    ) -> dict[str, str]:
+        extracted = extracted if isinstance(extracted, dict) else {}
+        l2_content = str(extracted.get("l2_content") or raw_content or "")
+        l0_abstract = cls._safe_summary_text(extracted.get("l0_abstract") or l2_content)
+        if not l0_abstract:
+            l0_abstract = cls._safe_summary_text(raw_content)
+        l1_summary = str(extracted.get("l1_summary") or "").strip()
+        if not l1_summary and l0_abstract:
+            l1_summary = f"- {l0_abstract}"
+
+        parts = [
+            f"L0: {l0_abstract}" if l0_abstract else "",
+            f"L1: {l1_summary}" if l1_summary else "",
+            f"L2: {l2_content}" if l2_content else "",
+        ]
+        embedding_text = "\n".join(part for part in parts if part).strip()
+        model_name = cls._embedding_model_name(embedder)
+        embedding_hash = hashlib.sha256(
+            f"{model_name}\n{embedding_text}".encode("utf-8")
+        ).hexdigest()
+
+        return {
+            "raw_content": raw_content or "",
+            "l0_abstract": l0_abstract,
+            "l1_summary": l1_summary,
+            "l2_content": l2_content,
+            "embedding_text": embedding_text,
+            "embedding_hash": embedding_hash,
+            "search_text": l0_abstract or cls._safe_summary_text(l1_summary or l2_content),
+        }
 
     # ================================================================
     # Internal: Tag Extraction
@@ -365,19 +449,24 @@ class MemoryPipeline:
         count = 0
         for i in range(0, len(items), self._batch_size):
             batch = items[i : i + self._batch_size]
-            contents = [r["content"] for _, r in batch]
+            embed_texts = [
+                r.get("embedding_text") or r["content"]
+                if self._summary_index_enabled()
+                else r["content"]
+                for _, r in batch
+            ]
             # Skip Ollama embed for items marked skip_embed (e.g. auto_inject structured content)
             skip_set = {mid for mid, r in batch if r.get("skip_embed")}
             try:
                 if skip_set:
                     vectors = []
-                    for mid, r in batch:
+                    for (mid, r), embed_text in zip(batch, embed_texts):
                         if mid in skip_set:
                             vectors.append([0.0] * self.embedder.dim)
                         else:
-                            vectors.append(self.embedder.embed(r["content"]))
+                            vectors.append(self.embedder.embed(embed_text))
                 else:
-                    vectors = self.embedder.embed_batch(contents)
+                    vectors = self.embedder.embed_batch(embed_texts)
             except Exception as e:
                 logging.warning(
                     "Embed batch failed, deferring %d items (skip_set=%d): %s",
@@ -591,6 +680,17 @@ class MemoryPipeline:
                 if extracted_category == "other" or extracted_confidence < 0.5:
                     if "llm_pending:true" not in tags:
                         tags.append("llm_pending:true")
+                metadata_json = dict(record.get("metadata_json", {}))
+                metadata_json.update(
+                    {
+                        "raw_content": record.get("raw_content", ""),
+                        "l0_abstract": record.get("l0_abstract", ""),
+                        "l1_summary": record.get("l1_summary", ""),
+                        "l2_content": record.get("l2_content", ""),
+                        "embedding_text": record.get("embedding_text", ""),
+                        "embedding_hash": record.get("embedding_hash", ""),
+                    }
+                )
                 stored = self.rec_mem.store(
                     content=record["content"],
                     memory_type=record["memory_type"],
@@ -609,7 +709,7 @@ class MemoryPipeline:
                     origin_ref=record.get("origin_ref", ""),
                     origin_hash=record.get("origin_hash", ""),
                     parent_memory_ids=record.get("parent_memory_ids", []),
-                    metadata_json=record.get("metadata_json", {}),
+                    metadata_json=metadata_json,
                 )
 
                 # Attach quality metadata
@@ -665,10 +765,15 @@ class MemoryPipeline:
                         ldb = getattr(engine, "_ldb", None)
                         if ldb is not None:
                             try:
+                                lancedb_text = (
+                                    record.get("search_text", "")
+                                    if self._summary_index_enabled()
+                                    else record.get("content", "")
+                                )
                                 ldb.insert(
                                     memory_id=stored.memory_id,
                                     vector=vec,
-                                    text=record.get("content", ""),
+                                    text=lancedb_text,
                                     tier=record.get("tier", "L1"),
                                     category=record.get("category", "other"),
                                     scope=record.get("scope", "global"),
@@ -690,7 +795,7 @@ class MemoryPipeline:
                         origin_ref=record.get("origin_ref", ""),
                         origin_hash=record.get("origin_hash", ""),
                         parent_memory_ids=record.get("parent_memory_ids", []),
-                        metadata_json=record.get("metadata_json", {}),
+                        metadata_json=metadata_json,
                     )
                     sqlite = getattr(engine, "_sqlite", None)
                     if sqlite is not None:
@@ -713,7 +818,7 @@ class MemoryPipeline:
                                 record.get("origin_ref", ""),
                                 record.get("origin_hash", ""),
                                 json.dumps(record.get("parent_memory_ids", []), ensure_ascii=False),
-                                json.dumps(record.get("metadata_json", {}), ensure_ascii=False),
+                                json.dumps(metadata_json, ensure_ascii=False),
                                 stored.memory_id,
                             ),
                         )

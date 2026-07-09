@@ -11,6 +11,21 @@ from plastic_promise.core.embedder import FallbackEmbedder
 class TestPipelineQuality:
     """Integration tests for quality pipeline features."""
 
+    class RecordingEmbedder:
+        dim = 1024
+
+        def __init__(self):
+            self.texts = []
+            self.model_name = "recording-test"
+
+        def embed(self, text):
+            self.texts.append(text)
+            return [0.1] * self.dim
+
+        def embed_batch(self, texts):
+            self.texts.extend(texts)
+            return [[0.1] * self.dim for _ in texts]
+
     @pytest.fixture(autouse=True)
     def setup(self):
         """Create pipeline with mocked dependencies."""
@@ -56,6 +71,37 @@ class TestPipelineQuality:
             assert record["extracted"]["confidence"] == 0.9
             # Tags should include cat:preference
             assert any("cat:preference" in tag for tag in record["tags"])
+
+    def test_store_urgent_builds_summary_index_fields_from_extraction(self):
+        raw = "User said they like Rust, with extra source wording."
+        l2 = "User likes Rust for backend development."
+        with patch("plastic_promise.smart_extractor.extract_memories") as mock_extract:
+            from plastic_promise.smart_extractor import ExtractedMemory
+
+            mock_extract.return_value = [
+                ExtractedMemory(
+                    category="preference",
+                    l0_abstract="User Rust preference",
+                    l1_summary="- Language: Rust\n- Use: backend",
+                    l2_content=l2,
+                    importance=0.8,
+                    confidence=0.9,
+                    source_segment=raw,
+                )
+            ]
+            mid = self.pipeline.store_urgent(raw)
+
+        record = self.pipeline._buffer[mid]
+        assert record["content"] == l2
+        assert record["raw_content"] == raw
+        assert record["l0_abstract"] == "User Rust preference"
+        assert record["l1_summary"] == "- Language: Rust\n- Use: backend"
+        assert record["l2_content"] == l2
+        assert "L0: User Rust preference" in record["embedding_text"]
+        assert "L2: User likes Rust" in record["embedding_text"]
+        assert record["search_text"] == "User Rust preference"
+        assert len(record["embedding_hash"]) == 64
+        assert record["metadata_json"]["extracted"]["l0_abstract"] == "User Rust preference"
 
     def test_store_urgent_no_extraction_returns_none(self):
         """extract_memories returns empty and content is whitespace → returns None."""
@@ -250,3 +296,125 @@ class TestPipelineQuality:
         assert stored.decay_multiplier > 0.9
         # effective_half_life should be the L3 base (90 days), not the default 3.0
         assert stored.effective_half_life > 3.0
+
+    def test_summary_index_gate_embeds_embedding_text_and_lancedb_uses_search_text(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("PP_MEMORY_SUMMARY_INDEX", "1")
+        embedder = self.RecordingEmbedder()
+        rec_mem = MagicMock(spec=RecMem)
+        rec_mem._records = {}
+        engine = MagicMock()
+        engine._memories = {"stored_summary": {}}
+        engine._sqlite = None
+        engine._ldb = MagicMock()
+        rec_mem._engine = engine
+
+        def mock_store(**kwargs):
+            mr = MemoryRecord(
+                content=kwargs["content"],
+                memory_type=kwargs["memory_type"],
+                source=kwargs["source"],
+                memory_id="stored_summary",
+                metadata_json=kwargs.get("metadata_json", {}),
+            )
+            rec_mem._records[mr.memory_id] = mr
+            return mr
+
+        rec_mem.store = mock_store
+        pipeline = MemoryPipeline(rec_mem=rec_mem, embedder=embedder)
+        pipeline._lancedb = MagicMock()
+        pipeline._lancedb.check_duplicate.return_value = None
+
+        with patch("plastic_promise.smart_extractor.extract_memories") as mock_extract:
+            from plastic_promise.smart_extractor import ExtractedMemory
+
+            mock_extract.return_value = [
+                ExtractedMemory(
+                    category="fact",
+                    l0_abstract="Compact LanceDB index text",
+                    l1_summary="- Full detail preserved in SQL",
+                    l2_content="Long SQL-only detail with exact identifier PP-12345.",
+                    importance=0.8,
+                    confidence=0.9,
+                    source_segment="raw source with PP-12345",
+                )
+            ]
+            pipeline.store_urgent("raw source with PP-12345")
+
+        pipeline.process_pipeline()
+
+        assert embedder.texts
+        assert embedder.texts[0].startswith("L0: Compact LanceDB index text")
+        assert "PP-12345" in embedder.texts[0]
+        insert_kwargs = engine._ldb.insert.call_args.kwargs
+        assert insert_kwargs["text"] == "Compact LanceDB index text"
+        assert "PP-12345" not in insert_kwargs["text"]
+        stored_metadata = rec_mem._records["stored_summary"].metadata_json
+        assert stored_metadata["raw_content"] == "raw source with PP-12345"
+        assert stored_metadata["l2_content"] == "Long SQL-only detail with exact identifier PP-12345."
+
+    def test_summary_index_gate_off_preserves_lancedb_content_text(self, monkeypatch):
+        monkeypatch.delenv("PP_MEMORY_SUMMARY_INDEX", raising=False)
+        embedder = self.RecordingEmbedder()
+        rec_mem = MagicMock(spec=RecMem)
+        rec_mem._records = {}
+        engine = MagicMock()
+        engine._memories = {"stored_legacy": {}}
+        engine._sqlite = None
+        engine._ldb = MagicMock()
+        rec_mem._engine = engine
+
+        def mock_store(**kwargs):
+            mr = MemoryRecord(
+                content=kwargs["content"],
+                memory_type=kwargs["memory_type"],
+                source=kwargs["source"],
+                memory_id="stored_legacy",
+                metadata_json=kwargs.get("metadata_json", {}),
+            )
+            rec_mem._records[mr.memory_id] = mr
+            return mr
+
+        rec_mem.store = mock_store
+        pipeline = MemoryPipeline(rec_mem=rec_mem, embedder=embedder)
+        pipeline._lancedb = MagicMock()
+        pipeline._lancedb.check_duplicate.return_value = None
+
+        with patch("plastic_promise.smart_extractor.extract_memories") as mock_extract:
+            mock_extract.return_value = []
+            pipeline.store_urgent("Legacy full content text")
+
+        pipeline.process_pipeline()
+
+        assert embedder.texts == ["Legacy full content text"]
+        insert_kwargs = engine._ldb.insert.call_args.kwargs
+        assert insert_kwargs["text"] == "Legacy full content text"
+
+    def test_sqlite_round_trips_summary_index_fields(self, tmp_path):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+
+        store = _SQLiteMemoryStore(str(tmp_path / "memory.db"))
+        store.upsert(
+            "summary_row",
+            {
+                "content": "display content",
+                "memory_type": "experience",
+                "source": "test",
+                "raw_content": "raw source text",
+                "l0_abstract": "compact index",
+                "l1_summary": "- structured summary",
+                "l2_content": "full narrative",
+                "embedding_text": "L0: compact index\nL2: full narrative",
+                "embedding_hash": "abc123",
+                "metadata_json": {"raw_content": "metadata fallback should not win"},
+            },
+        )
+
+        row = store.get("summary_row")
+        assert row["raw_content"] == "raw source text"
+        assert row["l0_abstract"] == "compact index"
+        assert row["l1_summary"] == "- structured summary"
+        assert row["l2_content"] == "full narrative"
+        assert row["embedding_text"] == "L0: compact index\nL2: full narrative"
+        assert row["embedding_hash"] == "abc123"

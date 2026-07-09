@@ -3628,6 +3628,12 @@ class _SQLiteStorage:
         add_column("origin_hash", "TEXT NOT NULL DEFAULT ''")
         add_column("parent_memory_ids", "TEXT NOT NULL DEFAULT '[]'")
         add_column("metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        add_column("raw_content", "TEXT NOT NULL DEFAULT ''")
+        add_column("l0_abstract", "TEXT NOT NULL DEFAULT ''")
+        add_column("l1_summary", "TEXT NOT NULL DEFAULT ''")
+        add_column("l2_content", "TEXT NOT NULL DEFAULT ''")
+        add_column("embedding_text", "TEXT NOT NULL DEFAULT ''")
+        add_column("embedding_hash", "TEXT NOT NULL DEFAULT ''")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS projects ("
             "project_id TEXT PRIMARY KEY,"
@@ -3704,13 +3710,30 @@ class _SQLiteStorage:
         """Insert or update a memory record."""
         import json
 
+        metadata_json = data.get("metadata_json", {})
+        if isinstance(metadata_json, str):
+            try:
+                metadata_json = json.loads(metadata_json) if metadata_json.strip() else {}
+            except (TypeError, json.JSONDecodeError):
+                metadata_json = {}
+        if not isinstance(metadata_json, dict):
+            metadata_json = {}
+
+        def summary_field(name: str) -> str:
+            value = data.get(name, "")
+            if value:
+                return str(value)
+            value = metadata_json.get(name, "")
+            return str(value or "")
+
         self._conn.execute(
             "INSERT OR REPLACE INTO memories (id, content, memory_type, source, owner, "
             "tier, scope, category, tags, domain, importance, entity_ids, created_at, access_count, "
             "worth_success, worth_failure, activation_weight, decay_multiplier, effective_half_life, "
             "last_accessed, project_id, visibility, source_class, created_by_call_id, origin_kind, "
-            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json, raw_content, "
+            "l0_abstract, l1_summary, l2_content, embedding_text, embedding_hash) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 data.get("content", ""),
@@ -3741,7 +3764,13 @@ class _SQLiteStorage:
                 data.get("origin_ref", ""),
                 data.get("origin_hash", ""),
                 json.dumps(data.get("parent_memory_ids", []), ensure_ascii=False),
-                json.dumps(data.get("metadata_json", {}), ensure_ascii=False),
+                json.dumps(metadata_json, ensure_ascii=False),
+                summary_field("raw_content"),
+                summary_field("l0_abstract"),
+                summary_field("l1_summary"),
+                summary_field("l2_content"),
+                summary_field("embedding_text"),
+                summary_field("embedding_hash"),
             ),
         )
         if self._batch_depth <= 0:
@@ -3758,7 +3787,8 @@ class _SQLiteStorage:
             "worth_success, worth_failure, activation_weight, "
             "decay_multiplier, effective_half_life, last_accessed, "
             "project_id, visibility, source_class, created_by_call_id, origin_kind, "
-            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json "
+            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json, "
+            "raw_content, l0_abstract, l1_summary, l2_content, embedding_text, embedding_hash "
             "FROM memories WHERE id = ?",
             (mid,),
         ).fetchone()
@@ -3782,7 +3812,9 @@ class _SQLiteStorage:
             "worth_success, worth_failure, activation_weight, "
             "decay_multiplier, effective_half_life, last_accessed, "
             "project_id, visibility, source_class, created_by_call_id, origin_kind, "
-            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json FROM memories"
+            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json, "
+            "raw_content, l0_abstract, l1_summary, l2_content, embedding_text, embedding_hash "
+            "FROM memories"
         ).fetchall()
         for row in rows:
             d = self._row_to_dict(row)
@@ -3961,6 +3993,12 @@ class _SQLiteStorage:
             "origin_hash": row[27] if len(row) > 27 else "",
             "parent_memory_ids": self._json_list_or_empty(row[28]) if len(row) > 28 else [],
             "metadata_json": self._json_dict_or_empty(row[29]) if len(row) > 29 else {},
+            "raw_content": row[30] if len(row) > 30 else "",
+            "l0_abstract": row[31] if len(row) > 31 else "",
+            "l1_summary": row[32] if len(row) > 32 else "",
+            "l2_content": row[33] if len(row) > 33 else "",
+            "embedding_text": row[34] if len(row) > 34 else "",
+            "embedding_hash": row[35] if len(row) > 35 else "",
         }
 
 
