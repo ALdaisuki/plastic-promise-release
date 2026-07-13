@@ -5,12 +5,21 @@ Vector dim: 1024 (mxbai-embed-large), configurable via PP_EMBEDDING_DIM.
 """
 
 import logging
+import math
 import os
 
 import lancedb
 import pyarrow as pa
+from lancedb.index import FTS
 
 from plastic_promise.core.embedder import Embedder
+from plastic_promise.core.memory_index import (
+    IndexMaterial,
+    IndexMaterialError,
+    metadata_with_index_material,
+    resolve_index_material,
+)
+from plastic_promise.core.synthesis_retrieval import synthesis_index_eligible
 
 logger = logging.getLogger("plastic-promise.lancedb")
 
@@ -45,6 +54,9 @@ class LanceDBStore:
         self._db: lancedb.DBConnection | None = None
         self._table: lancedb.table.Table | None = None
         self._fts_ready = False
+        self._last_search_diagnostics: list[dict[str, str]] = []
+        self._index_diagnostics: list[dict[str, str]] = []
+        self._index_failures: list[dict[str, str]] = []
         self._init_db()
 
     def _init_db(self) -> None:
@@ -82,8 +94,7 @@ class LanceDBStore:
             except Exception:
                 pass  # list_indices may not be available — fall through to creation
 
-            # LanceDB 0.30+ expects a single column name string, not a list
-            self._table.create_fts_index("text", replace=True)
+            self._table.create_index("text", config=FTS(), replace=True)
             self._fts_ready = True
             logger.info("LanceDB: FTS index ready on 'text'")
         except Exception as e:
@@ -166,9 +177,15 @@ class LanceDBStore:
             return []
         if self._table is None:
             return []
+        self._last_search_diagnostics = []
         try:
             if self._fts_ready:
-                raw = self._table.search(query, query_type="fts").limit(k).to_list()
+                raw = (
+                    self._table.search(query, query_type="fts")
+                    .select(["memory_id", "text", "tier", "category", "scope", "_score"])
+                    .limit(k)
+                    .to_list()
+                )
             else:
                 # Fallback: substring match via pyarrow compute
                 safe_query = query.replace("'", "''")  # escape single quotes
@@ -206,7 +223,20 @@ class LanceDBStore:
             return results
         except Exception as e:
             logger.warning("LanceDB FTS search failed: %s", e)
+            self._last_search_diagnostics = [
+                {
+                    "channel": "fts",
+                    "reason": "lancedb_fts_query_failed",
+                    "error_class": e.__class__.__name__,
+                }
+            ]
             return []
+
+    def consume_search_diagnostics(self) -> list[dict[str, str]]:
+        """Return and clear structured diagnostics from the latest search call."""
+        diagnostics = list(self._last_search_diagnostics)
+        self._last_search_diagnostics = []
+        return diagnostics
 
     def fts_search(
         self, query: str, k: int = 20, scope: str | None = None
@@ -260,9 +290,10 @@ class LanceDBStore:
         if self._table is None:
             return None
         try:
+            escaped_memory_id = str(memory_id).replace("'", "''")
             rows = (
                 self._table.search()
-                .where(f"memory_id = '{memory_id}'", prefilter=True)
+                .where(f"memory_id = '{escaped_memory_id}'", prefilter=True)
                 .limit(1)
                 .to_list()
             )
@@ -301,31 +332,99 @@ class LanceDBStore:
         if self._vectors_disabled:
             logger.debug("LanceDBStore.insert(%s): vectors disabled, skipping write", memory_id)
             return
-        if self._table is None:
-            return
         try:
-            existing = (
-                self._table.search()
-                .where(f"memory_id = '{memory_id}'", prefilter=True)
-                .limit(1)
-                .to_list()
-            )
-            if existing:
-                return  # already exists, skip
-            self._table.add(
-                [
-                    {
-                        "memory_id": memory_id,
-                        "vector": vector,
-                        "text": text,
-                        "tier": tier,
-                        "category": category,
-                        "scope": scope,
-                    }
-                ]
-            )
+            self.insert_checked(memory_id, vector, text, tier, category, scope)
         except Exception as e:
             logger.error("LanceDB insert failed for %s: %s", memory_id, e)
+
+    def insert_checked(
+        self,
+        memory_id: str,
+        vector: list[float],
+        text: str,
+        tier: str = "L1",
+        category: str = "other",
+        scope: str = "global",
+    ) -> None:
+        """Insert a vector row and propagate backend failures to repair workers."""
+        if self._vectors_disabled:
+            raise RuntimeError("lancedb_vectors_disabled")
+        if self._table is None:
+            raise RuntimeError("lancedb_table_unavailable")
+        escaped_memory_id = str(memory_id).replace("'", "''")
+        existing = (
+            self._table.search()
+            .where(f"memory_id = '{escaped_memory_id}'", prefilter=True)
+            .limit(1)
+            .to_list()
+        )
+        if existing:
+            return
+        self._table.add(
+            [
+                {
+                    "memory_id": memory_id,
+                    "vector": vector,
+                    "text": text,
+                    "tier": tier,
+                    "category": category,
+                    "scope": scope,
+                }
+            ]
+        )
+
+    def replace_checked(
+        self,
+        memory_id: str,
+        vector: list[float],
+        text: str,
+        tier: str = "L1",
+        category: str = "other",
+        scope: str = "global",
+    ) -> None:
+        """Replace one vector row and propagate failures to repair workers."""
+        if self._vectors_disabled:
+            raise RuntimeError("lancedb_vectors_disabled")
+        if self._table is None:
+            raise RuntimeError("lancedb_table_unavailable")
+        escaped_memory_id = str(memory_id).replace("'", "''")
+        existing = (
+            self._table.search()
+            .where(f"memory_id = '{escaped_memory_id}'", prefilter=True)
+            .limit(2)
+            .to_list()
+        )
+        desired = {
+            "memory_id": memory_id,
+            "vector": vector,
+            "text": text,
+            "tier": tier,
+            "category": category,
+            "scope": scope,
+        }
+        if len(existing) == 1 and self._checked_row_matches(existing[0], desired):
+            return
+        if existing:
+            self.delete_checked(memory_id)
+        self._table.add([desired])
+
+    @staticmethod
+    def _checked_row_matches(existing: dict, desired: dict) -> bool:
+        if any(existing.get(key) != desired[key] for key in ("text", "tier", "category", "scope")):
+            return False
+        existing_vector = existing.get("vector")
+        desired_vector = desired["vector"]
+        if not isinstance(existing_vector, (list, tuple)) or len(existing_vector) != len(
+            desired_vector
+        ):
+            return False
+        try:
+            return all(
+                math.isclose(float(left), float(right), rel_tol=1e-6, abs_tol=1e-7)
+                for left, right in zip(existing_vector, desired_vector, strict=True)
+            )
+        except (TypeError, ValueError):
+            return False
 
     def update(
         self,
@@ -342,12 +441,17 @@ class LanceDBStore:
 
     def delete(self, memory_id: str) -> None:
         """Delete a vector row by memory_id."""
-        if self._table is None:
-            return
         try:
-            self._table.delete(f"memory_id = '{memory_id}'")
+            self.delete_checked(memory_id)
         except Exception as e:
             logger.error("LanceDB delete failed for %s: %s", memory_id, e)
+
+    def delete_checked(self, memory_id: str) -> None:
+        """Delete a vector row and propagate backend failures to repair workers."""
+        if self._table is None:
+            raise RuntimeError("lancedb_table_unavailable")
+        escaped_memory_id = str(memory_id).replace("'", "''")
+        self._table.delete(f"memory_id = '{escaped_memory_id}'")
 
     def count_rows(self) -> int:
         """Return total rows in the table."""
@@ -373,33 +477,59 @@ class LanceDBStore:
 
     def sync_with_engine(self, engine: object) -> dict:
         """Repair ID-level drift between SQLite memories and LanceDB rows."""
-        memories = getattr(engine, "_memories", {}) or {}
-        sqlite_ids = set(memories.keys())
+        self._reset_index_diagnostics()
+        memories = self._canonical_engine_memories(engine)
+        if memories is None:
+            return {
+                "orphan_deleted": 0,
+                "missing_backfilled": 0,
+                "missing_skipped": 0,
+                "orphan_ids": [],
+                "missing_ids": [],
+                "canonical_unavailable": True,
+            }
+        eligible_memories = self._eligible_engine_memories(engine, memories)
+        sqlite_ids = set(eligible_memories)
         ldb_ids = self.list_memory_ids()
 
         orphan_ids = sorted(ldb_ids - sqlite_ids)
-        missing_ids = sorted(sqlite_ids - ldb_ids)
+        missing_ids = [mid for mid in eligible_memories if mid not in ldb_ids]
 
         orphan_deleted = 0
         for mid in orphan_ids:
-            self.delete(mid)
-            orphan_deleted += 1
+            if self._delete_repair_row(mid):
+                orphan_deleted += 1
 
         missing_backfilled = 0
         missing_skipped = 0
         for mid in missing_ids:
-            if self._insert_engine_memory(mid, memories.get(mid, {})):
+            if self._insert_engine_memory(engine, mid, eligible_memories.get(mid, {})):
                 missing_backfilled += 1
             else:
                 missing_skipped += 1
 
-        return {
+        # Legacy materialization can change a source embedding hash. Recheck
+        # after repair so a synthesis that became stale during this pass cannot
+        # remain in the derived index.
+        final_eligible_ids = set(self._eligible_engine_memories(engine, memories))
+        late_orphan_ids = sorted(self.list_memory_ids() - final_eligible_ids)
+        for mid in late_orphan_ids:
+            if mid in orphan_ids:
+                continue
+            if self._delete_repair_row(mid):
+                orphan_deleted += 1
+        orphan_ids = sorted(set(orphan_ids) | set(late_orphan_ids))
+
+        result = {
             "orphan_deleted": orphan_deleted,
             "missing_backfilled": missing_backfilled,
             "missing_skipped": missing_skipped,
             "orphan_ids": orphan_ids,
             "missing_ids": missing_ids,
         }
+        if self._index_failures:
+            result["diagnostics"] = list(self._index_failures)
+        return result
 
     def clear_all(self) -> int:
         """Delete all rows from the table and return the count that was removed.
@@ -407,17 +537,21 @@ class LanceDBStore:
         After clearing, the table is empty but still exists with its schema
         and FTS index intact.
         """
-        if self._table is None:
-            return 0
         try:
-            count = self._table.count_rows()
-            if count > 0:
-                self._table.delete("memory_id IS NOT NULL")
-            logger.info("LanceDB: cleared %d rows", count)
-            return count
+            return self.clear_all_checked()
         except Exception as e:
             logger.error("LanceDB clear_all failed: %s", e)
             return 0
+
+    def clear_all_checked(self) -> int:
+        """Delete every vector row and propagate backend failures to repair workers."""
+        if self._table is None:
+            raise RuntimeError("lancedb_table_unavailable")
+        count = self._table.count_rows()
+        if count > 0:
+            self._table.delete("memory_id IS NOT NULL")
+        logger.info("LanceDB: cleared %d rows", count)
+        return count
 
     def rebuild_all(self, engine: object) -> int:
         """Clear LanceDB table and rebuild all vectors from SQLite memories.
@@ -437,12 +571,24 @@ class LanceDBStore:
         """
         import os as _os
 
+        self._reset_index_diagnostics()
+
         _max_batch = int(_os.environ.get("LDB_REBUILD_MAX_PER_CALL", "200"))
 
-        removed = self.clear_all()
+        canonical_memories = self._canonical_engine_memories(engine)
+        if canonical_memories is None:
+            logger.warning("LanceDB rebuild: canonical SQLite memories unavailable")
+            return 0
+
+        try:
+            removed = self.clear_all_checked()
+        except Exception as exc:
+            self._record_index_diagnostic("__table__", "lancedb_clear_failed", failed=True)
+            logger.error("LanceDB rebuild: clear failed: %s", exc)
+            return 0
         logger.info("LanceDB rebuild: removed %d rows, starting re-index", removed)
 
-        memories = getattr(engine, "_memories", {})
+        memories = self._eligible_engine_memories(engine, canonical_memories)
         if not memories:
             logger.warning("LanceDB rebuild: engine._memories is empty — nothing to rebuild")
             return 0
@@ -458,22 +604,9 @@ class LanceDBStore:
                 )
                 break
 
-            content = mem_data.get("content", "")
-            if not content or not content.strip():
-                continue
-
             try:
-                vector = self._embedder.embed(content)
-            except Exception as e:
-                logger.warning("LanceDB rebuild: embed failed for %s — %s (skipping)", mid, e)
-                continue
-
-            tier = mem_data.get("tier", "L1")
-            category = mem_data.get("category", "other")
-            scope = mem_data.get("scope", "global")
-
-            try:
-                self.insert(mid, vector, content, tier=tier, category=category, scope=scope)
+                if not self._insert_engine_memory(engine, mid, mem_data):
+                    continue
                 rebuilt += 1
             except Exception as e:
                 logger.error("LanceDB rebuild: insert failed for %s: %s", mid, e)
@@ -481,30 +614,376 @@ class LanceDBStore:
         logger.info("LanceDB rebuild: complete — %d memories re-indexed", rebuilt)
         return rebuilt
 
-    def _insert_engine_memory(self, mid: str, mem_data: dict) -> bool:
-        content = mem_data.get("content", "")
-        if not content or not content.strip():
+    def _insert_engine_memory(self, engine: object, mid: str, mem_data: dict) -> bool:
+        if not self._memory_is_index_eligible(engine, mid, mem_data):
+            return False
+
+        model_name = self._embedding_model_name()
+        try:
+            material, needs_persist = resolve_index_material(
+                mem_data,
+                model_name=model_name,
+            )
+        except IndexMaterialError as exc:
+            self._record_index_diagnostic(mid, str(exc), failed=True)
+            logger.warning("LanceDB sync: skipped %s (%s)", mid, exc)
+            return False
+        if not material.vector_text.strip() or not material.search_text.strip():
+            self._record_index_diagnostic(mid, "index_material_incomplete", failed=True)
             return False
         try:
-            vector = self._embedder.embed(content)
-            self.insert(
-                memory_id=mid,
-                vector=vector,
-                text=content,
-                tier=mem_data.get("tier", "L1"),
-                category=mem_data.get("category", "other"),
-                scope=mem_data.get("scope", "global"),
+            if needs_persist:
+                self._record_index_diagnostic(
+                    mid,
+                    "index_material_legacy_materialized",
+                    failed=False,
+                )
+                logger.warning(
+                    "LanceDB sync: explicitly materializing pre-v2 index contract for %s",
+                    mid,
+                )
+                if not self._persist_index_material(
+                    engine,
+                    mid,
+                    mem_data,
+                    material,
+                ):
+                    self._record_index_diagnostic(
+                        mid,
+                        "index_material_persist_failed",
+                        failed=True,
+                    )
+                    return False
+            vector = self._embedder.embed(material.vector_text)
+            canonical = self._validated_canonical_index_memory(
+                engine,
+                mid,
+                material,
+                model_name=model_name,
             )
+            if canonical is None:
+                self._record_index_diagnostic(
+                    mid,
+                    "index_material_changed_during_index",
+                    failed=True,
+                )
+                return False
+            try:
+                self.insert_checked(
+                    memory_id=mid,
+                    vector=vector,
+                    text=material.search_text,
+                    tier=canonical.get("tier", "L1"),
+                    category=canonical.get("category", "other"),
+                    scope=canonical.get("scope", "global"),
+                )
+            except Exception as exc:
+                self._record_index_diagnostic(mid, "lancedb_insert_failed", failed=True)
+                logger.warning("LanceDB sync: insert failed for %s: %s", mid, exc)
+                return False
+            if (
+                self._validated_canonical_index_memory(
+                    engine,
+                    mid,
+                    material,
+                    model_name=model_name,
+                )
+                is None
+            ):
+                self._delete_repair_row(mid)
+                self._record_index_diagnostic(
+                    mid,
+                    "index_material_changed_during_index",
+                    failed=True,
+                )
+                return False
             return True
+        except IndexMaterialError as exc:
+            self._record_index_diagnostic(mid, str(exc), failed=True)
+            logger.warning("LanceDB sync: skipped %s (%s)", mid, exc)
+            return False
         except Exception as e:
+            self._record_index_diagnostic(mid, "lancedb_backfill_failed", failed=True)
             logger.warning("LanceDB sync: failed to backfill %s: %s", mid, e)
             return False
+
+    def _delete_repair_row(self, memory_id: str) -> bool:
+        try:
+            self.delete_checked(memory_id)
+        except Exception as exc:
+            self._record_index_diagnostic(memory_id, "lancedb_delete_failed", failed=True)
+            logger.warning("LanceDB repair: delete failed for %s: %s", memory_id, exc)
+            return False
+        return True
+
+    def _reset_index_diagnostics(self) -> None:
+        self._index_diagnostics = []
+        self._index_failures = []
+
+    def _record_index_diagnostic(
+        self,
+        memory_id: str,
+        reason: str,
+        *,
+        failed: bool,
+    ) -> None:
+        diagnostic = {"memory_id": str(memory_id), "reason": str(reason)}
+        if diagnostic not in self._index_diagnostics:
+            self._index_diagnostics.append(diagnostic)
+        if failed and diagnostic not in self._index_failures:
+            self._index_failures.append(diagnostic)
+
+    @property
+    def index_diagnostics(self) -> tuple[dict[str, str], ...]:
+        return tuple(dict(item) for item in self._index_diagnostics)
+
+    def _validated_canonical_index_memory(
+        self,
+        engine: object,
+        memory_id: str,
+        expected_material: IndexMaterial,
+        *,
+        model_name: str,
+    ) -> dict | None:
+        canonical = self._canonical_index_memory(engine, memory_id)
+        if canonical is None or not self._memory_is_index_eligible(
+            engine,
+            memory_id,
+            canonical,
+        ):
+            return None
+        material, needs_persist = resolve_index_material(
+            canonical,
+            model_name=model_name,
+        )
+        if needs_persist or material != expected_material:
+            return None
+        return canonical
+
+    def _eligible_engine_memories(
+        self,
+        engine: object,
+        memories: dict,
+    ) -> dict[str, dict]:
+        ordinary: list[tuple[str, dict]] = []
+        syntheses: list[tuple[str, dict]] = []
+        for mid, mem_data in memories.items():
+            if not isinstance(mem_data, dict):
+                continue
+            if not self._memory_is_index_eligible(engine, mid, mem_data):
+                continue
+            memory_type = str(mem_data.get("memory_type", "experience")).strip().casefold()
+            target = syntheses if memory_type == "synthesis" else ordinary
+            target.append((mid, mem_data))
+        return dict(sorted(ordinary) + sorted(syntheses))
+
+    def _canonical_engine_memories(self, engine: object) -> dict[str, dict] | None:
+        runtime_memories = getattr(engine, "_memories", {}) or {}
+        sqlite_store = getattr(engine, "_sqlite", None)
+        if sqlite_store is None:
+            return runtime_memories
+
+        iter_all = getattr(sqlite_store, "iter_all", None)
+        if not callable(iter_all):
+            logger.warning("LanceDB repair: canonical SQLite iterator unavailable")
+            return None
+        try:
+            canonical = dict(iter_all())
+        except Exception as exc:
+            logger.warning("LanceDB repair: canonical SQLite load failed: %s", exc)
+            return None
+
+        self._sync_runtime_cache(engine, canonical)
+        return canonical
+
+    @staticmethod
+    def _sync_runtime_cache(engine: object, canonical: dict[str, dict]) -> None:
+        runtime = getattr(engine, "_memories", None)
+        if not isinstance(runtime, dict):
+            return
+
+        def apply() -> None:
+            for memory_id in set(runtime) - set(canonical):
+                runtime.pop(memory_id, None)
+            for memory_id, row in canonical.items():
+                current = runtime.get(memory_id)
+                if isinstance(current, dict):
+                    current.clear()
+                    current.update(row)
+                else:
+                    runtime[memory_id] = dict(row)
+
+        lock = getattr(engine, "_write_lock", None)
+        if lock is None:
+            apply()
+        else:
+            with lock:
+                apply()
+
+    @staticmethod
+    def _canonical_connection(engine: object):
+        sqlite_store = getattr(engine, "_sqlite", None)
+        return getattr(sqlite_store, "_conn", None)
+
+    @staticmethod
+    def _canonical_index_memory(engine: object, memory_id: str) -> dict | None:
+        sqlite_store = getattr(engine, "_sqlite", None)
+        if sqlite_store is not None:
+            getter = getattr(sqlite_store, "get", None)
+            if not callable(getter):
+                return None
+            try:
+                memory = getter(memory_id)
+            except Exception:
+                return None
+            return dict(memory) if isinstance(memory, dict) else None
+        runtime = getattr(engine, "_memories", None)
+        if not isinstance(runtime, dict):
+            return None
+        memory = runtime.get(memory_id)
+        return dict(memory) if isinstance(memory, dict) else None
+
+    def _memory_is_index_eligible(
+        self,
+        engine: object,
+        memory_id: str,
+        memory: dict,
+    ) -> bool:
+        canonical_type = str(memory.get("memory_type", "experience")).strip().casefold()
+        if not canonical_type:
+            return False
+        conn = self._canonical_connection(engine)
+        if canonical_type == "synthesis":
+            if conn is None:
+                return False
+            return synthesis_index_eligible(conn, memory_id)
+        if conn is None:
+            return True
+        try:
+            has_control = (
+                conn.execute(
+                    "SELECT 1 FROM synthesis_artifacts WHERE memory_id = ?",
+                    (memory_id,),
+                ).fetchone()
+                is not None
+            )
+        except Exception:
+            return False
+        if has_control:
+            return synthesis_index_eligible(conn, memory_id)
+        return True
+
+    def _embedding_model_name(self) -> str:
+        return str(
+            getattr(self._embedder, "model_name", None)
+            or getattr(self._embedder, "model", None)
+            or self._embedder.__class__.__name__
+        )
+
+    @staticmethod
+    def _persist_index_material(
+        engine: object,
+        memory_id: str,
+        memory: dict,
+        material: IndexMaterial,
+    ) -> bool:
+        fields = {
+            "embedding_text": material.vector_text,
+            "search_text": material.search_text,
+            "embedding_hash": material.embedding_hash,
+            "metadata_json": metadata_with_index_material(
+                memory.get("metadata_json"),
+                material,
+            ),
+        }
+        material_fields = (
+            "content",
+            "memory_type",
+            "raw_content",
+            "l0_abstract",
+            "l1_summary",
+            "l2_content",
+            "embedding_text",
+            "embedding_hash",
+            "search_text",
+            "metadata_json",
+            "project_id",
+            "visibility",
+            "source_class",
+        )
+
+        def persist() -> bool:
+            sqlite_store = getattr(engine, "_sqlite", None)
+            if sqlite_store is None:
+                current = dict(memory)
+            else:
+                getter = getattr(sqlite_store, "get", None)
+                if not callable(getter):
+                    return False
+                try:
+                    current = getter(memory_id)
+                except Exception:
+                    return False
+                if not isinstance(current, dict):
+                    return False
+                conn = getattr(sqlite_store, "_conn", None)
+                if conn is None:
+                    return False
+                try:
+                    has_control = (
+                        conn.execute(
+                            "SELECT 1 FROM synthesis_artifacts WHERE memory_id = ?",
+                            (memory_id,),
+                        ).fetchone()
+                        is not None
+                    )
+                except Exception:
+                    return False
+                if has_control:
+                    return False
+
+            if str(current.get("memory_type") or "").strip().casefold() == "synthesis":
+                return False
+            if any(current.get(field) != memory.get(field) for field in material_fields):
+                return False
+
+            if sqlite_store is not None:
+                from plastic_promise.core.synthesis import synthesis_content_hash
+
+                patch = getattr(sqlite_store, "patch_ordinary", None)
+                if not callable(patch):
+                    return False
+                try:
+                    updated_memory = patch(
+                        memory_id,
+                        replacements=fields,
+                        expected_project_id=str(current.get("project_id") or ""),
+                        expected_content_hash=synthesis_content_hash(current.get("content")),
+                        expected_embedding_hash=str(current.get("embedding_hash") or ""),
+                    )
+                except Exception:
+                    return False
+            else:
+                updated_memory = dict(current)
+                updated_memory.update(fields)
+
+            memory.update(fields)
+            runtime = getattr(engine, "_memories", None)
+            if isinstance(runtime, dict):
+                runtime[memory_id] = dict(updated_memory)
+            return True
+
+        lock = getattr(engine, "_write_lock", None)
+        if lock is None:
+            return persist()
+        with lock:
+            return persist()
 
     def backfill(self, engine: object) -> int:
         """Backfill LanceDB from SQLite for memories missing vectors.
 
-        Called once during ContextEngine initialization. Only runs if
-        the LanceDB table has fewer entries than SQLite.
+        Called during ContextEngine initialization. Compares eligible IDs,
+        because raw row counts can hide missing ordinary or verified memories.
 
         Safety: limits per-call backfill to MAX_BACKFILL_PER_CALL (50) to
         avoid blocking auto_context_inject / session-init on cold start.
@@ -520,57 +999,36 @@ class LanceDBStore:
         """
         import os as _os
 
+        self._reset_index_diagnostics()
+
         _max_backfill = int(_os.environ.get("LDB_BACKFILL_MAX_PER_CALL", "50"))
 
-        ldb_count = self.count_rows()
-        sqlite_count = getattr(engine, "memory_count", 0)
-        if ldb_count >= sqlite_count:
-            logger.info(
-                "LanceDB backfill: table has %d rows, SQLite has %d — skip", ldb_count, sqlite_count
-            )
+        canonical_memories = self._canonical_engine_memories(engine)
+        if canonical_memories is None:
+            logger.warning("LanceDB backfill: canonical SQLite memories unavailable")
+            return 0
+        memories = self._eligible_engine_memories(engine, canonical_memories)
+        ldb_ids = self.list_memory_ids()
+        missing_ids = [mid for mid in memories if mid not in ldb_ids]
+        if not missing_ids:
+            logger.info("LanceDB backfill: no eligible IDs are missing")
             return 0
 
         logger.info(
-            "LanceDB backfill: %d in LDB < %d in SQLite — starting (max %d per call)",
-            ldb_count,
-            sqlite_count,
+            "LanceDB backfill: %d eligible IDs missing (max %d per call)",
+            len(missing_ids),
             _max_backfill,
         )
-        # Use engine._memories dict directly (already loaded from SQLite) — avoids redundant re-query
-        memories = getattr(engine, "_memories", {})
         backfilled = 0
-        for mid, mem_data in memories.items():
+        for mid in missing_ids:
             if backfilled >= _max_backfill:
                 logger.info(
                     "LanceDB backfill: hit per-call limit (%d), deferring remaining", _max_backfill
                 )
                 break
-            content = mem_data.get("content", "")
-            if not content or not content.strip():
-                continue
-            # Check if already in LanceDB
             try:
-                existing = (
-                    self._table.search()
-                    .where(f"memory_id = '{mid}'", prefilter=True)
-                    .limit(1)
-                    .to_list()
-                )
-                if existing:
+                if not self._insert_engine_memory(engine, mid, memories[mid]):
                     continue
-            except Exception:
-                pass
-            # Per-item embed — skip failures, continue with next
-            try:
-                vec = self._embedder.embed(content)
-                self.insert(
-                    memory_id=mid,
-                    vector=vec,
-                    text=content,
-                    tier=mem_data.get("tier", "L1"),
-                    category=mem_data.get("category", "other"),
-                    scope=mem_data.get("scope", "global"),
-                )
                 backfilled += 1
                 if backfilled % 10 == 0:
                     logger.info("LanceDB backfill: %d/%d done", backfilled, len(memories))

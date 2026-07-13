@@ -1,22 +1,60 @@
 from __future__ import annotations
 
-from copy import deepcopy
+import json
 import math
 import sys
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from plastic_promise.core.context_engine import ContextEngine
+from plastic_promise.core.context_engine import ContextEngine, ContextItem, ContextPack
+from plastic_promise.core.fusion_policy import (
+    FusionConfig,
+    FusionConfigurationError,
+    weighted_rrf,
+)
 from plastic_promise.core.project_context import ProjectContext
+from plastic_promise.core.retrieval_planner import RetrievalPlan
 from plastic_promise.mcp.tools.memory import _project_allowed
-
 
 PROJECT_ID = "project:alpha"
 OTHER_PROJECT_ID = "project:beta"
 VECTOR_DIM = 1024
+WRRF_GOLDEN_PATH = Path(__file__).parent / "fixtures" / "recall_quality" / "wrrf-v1-golden.json"
+
+
+def _decode_wrrf_special_numbers(value):
+    if isinstance(value, dict):
+        return {key: _decode_wrrf_special_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_wrrf_special_numbers(item) for item in value]
+    if value == "NaN":
+        return float("nan")
+    if value == "Infinity":
+        return float("inf")
+    if value == "-Infinity":
+        return float("-inf")
+    return value
+
+
+WRRF_GOLDEN = _decode_wrrf_special_numbers(json.loads(WRRF_GOLDEN_PATH.read_text(encoding="utf-8")))
+
+
+def _wrrf_config(payload) -> FusionConfig:
+    return FusionConfig(
+        k=payload["k"],
+        channels=tuple(payload["channels"]),
+        weights=payload["weights"],
+        windows=payload["windows"],
+        config_hash="",
+    )
+
+
+def _wrrf_rankings(payload):
+    return {channel: [(row[0], row[1]) for row in rows] for channel, rows in payload.items()}
 
 
 def _unit_vector(axis: int, scale: float = 1.0) -> list[float]:
@@ -238,7 +276,7 @@ class _FakeVectorStore:
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
-    dot = sum(a * b for a, b in zip(left, right))
+    dot = sum(a * b for a, b in zip(left, right, strict=True))
     left_norm = sum(a * a for a in left) ** 0.5
     right_norm = sum(b * b for b in right) ** 0.5
     if left_norm <= 1e-12 or right_norm <= 1e-12:
@@ -269,6 +307,81 @@ def rust_core():
     return pytest.importorskip("context_engine_core")
 
 
+@pytest.mark.parametrize(
+    "case",
+    WRRF_GOLDEN["valid_cases"],
+    ids=lambda case: case["name"],
+)
+def test_python_and_rust_wrrf_have_exact_order_and_score_parity(rust_core, case):
+    config = _wrrf_config(case["config"])
+    rankings = _wrrf_rankings(case["rankings"])
+
+    python_result = weighted_rrf(rankings, config)
+    rust_result = rust_core.weighted_rrf_fuse(rankings, config)
+    expected = case["expected"]
+
+    assert [row[0] for row in rust_result] == [row[0] for row in python_result]
+    assert [row[0] for row in python_result] == [row[0] for row in expected]
+    assert [row[1] for row in rust_result] == pytest.approx(
+        [row[1] for row in python_result],
+        abs=WRRF_GOLDEN["score_tolerance"],
+        rel=0.0,
+    )
+    assert [row[1] for row in rust_result] == pytest.approx(
+        [row[1] for row in expected],
+        abs=WRRF_GOLDEN["score_tolerance"],
+        rel=0.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    WRRF_GOLDEN["invalid_cases"],
+    ids=lambda case: case["name"],
+)
+def test_python_and_rust_wrrf_fail_closed_with_shared_reason(rust_core, case):
+    config = _wrrf_config(case["config"])
+    rankings = _wrrf_rankings(case["rankings"])
+
+    with pytest.raises(FusionConfigurationError) as python_error:
+        weighted_rrf(rankings, config)
+    with pytest.raises(ValueError) as rust_error:
+        rust_core.weighted_rrf_fuse(rankings, config)
+
+    assert str(python_error.value) == case["expected_error"]
+    assert str(rust_error.value).startswith(case["expected_error"])
+
+
+def test_rust_snapshot_supply_accepts_two_channel_wrrf_config(rust_core):
+    if not hasattr(rust_core.ContextEngine, "new_with_backends"):
+        pytest.skip("context_engine_core lacks snapshot constructor")
+    engine = rust_core.ContextEngine.new_with_backends(":memory:", ":memory:")
+    config = {
+        "k": 2,
+        "channels": ["vector", "bm25"],
+        "weights": {"vector": 0.6, "bm25": 0.4},
+        "windows": {"vector": 20, "bm25": 20},
+    }
+
+    pack = engine.supply_with_project_context(
+        "english bm25 scanner reviews lexical parity fixture",
+        FIXED_VECTORS["bm25_en"],
+        "general",
+        "global",
+        _snapshot("bm25_english"),
+        PROJECT_ID,
+        "balanced",
+        False,
+        json.dumps(config, separators=(",", ":"), sort_keys=True),
+    )
+
+    audit = json.loads(pack.audit_metadata["retrieval_fusion_json"])
+    assert audit["algorithm"] == "weighted-rrf-v1"
+    assert audit["effective_runtime"] == "rust"
+    assert set(pack.channel_rankings) == {"vector", "bm25"}
+    assert pack.channel_states["bm25"]["participating"] == "true"
+
+
 def _snapshot(*memory_ids: str) -> list[dict[str, Any]]:
     return [deepcopy(FIXED_MEMORY_SNAPSHOT[memory_id]) for memory_id in memory_ids]
 
@@ -291,7 +404,7 @@ def _python_pack(
     engine._graph_traversal = lambda task_type: []
     engine._fts_retrieval = lambda query, scope="global": []
     engine._apply_edge_feedback = lambda: None
-    engine._maybe_adjust_tier = lambda memory_id: None
+    engine._maybe_adjust_tier = lambda memory_id, candidate: candidate
     engine._calc_freshness = lambda memory_id: "valid"
     engine._calc_decay_status = lambda memory_id, memory: "healthy"
     engine._compute_divergent_quality = lambda items, all_items: items
@@ -306,7 +419,9 @@ def _python_pack(
         project_policy=project_policy,
         project_degraded=project_degraded,
     )
-    return _filter_python_pack_by_project(pack, engine, project_id, project_policy, project_degraded)
+    return _filter_python_pack_by_project(
+        pack, engine, project_id, project_policy, project_degraded
+    )
 
 
 def _filter_python_pack_by_project(pack, engine, project_id, project_policy, project_degraded):
@@ -389,8 +504,70 @@ def _item_score(pack, memory_id: str) -> float:
     raise AssertionError(f"{memory_id} not present in normalized pack")
 
 
+def test_synthesis_public_gate_is_identical_for_python_and_rust_shaped_packs(monkeypatch):
+    monkeypatch.setenv("PP_SYNTHESIS_RETRIEVAL", "1")
+    engine = ContextEngine(use_sqlite=False)
+    engine._memories = {
+        "draft-parity": {
+            "id": "draft-parity",
+            "memory_type": "synthesis",
+            "project_id": PROJECT_ID,
+            "visibility": "project",
+        },
+        "ordinary-parity": {
+            "id": "ordinary-parity",
+            "memory_type": "experience",
+            "project_id": PROJECT_ID,
+            "visibility": "project",
+        },
+    }
+    plan = RetrievalPlan(
+        mode="global",
+        budget={"core": 2, "related": 2, "divergent": 1, "raw_evidence": 4},
+    )
+
+    def shaped_pack() -> ContextPack:
+        return ContextPack(
+            core=[
+                ContextItem("draft-parity", "draft parity secret", 0.99, layer="core"),
+                ContextItem("ordinary-parity", "ordinary parity", 0.90, layer="core"),
+            ],
+            per_item_stats=[
+                {"id": "draft-parity", "content": "draft parity secret"},
+                {"id": "ordinary-parity"},
+            ],
+        )
+
+    python_pack = engine._finalize_supply_pack(
+        shaped_pack(),
+        plan,
+        task_type="general",
+        project_id=PROJECT_ID,
+        project_policy="balanced",
+    )
+    rust_pack = engine._finalize_supply_pack(
+        shaped_pack(),
+        plan,
+        task_type="general",
+        project_id=PROJECT_ID,
+        project_policy="balanced",
+    )
+
+    assert _item_ids(python_pack) == ["ordinary-parity"]
+    assert _item_ids(rust_pack) == _item_ids(python_pack)
+    assert all(row["id"] != "draft-parity" for row in rust_pack.per_item_stats)
+
+
 @pytest.mark.parametrize(
-    ("name", "memory_ids", "query", "vector_key", "project_policy", "project_degraded", "expected_ids"),
+    (
+        "name",
+        "memory_ids",
+        "query",
+        "vector_key",
+        "project_policy",
+        "project_degraded",
+        "expected_ids",
+    ),
     [
         (
             "strict project isolation",
@@ -520,8 +697,7 @@ def test_source_penalty_is_semantically_equivalent(rust_core, monkeypatch):
     if rust_penalties:
         assert float(rust_penalties["source_daemon"]) == pytest.approx(0.3)
     assert any(
-        row.get("id") == "source_daemon"
-        and row.get("filter_reason") == "below_hard_min_score"
+        row.get("id") == "source_daemon" and row.get("filter_reason") == "below_hard_min_score"
         for row in rust_pack.per_item_stats
     )
 

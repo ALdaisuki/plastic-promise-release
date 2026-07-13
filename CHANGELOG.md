@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Released version: `0.1.15`.
+
+## [0.1.15] - 2026-07-13
+
+### Added
+
+- Added opt-in governed synthesis and memory proposals with canonical SQLite
+  lifecycle, provenance, review evidence, and fail-closed retrieval admission.
+- Added durable checked `memory-index/v3` upsert/delete replay so LanceDB remains
+  a rebuildable projection of canonical memory state.
+
+### Changed
+
+- Routed retrieval-visible ordinary-memory content and availability changes
+  through one field-scoped transaction boundary. Source lineage, dependent
+  synthesis invalidation, the canonical memory version, and checked index jobs
+  are now committed together before derived-index repair.
+- Kept ordinary metadata-only changes narrow so updates do not overwrite
+  project, provenance, summary, index-material, or lifecycle fields owned by
+  other subsystems.
+- Raised the minimum supported LanceDB dependency to `0.34.0` for the governed
+  retrieval and compact index contracts.
+
+### Fixed
+
+- Enforced project equality during GC candidate discovery, before a merge
+  transaction, and again against canonical source and peer rows inside the
+  transaction. Empty, cross-project, and spoofed peer identities fail without
+  changing memory, lineage, outbox, version, or cache state.
+- Made both `smart-remember` aliases use server-owned `memory_update` authority
+  and overwrite caller-supplied runtime identity before canonical reads or
+  mutations.
+- Routed public update/correct/forget, feedback, skill completion, RecMem,
+  lifecycle scans, duplicate cleanup, GC merge, and audit rollover through
+  canonical patch or source-mutation paths.
+- Removed every case-insensitive `cat:*` tag during LLM reclassification instead
+  of leaving differently cased stale category tags behind.
+- Made ordinary `memory_store` return the durable canonical survivor after
+  vector deduplication, and made restart-recovery source seeding deterministic
+  so model similarity cannot collapse its two independent source records.
+- Bound vector-dedup reinforcement to an exact project, visibility, source
+  class, and memory-type match, and made API/SSE metadata come from the
+  canonical survivor instead of the submitted candidate.
+
+### Security
+
+- Enforced direct tool-manifest trust checks, retained public `memory_forget` as
+  a critical `0.80` operation, and added the internal-only `audit_rollover`
+  capability at `0.60` without weakening public delete authority.
+- Bound public mutation actor, call, project, and trust evidence to server-owned
+  runtime context; caller-declared identity remains audit-only.
+
+### Upgrade Notes
+
+- The synthesis, synthesis-retrieval, proposal, and compact index-text gates
+  remain off by default, so existing deployments keep legacy retrieval behavior
+  until each gate is explicitly enabled.
+- The governed retrieval path requires LanceDB `>=0.34.0`. Environments pinned
+  to an older LanceDB must upgrade that dependency before restarting services.
+- The public release repository contains a historical `v0.2.14` tag, which
+  SemVer sorts above the active `main` package line (`0.1.14`) and this prepared
+  `0.1.15` version. The historical tag remains untouched and `0.1.15` must not
+  be marked as latest; pure SemVer selectors may therefore continue to prefer
+  `v0.2.14`.
+- Restart the MCP server and Maintenance Daemon together after upgrading; mixed
+  process versions do not share one mutation contract. Then run
+  `python scripts/smoke_http_mcp.py --expected-version 0.1.15 --expected-mode rust-full`
+  against the live Streamable HTTP endpoint.
+- Fusion rollback restores `legacy-auto`, unsets the candidate RRF environment,
+  retains SQLite/outbox evidence, and replays checked index jobs before smoke.
+- Maintenance one-shot JSON output, PID-bound `maintenance-heartbeat/v1`, and
+  the cross-process restart-recovery smoke are the release recovery evidence.
+- Existing valid `memory-index/v2` upserts remain replay-compatible; all new
+  checked ordinary index upserts and deletes use `memory-index/v3`.
+- No public MCP tool or parameter was removed. Existing SQLite memory remains
+  canonical; LanceDB is derived and can be repaired from durable checked jobs.
+
+### Verification
+
+- Historical Tasks 1-5 slice evidence remains: the stable 17-file matrix passed
+  `688` tests twice, a read-only reviewer ran `95` focused tests, and the local
+  audit fallback scored `0.6987` against its `0.60` slice gate.
+- Release status for `0.1.15` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. The one-shot public calibration produced no eligible WRRF candidate, so held-out queries remained unopened and legacy-auto is the released policy.
+
 ## [0.1.14] - 2026-07-09
 
 ### Changed
@@ -255,6 +339,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.15]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.11...v0.1.12

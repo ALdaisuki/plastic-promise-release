@@ -2,14 +2,16 @@
 
 import asyncio
 import importlib.util
+import json
 import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
-import tomllib
+from datetime import datetime, timezone
 
 import pytest
+import tomllib
 
 from plastic_promise.launcher.bootstrap_checker import check_bootstrap
 from plastic_promise.launcher.env_checker import run_env_checks
@@ -20,6 +22,127 @@ from plastic_promise.launcher.service_definition import (
 )
 
 
+def test_health_rejects_fresh_heartbeat_when_reported_pid_is_dead(monkeypatch, tmp_path):
+    from plastic_promise.launcher import service_manager
+
+    heartbeat = tmp_path / "maintenance.heartbeat"
+    service_manager.write_maintenance_heartbeat(
+        heartbeat,
+        pid=424242,
+        updated_at=datetime.now(timezone.utc),
+        startup_replay_cycle_id="startup-cycle",
+        process_generation="a" * 32,
+    )
+    monkeypatch.setattr(service_manager, "pid_is_alive", lambda pid: False)
+
+    health = service_manager.read_maintenance_health(heartbeat)
+
+    assert health["healthy"] is False
+    assert health["reason"] == "maintenance_pid_not_alive"
+
+
+def test_daemon_once_parser_requires_supported_mcp_url_and_json_contract():
+    from daemons.maintenance_daemon import (
+        parse_daemon_args,
+        validate_daemon_once_arguments,
+    )
+
+    with pytest.raises(SystemExit):
+        parse_daemon_args(["--once", "--mcp-url", "not-a-url", "--json"])
+    result = validate_daemon_once_arguments(
+        {
+            "once": True,
+            "mcp_url": "http://127.0.0.1:9020/mcp",
+            "json": True,
+        }
+    )
+    assert result == {"ok": True}
+    assert (
+        validate_daemon_once_arguments({"once": True, "json": False})["error"]
+        == "daemon_once_arguments_invalid"
+    )
+
+
+def test_daemon_parser_rejects_foreign_source_identity():
+    from daemons.maintenance_daemon import parse_daemon_args
+
+    with pytest.raises(SystemExit):
+        parse_daemon_args(["--source-root", "foreign-root"])
+    with pytest.raises(SystemExit):
+        parse_daemon_args(["--source-revision", "f" * 40])
+
+
+@pytest.mark.asyncio
+async def test_daemon_once_reuses_registry_once_and_skips_warmup_and_forever_loop(
+    monkeypatch, tmp_path
+):
+    from daemons import maintenance_daemon
+
+    calls = []
+
+    class Registry:
+        def __init__(self):
+            self.jobs = [
+                type(
+                    "Job",
+                    (),
+                    {"name": "governed_maintenance", "next_deadline": 1.0},
+                )()
+            ]
+            self.run_due_count = 0
+
+        async def run_due(self, _now):
+            self.run_due_count += 1
+            calls.append("registry.run_due")
+            return (
+                {
+                    "name": "governed_maintenance",
+                    "status": "success",
+                    "result": {
+                        "status": "success",
+                        "cycle_call_id": "cycle-once",
+                        "errors": {},
+                        "results": {
+                            "memory_index_replay": {"failed": 0},
+                            "synthesis_index_replay": {"failed": 0},
+                        },
+                    },
+                },
+            )
+
+    registry = Registry()
+    monkeypatch.setattr(
+        maintenance_daemon, "build_maintenance_registry", lambda **_kwargs: registry
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "run_warmup", lambda *_args, **_kwargs: calls.append("warmup")
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "run_forever", lambda *_args, **_kwargs: calls.append("forever")
+    )
+    monkeypatch.setattr(maintenance_daemon, "_maintenance_engine", lambda: type("Engine", (), {})())
+    monkeypatch.setattr(maintenance_daemon, "_close_maintenance_engine", lambda _engine: None)
+    monkeypatch.setattr(maintenance_daemon, "_run_dir", str(tmp_path))
+    monkeypatch.setattr(maintenance_daemon, "_pid_path", str(tmp_path / "daemon.pid"))
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "_heartbeat_path",
+        str(tmp_path / "daemon.heartbeat"),
+    )
+    daemon_pid = tmp_path / "daemon.pid"
+    daemon_pid.write_text("12345", encoding="utf-8")
+
+    exit_code = await maintenance_daemon.daemon_main(
+        ["--once", "--mcp-url", "http://127.0.0.1:9020/mcp", "--json"]
+    )
+
+    assert exit_code == 0
+    assert calls == ["registry.run_due"]
+    assert registry.run_due_count == 1
+    assert daemon_pid.read_text(encoding="utf-8") == "12345"
+    assert not (tmp_path / "daemon.heartbeat").exists()
+
+
 @pytest.fixture(autouse=True)
 def _restore_plastic_environment():
     keys = (
@@ -28,6 +151,7 @@ def _restore_plastic_environment():
         "PLASTIC_PROJECT_ID",
         "PLASTIC_MCP_TRANSPORT",
         "PLASTIC_MCP_LEGACY_TRANSPORT_ALIAS",
+        "PLASTIC_PROCESS_GENERATION",
         "EMBEDDER_TIMEOUT",
         "PP_PROJECT_ID",
     )
@@ -296,9 +420,7 @@ def test_launcher_configures_default_project_identity(monkeypatch, tmp_path):
     assert os.environ["PLASTIC_DB_PATH"] == os.path.join(
         str(tmp_path), "data", "db", "plastic_memory.db"
     )
-    assert os.environ["PLASTIC_LANCEDB_PATH"] == os.path.join(
-        str(tmp_path), "data", "lancedb"
-    )
+    assert os.environ["PLASTIC_LANCEDB_PATH"] == os.path.join(str(tmp_path), "data", "lancedb")
     assert os.environ["PLASTIC_PROJECT_ID"] == "project:plastic-promise"
 
 
@@ -337,32 +459,27 @@ def test_stop_service_command_matcher_is_scoped():
     module = _load_init_and_start()
 
     assert module._is_managed_service_command_line(
-        r'C:\Python\python.exe -m plastic_promise --streamable-http 9020'
+        r"C:\Python\python.exe -m plastic_promise --streamable-http 9020"
     )
     assert module._is_managed_service_command_line(
-        r'C:\Python\python.exe -m plastic_promise.mcp.server --streamable-http 9020'
+        r"C:\Python\python.exe -m plastic_promise.mcp.server --streamable-http 9020"
     )
     assert module._is_managed_service_command_line(
         r'C:\Python\python.exe "F:\Agent\Memory system\daemons\maintenance_daemon.py"'
     )
+    assert not module._is_managed_service_command_line(r"C:\Python\python.exe unrelated_script.py")
     assert not module._is_managed_service_command_line(
-        r'C:\Python\python.exe unrelated_script.py'
-    )
-    assert not module._is_managed_service_command_line(
-        r'C:\Python\python.exe -m other_package --streamable-http 9020'
+        r"C:\Python\python.exe -m other_package --streamable-http 9020"
     )
 
 
-def test_stop_on_windows_filters_python_processes_by_command_line(monkeypatch):
+def test_stop_on_windows_without_owned_pid_files_does_not_enumerate_or_kill(monkeypatch):
     module = _load_init_and_start()
     calls = []
 
     class Result:
-        stdout = (
-            '[{"ProcessId":111,"CommandLine":"python -m plastic_promise --streamable-http 9020"},'
-            '{"ProcessId":222,"CommandLine":"python unrelated_script.py"},'
-            '{"ProcessId":333,"CommandLine":"python daemons/maintenance_daemon.py"}]'
-        )
+        stdout = ""
+        returncode = 0
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -375,10 +492,7 @@ def test_stop_on_windows_filters_python_processes_by_command_line(monkeypatch):
 
     assert module.do_stop() is True
 
-    assert ["taskkill", "/F", "/FI", "IMAGENAME eq python.exe"] not in calls
-    assert ["taskkill", "/F", "/PID", "111"] in calls
-    assert ["taskkill", "/F", "/PID", "333"] in calls
-    assert ["taskkill", "/F", "/PID", "222"] not in calls
+    assert calls == []
 
 
 def test_stop_on_windows_skips_stale_pid_file_for_unrelated_process(monkeypatch, tmp_path):
@@ -397,11 +511,641 @@ def test_stop_on_windows_skips_stale_pid_file_for_unrelated_process(monkeypatch,
     monkeypatch.setattr(module.sys, "platform", "win32")
     monkeypatch.setattr(module.sys, "argv", ["init_and_start.py", "--stop"])
     monkeypatch.setattr(module, "PID_FILE", str(pid_file))
+    monkeypatch.setattr(module, "MCP_PID_FILE", str(tmp_path / "mcp_server.pid"))
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
     assert module.do_stop() is True
 
     assert ["taskkill", "/F", "/PID", "222"] not in calls
+    assert pid_file.exists()
+
+
+def test_daemon_command_matcher_accepts_supported_manual_mcp_url(tmp_path):
+    module = _load_init_and_start()
+    script = tmp_path / "daemons" / "maintenance_daemon.py"
+
+    assert module._argv_matches_owned_service(
+        [sys.executable, str(script), "--mcp-url", "http://127.0.0.1:9020/mcp"],
+        source_root=str(tmp_path),
+        service_name="maintenance-daemon",
+    )
+    assert not module._argv_matches_owned_service(
+        [sys.executable, str(script), "--unknown", "value"],
+        source_root=str(tmp_path),
+        service_name="maintenance-daemon",
+    )
+
+
+def test_stop_on_windows_rejects_managed_command_from_foreign_worktree(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    pid_file = tmp_path / "mcp_server.pid"
+    pid_file.write_text("444", encoding="utf-8")
+    calls = []
+
+    class Result:
+        stdout = (
+            '{"ProcessId":444,"CommandLine":"python -m plastic_promise '
+            '--streamable-http 9020 --source-root F:\\\\Agent\\\\other-worktree"}'
+        )
+        returncode = 0
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module.sys, "argv", ["init_and_start.py", "--stop"])
+    monkeypatch.setattr(module, "MCP_PID_FILE", str(pid_file))
+    monkeypatch.setattr(module, "PID_FILE", str(tmp_path / "maintenance_daemon.pid"))
+    monkeypatch.setattr(module, "_project_root", r"F:\Agent\owned-worktree")
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module.do_stop() is True
+
+    assert ["taskkill", "/F", "/PID", "444"] not in calls
+
+
+def test_stop_on_windows_kills_only_owned_pid_with_source_root_marker(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    pid_file = tmp_path / "mcp_server.pid"
+    pid_file.write_text("555", encoding="utf-8")
+    calls = []
+
+    class Result:
+        stdout = (
+            '{"ProcessId":555,"CommandLine":"python -m plastic_promise '
+            '--streamable-http 9020 --source-root F:\\\\Agent\\\\owned-worktree"}'
+        )
+        returncode = 0
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module.sys, "argv", ["init_and_start.py", "--stop"])
+    monkeypatch.setattr(module, "MCP_PID_FILE", str(pid_file))
+    monkeypatch.setattr(module, "PID_FILE", str(tmp_path / "maintenance_daemon.pid"))
+    monkeypatch.setattr(module, "_project_root", r"F:\Agent\owned-worktree")
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module.do_stop() is True
+
+    assert ["taskkill", "/F", "/PID", "555"] in calls
+
+
+def test_launcher_reuses_healthy_owned_daemon_without_scheduling_duplicate(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    pid_file = tmp_path / "maintenance_daemon.pid"
+    heartbeat = tmp_path / "maintenance_daemon.heartbeat"
+    pid_file.write_text("777", encoding="utf-8")
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "schema": "maintenance-heartbeat/v1",
+                "pid": 777,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "startup_replay_cycle_id": "startup-cycle",
+                "startup_replay_owner_pid": 777,
+                "process_generation": "a" * 32,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "PID_FILE", str(pid_file))
+    monkeypatch.setattr(
+        module,
+        "_maintenance_heartbeat_path",
+        lambda: str(heartbeat),
+    )
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 777)
+    monkeypatch.setattr(module, "_process_create_time", lambda pid: 0.0 if pid == 777 else None)
+    monkeypatch.setattr(
+        module,
+        "_pid_matches_owned_service",
+        lambda pid, **_kwargs: pid == 777,
+    )
+    monkeypatch.setattr(
+        "plastic_promise.launcher.service_manager.pid_is_alive",
+        lambda pid: pid == 777,
+    )
+
+    status = module._inspect_existing_daemon()
+    selected = module._select_services_to_start(
+        mcp_already_running=True,
+        daemon_already_running=status["status"] == "reuse",
+    )
+
+    assert status == {"status": "reuse", "pid": 777, "reason": "ok"}
+    assert selected == []
+
+
+def test_launcher_rejects_heartbeat_from_previous_pid_incarnation(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    pid_file = tmp_path / "maintenance_daemon.pid"
+    heartbeat = tmp_path / "maintenance_daemon.heartbeat"
+    pid_file.write_text("778", encoding="utf-8")
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "schema": "maintenance-heartbeat/v1",
+                "pid": 778,
+                "updated_at": "2026-07-13T00:00:00Z",
+                "startup_replay_cycle_id": "old-cycle",
+                "startup_replay_owner_pid": 778,
+                "process_generation": "b" * 32,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "PID_FILE", str(pid_file))
+    monkeypatch.setattr(module, "_maintenance_heartbeat_path", lambda: str(heartbeat))
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 778)
+    monkeypatch.setattr(module, "_pid_matches_owned_service", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        module,
+        "_process_create_time",
+        lambda pid: datetime(2026, 7, 13, 1, 0, tzinfo=timezone.utc).timestamp(),
+    )
+
+    assert module._inspect_existing_daemon() == {
+        "status": "conflict",
+        "pid": 778,
+        "reason": "maintenance_pid_incarnation_mismatch",
+    }
+
+
+def test_process_create_time_uses_windows_os_probe_without_psutil_process(monkeypatch):
+    module = _load_init_and_start()
+
+    class Result:
+        returncode = 0
+        stdout = "2026-07-13T01:02:03.0000000Z\n"
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module.subprocess, "run", lambda *_args, **_kwargs: Result())
+
+    expected = datetime(2026, 7, 13, 1, 2, 3, tzinfo=timezone.utc).timestamp()
+    assert module._process_create_time(999999) == expected
+
+
+def test_launcher_requires_daemon_argv_to_attest_current_source_revision(tmp_path):
+    module = _load_init_and_start()
+    script = tmp_path / "daemons" / "maintenance_daemon.py"
+    argv = [
+        sys.executable,
+        str(script),
+        "--source-root",
+        str(tmp_path),
+        "--source-revision",
+        "a" * 40,
+    ]
+
+    assert module._argv_matches_owned_service(
+        argv,
+        source_root=str(tmp_path),
+        service_name="maintenance-daemon",
+        expected_source_revision="a" * 40,
+    )
+    assert not module._argv_matches_owned_service(
+        argv,
+        source_root=str(tmp_path),
+        service_name="maintenance-daemon",
+        expected_source_revision="b" * 40,
+    )
+
+
+def test_launcher_start_lock_prevents_concurrent_inspect_and_spawn(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    lock_path = tmp_path / "launcher-start.lock"
+    monkeypatch.setattr(module, "_launcher_start_lock_path", lambda: str(lock_path))
+
+    first = module._acquire_launcher_start_lock()
+    try:
+        assert first is not None
+        assert module._acquire_launcher_start_lock() is None
+    finally:
+        module._release_launcher_start_lock(first)
+
+    second = module._acquire_launcher_start_lock()
+    assert second is not None
+    module._release_launcher_start_lock(second)
+
+
+def test_launcher_rejects_live_daemon_pid_owned_by_foreign_checkout(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    pid_file = tmp_path / "maintenance_daemon.pid"
+    pid_file.write_text("888", encoding="utf-8")
+    monkeypatch.setattr(module, "PID_FILE", str(pid_file))
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 888)
+    monkeypatch.setattr(module, "_pid_matches_owned_service", lambda *_args, **_kwargs: False)
+
+    assert module._inspect_existing_daemon() == {
+        "status": "conflict",
+        "pid": 888,
+        "reason": "maintenance_pid_not_owned",
+    }
+
+
+@pytest.mark.asyncio
+async def test_launcher_check_only_never_inspects_or_mutates_daemon_state(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    args = type(
+        "Args",
+        (),
+        {
+            "stop": False,
+            "check_only": True,
+            "mode": None,
+            "skip_ollama_check": True,
+            "skip_lancedb_warmup": True,
+        },
+    )()
+    monkeypatch.setattr(module, "parse_args", lambda: args)
+    monkeypatch.setattr(module, "configure_default_environment", lambda _root: None)
+    monkeypatch.setattr(module, "resolve_source_revision", lambda _root: "a" * 40)
+    monkeypatch.setattr(module, "run_env_checks", lambda **_kwargs: (True, [], False))
+    log_path = tmp_path / "launcher.log"
+    monkeypatch.setattr(module, "LOG_FILE", str(log_path))
+    monkeypatch.setattr(
+        module,
+        "_inspect_existing_daemon",
+        lambda: pytest.fail("check-only inspected daemon state"),
+    )
+
+    await module.main()
+    assert not log_path.exists()
+
+
+def _mcp_health_payload(tmp_path, *, pid=321, revision="a" * 40):
+    from plastic_promise.launcher.service_manager import MCP_FUSION_IDENTITY_SCHEMA
+
+    return {
+        "status": "ok",
+        "version": "0.1.15",
+        "pid": pid,
+        "source_root": str(tmp_path),
+        "source_revision": revision,
+        "fusion_policy": "max-v1",
+        "fusion_attestation": {
+            "schema": MCP_FUSION_IDENTITY_SCHEMA,
+            "requested_policy": "max-v1",
+            "effective_policy": "max-v1",
+            "requested_runtime": "rust",
+            "effective_runtime": "python",
+            "capability_reason": "policy_requires_python:max-v1",
+            "candidate_id": "",
+            "config_hash": "",
+            "config": None,
+        },
+    }
+
+
+class _HealthyRuntimeEngine:
+    class Embedder:
+        def embed(self, _text):
+            return [0.5, 0.5]
+
+    def __init__(self, *, vector=None, ldb=True):
+        self._embedder = self.Embedder()
+        if vector is not None:
+            self._embedder.embed = lambda _text: vector
+        self._ldb = object() if ldb else None
+        self._graph_edges = {"edge": []}
+
+    def _ensure_heavy_init(self):
+        return None
+
+    def _check_rust_health(self):
+        return True
+
+
+def test_mcp_health_identity_rejects_foreign_200_and_pid(tmp_path):
+    from plastic_promise.launcher.service_manager import validate_mcp_health_identity
+
+    payload = _mcp_health_payload(tmp_path, pid=321)
+    valid, reason = validate_mcp_health_identity(
+        payload,
+        expected_pid=999,
+        expected_source_root=tmp_path,
+        expected_source_revision="a" * 40,
+    )
+    assert (valid, reason) == (False, "health_pid_mismatch")
+
+    payload["pid"] = 999
+    payload["source_root"] = str(tmp_path / "foreign")
+    valid, reason = validate_mcp_health_identity(
+        payload,
+        expected_pid=999,
+        expected_source_root=tmp_path,
+        expected_source_revision="a" * 40,
+    )
+    assert (valid, reason) == (False, "health_source_root_mismatch")
+
+    payload["source_root"] = str(tmp_path)
+    payload["source_revision"] = "b" * 40
+    valid, reason = validate_mcp_health_identity(
+        payload,
+        expected_pid=999,
+        expected_source_root=tmp_path,
+        expected_source_revision="a" * 40,
+    )
+    assert (valid, reason) == (False, "health_source_revision_mismatch")
+
+
+@pytest.mark.parametrize(
+    ("requested_runtime", "effective_runtime", "capability_reason", "expected_reason"),
+    [
+        ("rust", "rust", "rust_capability_satisfied", "health_fusion_capability_mismatch"),
+        ("rust", "python", "arbitrary_reason", "health_fusion_capability_mismatch"),
+        ("rust", "python", None, "health_fusion_runtime_invalid"),
+    ],
+)
+def test_mcp_health_identity_rejects_impossible_or_unbound_capability(
+    tmp_path, requested_runtime, effective_runtime, capability_reason, expected_reason
+):
+    from plastic_promise.launcher.service_manager import validate_mcp_health_identity
+
+    payload = _mcp_health_payload(tmp_path)
+    payload["fusion_attestation"].update(
+        {
+            "requested_runtime": requested_runtime,
+            "effective_runtime": effective_runtime,
+            "capability_reason": capability_reason,
+        }
+    )
+
+    valid, reason = validate_mcp_health_identity(
+        payload,
+        expected_pid=321,
+        expected_source_root=tmp_path,
+        expected_source_revision="a" * 40,
+    )
+
+    assert (valid, reason) == (False, expected_reason)
+
+
+def test_port_reuse_rejects_foreign_checkout_even_with_valid_http_200(monkeypatch, tmp_path):
+    from plastic_promise.launcher import env_checker
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return json.dumps(_mcp_health_payload(tmp_path / "foreign", pid=701)).encode("utf-8")
+
+    monkeypatch.setattr(env_checker.urllib.request, "urlopen", lambda *_a, **_k: Response())
+
+    occupant = env_checker._identify_port_9020_occupant(
+        expected_source_root=str(tmp_path),
+        expected_source_revision="a" * 40,
+    )
+
+    assert occupant is None
+
+
+@pytest.mark.asyncio
+async def test_service_manager_rejects_foreign_mcp_http_200(monkeypatch, tmp_path):
+    from plastic_promise.launcher import service_manager
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            payload = _mcp_health_payload(tmp_path / "foreign", pid=700)
+            return json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr(service_manager.urllib.request, "urlopen", lambda *_a, **_k: Response())
+    svc = ServiceDefinition(name="mcp-server", command=["python"], health_url="http://health")
+    manager = service_manager.ServiceManager(
+        [svc], str(tmp_path), expected_source_revision="a" * 40
+    )
+    runtime = manager._runtimes["mcp-server"]
+    runtime.pid = 700
+
+    assert await manager._health_check(runtime) is False
+
+
+def test_server_health_identity_exposes_checkout_and_fusion(monkeypatch):
+    from plastic_promise.core.fusion_policy import canonical_fusion_config_hash
+    from plastic_promise.mcp import server
+
+    config = {
+        "k": 2,
+        "channels": ["vector", "bm25", "fts"],
+        "weights": {"vector": 0.6, "bm25": 0.25, "fts": 0.15},
+        "windows": {"vector": 20, "bm25": 20, "fts": 20},
+    }
+    config_hash = canonical_fusion_config_hash(config)
+    candidate = "wrrf-v1:" + config_hash
+    monkeypatch.setenv("PP_RETRIEVAL_FUSION_POLICY", candidate)
+    monkeypatch.setenv("PP_RETRIEVAL_RRF_K", "2")
+    monkeypatch.setenv("PP_RETRIEVAL_RRF_WEIGHTS_JSON", json.dumps(config["weights"]))
+    monkeypatch.setenv("PP_RETRIEVAL_RRF_WINDOWS_JSON", json.dumps(config["windows"]))
+
+    identity = server._server_process_identity(engine=_HealthyRuntimeEngine())
+
+    assert identity["pid"] == os.getpid()
+    assert identity["source_root"] == server._SOURCE_ROOT
+    assert identity["source_revision"] == server._SOURCE_REVISION
+    assert identity["fusion_policy"] == candidate
+    assert identity["fusion_attestation"]["candidate_id"] == candidate
+    assert identity["fusion_attestation"]["config_hash"] == config_hash
+    assert identity["fusion_attestation"]["config"]["config_hash"] == config_hash
+    assert identity["fusion_attestation"]["effective_policy"] == candidate
+    assert identity["fusion_attestation"]["effective_runtime"] == "python"
+
+
+def test_server_health_identity_rejects_missing_wrrf_config_and_revision(monkeypatch):
+    from plastic_promise.core.fusion_policy import FusionConfigurationError
+    from plastic_promise.mcp import server
+
+    monkeypatch.setenv("PP_RETRIEVAL_FUSION_POLICY", "wrrf-v1:" + "b" * 64)
+    monkeypatch.delenv("PP_RETRIEVAL_RRF_K", raising=False)
+    with pytest.raises(FusionConfigurationError):
+        server._server_process_identity(engine=_HealthyRuntimeEngine())
+
+    monkeypatch.setattr(server, "_SOURCE_REVISION", None)
+    with pytest.raises(RuntimeError, match="source_revision_unavailable"):
+        server._server_process_identity()
+
+
+@pytest.mark.parametrize(
+    ("engine", "reason"),
+    [
+        (_HealthyRuntimeEngine(vector=[0.0, 0.0]), "retrieval_embedding_zero_or_invalid"),
+        (_HealthyRuntimeEngine(ldb=False), "retrieval_lancedb_unavailable"),
+    ],
+)
+def test_server_health_identity_rejects_unrunnable_retrieval_capability(engine, reason):
+    from plastic_promise.mcp import server
+
+    with pytest.raises(RuntimeError, match=reason):
+        server._server_process_identity(
+            engine=engine,
+            environ={
+                "PP_RETRIEVAL_FUSION_POLICY": "legacy-auto",
+                "LDB_INIT_ON_HEAVY_INIT": "1",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("policy", "effective_runtime"),
+    [("legacy-auto", "rust"), ("max-v1", "python")],
+)
+def test_server_health_identity_keeps_builtin_policies_healthy(policy, effective_runtime):
+    from plastic_promise.mcp import server
+
+    identity = server._server_process_identity(
+        engine=_HealthyRuntimeEngine(),
+        environ={
+            "PP_RETRIEVAL_FUSION_POLICY": policy,
+            "PP_PREFER_RUST_SUPPLY": "1",
+            "PP_FORCE_PYTHON_SUPPLY": "0",
+        },
+    )
+
+    assert identity["fusion_policy"] == policy
+    assert identity["fusion_attestation"]["effective_policy"] == policy
+    assert identity["fusion_attestation"]["effective_runtime"] == effective_runtime
+    assert identity["fusion_attestation"]["config"] is None
+
+
+def test_maintenance_health_binds_runtime_pid_and_replay_owner(monkeypatch, tmp_path):
+    from plastic_promise.launcher import service_manager
+
+    heartbeat = tmp_path / "maintenance.heartbeat"
+    service_manager.write_maintenance_heartbeat(
+        heartbeat,
+        pid=101,
+        startup_replay_cycle_id="cycle-101",
+        process_generation="a" * 32,
+    )
+    monkeypatch.setattr(service_manager, "pid_is_alive", lambda _pid: True)
+
+    health = service_manager.read_maintenance_health(
+        heartbeat,
+        expected_pid=202,
+        expected_process_generation="a" * 32,
+    )
+    assert health["reason"] == "maintenance_pid_mismatch"
+
+    payload = json.loads(heartbeat.read_text(encoding="utf-8"))
+    payload["startup_replay_owner_pid"] = 202
+    heartbeat.write_text(json.dumps(payload), encoding="utf-8")
+    health = service_manager.read_maintenance_health(
+        heartbeat,
+        expected_pid=101,
+        expected_process_generation="a" * 32,
+    )
+    assert health["reason"] == "maintenance_startup_replay_owner_mismatch"
+
+    payload["startup_replay_owner_pid"] = 101
+    heartbeat.write_text(json.dumps(payload), encoding="utf-8")
+    health = service_manager.read_maintenance_health(
+        heartbeat,
+        expected_pid=101,
+        expected_process_generation="b" * 32,
+    )
+    assert health["reason"] == "maintenance_process_generation_mismatch"
+
+
+def test_owned_service_argv_requires_exact_root_and_daemon_path(tmp_path):
+    module = _load_init_and_start()
+    root = str(tmp_path / "owned")
+    foreign = root + "-foreign"
+
+    assert module._argv_matches_owned_service(
+        ["python", "-m", "plastic_promise", "--streamable-http", "9020", "--source-root", root],
+        source_root=root,
+        service_name="mcp-server",
+    )
+    assert not module._argv_matches_owned_service(
+        [
+            "python",
+            "-m",
+            "plastic_promise",
+            "--streamable-http",
+            "9020",
+            "--source-root",
+            foreign,
+        ],
+        source_root=root,
+        service_name="mcp-server",
+    )
+    assert not module._argv_matches_owned_service(
+        ["python", os.path.join(foreign, "daemons", "maintenance_daemon.py")],
+        source_root=root,
+        service_name="maintenance-daemon",
+    )
+    daemon = os.path.join(root, "daemons", "maintenance_daemon.py")
+    assert not module._argv_matches_owned_service(
+        ["not-python", "-m", "plastic_promise", "--streamable-http", "9020", "--source-root", root],
+        source_root=root,
+        service_name="mcp-server",
+    )
+    assert not module._argv_matches_owned_service(
+        [
+            "python",
+            "unrelated.py",
+            "-m",
+            "plastic_promise",
+            "--streamable-http",
+            "9020",
+            "--source-root",
+            root,
+        ],
+        source_root=root,
+        service_name="mcp-server",
+    )
+    assert not module._argv_matches_owned_service(
+        ["python", "wrapper.py", daemon],
+        source_root=root,
+        service_name="maintenance-daemon",
+    )
+    for argv in (
+        [
+            "python",
+            "-m",
+            "plastic_promise.mcp.server",
+            "--streamable-http",
+            "9020",
+            "--source-root",
+            root,
+        ],
+        ["python", "-m", "plastic_promise", "--http", "9020", "--source-root", root],
+        ["python", "-m", "plastic_promise", "--streamable-http", "9021", "--source-root", root],
+        ["python", daemon, "--once", "--json"],
+    ):
+        service_name = "maintenance-daemon" if daemon in argv else "mcp-server"
+        assert not module._argv_matches_owned_service(
+            argv,
+            source_root=root,
+            service_name=service_name,
+        )
+
+
+@pytest.mark.asyncio
+async def test_launcher_refuses_start_when_source_revision_is_unavailable(monkeypatch):
+    module = _load_init_and_start()
+    monkeypatch.setattr(module.sys, "argv", ["init_and_start.py", "--check-only"])
+    monkeypatch.setattr(module, "resolve_source_revision", lambda _root: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await module.main()
+
+    assert exc_info.value.code == 1
 
 
 def test_direct_mcp_server_streamable_http_configures_default_project_identity(monkeypatch):
@@ -424,9 +1168,7 @@ def test_direct_mcp_server_streamable_http_configures_default_project_identity(m
     assert captured["port"] == 9020
     assert os.environ["PLASTIC_MCP_TRANSPORT"] == "streamable_http"
     assert os.environ["PLASTIC_PROJECT_ID"] == "project:plastic-promise"
-    assert os.environ["PLASTIC_DB_PATH"].endswith(
-        os.path.join("data", "db", "plastic_memory.db")
-    )
+    assert os.environ["PLASTIC_DB_PATH"].endswith(os.path.join("data", "db", "plastic_memory.db"))
     assert os.environ["PLASTIC_LANCEDB_PATH"].endswith(os.path.join("data", "lancedb"))
 
 
@@ -451,7 +1193,8 @@ def test_direct_mcp_server_legacy_sse_alias_still_routes_to_streamable_http(monk
 
 
 def test_packaged_streamable_http_entrypoints_resolve():
-    data = tomllib.loads(open("pyproject.toml", encoding="utf-8").read())
+    with open("pyproject.toml", encoding="utf-8") as project_file:
+        data = tomllib.loads(project_file.read())
     scripts = data["project"]["scripts"]
 
     assert scripts["plastic-promise-streamable-http"] == "plastic_promise:main_streamable_http"
@@ -465,10 +1208,27 @@ def test_packaged_streamable_http_entrypoints_resolve():
     assert callable(plastic_promise.main_sse)
 
 
+def test_packaged_lancedb_dependency_excludes_known_native_fts_bug():
+    with open("pyproject.toml", encoding="utf-8") as project_file:
+        data = tomllib.loads(project_file.read())
+    dependencies = set(data["project"]["dependencies"])
+    with open("requirements.txt", encoding="utf-8") as requirements_file:
+        requirements = {
+            line.strip()
+            for line in requirements_file
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+    assert "lancedb>=0.34.0" in dependencies
+    assert "lancedb>=0.34.0" in requirements
+
+
 def test_top_level_module_accepts_streamable_http_and_legacy_sse_flags():
     import plastic_promise.__main__ as top_level
 
-    assert top_level._extract_streamable_http_port(["plastic_promise", "--streamable-http", "9021"]) == (
+    assert top_level._extract_streamable_http_port(
+        ["plastic_promise", "--streamable-http", "9021"]
+    ) == (
         True,
         9021,
     )

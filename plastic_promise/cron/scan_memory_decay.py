@@ -3,125 +3,191 @@
 import json
 import os
 import sqlite3
-from contextlib import suppress
+import uuid
 from datetime import datetime, timedelta
 
 from plastic_promise.core.paths import get_db_path
+from plastic_promise.core.synthesis import ensure_synthesis_schema, synthesis_content_hash
+from plastic_promise.core.synthesis_retrieval import (
+    available_ordinary_memory_sql_predicate,
+    ordinary_memory_sql_predicate,
+)
 
 
-def _load_tags(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    try:
-        tags = json.loads(raw)
-    except Exception:
-        return []
-    return tags if isinstance(tags, list) else []
-
-
-def _store_tags(conn: sqlite3.Connection, memory_id: str, tags: list[str]) -> None:
-    conn.execute(
-        "UPDATE memories SET tags = ? WHERE id = ?",
-        (json.dumps(sorted(set(tags)), ensure_ascii=False), memory_id),
-    )
-
-
-def _worth(success: int | None, failure: int | None) -> float:
-    ws = int(success or 0)
-    wf = int(failure or 0)
+def _worth(success: int | float | None, failure: int | float | None) -> float:
+    ws = float(success or 0.0)
+    wf = float(failure or 0.0)
     total = ws + wf
     return (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
 
 
-def _run_lifecycle_maintenance(conn: sqlite3.Connection) -> dict:
-    """Mark lifecycle state transitions without hard-deleting memories."""
+def _run_lifecycle_maintenance(conn: sqlite3.Connection, engine) -> dict:
+    """Discover lifecycle candidates and delegate canonical state changes."""
+    ensure_synthesis_schema(conn)
+    conn.commit()
+    ordinary_guard = ordinary_memory_sql_predicate("memories")
+    available_guard = available_ordinary_memory_sql_predicate("memories")
+    eligible_guard = " AND ".join(
+        (
+            "typeof(memories.id) = 'text' AND TRIM(memories.id) != ''",
+            "typeof(memories.content) = 'text' AND TRIM(memories.content) != ''",
+            "typeof(memories.project_id) = 'text' AND TRIM(memories.project_id) != ''",
+            "typeof(memories.embedding_hash) = 'text' AND TRIM(memories.embedding_hash) != ''",
+            "typeof(memories.created_at) = 'text' AND TRIM(memories.created_at) != ''",
+            "typeof(memories.worth_success) IN ('integer', 'real') "
+            "AND memories.worth_success >= 0 "
+            "AND memories.worth_success < 1.0e308",
+            "typeof(memories.worth_failure) IN ('integer', 'real') "
+            "AND memories.worth_failure >= 0 "
+            "AND memories.worth_failure < 1.0e308",
+            "(memories.worth_success + memories.worth_failure) < 1.0e308",
+            "typeof(memories.access_count) = 'integer' AND memories.access_count >= 0",
+            "typeof(memories.tags) = 'text' AND json_valid(memories.tags) "
+            "AND json_type(CASE WHEN json_valid(memories.tags) "
+            "THEN memories.tags ELSE 'null' END) = 'array'",
+            "typeof(memories.metadata_json) = 'text' "
+            "AND json_valid(memories.metadata_json) "
+            "AND json_type(CASE WHEN json_valid(memories.metadata_json) "
+            "THEN memories.metadata_json ELSE 'null' END) = 'object'",
+        )
+    )
     lifecycle = {
         "stale_marked": 0,
         "conflicts_marked": 0,
         "forgotten_candidates": 0,
     }
+    mutate = getattr(engine, "mutate_ordinary_source", None)
+
+    def observed_precondition(row) -> dict:
+        try:
+            tags = json.loads(row["tags"])
+            metadata = json.loads(row["metadata_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return {
+            "access_count": row["access_count"],
+            "content_hash": synthesis_content_hash(row["content"]),
+            "created_at": row["created_at"],
+            "decay_multiplier": row["decay_multiplier"],
+            "embedding_hash": row["embedding_hash"],
+            "metadata_json": metadata,
+            "project_id": row["project_id"],
+            "tags": tags,
+            "worth_failure": row["worth_failure"],
+            "worth_success": row["worth_success"],
+        }
+
+    def mark_forgotten(
+        row,
+        *,
+        reason: str,
+        transition: str,
+        survivor=None,
+    ) -> bool:
+        if not callable(mutate):
+            return False
+        observed = observed_precondition(row)
+        if not observed:
+            return False
+        peer_snapshots = {}
+        if survivor is not None:
+            peer = observed_precondition(survivor)
+            if not peer:
+                return False
+            peer_snapshots[survivor["id"]] = peer
+        try:
+            mutate(
+                row["id"],
+                operation="forgotten",
+                reason=reason,
+                actor="scan_memory_decay",
+                call_id=(f"internal:scan_memory_decay:lifecycle:{transition}:{uuid.uuid4().hex}"),
+                expected_project_id=observed.pop("project_id"),
+                expected_content_hash=observed.pop("content_hash"),
+                expected_source_snapshot=observed,
+                expected_peer_snapshots=peer_snapshots,
+                require_source_available=True,
+            )
+        except Exception:
+            return False
+        return True
 
     stale_rows = conn.execute(
-        """
-        SELECT id, tags, worth_success, worth_failure
+        f"""
+        SELECT id, content, project_id, tags, metadata_json, worth_success,
+               worth_failure, decay_multiplier, access_count, created_at,
+               embedding_hash
         FROM memories
         WHERE decay_multiplier < 0.2
           AND COALESCE(worth_failure, 0) >= COALESCE(worth_success, 0)
-          AND tags NOT LIKE '%status:forgotten%'
-          AND tags NOT LIKE '%status:replaced%'
+          AND {eligible_guard}
+          AND {available_guard}
+        ORDER BY created_at, id
         LIMIT 50
         """
     ).fetchall()
     for row in stale_rows:
-        tags = _load_tags(row["tags"])
-        tags.extend(["status:forgotten", "decay:pending", "lifecycle:stale"])
-        _store_tags(conn, row["id"], tags)
-        conn.execute(
-            """
-            UPDATE memories
-            SET importance = 0.0,
-                activation_weight = 0.0,
-                worth_success = 0,
-                worth_failure = MAX(COALESCE(worth_failure, 0), 10),
-                decay_multiplier = 0.0,
-                last_accessed = ?
-            WHERE id = ?
-            """,
-            (datetime.now().isoformat(), row["id"]),
-        )
-        lifecycle["stale_marked"] += 1
+        if mark_forgotten(
+            row,
+            reason="lifecycle:stale",
+            transition="stale",
+        ):
+            lifecycle["stale_marked"] += 1
 
     duplicate_contents = conn.execute(
-        """
-        SELECT content
+        f"""
+        SELECT content, project_id
         FROM memories
-        WHERE content IS NOT NULL
-          AND TRIM(content) != ''
-          AND tags NOT LIKE '%status:replaced%'
-          AND tags NOT LIKE '%status:forgotten%'
-        GROUP BY content
+        WHERE {eligible_guard}
+          AND {available_guard}
+        GROUP BY project_id, content
         HAVING COUNT(*) > 1
+        ORDER BY project_id, content
         LIMIT 20
         """
     ).fetchall()
     for duplicate in duplicate_contents:
         rows = conn.execute(
-            """
-            SELECT id, tags, worth_success, worth_failure, access_count, created_at
+            f"""
+            SELECT id, content, project_id, tags, metadata_json, worth_success,
+                   worth_failure, decay_multiplier, access_count, created_at,
+                   embedding_hash
             FROM memories
             WHERE content = ?
-              AND tags NOT LIKE '%status:replaced%'
-              AND tags NOT LIKE '%status:forgotten%'
+              AND project_id = ?
+              AND {eligible_guard}
+              AND {available_guard}
             """,
-            (duplicate["content"],),
+            (duplicate["content"], duplicate["project_id"]),
         ).fetchall()
         if len(rows) < 2:
             continue
-        ranked = sorted(
-            rows,
-            key=lambda row: (
-                _worth(row["worth_success"], row["worth_failure"]),
-                int(row["access_count"] or 0),
-                row["created_at"] or "",
-            ),
-            reverse=True,
-        )
+        try:
+            ranked = sorted(
+                rows,
+                key=lambda row: (
+                    _worth(row["worth_success"], row["worth_failure"]),
+                    int(row["access_count"]),
+                    row["created_at"],
+                    row["id"],
+                ),
+                reverse=True,
+            )
+        except (OverflowError, TypeError, ValueError):
+            continue
         survivor_id = ranked[0]["id"]
         for loser in ranked[1:]:
-            tags = _load_tags(loser["tags"])
-            tags.extend(["status:replaced", "lifecycle:conflict", f"replaced_by:{survivor_id}"])
-            _store_tags(conn, loser["id"], tags)
-            conn.execute(
-                "UPDATE memories SET worth_failure = MAX(COALESCE(worth_failure, 0), 10) "
-                "WHERE id = ?",
-                (loser["id"],),
-            )
-            lifecycle["conflicts_marked"] += 1
+            if mark_forgotten(
+                loser,
+                reason=f"lifecycle:duplicate_replacement:{survivor_id}",
+                transition="duplicate",
+                survivor=ranked[0],
+            ):
+                lifecycle["conflicts_marked"] += 1
 
     lifecycle["forgotten_candidates"] = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE tags LIKE '%status:forgotten%'"
+        f"SELECT COUNT(*) FROM memories WHERE tags LIKE '%status:forgotten%' AND {ordinary_guard}"
     ).fetchone()[0]
-    conn.commit()
     return lifecycle
 
 
@@ -134,6 +200,9 @@ async def scan_memory_decay(engine) -> dict:
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    ensure_synthesis_schema(conn)
+    conn.commit()
+    ordinary_guard = ordinary_memory_sql_predicate("memories")
     findings = []
     lifecycle = {"stale_marked": 0, "conflicts_marked": 0, "forgotten_candidates": 0}
 
@@ -142,7 +211,8 @@ async def scan_memory_decay(engine) -> dict:
         thirty_days = (datetime.now() - timedelta(days=30)).isoformat()
         zombies = conn.execute(
             "SELECT COUNT(*) FROM memories WHERE tier='L3' "
-            "AND (last_accessed IS NULL OR last_accessed = '' OR last_accessed < ?)",
+            "AND (last_accessed IS NULL OR last_accessed = '' OR last_accessed < ?) "
+            f"AND {ordinary_guard}",
             (thirty_days,),
         ).fetchone()[0]
 
@@ -161,13 +231,15 @@ async def scan_memory_decay(engine) -> dict:
         # 2. Memory influx: count new memories in last 24h
         yesterday = (datetime.now() - timedelta(hours=24)).isoformat()
         influx = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE created_at > ?", (yesterday,)
+            f"SELECT COUNT(*) FROM memories WHERE created_at > ? AND {ordinary_guard}",
+            (yesterday,),
         ).fetchone()[0]
 
         # Dynamic threshold: median + 2*std of daily counts over 7 days
         daily_counts = conn.execute(
             "SELECT DATE(created_at) as d, COUNT(*) as cnt "
             "FROM memories WHERE created_at > datetime('now', '-7 days') "
+            f"AND {ordinary_guard} "
             "GROUP BY d ORDER BY cnt"
         ).fetchall()
         if len(daily_counts) >= 3:
@@ -195,6 +267,7 @@ async def scan_memory_decay(engine) -> dict:
         domain_counts = conn.execute(
             "SELECT domain, COUNT(*) as cnt FROM memories "
             "WHERE domain IS NOT NULL AND domain != '' "
+            f"AND {ordinary_guard} "
             "GROUP BY domain"
         ).fetchall()
         if domain_counts:
@@ -220,7 +293,10 @@ async def scan_memory_decay(engine) -> dict:
             try:
                 from plastic_promise.memory.soul_memory import EvolveR, RecMem
 
-                rm = RecMem()
+                # The scanner's engine owns the canonical SQLite snapshot.
+                # Passing it through both makes periodic lifecycle work real
+                # and keeps RecMem on the guarded Python mutation path.
+                rm = RecMem(engine)
                 updated = rm.update_all_decay()
                 routine["decay_updated"] = updated
                 evolver = EvolveR(rm)
@@ -234,14 +310,12 @@ async def scan_memory_decay(engine) -> dict:
             except Exception as e:
                 routine["error"] = str(e)
             finally:
-                sqlite = getattr(getattr(rm, "_engine", None), "_sqlite", None)
-                rm_conn = getattr(sqlite, "_conn", None)
-                if rm_conn is not None:
-                    with suppress(Exception):
-                        rm_conn.close()
+                # ``engine`` is owned by the scanner caller.  Do not close its
+                # canonical SQLite connection after routine maintenance.
+                pass
 
-        # 4b. Lifecycle state transitions: stale/conflict marking only.
-        lifecycle = _run_lifecycle_maintenance(conn)
+        # 4b. Lifecycle candidates: canonical unavailable transitions.
+        lifecycle = _run_lifecycle_maintenance(conn, engine)
 
         # 5. Decay anomaly detection: frequently accessed but heavily decayed
         anomalies = conn.execute(
@@ -249,6 +323,7 @@ async def scan_memory_decay(engine) -> dict:
             "FROM memories "
             "WHERE decay_multiplier < 0.2 AND access_count > 10 "
             "AND tier != 'L1' "
+            f"AND {ordinary_guard} "
             "LIMIT 20"
         ).fetchall()
         for row in anomalies:

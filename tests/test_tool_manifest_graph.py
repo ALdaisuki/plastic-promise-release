@@ -81,6 +81,40 @@ def test_defense_evaluate_tool_returns_allow_ask_deny():
     assert "reasons" in deny_payload
 
 
+def test_audit_rollover_is_narrowly_allowed_at_fresh_install_trust():
+    from plastic_promise.core.constants import TRUST_INITIAL
+    from plastic_promise.core.tool_manifest import (
+        evaluate_tool_decision,
+        manifest_for_tool,
+    )
+
+    rollover = manifest_for_tool("audit_rollover")
+    forget = manifest_for_tool("memory_forget")
+
+    assert rollover.domain == "audit"
+    assert rollover.risk_level == "high"
+    assert rollover.trust_requirement == TRUST_INITIAL
+    assert "audit.rollover" in rollover.capabilities
+    assert evaluate_tool_decision(rollover, TRUST_INITIAL)["decision"] == "allow"
+
+    assert forget.risk_level == "critical"
+    assert forget.trust_requirement > TRUST_INITIAL
+    assert evaluate_tool_decision(forget, TRUST_INITIAL)["decision"] == "ask"
+
+
+def test_public_memory_maintenance_tools_require_mutation_authority():
+    from plastic_promise.core.tool_manifest import manifest_for_tool
+
+    reclassify = manifest_for_tool("memory_reclassify")
+    sync_files = manifest_for_tool("memory_sync_files")
+
+    assert reclassify.trust_requirement == 0.60
+    assert "memory_mutation" in reclassify.side_effects
+    assert sync_files.trust_requirement == 0.60
+    assert {"memory_mutation", "file_write"}.issubset(sync_files.side_effects)
+    assert sync_files.evidence_required == ("source_dir", "project_id")
+
+
 def test_defense_schema_exposes_evaluate_tool_action():
     tool = next(tool for tool in asyncio.run(mcp_server.list_tools()) if tool.name == "defense")
     props = tool.inputSchema["properties"]

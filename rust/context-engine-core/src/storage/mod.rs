@@ -94,6 +94,16 @@ pub trait StorageBackend {
     /// Execute a scalar SQL query and return a single u64 value.
     /// Used for reading memory_version from SQLite.
     fn query_scalar(&self, sql: &str) -> Result<u64, String>;
+
+    /// Admit an externally supplied snapshot row before Rust reads its body.
+    ///
+    /// Persistent backends must treat SQLite as the authority and fail closed
+    /// when they cannot prove that the id is an ordinary memory. The default
+    /// deliberately rejects so a future backend cannot become an admission
+    /// bypass merely by implementing CRUD.
+    fn admit_snapshot(&self, _id: &str, _supplied_memory_type: &str) -> Result<bool, String> {
+        Err("snapshot admission is unavailable for this storage backend".to_string())
+    }
 }
 
 pub trait VectorIndex {

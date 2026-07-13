@@ -19,6 +19,7 @@ SuperPowers 标准化流水线 (obra 定义):
 """
 
 import json
+from contextlib import suppress
 
 from mcp.types import TextContent
 
@@ -100,19 +101,19 @@ STAGE_DESCRIPTIONS.update(
 STAGE_GUIDANCE_MAP = {
     "using-superpowers": {
         "layer": "bootstrap",
-        "summary": "Load and follow the relevant SuperPowers skill before any action.",
-        "artifact": "Skill selection and official skill-read evidence.",
+        "summary": "Bind the task to a governed workflow route and isolated flow before action.",
+        "artifact": "Workflow scope containing stage session, route, and flow identifiers.",
         "handoff": "After bootstrap, continue to the root stage that matches the task.",
         "artifacts": [
             {
-                "kind": "skill_bootstrap_trace",
-                "path": "current conversation skill-read trace",
+                "kind": "workflow_scope",
+                "path": "stage_session_id + route + flow_line_id",
                 "required": True,
             }
         ],
         "next_actions": [
-            "Identify the relevant SuperPowers skill.",
-            "Load/read the official skill file.",
+            "Select the governed workflow route.",
+            "Bind stage_session_id and flow_line_id.",
             "Enter brainstorming, systematic-debugging, requesting-code-review, or writing-skills as appropriate.",
         ],
     },
@@ -157,9 +158,7 @@ STAGE_GUIDANCE_MAP = {
         "summary": "Confirm isolated branch/worktree state before implementation.",
         "artifact": "Branch/worktree status and baseline verification evidence.",
         "handoff": "After isolation is confirmed, continue to writing-plans.",
-        "artifacts": [
-            {"kind": "workspace_state", "path": "git status --short", "required": True}
-        ],
+        "artifacts": [{"kind": "workspace_state", "path": "git status --short", "required": True}],
         "next_actions": [
             "Confirm the current branch or worktree.",
             "Run step-closure if the workspace state changed.",
@@ -228,7 +227,11 @@ STAGE_GUIDANCE_MAP = {
         "artifact": "Fresh command output proving tests/build/smoke checks pass.",
         "handoff": "After verification passes, continue to finishing-a-development-branch.",
         "artifacts": [
-            {"kind": "verification_log", "path": "fresh verification command output", "required": True}
+            {
+                "kind": "verification_log",
+                "path": "fresh verification command output",
+                "required": True,
+            }
         ],
         "next_actions": [
             "Run the full targeted verification command.",
@@ -242,7 +245,11 @@ STAGE_GUIDANCE_MAP = {
         "artifact": "Commit, PR, merge, and release-sync evidence as requested.",
         "handoff": "After branch finish, stop unless the user requested deployment or release sync.",
         "artifacts": [
-            {"kind": "integration_record", "path": "git log / PR / release-sync output", "required": True}
+            {
+                "kind": "integration_record",
+                "path": "git log / PR / release-sync output",
+                "required": True,
+            }
         ],
         "next_actions": [
             "Run final verification.",
@@ -255,7 +262,9 @@ STAGE_GUIDANCE_MAP = {
         "summary": "Prepare a structured review request from the current diff.",
         "artifact": "Review prompt, changed-file list, and pre-check result.",
         "handoff": "After review is requested, continue to receiving-code-review when feedback arrives.",
-        "artifacts": [{"kind": "review_request", "path": "review_run prepare output", "required": True}],
+        "artifacts": [
+            {"kind": "review_request", "path": "review_run prepare output", "required": True}
+        ],
         "next_actions": [
             "Run review preparation.",
             "Run step-closure for the review request.",
@@ -268,7 +277,11 @@ STAGE_GUIDANCE_MAP = {
         "artifact": "Review report, applied fixes, and re-verification evidence.",
         "handoff": "After feedback is resolved, continue to audit or finishing-a-development-branch.",
         "artifacts": [
-            {"kind": "review_resolution", "path": "review_run evaluate/apply output", "required": True}
+            {
+                "kind": "review_resolution",
+                "path": "review_run evaluate/apply output",
+                "required": True,
+            }
         ],
         "next_actions": [
             "Verify each review item against code reality.",
@@ -281,7 +294,9 @@ STAGE_GUIDANCE_MAP = {
         "summary": "Run structured self-audit before integration or release.",
         "artifact": "audit_run report and pass/block decision.",
         "handoff": "If audit passes, continue to finishing-a-development-branch.",
-        "artifacts": [{"kind": "audit_report", "path": "audit_run(action='full')", "required": True}],
+        "artifacts": [
+            {"kind": "audit_report", "path": "audit_run(action='full')", "required": True}
+        ],
         "next_actions": [
             "Run audit_run or the local audit checklist.",
             "Record pass/block decision.",
@@ -326,7 +341,6 @@ STAGE_GUIDANCE_MAP = {
             {"kind": "validation_log", "path": "skill validation command output", "required": True},
         ],
         "next_actions": [
-            "Read the official writing-skills instructions.",
             "Create or edit the skill artifact.",
             "Validate the skill and record the result.",
         ],
@@ -336,8 +350,8 @@ STAGE_GUIDANCE_MAP = {
 
 STAGE_ROUTE_MAP = {
     "superpowers-bootstrap": {
-        "label": "SuperPowers bootstrap",
-        "summary": "Session bootstrap route that loads the relevant official SuperPowers skill before work begins.",
+        "label": "Workflow bootstrap",
+        "summary": "Session bootstrap route that binds a programmatic workflow before work begins.",
         "stages": [
             "using-superpowers",
             "brainstorming",
@@ -417,39 +431,27 @@ def _infer_route_id(stage_name: str, route_id: str | None = None) -> str:
     return "custom"
 
 
-def _skill_authority_message(summary_kind: str, official_skill: str) -> str:
-    return (
-        f"This {summary_kind} summary is advisory only. The official SuperPowers SKILL "
-        f"is {official_skill}; agents must load/read that SKILL before executing "
-        "the current stage and must not begin development from sp-stage summaries alone."
-    )
-
-
 def _build_route_summary(stage_name: str, route_id: str | None = None) -> dict:
     resolved_route = _infer_route_id(stage_name, route_id)
     route = STAGE_ROUTE_MAP.get(
         resolved_route,
         {
             "label": "Custom route",
-            "summary": "Caller-defined route; follow SKILL_CHAIN_MAP for valid stage transitions.",
+            "summary": "Caller-defined route governed by server-validated stage transitions.",
             "stages": [stage_name],
         },
     )
     stages = list(route["stages"])
-    official_skill = f"superpowers:{stage_name}"
     return {
         "route_id": resolved_route,
         "label": route["label"],
         "summary": route["summary"],
-        "official_skill": official_skill,
-        "skill_authority": _skill_authority_message("route", official_skill),
         "stages": stages,
         "current_stage": stage_name,
         "current_index": stages.index(stage_name) if stage_name in stages else None,
-        "advisory_only": True,
         "session_isolation": (
             "Use stage_session_id plus flow_line_id to isolate concurrent "
-            "SuperPowers flow lines within the same agent session."
+            "governed flow lines within the same agent session."
         ),
     }
 
@@ -476,19 +478,13 @@ def build_stage_guidance(
         },
     )
     closure_mode = _closure_mode_for_stage(stage_name)
-    official_skill = f"superpowers:{stage_name}"
-    skill_authority = _skill_authority_message("stage", official_skill)
     return {
-        "official_skill": official_skill,
         "stage_summary": {
             "stage": stage_name,
             "layer": guidance["layer"],
             "summary": guidance["summary"],
-            "skill_authority": skill_authority,
         },
         "route_summary": _build_route_summary(stage_name, route_id=route_id),
-        "artifact_summary": guidance["artifact"],
-        "handoff_summary": guidance["handoff"],
         "required_artifacts": list(guidance["artifacts"]),
         "closure_reminder": {
             "tool": "step-closure",
@@ -501,7 +497,6 @@ def build_stage_guidance(
                 f"with mode='{closure_mode}' after substantive output or commit."
             ),
         },
-        "next_actions": list(guidance["next_actions"]),
     }
 
 
@@ -584,7 +579,6 @@ async def _governance_step_closure_full(ctx, params: dict):
             ),
         )
     ]
-
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -707,8 +701,8 @@ async def _request_review_handler(ctx, params, atom_results):
         }
 
         # 将审查请求存入记忆池 (供 Pi Reviewer 发现)
-        try:
-            ctx.register_memory(
+        with suppress(Exception):
+            ctx.create_ordinary_if_absent(
                 {
                     "id": f"review_req_{int(time.time())}",
                     "content": prep["structured_prompt"][:500],
@@ -724,9 +718,6 @@ async def _request_review_handler(ctx, params, atom_results):
                     "tier": "L1",
                 }
             )
-        except Exception:
-            pass  # 记忆存储失败不阻塞审查流程
-
     except Exception as e:
         review_error = str(e)
 

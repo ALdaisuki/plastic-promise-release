@@ -36,6 +36,7 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
             "stage_session_id": "stage:codex:schema",
             "flow_line_id": "bug-hunt",
             "request_id": "req:schema-memory",
+            "fusion_policy": "max-v1",
         },
         "context_supply": {
             "task_description": "审计 MCP 参数校验失败",
@@ -46,6 +47,7 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
             "stage_session_id": "stage:codex:schema",
             "flow_line_id": "bug-hunt",
             "request_id": "req:schema-context",
+            "fusion_policy": "max-v1",
         },
         "defense": {"action": "get"},
         "runtime_mode": {"action": "set", "mode": "rust-full"},
@@ -89,6 +91,7 @@ def test_handler_read_optional_fields_are_declared():
         "request_id",
         "project_id",
         "project_policy",
+        "fusion_policy",
     }.issubset(memory_props)
 
     context_props = set(tools["context_supply"].inputSchema["properties"])
@@ -100,10 +103,15 @@ def test_handler_read_optional_fields_are_declared():
         "project_policy",
         "retrieval_mode",
         "debug",
+        "fusion_policy",
     }.issubset(context_props)
 
     memory_store_props = set(tools["memory_store"].inputSchema["properties"])
     assert {
+        "commit_mode",
+        "origin_role",
+        "origin_turn_hash",
+        "origin_visibility",
         "project_id",
         "project_policy",
         "visibility",
@@ -111,15 +119,53 @@ def test_handler_read_optional_fields_are_declared():
         "origin_kind",
         "origin_uri",
         "parent_memory_ids",
+        "source_ids",
+        "synthesis_key",
+        "validity_scope",
+        "automatic",
+        "reuse_signal",
+        "expected_revision",
+        "actor",
     }.issubset(memory_store_props)
+
+    for name in (
+        "memory_update",
+        "memory_correct",
+        "memory_forget",
+        "memory_reclassify",
+        "memory_sync_files",
+        "smart-remember",
+        "smart_remember",
+    ):
+        properties = tools[name].inputSchema["properties"]
+        assert "project_id" in properties
+        assert properties["project_policy"]["enum"] == ["strict", "balanced", "open"]
+
+    assert "memory_id" in tools["memory_reclassify"].inputSchema["properties"]
+
+    feedback_props = set(tools["feedback_apply"].inputSchema["properties"])
+    assert {
+        "actor",
+        "call_id",
+        "expected_revision",
+        "rejection_reason",
+        "stage_session_id",
+        "flow_line_id",
+        "request_id",
+    }.issubset(feedback_props)
 
     review_props = set(tools["review_run"].inputSchema["properties"])
     assert {"project_id", "project_policy"}.issubset(review_props)
 
     commercial_audit_props = set(tools["commercial_audit_export"].inputSchema["properties"])
-    assert {"project_id", "since", "until", "include_outbox", "export_otlp", "otlp_endpoint"}.issubset(
-        commercial_audit_props
-    )
+    assert {
+        "project_id",
+        "since",
+        "until",
+        "include_outbox",
+        "export_otlp",
+        "otlp_endpoint",
+    }.issubset(commercial_audit_props)
 
     principle_props = set(tools["principle_activate"].inputSchema["properties"])
     assert "project_id" in principle_props
@@ -158,8 +204,8 @@ def test_handler_read_optional_fields_are_declared():
 
 
 def test_context_supply_debug_returns_structured_metadata(monkeypatch):
-    from plastic_promise.core.context_engine import ContextItem, ContextPack
     import plastic_promise.core.embedder as embedder_mod
+    from plastic_promise.core.context_engine import ContextItem, ContextPack
     from plastic_promise.mcp.tools.context import handle_context_supply
 
     class FakeEmbedder:
@@ -169,6 +215,16 @@ def test_context_supply_debug_returns_structured_metadata(monkeypatch):
     class FakeEngine:
         def __init__(self):
             self.kwargs = {}
+            self._memories = {
+                "m1": {
+                    "id": "m1",
+                    "content": "debug context item",
+                    "memory_type": "experience",
+                    "project_id": "project:legacy-global",
+                    "visibility": "global",
+                    "source_class": "experience",
+                }
+            }
 
         def supply(self, *_args, **kwargs):
             self.kwargs = kwargs
@@ -187,7 +243,9 @@ def test_context_supply_debug_returns_structured_metadata(monkeypatch):
                 per_item_stats=[{"id": "m1", "gate_decision": "core"}],
             )
 
-    monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+    monkeypatch.setattr(
+        embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+    )
     engine = FakeEngine()
 
     result = asyncio.run(
@@ -198,6 +256,7 @@ def test_context_supply_debug_returns_structured_metadata(monkeypatch):
                 "task_type": "debugging",
                 "retrieval_mode": "mix",
                 "debug": True,
+                "fusion_policy": "max-v1",
             },
         )
     )
@@ -205,6 +264,7 @@ def test_context_supply_debug_returns_structured_metadata(monkeypatch):
     data = json.loads(result[0].text)
     assert engine.kwargs["debug"] is True
     assert engine.kwargs["retrieval_mode"] == "mix"
+    assert engine.kwargs["fusion_policy"] == "max-v1"
     assert data["pipeline_stats"]["canonical_hot_count"] == 1
     assert data["per_item_stats"][0]["gate_decision"] == "core"
     assert data["audit_metadata"]["canonical_hot"]["enabled"] is True
@@ -212,8 +272,8 @@ def test_context_supply_debug_returns_structured_metadata(monkeypatch):
 
 
 def test_context_supply_debug_tolerates_pack_without_audit_metadata(monkeypatch):
-    from plastic_promise.core.context_engine import ContextItem
     import plastic_promise.core.embedder as embedder_mod
+    from plastic_promise.core.context_engine import ContextItem
     from plastic_promise.mcp.tools.context import handle_context_supply
 
     class FakeEmbedder:
@@ -243,7 +303,9 @@ def test_context_supply_debug_tolerates_pack_without_audit_metadata(monkeypatch)
         def supply(self, *_args, **_kwargs):
             return MinimalPack()
 
-    monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+    monkeypatch.setattr(
+        embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+    )
 
     result = asyncio.run(
         handle_context_supply(
@@ -307,19 +369,35 @@ def test_hyphenated_skill_aliases_are_exposed_with_matching_required_fields():
         )
 
 
-def test_sp_stage_schema_exposes_full_superpowers_skill_surface():
+def test_smart_remember_schema_exposes_project_authority():
+    tools = _tools_by_name()
+
+    for name in ("smart-remember", "smart_remember"):
+        properties = tools[name].inputSchema["properties"]
+        assert properties["project_id"]["type"] == "string"
+        assert properties["project_policy"]["enum"] == ["strict", "balanced", "open"]
+
+
+def test_sp_stage_schema_keeps_programmatic_stage_surface():
     tools = _tools_by_name()
     enum_values = set(tools["sp-stage"].inputSchema["properties"]["stage"]["enum"])
 
     assert {"using-superpowers", "writing-skills"}.issubset(enum_values)
 
 
-def test_sp_stage_description_lists_every_exposed_stage():
+def test_sp_stage_description_is_concise_and_programmatic():
     tool = _tools_by_name()["sp-stage"]
-    enum_values = set(tool.inputSchema["properties"]["stage"]["enum"])
-    missing = sorted(stage for stage in enum_values if stage not in (tool.description or ""))
+    description = tool.description or ""
 
-    assert not missing
+    assert "chain" in description.lower()
+    assert "required artifacts" in description.lower()
+    assert "closure reminder" in description.lower()
+    assert "official" not in description.lower()
+    assert "SKILL" not in description
+    schema_text = json.dumps(tool.inputSchema, ensure_ascii=False)
+    assert "official" not in schema_text.lower()
+    assert "SKILL" not in schema_text
+    assert len(description) < 500
 
 
 def test_codex_deferred_tool_discovery_keywords_are_exposed():
@@ -398,9 +476,7 @@ def test_session_init_alias_routes_to_canonical_skill(monkeypatch):
     monkeypatch.setattr(mcp_server, "get_engine", lambda: object())
     monkeypatch.setattr(mcp_server, "get_skill_engine", lambda: FakeSkillEngine())
 
-    result = asyncio.run(
-        mcp_server.call_tool("session_init", {"task_description": "alias route"})
-    )
+    result = asyncio.run(mcp_server.call_tool("session_init", {"task_description": "alias route"}))
     data = json.loads(result[0].text)
     assert data["success"] is True
     assert calls == [("session-init", {"task_description": "alias route"}, "claude")]
@@ -444,9 +520,7 @@ def test_windows_client_disconnect_filter_suppresses_proactor_noise(monkeypatch)
         delegated = []
         loop = asyncio.get_running_loop()
         loop.set_exception_handler(lambda _loop, context: delegated.append(context))
-        mcp_server._install_windows_client_disconnect_filter(
-            mcp_server.logging.getLogger("test")
-        )
+        mcp_server._install_windows_client_disconnect_filter(mcp_server.logging.getLogger("test"))
         handler = loop.get_exception_handler()
 
         handler(

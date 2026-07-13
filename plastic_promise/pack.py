@@ -84,7 +84,7 @@ def import_pack(engine: Any, path: str, owner: str = "") -> dict:
     imported = 0
     for mem in pack.get("memories", []):
         try:
-            engine.register_memory(
+            engine.create_ordinary_if_absent(
                 {
                     "id": mem.get("id", f"exp_{uuid.uuid4().hex[:8]}"),
                     "content": mem["content"],
@@ -115,7 +115,7 @@ def recall_pack(engine: Any, query: str, pack_name: str = None, strict: bool = T
     memories = {m["id"]: m for m in engine.iter_memories()} if engine else {}
 
     items = []
-    for mid, score, content, source in results:
+    for mid, score, content, _source in results:
         if mid not in memories or mid.startswith("principle:"):
             continue
         mem = memories[mid]

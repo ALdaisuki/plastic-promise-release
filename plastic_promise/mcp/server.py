@@ -17,8 +17,10 @@
 import importlib.util
 import json
 import logging
+import math
 import os
 import sys
+from contextlib import suppress
 from typing import Any
 
 # 确保项目根在 path 中
@@ -44,8 +46,19 @@ from plastic_promise import __version__
 from plastic_promise.core.constants import (
     CORE_PRINCIPLES,
 )
+from plastic_promise.core.fusion_policy import (
+    FusionConfigurationError,
+    canonical_fusion_config_hash,
+    load_fusion_config,
+)
+from plastic_promise.core.retrieval_planner import plan_retrieval
 from plastic_promise.launcher.default_environment import configure_default_environment
 from plastic_promise.launcher.runtime_mode import RUNTIME_MODE_KEYS
+from plastic_promise.launcher.service_manager import (
+    MCP_FUSION_IDENTITY_SCHEMA,
+    canonical_source_root,
+    resolve_source_revision,
+)
 
 PLASTIC_PROMISE_VERSION = __version__
 SERVER_INSTRUCTIONS = (
@@ -56,9 +69,101 @@ SERVER_INSTRUCTIONS = (
     "needed. Use debug=true only for diagnostics."
 )
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SOURCE_ROOT = canonical_source_root(_PROJECT_ROOT)
+_SOURCE_REVISION = resolve_source_revision(_SOURCE_ROOT)
 _engine = None  # 延迟初始化
 _skill_engine = None  # 延迟初始化 — SkillEngine 单例
 _closure_history: deque = deque(maxlen=5)  # 滑动窗口: 最近5次闭环 {scarf, trust, cei}
+
+
+def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
+    """Return validated deployment and effective retrieval-runtime identity."""
+    if _SOURCE_REVISION is None:
+        raise RuntimeError("source_revision_unavailable")
+    env = environ if environ is not None else os.environ
+    fusion_policy = str(env.get("PP_RETRIEVAL_FUSION_POLICY", "legacy-auto")).strip()
+    runtime_engine = engine if engine is not None else get_engine()
+    runtime_engine._ensure_heavy_init()
+    embedder = getattr(runtime_engine, "_embedder", None)
+    if embedder is None:
+        raise RuntimeError("retrieval_embedder_unavailable")
+    probe_vector = embedder.embed("plastic promise retrieval health probe")
+    if (
+        not isinstance(probe_vector, list)
+        or not probe_vector
+        or any(
+            not isinstance(value, (int, float)) or not math.isfinite(value)
+            for value in probe_vector
+        )
+        or not any(float(value) != 0.0 for value in probe_vector)
+    ):
+        raise RuntimeError("retrieval_embedding_zero_or_invalid")
+    lancedb = getattr(runtime_engine, "_ldb", None)
+    if env.get("LDB_INIT_ON_HEAVY_INIT", "1") == "1" and lancedb is None:
+        raise RuntimeError("retrieval_lancedb_unavailable")
+    has_fts = (
+        lancedb is not None
+        and env.get("PP_FTS_DISABLED", "") != "1"
+        and env.get("PP_FTS_FUSION", "1") == "1"
+    )
+    retrieval_plan = plan_retrieval(
+        has_vector=True,
+        has_graph=bool(getattr(runtime_engine, "_graph_edges", None)),
+        has_fts=has_fts,
+    )
+    fusion_config = load_fusion_config(fusion_policy, retrieval_plan, env)
+
+    force_python = env.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1"
+    prefer_rust = env.get("PP_PREFER_RUST_SUPPLY", "1") == "1"
+    requested_runtime = "python" if force_python or not prefer_rust else "rust"
+    if force_python or not prefer_rust:
+        effective_runtime = "python"
+        capability_reason = "runtime_forced:python" if force_python else "runtime_preferred:python"
+    elif fusion_policy == "max-v1":
+        effective_runtime = "python"
+        capability_reason = "policy_requires_python:max-v1"
+    elif fusion_config is not None and "fts" in retrieval_plan.fusion_channels:
+        effective_runtime = "python"
+        capability_reason = "rust_capability_missing:fts"
+    else:
+        if runtime_engine._check_rust_health() is True:
+            effective_runtime = "rust"
+            capability_reason = "rust_capability_satisfied"
+        else:
+            effective_runtime = "python"
+            capability_reason = "rust_unavailable_or_failed"
+
+    candidate_id = fusion_policy if fusion_policy.startswith("wrrf-v1:") else ""
+    config_payload = None
+    if fusion_config is not None:
+        config_payload = {
+            "k": fusion_config.k,
+            "channels": list(fusion_config.channels),
+            "weights": dict(fusion_config.weights),
+            "windows": dict(fusion_config.windows),
+        }
+        recomputed_hash = canonical_fusion_config_hash(config_payload)
+        if recomputed_hash != fusion_config.config_hash:
+            raise FusionConfigurationError("fusion_health_config_hash_mismatch")
+        config_payload["config_hash"] = recomputed_hash
+    return {
+        "version": PLASTIC_PROMISE_VERSION,
+        "pid": os.getpid(),
+        "source_root": _SOURCE_ROOT,
+        "source_revision": _SOURCE_REVISION,
+        "fusion_policy": fusion_policy,
+        "fusion_attestation": {
+            "schema": MCP_FUSION_IDENTITY_SCHEMA,
+            "requested_policy": fusion_policy,
+            "effective_policy": fusion_policy,
+            "requested_runtime": requested_runtime,
+            "effective_runtime": effective_runtime,
+            "capability_reason": capability_reason,
+            "candidate_id": candidate_id,
+            "config_hash": candidate_id.partition(":")[2] if candidate_id else "",
+            "config": config_payload,
+        },
+    }
 
 
 def _is_windows_client_disconnect(context: dict[str, Any]) -> bool:
@@ -161,6 +266,16 @@ server = Server(
     instructions=SERVER_INSTRUCTIONS,
 )
 
+_notify_queue: Any | None = None
+
+
+def notify_issue_change(data: dict[str, Any]) -> None:
+    """Push a state-change event when the HTTP event queue is active."""
+    queue = _notify_queue
+    if queue is not None:
+        with suppress(Exception):
+            queue.put_nowait(data)
+
 _CODEX_DISCOVERY_HINTS = {
     "session-init": (
         "Plastic Promise MCP; Codex tool_search discovery; bootstrap; session init; "
@@ -168,7 +283,7 @@ _CODEX_DISCOVERY_HINTS = {
     ),
     "sp-stage": (
         "Plastic Promise MCP; Codex tool_search discovery; SuperPowers; workflow stage; "
-        "brainstorming; TDD; verification; skill chain."
+        "brainstorming; TDD; verification; governed chain."
     ),
     "memory_recall": (
         "Plastic Promise MCP; Codex tool_search discovery; memory recall; memory_recall; "
@@ -282,6 +397,32 @@ _PROVENANCE_PROPERTIES = {
     "metadata_json": {"type": "object", "description": "Structured provenance metadata"},
     "call_id": {"type": "string", "description": "Trace call id"},
     "parent_call_id": {"type": "string", "description": "Parent trace call id"},
+    "commit_mode": {
+        "type": "string",
+        "enum": ["direct", "propose"],
+        "description": "Advisory write intent; never bypasses server proposal policy",
+    },
+    "origin_role": {
+        "type": "string",
+        "description": "Originating conversation role; server runtime provenance remains authoritative",
+    },
+    "origin_turn_hash": {
+        "type": "string",
+        "description": "Stable hash of the originating user turn for proposal deduplication",
+    },
+    "origin_visibility": {
+        "type": "string",
+        "enum": ["project", "global", "shared", "private"],
+        "description": "Visibility boundary of the originating turn",
+    },
+}
+
+_FUSION_POLICY_PROPERTY = {
+    "fusion_policy": {
+        "type": "string",
+        "pattern": "^(legacy-auto|max-v1|wrrf-v1:[0-9a-f]{64})$",
+        "description": "Normalized retrieval fusion policy identifier",
+    }
 }
 
 
@@ -296,6 +437,7 @@ def _with_codex_discovery_hints(tools: list[Tool]) -> list[Tool]:
         if marker not in (tool.description or ""):
             tool.description = f"{tool.description} {marker} {hint}"
     return tools
+
 
 # ---------------------------------------------------------------------------
 # 能力声明
@@ -400,6 +542,36 @@ async def list_tools() -> list[Tool]:
                             "items": {"type": "string"},
                             "description": "自定义标签 (task:pending, assignee:pi_builder 等)",
                         },
+                        "source_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Canonical evidence memory ids for governed synthesis",
+                        },
+                        "synthesis_key": {
+                            "type": "string",
+                            "description": "Stable unique key for a governed synthesis artifact",
+                        },
+                        "validity_scope": {
+                            "type": "string",
+                            "description": "Declared validity scope for the synthesis",
+                        },
+                        "automatic": {
+                            "type": "boolean",
+                            "description": "Whether synthesis creation was automatic",
+                        },
+                        "reuse_signal": {
+                            "type": "boolean",
+                            "description": "Whether reuse evidence justifies automatic synthesis",
+                        },
+                        "expected_revision": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "CAS revision for refreshing an existing synthesis key",
+                        },
+                        "actor": {
+                            "type": "string",
+                            "description": "Actor responsible for the lifecycle mutation",
+                        },
                         **_PROJECT_CONTEXT_PROPERTIES,
                         **_PROVENANCE_PROPERTIES,
                     },
@@ -414,7 +586,13 @@ async def list_tools() -> list[Tool]:
                     "properties": {
                         "memory_id": {"type": "string", "description": "记忆 ID"},
                         "content": {"type": "string", "description": "新内容"},
+                        "importance": {"type": "number", "description": "更新后的重要性"},
+                        "category": {"type": "string", "description": "更新后的分类"},
                         "reset_worth": {"type": "boolean", "description": "是否重置 worth 计数器"},
+                        "reason": {
+                            "type": "string",
+                            "description": "内容替换的审计原因",
+                        },
                     },
                     "required": ["memory_id"],
                 },
@@ -789,6 +967,30 @@ async def list_tools() -> list[Tool]:
                             "description": "反馈类型: adopted/ignored/rejected",
                         },
                         "task_context": {"type": "string", "description": "触发反馈的任务上下文"},
+                        "actor": {
+                            "type": "string",
+                            "description": (
+                                "Caller-declared reviewer identity for audit only; "
+                                "runtime authority is server-owned"
+                            ),
+                        },
+                        "call_id": {
+                            "type": "string",
+                            "description": (
+                                "Caller-declared call id for audit only; "
+                                "approval evidence uses a server call id"
+                            ),
+                        },
+                        "expected_revision": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Expected synthesis revision for CAS feedback",
+                        },
+                        "rejection_reason": {
+                            "type": "string",
+                            "description": "Reason for contesting a rejected synthesis",
+                        },
+                        **_REQUEST_SCOPE_PROPERTIES,
                     },
                     "required": ["item_id", "feedback_type"],
                 },
@@ -1298,15 +1500,15 @@ async def list_tools() -> list[Tool]:
                         },
                         "stage_session_id": {
                             "type": "string",
-                            "description": "SuperPowers stage chain scope id; omitted means session-init allocates one",
+                            "description": "Governed stage-chain scope id; omitted means session-init allocates one",
                         },
                         "flow_line_id": {
                             "type": "string",
-                            "description": "SuperPowers flow line id to pair with stage_session_id; omitted defaults to the selected route",
+                            "description": "Governed flow-line id paired with stage_session_id; omitted defaults to the selected route",
                         },
                         "route": {
                             "type": "string",
-                            "description": "Default SuperPowers route profile for workflow_contract; built-ins include normal-development, audit-review, and bug-hunt",
+                            "description": "Default governed route profile for workflow_contract",
                         },
                         "agent_name": {
                             "type": "string",
@@ -1330,6 +1532,15 @@ async def list_tools() -> list[Tool]:
                         "source": {
                             "type": "string",
                             "description": "来源: user/system/claude_code",
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project identity for recall and storage",
+                        },
+                        "project_policy": {
+                            "type": "string",
+                            "enum": ["strict", "balanced", "open"],
+                            "description": "Project isolation policy for duplicate recall",
                         },
                     },
                     "required": ["content", "memory_type"],
@@ -1531,13 +1742,17 @@ async def list_tools() -> list[Tool]:
             # === SuperPowers 流水线阶段技能 (统一入口) ===
             Tool(
                 name="sp-stage",
-                description="SuperPowers 流水线统一阶段入口。stage 参数对应 SuperPowers 标准阶段: using-superpowers | audit | brainstorming | exemplar-research | writing-plans | executing-plans | subagent-driven-development | test-driven-development | verification-before-completion | finishing-a-development-branch | requesting-code-review | receiving-code-review | systematic-debugging | using-git-worktrees | dispatching-parallel-agents | writing-skills。自动触发 skill_session_start/complete 追踪。",
+                description=(
+                    "Plastic Promise governed workflow stage entry. Validates chain transitions, "
+                    "isolates session and flow state, tracks stage execution, and returns a concise "
+                    "stage summary, required artifacts, and closure reminder."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "stage": {
                             "type": "string",
-                            "description": "SuperPowers 阶段名称",
+                            "description": "Governed workflow stage name",
                             "enum": [
                                 "using-superpowers",
                                 "audit",
@@ -1560,15 +1775,15 @@ async def list_tools() -> list[Tool]:
                         "task_description": {"type": "string", "description": "当前阶段任务描述"},
                         "stage_session_id": {
                             "type": "string",
-                            "description": "SuperPowers stage chain scope id returned by session-init",
+                            "description": "Governed stage-chain scope id returned by session-init",
                         },
                         "flow_line_id": {
                             "type": "string",
-                            "description": "Optional flow line id for isolating concurrent SuperPowers routes within a stage_session_id",
+                            "description": "Optional flow-line id for isolating concurrent routes within a stage_session_id",
                         },
                         "route": {
                             "type": "string",
-                            "description": "Advisory SuperPowers route profile for stage summaries; built-ins include normal-development, audit-review, and bug-hunt",
+                            "description": "Governed route profile used for chain validation and stage summaries",
                         },
                         "agent_name": {
                             "type": "string",
@@ -1605,13 +1820,28 @@ async def list_tools() -> list[Tool]:
     # Project/provenance schema fields are added by name to avoid widening
     # unrelated action schemas that share the same local shape.
     by_name = {tool.name: tool for tool in tools}
-    for tool_name in ("memory_recall", "context_supply", "memory_store", "review_run"):
+    for tool_name in (
+        "memory_recall",
+        "context_supply",
+        "memory_store",
+        "memory_update",
+        "memory_forget",
+        "memory_correct",
+        "memory_reclassify",
+        "memory_sync_files",
+        "smart-remember",
+        "smart_remember",
+        "review_run",
+    ):
         schema = by_name[tool_name].inputSchema
         schema.setdefault("properties", {}).update(_PROJECT_CONTEXT_PROPERTIES)
+    by_name["memory_reclassify"].inputSchema["properties"]["memory_id"] = {
+        "type": "string",
+        "description": "Optional single memory id to reclassify",
+    }
     for tool_name in ("memory_recall", "context_supply"):
-        by_name[tool_name].inputSchema.setdefault("properties", {}).update(
-            _RETRIEVAL_MODE_PROPERTY
-        )
+        by_name[tool_name].inputSchema.setdefault("properties", {}).update(_RETRIEVAL_MODE_PROPERTY)
+        by_name[tool_name].inputSchema["properties"].update(_FUSION_POLICY_PROPERTY)
     by_name["memory_store"].inputSchema["properties"].update(_PROVENANCE_PROPERTIES)
     by_name["review_run"].inputSchema["properties"]["allow_project_unknown"] = {
         "type": "boolean",
@@ -1734,7 +1964,597 @@ def _format_closure_dashboard(result: dict, history: deque) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _tool_runtime_event_context(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _feedback_runtime_actor() -> str:
+    """Resolve reviewer identity from server-owned process configuration."""
+    configured = str(os.environ.get("PP_MCP_RUNTIME_ACTOR") or "").strip()
+    normalized = configured.casefold().replace("-", "_").replace(" ", "_")
+    compact = normalized.replace("_", "")
+    for actor in ("pi_reviewer", "pi_builder", "pi_fixer", "codex", "claude"):
+        if actor.replace("_", "") in compact:
+            return actor
+    return normalized or "mcp"
+
+
+def _memory_sync_allowed_roots(environ: dict[str, str] | None = None) -> list[str]:
+    """Return canonical server-owned roots permitted for file-memory imports."""
+    env = environ if environ is not None else os.environ
+    roots = [
+        os.path.join(_PROJECT_ROOT, "var", "memory_files"),
+        os.path.join(os.path.expanduser("~"), ".claude", "projects"),
+    ]
+    configured = str(env.get("PP_MEMORY_SYNC_ALLOWED_ROOTS") or "")
+    roots.extend(path.strip() for path in configured.split(os.pathsep) if path.strip())
+    return list(dict.fromkeys(canonical_source_root(path) for path in roots))
+
+
+def _mutation_runtime_context(
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build server-owned authority for a public mutation handler."""
+    from plastic_promise.core.project_context import infer_project_context
+    from plastic_promise.core.tool_manifest import (
+        evaluate_tool_decision,
+        manifest_for_tool,
+    )
+    from plastic_promise.core.traceability import new_call_id
+    from plastic_promise.mcp.tools.audit_defense import _get_trust_manager
+
+    actor = _feedback_runtime_actor()
+    # Project authority is process-owned for mutation tools. Caller project
+    # declarations remain audit metadata and cannot expand the writable scope.
+    project_context = infer_project_context({})
+    call_id = new_call_id()
+    try:
+        tm = _get_trust_manager()
+        trust_score = float(tm.get(actor))
+        trust_tier = str(tm.tier(actor))
+        decision = evaluate_tool_decision(
+            manifest_for_tool(tool_name),
+            trust_score,
+            trust_tier=trust_tier,
+        )["decision"]
+    except Exception:
+        trust_score = 0.0
+        trust_tier = ""
+        decision = "deny"
+    context = {
+        "actor": actor,
+        "call_id": call_id,
+        "project_id": project_context.project_id,
+        "project_policy": project_context.project_policy,
+        "trust_score": trust_score,
+        "trust_tier": trust_tier,
+        "defense_decision": decision,
+    }
+    if tool_name == "memory_sync_files":
+        context["allowed_source_roots"] = _memory_sync_allowed_roots()
+    return context
+
+
+def _feedback_runtime_context() -> dict[str, Any]:
+    """Compatibility wrapper for existing feedback-focused integrations."""
+    return _mutation_runtime_context("feedback_apply")
+
+
+_NOTIFICATION_RUNTIME_TOOL_BY_EVENT = {
+    "audit_report": "audit_rollover",
+    "llm_classified": "memory_update",
+}
+
+
+def _smart_remember_runtime_caller(
+    runtime_context: dict[str, Any] | None,
+) -> str:
+    """Map a server-owned runtime actor onto SkillEngine's coarse role taxonomy."""
+    if not isinstance(runtime_context, dict):
+        return ""
+    actor = str(runtime_context.get("actor") or "").strip().casefold()
+    if actor == "pi" or actor.startswith("pi_"):
+        return "pi"
+    if actor in {"claude", "codex", "mcp"}:
+        return "claude"
+    return actor
+
+
+def _notification_runtime_authority(
+    runtime_authority: dict[str, Any] | None,
+    *,
+    tool_name: str,
+    reason_prefix: str,
+) -> tuple[tuple[str, str, str] | None, str]:
+    """Validate server-owned notification authority against one tool manifest."""
+    from plastic_promise.core.tool_manifest import manifest_for_tool
+
+    if not isinstance(runtime_authority, dict):
+        return None, f"{reason_prefix}_runtime_authorization_required"
+    actor = str(runtime_authority.get("actor") or "").strip()
+    call_id = str(runtime_authority.get("call_id") or "").strip()
+    project_id = str(runtime_authority.get("project_id") or "").strip()
+    if not actor or not call_id or project_id in {"", "project:unknown"}:
+        return None, f"{reason_prefix}_runtime_authorization_required"
+    try:
+        trust_score = float(runtime_authority.get("trust_score"))
+    except (TypeError, ValueError):
+        return None, f"{reason_prefix}_runtime_authorization_denied"
+    if (
+        runtime_authority.get("defense_decision") != "allow"
+        or not math.isfinite(trust_score)
+        or not 0.0 <= trust_score <= 1.0
+        or trust_score < manifest_for_tool(tool_name).trust_requirement
+    ):
+        return None, f"{reason_prefix}_runtime_authorization_denied"
+    return (actor, call_id, project_id), ""
+
+
+def _persist_audit_report_notification(
+    engine: Any,
+    event: dict[str, Any],
+    runtime_authority: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Persist one authorized audit report with explicit partial evidence."""
+    from plastic_promise.core.memory_index import (
+        build_index_material,
+        metadata_with_index_material,
+    )
+    from plastic_promise.core.synthesis import synthesis_content_hash
+    from plastic_promise.core.synthesis_retrieval import _source_is_available
+
+    authority, authority_reason = _notification_runtime_authority(
+        runtime_authority,
+        tool_name="audit_rollover",
+        reason_prefix="audit_notification",
+    )
+    if authority is None:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": authority_reason,
+            "tombstoned_ids": [],
+            "memory_id": "",
+        }
+    actor, call_id, project_id = authority
+
+    canonical_review = getattr(engine, "get_memory_dict_for_review", None)
+    if not callable(canonical_review):
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "audit_notification_canonical_review_required",
+            "tombstoned_ids": [],
+            "memory_id": "",
+        }
+
+    audit_content = str(event.get("content") or "").strip()
+    if not audit_content:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "audit_notification_content_required",
+            "tombstoned_ids": [],
+            "memory_id": "",
+        }
+    try:
+        overall = float(event.get("overall", 0) or 0)
+    except (TypeError, ValueError):
+        overall = 0.0
+    try:
+        material = build_index_material(
+            {"content": audit_content},
+            policy="legacy",
+            model_name="audit-notification",
+        )
+        audit_memory = {
+            "content": audit_content,
+            "memory_type": "reflection",
+            "tags": ["audit", "domain:governing", f"score:{overall:.2f}"],
+            "source": "maintenance_daemon",
+            "project_id": project_id,
+            "visibility": "project",
+            "source_class": "reflection",
+            "created_by_call_id": call_id,
+            "raw_content": audit_content,
+            "l0_abstract": audit_content,
+            "l1_summary": audit_content,
+            "l2_content": audit_content,
+            "embedding_text": material.vector_text,
+            "embedding_hash": material.embedding_hash,
+            "search_text": material.search_text,
+            "metadata_json": metadata_with_index_material({}, material),
+        }
+    except Exception:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "audit_notification_index_material_failed",
+            "tombstoned_ids": [],
+            "memory_id": "",
+        }
+
+    audit_sources: list[tuple[str, str, str, dict[str, Any]]] = []
+    for mem in list(engine.iter_memories()):
+        if not isinstance(mem, dict):
+            continue
+        memory_id = str(mem.get("id") or "").strip()
+        if not memory_id:
+            continue
+        try:
+            canonical = canonical_review(memory_id)
+        except Exception:
+            return {
+                "committed": False,
+                "partial": False,
+                "reason": "audit_notification_canonical_review_failed",
+                "tombstoned_ids": [],
+                "memory_id": "",
+            }
+        if canonical is None:
+            continue
+        if not isinstance(canonical, dict):
+            return {
+                "committed": False,
+                "partial": False,
+                "reason": "audit_notification_canonical_review_failed",
+                "tombstoned_ids": [],
+                "memory_id": "",
+            }
+        tags = canonical.get("tags")
+        if not isinstance(tags, (list, tuple)) or "audit" not in tags:
+            continue
+        try:
+            if not _source_is_available(canonical):
+                continue
+        except Exception:
+            return {
+                "committed": False,
+                "partial": False,
+                "reason": "audit_notification_canonical_review_failed",
+                "tombstoned_ids": [],
+                "memory_id": "",
+            }
+        source_project_id = str(canonical.get("project_id") or "").strip()
+        if source_project_id == project_id:
+            audit_sources.append(
+                (
+                    memory_id,
+                    source_project_id,
+                    synthesis_content_hash(canonical.get("content")),
+                    {"tags": list(tags)},
+                )
+            )
+
+    tombstoned_ids: list[str] = []
+    stale_dependents: list[str] = []
+    for index, (
+        memory_id,
+        source_project_id,
+        expected_content_hash,
+        expected_source_snapshot,
+    ) in enumerate(audit_sources):
+        try:
+            result = engine.mutate_ordinary_source(
+                memory_id,
+                operation="forgotten",
+                reason="http_notify:audit_replaced",
+                actor=actor,
+                call_id=f"{call_id}:audit-replaced:{index}",
+                expected_project_id=source_project_id,
+                expected_content_hash=expected_content_hash,
+                expected_source_snapshot=expected_source_snapshot,
+                require_source_available=True,
+            )
+        except Exception:
+            return {
+                "committed": False,
+                "partial": bool(tombstoned_ids),
+                "reason": "audit_replacement_failed",
+                "tombstoned_ids": tombstoned_ids,
+                "stale_dependents": stale_dependents,
+                "memory_id": "",
+            }
+        tombstoned_ids.append(memory_id)
+        stale_dependents.extend(str(item) for item in result.stale_synthesis_ids)
+
+    try:
+        memory_id = engine.create_ordinary_if_absent(audit_memory)
+    except Exception:
+        memory_id = ""
+    if not memory_id:
+        return {
+            "committed": False,
+            "partial": bool(tombstoned_ids),
+            "reason": "audit_report_store_failed",
+            "tombstoned_ids": tombstoned_ids,
+            "stale_dependents": stale_dependents,
+            "memory_id": "",
+        }
+    return {
+        "committed": True,
+        "partial": False,
+        "reason": "",
+        "tombstoned_ids": tombstoned_ids,
+        "stale_dependents": stale_dependents,
+        "memory_id": str(memory_id),
+    }
+
+
+def _persist_llm_classification_notification(
+    engine: Any,
+    event: dict[str, Any],
+    runtime_authority: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply one authorized classification as a single canonical metadata patch."""
+    from plastic_promise.core.synthesis import synthesis_content_hash
+    from plastic_promise.smart_extractor import CATEGORY_KEYWORDS
+
+    authority, authority_reason = _notification_runtime_authority(
+        runtime_authority,
+        tool_name="memory_update",
+        reason_prefix="llm_classification",
+    )
+    memory_id = str(event.get("memory_id") or "").strip()
+    if authority is None:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": authority_reason,
+            "memory_id": memory_id,
+        }
+    _actor, _call_id, project_id = authority
+    if not memory_id:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_memory_id_required",
+            "memory_id": "",
+        }
+    raw_category = event.get("new_category")
+    if raw_category is not None and not isinstance(raw_category, str):
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_category_invalid",
+            "memory_id": memory_id,
+        }
+    new_category = str(raw_category or "").strip().casefold()
+    allowed_categories = frozenset(CATEGORY_KEYWORDS)
+    if new_category not in allowed_categories:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_category_invalid",
+            "memory_id": memory_id,
+        }
+
+    canonical_review = getattr(engine, "get_memory_dict_for_review", None)
+    if not callable(canonical_review):
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_canonical_review_required",
+            "memory_id": memory_id,
+        }
+    try:
+        canonical = canonical_review(memory_id)
+    except Exception:
+        canonical = None
+    if not isinstance(canonical, dict):
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_canonical_source_missing",
+            "memory_id": memory_id,
+        }
+    source_project_id = str(canonical.get("project_id") or "").strip()
+    if not source_project_id:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_source_project_required",
+            "memory_id": memory_id,
+        }
+    if source_project_id != project_id:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_project_mismatch",
+            "memory_id": memory_id,
+        }
+    observed_project_id = str(event.get("expected_project_id") or "").strip()
+    if not observed_project_id:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_expected_project_required",
+            "memory_id": memory_id,
+        }
+    if observed_project_id != source_project_id:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_source_changed",
+            "memory_id": memory_id,
+        }
+
+    expected_content_hash = str(event.get("expected_content_hash") or "").strip()
+    if not expected_content_hash:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_content_hash_required",
+            "memory_id": memory_id,
+        }
+    if synthesis_content_hash(canonical.get("content")) != expected_content_hash:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_source_changed",
+            "memory_id": memory_id,
+        }
+    expected_category = str(event.get("expected_category") or "").strip()
+    if not expected_category:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_expected_category_required",
+            "memory_id": memory_id,
+        }
+    if str(canonical.get("category") or "").strip() != expected_category:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_source_changed",
+            "memory_id": memory_id,
+        }
+
+    source_tags = canonical.get("tags")
+    if not isinstance(source_tags, (list, tuple)):
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_source_tags_invalid",
+            "memory_id": memory_id,
+        }
+    observed_tags = event.get("expected_tags")
+    if not isinstance(observed_tags, (list, tuple)) or not all(
+        isinstance(tag, str) for tag in observed_tags
+    ):
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_expected_tags_required",
+            "memory_id": memory_id,
+        }
+    observed_tags = list(observed_tags)
+    if list(source_tags) != observed_tags or "llm_pending:true" not in observed_tags:
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_source_changed",
+            "memory_id": memory_id,
+        }
+    tags = [
+        str(tag)
+        for tag in observed_tags
+        if str(tag) != "llm_pending:true" and not str(tag).casefold().startswith("cat:")
+    ]
+    if "llm_classified:true" not in tags:
+        tags.append("llm_classified:true")
+    category_tag = f"cat:{new_category}" if new_category else ""
+    if category_tag and category_tag not in tags:
+        tags.append(category_tag)
+    replacements: dict[str, Any] = {"tags": tags}
+    if new_category:
+        replacements["category"] = new_category
+
+    patch = getattr(engine, "patch_ordinary_memory", None)
+    if not callable(patch):
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_patch_api_required",
+            "memory_id": memory_id,
+        }
+    try:
+        updated = patch(
+            memory_id,
+            replacements=replacements,
+            expected_project_id=source_project_id,
+            expected_content_hash=expected_content_hash,
+            expected_tags=observed_tags,
+            expected_category=expected_category,
+            require_source_available=True,
+        )
+    except Exception:
+        updated = None
+    if not isinstance(updated, dict):
+        return {
+            "committed": False,
+            "partial": False,
+            "reason": "llm_classification_patch_failed",
+            "memory_id": memory_id,
+        }
+    return {
+        "committed": True,
+        "partial": False,
+        "reason": "",
+        "memory_id": memory_id,
+        "category": new_category,
+        "tags": tags,
+    }
+
+
+async def _persist_then_publish_notification(
+    queue: Any,
+    event: dict[str, Any],
+    *,
+    engine: Any | None = None,
+    runtime_authority: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Publish governed notifications only after their canonical write outcome."""
+    event_type = event.get("type")
+    if event_type == "audit_report":
+        persistence = _persist_audit_report_notification(
+            engine,
+            event,
+            runtime_authority,
+        )
+    elif event_type == "llm_classified":
+        persistence = _persist_llm_classification_notification(
+            engine,
+            event,
+            runtime_authority,
+        )
+    else:
+        await queue.put(event)
+        return None
+
+    if persistence.get("committed"):
+        await queue.put(event)
+    elif event_type == "audit_report" and persistence.get("partial"):
+        await queue.put(
+            {
+                "type": "audit_report_persistence",
+                "status": "partial",
+                "event": event,
+                "audit_persistence": persistence,
+            }
+        )
+    return persistence
+
+
+async def _handle_notification_event(
+    queue: Any,
+    event: dict[str, Any],
+    *,
+    engine: Any | None = None,
+    runtime_authority: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run /notify business logic and build its explicit response payload."""
+    persistence = await _persist_then_publish_notification(
+        queue,
+        event,
+        engine=engine,
+        runtime_authority=runtime_authority,
+    )
+    response: dict[str, Any] = {"ok": True}
+    if persistence is not None:
+        response["ok"] = bool(persistence.get("committed"))
+        persistence_key = (
+            "audit_persistence"
+            if event.get("type") == "audit_report"
+            else "classification_persistence"
+        )
+        response[persistence_key] = persistence
+    return response
+
+
+def _tool_runtime_event_context(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    mutation_runtime_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         from plastic_promise.core.tool_manifest import (
             evaluate_tool_decision,
@@ -1750,7 +2570,7 @@ def _tool_runtime_event_context(name: str, arguments: dict[str, Any]) -> dict[st
         trust_tier = str(arguments.get("trust_tier") or tm.tier(target))
         manifest = manifest_for_tool(name)
         decision = evaluate_tool_decision(manifest, trust_score, trust_tier=trust_tier)
-        return {
+        context = {
             **scope,
             "tool_name": name,
             "actor": str(arguments.get("actor") or arguments.get("agent_name") or "mcp"),
@@ -1767,6 +2587,36 @@ def _tool_runtime_event_context(name: str, arguments: dict[str, Any]) -> dict[st
                 "fallbacks": list(manifest.fallbacks),
             },
         }
+        if mutation_runtime_context is not None:
+            context.update(
+                {
+                    "project_id": str(mutation_runtime_context.get("project_id") or ""),
+                    "actor": str(mutation_runtime_context.get("actor") or "mcp"),
+                    "trust_tier": str(mutation_runtime_context.get("trust_tier") or ""),
+                    "defense_decision": str(
+                        mutation_runtime_context.get("defense_decision") or "deny"
+                    ),
+                }
+            )
+            context["audit_trace"].update(
+                {
+                    "runtime_call_id": str(mutation_runtime_context.get("call_id") or ""),
+                    "trust_score": mutation_runtime_context.get("trust_score", 0.0),
+                }
+            )
+            context["metadata"]["caller_declarations"] = {
+                key: arguments[key]
+                for key in (
+                    "actor",
+                    "call_id",
+                    "project_id",
+                    "trust_score",
+                    "trust_tier",
+                    "defense_decision",
+                )
+                if key in arguments
+            }
+        return context
     except Exception:
         return {
             "tool_name": name,
@@ -1813,7 +2663,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     Handlers are lazily imported on first call.
     """
     engine = get_engine()
-    runtime_ctx = _tool_runtime_event_context(name, arguments)
+    mutation_tool_name = "memory_update" if name in {"smart-remember", "smart_remember"} else name
+    mutation_runtime_context = (
+        _mutation_runtime_context(mutation_tool_name, arguments)
+        if mutation_tool_name
+        in {
+            "memory_update",
+            "memory_forget",
+            "memory_correct",
+            "memory_reclassify",
+            "memory_sync_files",
+            "feedback_apply",
+        }
+        else None
+    )
+    runtime_ctx = _tool_runtime_event_context(
+        name,
+        arguments,
+        mutation_runtime_context=mutation_runtime_context,
+    )
     runtime_status = "completed"
     _record_tool_runtime_event(engine, runtime_ctx, "pending")
     _record_tool_runtime_event(engine, runtime_ctx, "running")
@@ -1831,11 +2699,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_update":
             from plastic_promise.mcp.tools.memory import handle_memory_update
 
-            return await handle_memory_update(engine, arguments)
+            return await handle_memory_update(
+                engine,
+                arguments,
+                _runtime_context=mutation_runtime_context,
+            )
         elif name == "memory_forget":
             from plastic_promise.mcp.tools.memory import handle_memory_forget
 
-            return await handle_memory_forget(engine, arguments)
+            return await handle_memory_forget(
+                engine,
+                arguments,
+                _runtime_context=mutation_runtime_context,
+            )
         elif name == "memory_list":
             from plastic_promise.mcp.tools.memory import handle_memory_list
 
@@ -1847,11 +2723,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_correct":
             from plastic_promise.mcp.tools.memory import handle_memory_correct
 
-            return await handle_memory_correct(engine, arguments)
+            return await handle_memory_correct(
+                engine,
+                arguments,
+                _runtime_context=mutation_runtime_context,
+            )
         elif name == "memory_reclassify":
             from plastic_promise.mcp.tools.memory import handle_memory_reclassify
 
-            return await handle_memory_reclassify(engine, arguments)
+            return await handle_memory_reclassify(
+                engine,
+                arguments,
+                _runtime_context=mutation_runtime_context,
+            )
         # Principle domain
         elif name == "principle_activate":
             from plastic_promise.mcp.tools.principles import handle_principle_activate
@@ -1906,7 +2790,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "feedback_apply":
             from plastic_promise.mcp.tools.reflection import handle_feedback_apply
 
-            return await handle_feedback_apply(engine, arguments)
+            return await handle_feedback_apply(
+                engine,
+                arguments,
+                _runtime_context=mutation_runtime_context,
+            )
 
         # Management
         elif name == "system":
@@ -2018,7 +2906,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             ]
         elif name in ("smart-remember", "smart_remember"):
             se = get_skill_engine()
-            result = await se.exec("smart-remember", arguments, caller="claude")
+            skill_arguments = dict(arguments)
+            skill_arguments["_runtime_context"] = mutation_runtime_context
+            result = await se.exec(
+                "smart-remember",
+                skill_arguments,
+                caller=_smart_remember_runtime_caller(mutation_runtime_context),
+            )
             return [
                 TextContent(
                     type="text",
@@ -2146,6 +3040,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         step_id = safe.get("reflection", {}).get("step_id", "")
                         tags = ["closure", "domain:reflecting", f"step:{step_id}"]
 
+                        smart_runtime_context = _mutation_runtime_context("memory_update")
                         sr_result = await sr_engine.exec(
                             "smart-remember",
                             {
@@ -2154,8 +3049,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                                 "source": "step-closure",
                                 "scope": "global",
                                 "tags": tags,
+                                "_runtime_context": smart_runtime_context,
                             },
-                            caller="claude",
+                            caller=_smart_remember_runtime_caller(smart_runtime_context),
                         )
                         if sr_result.success and sr_result.data:
                             smart_memory_id = sr_result.data.get("memory_id", "")
@@ -2184,7 +3080,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             stage = arguments.get("stage", "")
             task_desc = arguments.get("task_description", "")
             stage_session_id = arguments.get("stage_session_id") or arguments.get("stage_id")
-            flow_line_id = str(arguments.get("flow_line_id") or arguments.get("flow_id") or "").strip()
+            flow_line_id = str(
+                arguments.get("flow_line_id") or arguments.get("flow_id") or ""
+            ).strip()
             flow_line_id = flow_line_id or None
             route_id = str(arguments.get("route") or "").strip() or None
             public_stage_session_id = stage_session_id or "default"
@@ -2200,47 +3098,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             from plastic_promise.core.constants import (
                 normalize_stage_name,
             )
-            from plastic_promise.skills.superpowers_stages import attach_stage_guidance
             from plastic_promise.mcp.tools.skill_tracking import (
                 get_current_stage,
                 set_current_stage,
             )
+            from plastic_promise.skills.superpowers_stages import attach_stage_guidance
 
             lookup_stage = normalize_stage_name(stage)
-            current = get_current_stage(flow_scope_id)
-            lookup_current = normalize_stage_name(current)
-            if lookup_current and lookup_current != lookup_stage:
-                target_chain = _CHAIN_MAP.get(lookup_stage) or _CHAIN_MAP.get(
-                    f"sp-{lookup_stage}", {}
-                )
-                target_is_root = bool(target_chain) and target_chain.get("predecessors", []) == []
-
-                # Root stages intentionally start independent chains. This prevents one
-                # Agent's review/debug flow from blocking another Agent's new flow via the
-                # process-wide fallback current_stage.
-                if not target_is_root:
-                    chain = _CHAIN_MAP.get(lookup_current) or _CHAIN_MAP.get(
-                        f"sp-{lookup_current}", {}
-                    )
-                    valid_next = chain.get("successors", [])
-                    valid_next_normalized = [normalize_stage_name(s) for s in valid_next]
-                    if lookup_stage not in valid_next_normalized:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=json.dumps(
-                                    {
-                                        "error": "chain_violation",
-                                        "message": f"Stage '{stage}' is not a valid successor of '{lookup_current}'. Valid next stages: {valid_next_normalized}",
-                                        "current_stage": lookup_current,
-                                        "valid_next": valid_next_normalized,
-                                    },
-                                    ensure_ascii=False,
-                                ),
-                            )
-                        ]
-            # ── End chain validation ──
-            # ── Stage existence validation: reject unknown/empty stages ──
             if not lookup_stage or lookup_stage not in _CHAIN_MAP:
                 return [
                     TextContent(
@@ -2255,6 +3119,60 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         ),
                     )
                 ]
+
+            current = get_current_stage(flow_scope_id)
+            lookup_current = normalize_stage_name(current)
+            target_chain = _CHAIN_MAP.get(lookup_stage) or _CHAIN_MAP.get(f"sp-{lookup_stage}", {})
+            target_is_root = bool(target_chain) and target_chain.get("predecessors", []) == []
+            valid_root_entrypoints = sorted(
+                normalize_stage_name(candidate)
+                for candidate, chain in _CHAIN_MAP.items()
+                if not candidate.startswith("sp-") and chain.get("predecessors", []) == []
+            )
+
+            if not lookup_current and not target_is_root:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "chain_violation",
+                                "message": (
+                                    f"Stage '{stage}' cannot start a new workflow chain. "
+                                    f"Valid root entrypoints: {valid_root_entrypoints}"
+                                ),
+                                "current_stage": None,
+                                "valid_next": valid_root_entrypoints,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+
+            # Root stages intentionally start independent chains. This prevents one
+            # Agent's review/debug flow from blocking another Agent's new flow via the
+            # process-wide fallback current_stage.
+            if lookup_current and lookup_current != lookup_stage and not target_is_root:
+                chain = _CHAIN_MAP.get(lookup_current) or _CHAIN_MAP.get(f"sp-{lookup_current}", {})
+                valid_next = chain.get("successors", [])
+                valid_next_normalized = [normalize_stage_name(s) for s in valid_next]
+                if lookup_stage not in valid_next_normalized:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "chain_violation",
+                                    "message": f"Stage '{stage}' is not a valid successor of '{lookup_current}'. Valid next stages: {valid_next_normalized}",
+                                    "current_stage": lookup_current,
+                                    "valid_next": valid_next_normalized,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+            # ── End chain validation ──
+            # ── Stage existence validation: reject unknown/empty stages ──
             se = get_skill_engine()
             skill_name = f"sp-{lookup_stage}"
             stage_params = {
@@ -2307,7 +3225,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_sync_files":
             from plastic_promise.mcp.tools.memory import handle_memory_sync_files
 
-            return await handle_memory_sync_files(engine, arguments)
+            return await handle_memory_sync_files(
+                engine,
+                arguments,
+                _runtime_context=mutation_runtime_context,
+            )
 
         # ── Market tools ──
         elif name == "market_list":
@@ -2602,14 +3524,8 @@ async def run_streamable_http(port: int = 9020):
     # Notification queue — issue transitions push here, /events streams
     import asyncio as _asyncio
 
-    _notify_queue: _asyncio.Queue = _asyncio.Queue()
-
-    def notify_issue_change(data: dict):
-        """Push issue state change to all SSE event listeners."""
-        try:
-            _notify_queue.put_nowait(data)
-        except Exception:
-            pass
+    global _notify_queue
+    _notify_queue = _asyncio.Queue()
 
     class _NoOpResponse(Response):
         """Sentinel response — the SSE transport already handled the send via request._send."""
@@ -2670,10 +3586,8 @@ async def run_streamable_http(port: int = 9020):
                     break
 
         # Clean shutdown
-        try:
+        with suppress(Exception):
             await request._send({"type": "http.response.body", "body": b"", "more_body": False})
-        except Exception:
-            pass
 
     async def handle_notify(request: Request):
         """接收外部推送并广播到 SSE /events。Daemon/Worker 状态变更入口。"""
@@ -2684,71 +3598,40 @@ async def run_streamable_http(port: int = 9020):
         try:
             body = await request.body()
             event = _json.loads(body.decode())
-            await _notify_queue.put(event)
-
-            # Persist audit reports as memories
-            if event.get("type") == "audit_report":
-                try:
-                    engine = get_engine()
-                    report_text = event.get("content", "")
-                    # Mark existing audit memories as replaced
-                    for mem in engine.iter_memories():
-                        mid = mem.get("id", "")
-                        if mid and "audit" in mem.get("tags", []):
-                            mtags = list(mem.get("tags", []))
-                            if "status:replaced" not in mtags:
-                                mtags.append("status:replaced")
-                                engine.update_memory_fields(mid, tags=mtags)
-                    engine.register_memory(
-                        {
-                            "content": report_text,
-                            "memory_type": "reflection",
-                            "tags": [
-                                "audit",
-                                "domain:governing",
-                                f"score:{event.get('overall', 0):.2f}",
-                            ],
-                            "source": "maintenance_daemon",
-                        }
-                    )
-                except Exception:
-                    pass
-
-            # Refresh in-memory cache when daemon updates classification via SQLite
-            if event.get("type") == "llm_classified":
-                try:
-                    engine = get_engine()
-                    mid = event.get("memory_id", "")
-                    new_category = event.get("new_category", "")
-                    if mid and engine.memory_exists(mid):
-                        engine.update_memory_fields(mid, category=new_category)
-                        # Update tags to reflect classification state
-                        mem = engine.get_memory_dict(mid)
-                        tags = list(mem.get("tags", [])) if mem else []
-                        if "llm_pending:true" in tags:
-                            tags.remove("llm_pending:true")
-                        if "llm_classified:true" not in tags:
-                            tags.append("llm_classified:true")
-                        if new_category and f"cat:{new_category}" not in tags:
-                            tags.append(f"cat:{new_category}")
-                        engine.update_memory_fields(mid, tags=tags)
-                except Exception:
-                    pass
-
-            return JSONResponse({"ok": True})
+            event_type = event.get("type")
+            runtime_tool = _NOTIFICATION_RUNTIME_TOOL_BY_EVENT.get(event_type)
+            response = await _handle_notification_event(
+                _notify_queue,
+                event,
+                engine=get_engine() if runtime_tool else None,
+                runtime_authority=(
+                    _mutation_runtime_context(runtime_tool) if runtime_tool else None
+                ),
+            )
+            return JSONResponse(response)
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)})
 
     async def health(request):
         from starlette.responses import JSONResponse
 
+        try:
+            identity = _server_process_identity()
+        except (FusionConfigurationError, RuntimeError, ValueError) as exc:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "identity_valid": False,
+                    "identity_error": str(exc),
+                    "uptime": round(_time.time() - start_time, 1),
+                    "pid": os.getpid(),
+                    "source_root": _SOURCE_ROOT,
+                    "source_revision": _SOURCE_REVISION or "",
+                },
+                status_code=503,
+            )
         return JSONResponse(
-            {
-                "status": "ok",
-                "uptime": round(_time.time() - start_time, 1),
-                "version": PLASTIC_PROMISE_VERSION,
-                "pid": os.getpid(),
-            }
+            {"status": "ok", "uptime": round(_time.time() - start_time, 1), **identity}
         )
 
     async def api_stats(request):
@@ -2957,9 +3840,7 @@ setInterval(refresh, 5000);
 </script>
 </body>
 </html>"""
-        return HTMLResponse(
-            html.replace("__PLASTIC_PROMISE_VERSION__", PLASTIC_PROMISE_VERSION)
-        )
+        return HTMLResponse(html.replace("__PLASTIC_PROMISE_VERSION__", PLASTIC_PROMISE_VERSION))
 
     async def shutdown():
         logger.info("Shutting down Plastic Promise Streamable HTTP server...")

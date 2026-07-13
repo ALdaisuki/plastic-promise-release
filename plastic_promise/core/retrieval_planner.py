@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from plastic_promise.core.fusion_policy import FUSION_CHANNEL_ORDER
+
 VALID_RETRIEVAL_MODES = {
     "local",
     "global",
@@ -13,6 +15,18 @@ VALID_RETRIEVAL_MODES = {
     "audit",
     "principle",
 }
+
+HIGH_IMPACT_SYNTHESIS_RETRIEVAL = frozenset(
+    {
+        "code",
+        "audit",
+        "principle",
+        "governing",
+        "correction",
+        "code_review",
+        "debugging",
+    }
+)
 
 
 MODE_BUDGETS: dict[str, dict[str, int]] = {
@@ -32,6 +46,8 @@ class RetrievalPlan:
     mode: str
     budget: dict[str, int]
     channels: list[str] = field(default_factory=list)
+    fusion_channels: tuple[str, ...] = field(default_factory=tuple)
+    channel_windows: dict[str, int] = field(default_factory=dict)
     task_type: str = "general"
     scope: str = "global"
     project_policy: str = "balanced"
@@ -42,11 +58,24 @@ class RetrievalPlan:
             "mode": self.mode,
             "budget": dict(self.budget),
             "channels": list(self.channels),
+            "fusion_channels": list(self.fusion_channels),
+            "channel_windows": dict(self.channel_windows),
             "task_type": self.task_type,
             "scope": self.scope,
             "project_policy": self.project_policy,
             "reason": self.reason,
         }
+
+
+def requires_synthesis_source_expansion(
+    plan: RetrievalPlan,
+    *,
+    task_type: str | None = None,
+) -> bool:
+    """Return whether selected synthesis must carry current raw source evidence."""
+    normalized_mode = str(plan.mode or "").strip().casefold()
+    normalized_task = str(task_type or plan.task_type or "").strip().casefold()
+    return bool({normalized_mode, normalized_task} & HIGH_IMPACT_SYNTHESIS_RETRIEVAL)
 
 
 def plan_retrieval(
@@ -107,10 +136,15 @@ def plan_retrieval(
     if mode == "code":
         channels.append("code")
 
+    fusion_channels = tuple(channel for channel in FUSION_CHANNEL_ORDER if channel in channels)
+    channel_windows = dict.fromkeys(fusion_channels, 32)
+
     return RetrievalPlan(
         mode=mode,
         budget=dict(MODE_BUDGETS[mode]),
         channels=channels,
+        fusion_channels=fusion_channels,
+        channel_windows=channel_windows,
         task_type=normalized_task,
         scope=normalized_scope,
         project_policy=normalized_policy,

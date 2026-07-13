@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.types import TextContent
+
 from plastic_promise import __version__
 
 PLASTIC_PROMISE_VERSION = __version__
@@ -148,10 +149,10 @@ async def handle_system_benchmark(engine: Any, args: dict) -> list[TextContent]:
     """Run or summarize retrieval benchmarks without forcing heavy init for history."""
     try:
         from plastic_promise.core.benchmark import (
-            evaluate_benchmark_gate,
-            ensure_benchmark_schema,
-            load_benchmark_baseline,
             RUST_SNAPSHOT_SUPPLY_BENCHMARK,
+            ensure_benchmark_schema,
+            evaluate_benchmark_gate,
+            load_benchmark_baseline,
             run_retrieval_benchmark,
             run_rust_snapshot_supply_benchmark,
             save_benchmark_baseline,
@@ -259,7 +260,6 @@ async def handle_system_backup(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
-        fmt = args.get("format", "json")
         include_audit = args.get("include_audit_history", False)
 
         # Collect all memories
@@ -365,7 +365,7 @@ async def handle_system_migrate(engine: Any, args: dict) -> list[TextContent]:
                 continue
             try:
                 if isinstance(mem, dict):
-                    engine.register_memory(
+                    engine.create_ordinary_if_absent(
                         {
                             "id": mem.get("id", ""),
                             "content": mem.get("content", ""),

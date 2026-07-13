@@ -6,6 +6,7 @@ High-risk PRs: mandatory 10-item audit with pass/block decision.
 
 import json as _json
 import time as _time
+from contextlib import suppress
 
 # Risk classification thresholds
 HIGH_RISK_LABELS = {"AUDIT_PENDING", "BREAKING_CHANGE", "SECURITY", "CROSS_MODULE"}
@@ -53,9 +54,7 @@ def _is_high_risk(pr_meta: dict) -> bool:
     code_files = sum(1 for f in files if not any(f.endswith(ext) for ext in NON_CODE_EXTENSIONS))
     if code_files >= HIGH_RISK_CODE_FILES:
         return True
-    if pr_meta.get("lines_changed", 0) >= HIGH_RISK_LINES:
-        return True
-    return False
+    return pr_meta.get("lines_changed", 0) >= HIGH_RISK_LINES
 
 
 async def _audit_handler(ctx, params: dict, atom_results: dict):
@@ -69,7 +68,6 @@ async def _audit_handler(ctx, params: dict, atom_results: dict):
     """
     from plastic_promise.skills.engine import SkillResult
 
-    task_desc = params.get("task_description", "audit")
     pr_meta = params.get("pr_meta", {})
 
     # Risk classification (re-evaluated every call — no caching)
@@ -123,8 +121,8 @@ async def _audit_handler(ctx, params: dict, atom_results: dict):
         "checks": results,
         "trust_delta": trust_delta,
     }
-    try:
-        ctx.register_memory(
+    with suppress(Exception):
+        ctx.create_ordinary_if_absent(
             {
                 "id": f"audit_pr{pr_number}_{int(_time.time())}",
                 "content": _json.dumps(report, ensure_ascii=False),
@@ -139,8 +137,6 @@ async def _audit_handler(ctx, params: dict, atom_results: dict):
                 "tier": "L2",
             }
         )
-    except Exception:
-        pass  # audit report storage failure never blocks the audit
 
     return SkillResult(
         skill_name="sp-audit",

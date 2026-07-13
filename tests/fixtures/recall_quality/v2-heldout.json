@@ -1,0 +1,262 @@
+{
+  "schema_version": "recall-quality/v1",
+  "evidence_role": "held-out",
+  "dataset_revision": "2026-07-12-heldout.1",
+  "corpus_revision": "2026-07-12-heldout-corpus.1",
+  "synthesis_provenance_revision": "2026-07-12-heldout-provenance.1",
+  "synthesis_provenance": {
+    "h-syn-draft": {
+      "source_ids": ["h-rrf-env-id", "h-rrf-default"]
+    },
+    "h-syn-contested": {
+      "source_ids": ["h-cross-current", "h-cross-cache"]
+    },
+    "h-syn-stale": {
+      "source_ids": ["h-source-invalidate-zh", "h-source-refresh-zh"],
+      "verification_actor": "heldout-reviewer",
+      "verification_call_id": "heldout-verify-001",
+      "verified_at": "2026-07-12T00:00:00Z"
+    }
+  },
+  "corpus": [
+    {
+      "memory_id": "h-rrf-env-id",
+      "content": "PP_RETRIEVAL_RRF_K selects the reciprocal-rank denominator for an immutable fusion candidate.",
+      "domain": "building",
+      "category": "fact",
+      "l0_abstract": "WRRF denominator identifier",
+      "l1_summary": "The exact environment key configures the reciprocal-rank constant.",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-rrf-default",
+      "content": "Legacy fusion remains the default until an independently measured candidate passes every adoption gate.",
+      "domain": "building",
+      "category": "decision",
+      "l0_abstract": "Legacy fusion stays default",
+      "l1_summary": "Candidate evaluation cannot silently alter the production default.",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-source-invalidate-zh",
+      "content": "源证据发生变化时，旧的综合结论必须在同一事务中立即失效。",
+      "domain": "building",
+      "category": "decision",
+      "l0_abstract": "源变更同步失效",
+      "l1_summary": "提交源记录之前同时写入失效状态与可恢复索引任务。",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-source-refresh-zh",
+      "content": "维护任务可以稍后根据新快照生成草稿，但不能延迟旧结论的失效。",
+      "domain": "building",
+      "category": "pattern",
+      "l0_abstract": "新快照异步刷新",
+      "l1_summary": "刷新与即时失效属于两个不同的正确性边界。",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-cross-current",
+      "content": "Current source snapshots are authoritative after evidence changes and must be reverified before synthesis is visible.",
+      "domain": "governing",
+      "category": "decision",
+      "l0_abstract": "当前证据快照是权威来源",
+      "l1_summary": "Changed evidence requires a fresh review before generated context is admitted.",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-cross-cache",
+      "content": "A search cache accelerates reads but never decides whether a disputed generated conclusion is trustworthy.",
+      "domain": "governing",
+      "category": "fact",
+      "l0_abstract": "缓存不拥有治理权威",
+      "l1_summary": "Derived search state cannot override evidence review.",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-daemon-deadline",
+      "content": "Independent monotonic deadlines let each maintenance stage run when due even if another stage is delayed.",
+      "domain": "building",
+      "category": "pattern",
+      "l0_abstract": "Independent daemon deadlines",
+      "l1_summary": "Stage reachability is based on separate monotonic due times.",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-daemon-poll",
+      "content": "A fixed polling loop wakes periodically and records routine maintenance health.",
+      "domain": "building",
+      "category": "fact",
+      "l0_abstract": "Daemon polling loop",
+      "l1_summary": "Polling cadence alone does not prove independent stage scheduling.",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-current-revision",
+      "content": "新版本证据已经提交，当前修订可以作为下一次验证的输入。",
+      "domain": "governing",
+      "category": "fact",
+      "l0_abstract": "当前证据修订",
+      "l1_summary": "只允许最新快照进入后续验证。",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-old-revision",
+      "content": "历史修订保留审计用途，但不能作为当前结论继续可见的依据。",
+      "domain": "governing",
+      "category": "fact",
+      "l0_abstract": "历史证据仅供审计",
+      "l1_summary": "过期快照与当前检索资格严格分离。",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-manifest-hash",
+      "content": "A frozen candidate manifest binds the configuration hash, source commit, runtime route, dependencies, and unopened corpus fingerprint.",
+      "domain": "governing",
+      "category": "decision",
+      "l0_abstract": "候选清单绑定实验环境",
+      "l1_summary": "Manifest identity prevents result-dependent retuning across languages.",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-manifest-note",
+      "content": "An informal experiment note may describe candidate weights but does not provide an immutable comparison identity.",
+      "domain": "governing",
+      "category": "fact",
+      "l0_abstract": "实验备注不是冻结清单",
+      "l1_summary": "Narrative documentation cannot substitute for canonical hashes.",
+      "project_id": "project:heldout",
+      "memory_type": "experience",
+      "synthesis_status": "not-synthesis"
+    },
+    {
+      "memory_id": "h-syn-draft",
+      "content": "A generated ranking recommendation is ready for review and should already be treated as accepted evidence.",
+      "domain": "building",
+      "category": "synthesis",
+      "l0_abstract": "Unreviewed ranking recommendation",
+      "l1_summary": "The generated recommendation has not passed an evidence review.",
+      "project_id": "project:heldout",
+      "memory_type": "synthesis",
+      "synthesis_status": "draft"
+    },
+    {
+      "memory_id": "h-syn-contested",
+      "content": "A disputed cross-language conclusion claims cached output may override the current evidence snapshot.",
+      "domain": "governing",
+      "category": "synthesis",
+      "l0_abstract": "Disputed cache authority conclusion",
+      "l1_summary": "The generated claim conflicts with current evidence ownership.",
+      "project_id": "project:heldout",
+      "memory_type": "synthesis",
+      "synthesis_status": "contested"
+    },
+    {
+      "memory_id": "h-syn-stale",
+      "content": "旧证据支持的综合结论仍然可以在源变更后继续进入普通检索。",
+      "domain": "building",
+      "category": "synthesis",
+      "l0_abstract": "源变更前的旧结论",
+      "l1_summary": "该结论的证据快照已经失效。",
+      "project_id": "project:heldout",
+      "memory_type": "synthesis",
+      "synthesis_status": "stale"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "heldout-en-token-identifier",
+      "language": "en",
+      "group": "token-overlap",
+      "query": "PP_RETRIEVAL_RRF_K immutable candidate",
+      "relevant_memory_ids": ["h-rrf-env-id"],
+      "forbidden_memory_ids": ["h-syn-draft"],
+      "distractor_memory_ids": ["h-rrf-default"],
+      "task_type": "building",
+      "project_id": "project:heldout",
+      "scenarios": ["identifier", "draft-synthesis", "same-domain-distractor"]
+    },
+    {
+      "case_id": "heldout-zh-partial-source-change",
+      "language": "zh",
+      "group": "partial-overlap",
+      "query": "事实更新后怎样同步撤销旧的机器结论",
+      "relevant_memory_ids": ["h-source-invalidate-zh"],
+      "forbidden_memory_ids": ["h-syn-stale"],
+      "distractor_memory_ids": ["h-source-refresh-zh"],
+      "task_type": "building",
+      "project_id": "project:heldout",
+      "scenarios": ["source-change-invalidation", "stale-synthesis", "same-domain-distractor"]
+    },
+    {
+      "case_id": "heldout-cross-zero-contested",
+      "language": "cross-lingual",
+      "group": "zero-overlap",
+      "query": "证据漂移之后 authoritative snapshot 应由谁重新确认",
+      "relevant_memory_ids": ["h-cross-current"],
+      "forbidden_memory_ids": ["h-syn-contested"],
+      "distractor_memory_ids": ["h-cross-cache"],
+      "task_type": "governing",
+      "project_id": "project:heldout",
+      "scenarios": ["cross-lingual", "contested-synthesis", "zero-overlap"]
+    },
+    {
+      "case_id": "heldout-en-partial-deadline",
+      "language": "en",
+      "group": "partial-overlap",
+      "query": "prevent one slow maintenance job from starving another",
+      "relevant_memory_ids": ["h-daemon-deadline"],
+      "forbidden_memory_ids": ["h-syn-draft"],
+      "distractor_memory_ids": ["h-daemon-poll"],
+      "task_type": "building",
+      "project_id": "project:heldout",
+      "scenarios": ["same-domain-distractor", "partial-overlap"]
+    },
+    {
+      "case_id": "heldout-zh-zero-current-revision",
+      "language": "zh",
+      "group": "zero-overlap",
+      "query": "哪一份材料能进入再次审核而不是只留作历史追踪",
+      "relevant_memory_ids": ["h-current-revision"],
+      "forbidden_memory_ids": ["h-syn-stale"],
+      "distractor_memory_ids": ["h-old-revision"],
+      "task_type": "governing",
+      "project_id": "project:heldout",
+      "scenarios": ["source-change-invalidation", "zero-overlap"]
+    },
+    {
+      "case_id": "heldout-cross-token-manifest",
+      "language": "cross-lingual",
+      "group": "token-overlap",
+      "query": "候选 manifest hash 如何绑定 runtime route",
+      "relevant_memory_ids": ["h-manifest-hash"],
+      "forbidden_memory_ids": ["h-syn-contested"],
+      "distractor_memory_ids": ["h-manifest-note"],
+      "task_type": "governing",
+      "project_id": "project:heldout",
+      "scenarios": ["identifier", "cross-lingual", "same-domain-distractor"]
+    }
+  ]
+}

@@ -1,8 +1,7 @@
 import asyncio
 import json
 
-from plastic_promise.core.context_engine import _SQLiteMemoryStore
-from plastic_promise.core.context_engine import ContextEngine
+from plastic_promise.core.context_engine import ContextEngine, _SQLiteMemoryStore
 from plastic_promise.mcp.tools.memory import handle_memory_store
 from plastic_promise.memory.soul_memory import MemoryRecord
 
@@ -71,6 +70,40 @@ def test_traceability_tables_exist(tmp_path):
     assert {"projects", "call_spans", "memory_lineage", "degradation_events"}.issubset(
         table_names
     )
+    store._conn.close()
+
+
+def test_synthesis_artifacts_table_exists(tmp_path):
+    store = _SQLiteMemoryStore(str(tmp_path / "mem.db"))
+
+    columns = {
+        row[1]
+        for row in store._conn.execute("PRAGMA table_info(synthesis_artifacts)").fetchall()
+    }
+
+    assert {"memory_id", "synthesis_key", "status", "revision", "source_fingerprint"} <= columns
+    store._conn.close()
+
+
+def test_memory_proposals_table_exists(tmp_path):
+    store = _SQLiteMemoryStore(str(tmp_path / "mem.db"))
+
+    columns = {
+        row[1]
+        for row in store._conn.execute("PRAGMA table_info(memory_proposals)").fetchall()
+    }
+
+    assert {
+        "proposal_id",
+        "project_id",
+        "visibility",
+        "content_hash",
+        "status",
+        "approval_actor",
+        "approval_call_id",
+        "expires_at",
+        "redacted_at",
+    } <= columns
     store._conn.close()
 
 

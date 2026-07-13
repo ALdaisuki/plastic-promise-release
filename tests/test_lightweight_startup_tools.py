@@ -7,8 +7,8 @@ class NoHeavyEngine:
     def __init__(self):
         self._dm = None
         self._memories = {
-            "healthy": {"decay_multiplier": 1.0},
-            "decaying": {"decay_multiplier": 0.01},
+            "healthy": {"id": "healthy", "decay_multiplier": 1.0},
+            "decaying": {"id": "decaying", "decay_multiplier": 0.01},
         }
 
     def ensure_heavy_init(self):
@@ -25,6 +25,9 @@ class NoHeavyEngine:
 
     def get_fuzzy_buffer(self):
         return None
+
+    def iter_memories(self):
+        return iter(self._memories.values())
 
 
 def test_system_stats_does_not_force_heavy_init():
@@ -57,7 +60,27 @@ def test_memory_gc_dry_run_does_not_force_heavy_init():
     assert payload["merge"]["skipped"] == "lightweight dry_run does not initialize LanceDB"
 
 
-def test_skill_session_start_uses_lightweight_register_memory():
+def test_memory_gc_dry_run_uses_public_iterator_instead_of_raw_pool():
+    from plastic_promise.mcp.tools.memory import handle_memory_gc
+
+    engine = NoHeavyEngine()
+    engine._memories["draft-synthesis"] = {
+        "id": "draft-synthesis",
+        "memory_type": "synthesis",
+        "decay_multiplier": 0.0,
+    }
+    engine.iter_memories = lambda: iter(
+        memory for memory_id, memory in engine._memories.items() if memory_id != "draft-synthesis"
+    )
+
+    result = asyncio.run(handle_memory_gc(engine, {"dry_run": True}))
+    payload = json.loads(result[0].text)
+
+    assert payload["candidates"] == ["decaying"]
+    assert "draft-synthesis" not in json.dumps(payload)
+
+
+def test_skill_session_start_uses_lightweight_creation_only_memory():
     from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
 
     engine = MagicMock()
@@ -68,7 +91,7 @@ def test_skill_session_start_uses_lightweight_register_memory():
         "is_new": True,
         "edges_created": 0,
     }
-    engine.register_memory.return_value = "skill_start_test"
+    engine.create_ordinary_if_absent.side_effect = lambda record: record["id"]
 
     with patch("plastic_promise.mcp.tools.skill_tracking._get_current_branch", return_value=""):
         result = asyncio.run(
@@ -82,5 +105,33 @@ def test_skill_session_start_uses_lightweight_register_memory():
         )
 
     payload = json.loads(result[0].text)
-    assert payload["memory_id"] == "skill_start_test"
-    engine.register_memory.assert_called_once()
+    assert payload["memory_id"].startswith("skill_start_")
+    engine.create_ordinary_if_absent.assert_called_once()
+    engine.register_memory.assert_not_called()
+
+
+def test_daily_audit_guards_the_creation_only_writer(monkeypatch):
+    from plastic_promise.cron import audit_daily
+    from plastic_promise.defense import soul_audit
+
+    stored = []
+
+    class CreationOnlyEngine:
+        def memory_stats_json(self):
+            return "{}"
+
+        def create_ordinary_if_absent(self, record):
+            stored.append(record)
+            return record["id"]
+
+    class FailingAuditor:
+        async def run_audit(self, *, scope):
+            raise RuntimeError(f"audit unavailable: {scope}")
+
+    monkeypatch.setattr(soul_audit, "SoulAuditor", FailingAuditor)
+
+    report = audit_daily.run_sync(CreationOnlyEngine())
+
+    assert report["stored"] is True
+    assert len(stored) == 1
+    assert stored[0]["source"] == "audit_daily"

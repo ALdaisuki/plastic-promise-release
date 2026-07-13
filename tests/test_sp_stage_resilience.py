@@ -78,27 +78,46 @@ def test_writing_plans_guidance_requires_plan_artifact():
     guidance = build_stage_guidance("writing-plans", closed=False)
 
     assert guidance["stage_summary"]["layer"] == "planning"
-    assert "official SuperPowers SKILL" in guidance["stage_summary"]["skill_authority"]
-    assert guidance["official_skill"] == "superpowers:writing-plans"
     assert guidance["required_artifacts"][0]["path"] == (
         "docs/superpowers/plans/YYYY-MM-DD-<feature>.md"
     )
     assert "step-closure" in guidance["closure_reminder"]["message"]
     assert guidance["closure_reminder"]["sp_stage_closed"] is False
+    assert "official_skill" not in guidance
+    assert "skill_authority" not in guidance["stage_summary"]
+    assert "next_actions" not in guidance
+    assert "handoff_summary" not in guidance
+    assert set(guidance) == {
+        "stage_summary",
+        "route_summary",
+        "required_artifacts",
+        "closure_reminder",
+    }
+    assert set(guidance["stage_summary"]) == {"stage", "layer", "summary"}
+    assert set(guidance["route_summary"]) == {
+        "route_id",
+        "label",
+        "summary",
+        "stages",
+        "current_stage",
+        "current_index",
+        "session_isolation",
+    }
 
 
-def test_bug_hunt_route_guidance_points_to_official_skill():
+def test_bug_hunt_route_guidance_keeps_programmatic_session_contract():
     from plastic_promise.skills.superpowers_stages import build_stage_guidance
 
     guidance = build_stage_guidance("systematic-debugging")
 
     assert guidance["route_summary"]["route_id"] == "bug-hunt"
     assert guidance["route_summary"]["stages"][0] == "systematic-debugging"
-    assert guidance["official_skill"] == "superpowers:systematic-debugging"
-    assert guidance["route_summary"]["official_skill"] == guidance["official_skill"]
-    assert "must load/read that SKILL" in guidance["stage_summary"]["skill_authority"]
-    assert "must load/read that SKILL" in guidance["route_summary"]["skill_authority"]
-    assert "must not begin development" in guidance["route_summary"]["skill_authority"]
+    assert "stage_session_id" in guidance["route_summary"]["session_isolation"]
+    assert "flow_line_id" in guidance["route_summary"]["session_isolation"]
+    serialized = json.dumps(guidance)
+    assert "official_skill" not in serialized
+    assert "skill_authority" not in serialized
+    assert "load/read" not in serialized
 
 
 def test_custom_route_guidance_keeps_explicit_route_id():
@@ -109,7 +128,6 @@ def test_custom_route_guidance_keeps_explicit_route_id():
     assert guidance["route_summary"]["route_id"] == "release-hardening"
     assert guidance["route_summary"]["label"] == "Custom route"
     assert guidance["route_summary"]["stages"] == ["writing-plans"]
-    assert guidance["official_skill"] == "superpowers:writing-plans"
 
 
 def test_using_superpowers_guidance_is_bootstrap_stage():
@@ -118,10 +136,16 @@ def test_using_superpowers_guidance_is_bootstrap_stage():
     guidance = build_stage_guidance("using-superpowers")
 
     assert guidance["stage_summary"]["layer"] == "bootstrap"
-    assert guidance["official_skill"] == "superpowers:using-superpowers"
     assert guidance["route_summary"]["route_id"] == "superpowers-bootstrap"
     assert guidance["route_summary"]["stages"][0] == "using-superpowers"
-    assert "load/read that SKILL" in guidance["stage_summary"]["skill_authority"]
+    assert guidance["required_artifacts"] == [
+        {
+            "kind": "workflow_scope",
+            "path": "stage_session_id + route + flow_line_id",
+            "required": True,
+        }
+    ]
+    assert "official" not in json.dumps(guidance).lower()
 
 
 def test_writing_skills_guidance_uses_skill_authoring_route():
@@ -130,7 +154,7 @@ def test_writing_skills_guidance_uses_skill_authoring_route():
     guidance = build_stage_guidance("writing-skills")
 
     assert guidance["stage_summary"]["layer"] == "skill-authoring"
-    assert guidance["official_skill"] == "superpowers:writing-skills"
     assert guidance["route_summary"]["route_id"] == "skill-authoring"
     assert guidance["route_summary"]["stages"] == ["writing-skills"]
     assert guidance["closure_reminder"]["mode"] == "light"
+    assert "official" not in json.dumps(guidance).lower()

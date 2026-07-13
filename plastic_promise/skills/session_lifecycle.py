@@ -17,11 +17,10 @@ _VALID_WORKFLOW_ENTRYPOINTS = [
     "systematic-debugging",
     "requesting-code-review",
 ]
-_WORKFLOW_SKILL_AUTHORITY = (
+_WORKFLOW_GOVERNANCE_CONTRACT = (
     "Call sp-stage with stage_session_id, route, and flow_line_id. "
-    "Each stage must keep official_skill='superpowers:<stage>'; agents must load/read "
-    "the official SuperPowers SKILL before executing the current stage and must not "
-    "begin development from workflow_contract summaries alone."
+    "The server validates chain transitions, binds required artifacts and the closure "
+    "reminder to the current stage, and isolates state by session and flow."
 )
 
 
@@ -90,9 +89,9 @@ def _build_workflow_contract(params: dict, stage_session_id: str) -> dict:
         "available_routes": route_catalog,
         "custom_route_policy": (
             "Custom route ids are allowed, but every call must still pass a "
-            "non-empty flow_line_id and read the official SuperPowers SKILL for the stage."
+            "non-empty flow_line_id and follow server-returned valid stage transitions."
         ),
-        "skill_authority": _WORKFLOW_SKILL_AUTHORITY,
+        "governance_contract": _WORKFLOW_GOVERNANCE_CONTRACT,
         "next_call": {
             "tool": "sp-stage",
             "stage": entry_stage,
@@ -184,12 +183,24 @@ def _light_context_status(ctx, params: dict) -> dict:
     """Return a bounded lexical memory preview without embedding or rerank."""
     timeout_s = _context_timeout(params, _LIGHT_CONTEXT_TIMEOUT_S)
     deadline = time.monotonic() + timeout_s
-    memories = getattr(ctx, "_memories", None)
-    if not isinstance(memories, dict):
+    iter_memories = getattr(ctx, "iter_memories", None)
+    if not callable(iter_memories):
         return {
             "status": "deferred",
             "mode": "light",
-            "reason": "memory pool unavailable; call context_supply before material decisions",
+            "reason": "public memory iterator unavailable; call context_supply before material decisions",
+            "items": [],
+            "item_count": 0,
+            "timeout_s": timeout_s,
+            "requires_full_context_before_action": True,
+        }
+    try:
+        memories = list(iter_memories())
+    except Exception:
+        return {
+            "status": "deferred",
+            "mode": "light",
+            "reason": "public memory admission failed; call context_supply before material decisions",
             "items": [],
             "item_count": 0,
             "timeout_s": timeout_s,
@@ -213,12 +224,13 @@ def _light_context_status(ctx, params: dict) -> dict:
     scored: list[dict] = []
     scanned = 0
     timed_out = False
-    for mid, mem in memories.items():
+    for index, mem in enumerate(memories):
         if time.monotonic() > deadline:
             timed_out = True
             break
         if not isinstance(mem, dict) or _is_deleted_or_forgotten(mem):
             continue
+        mid = str(mem.get("id") or f"memory:{index}")
         content = str(mem.get("content", "") or "")
         if not content.strip():
             continue
@@ -257,9 +269,7 @@ def _light_context_status(ctx, params: dict) -> dict:
             }
         )
 
-    items = sorted(scored, key=lambda item: item["relevance"], reverse=True)[
-        :_LIGHT_CONTEXT_LIMIT
-    ]
+    items = sorted(scored, key=lambda item: item["relevance"], reverse=True)[:_LIGHT_CONTEXT_LIMIT]
     status = "ready" if items else ("degraded" if timed_out else "deferred")
     reason = (
         "light lexical memory preview; call context_supply before material decisions"
@@ -438,7 +448,7 @@ async def _session_init_handler(ctx, params, atom_results):
                 "flow_scope_id": workflow_contract["flow_scope_id"],
                 "entry_stage": workflow_contract["entry_stage"],
                 "valid_root_entrypoints": workflow_contract["valid_root_entrypoints"],
-                "skill_authority": workflow_contract["skill_authority"],
+                "governance_contract": workflow_contract["governance_contract"],
             }
         )
 

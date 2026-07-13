@@ -99,6 +99,29 @@ def _make_store_result(mid="mem_test"):
     return [TextContent(type="text", text=json.dumps({"memory_id": mid, "stored": True}))]
 
 
+def _bind_public_trace_views(engine):
+    """Expose the raw fixture data through ContextEngine's public read APIs."""
+
+    def list_graph_nodes(node_type=None):
+        nodes = [
+            {**node, "id": node_id}
+            for node_id, node in engine._graph_nodes.items()
+        ]
+        if node_type is None:
+            return nodes
+        return [node for node in nodes if node.get("type") == node_type]
+
+    def list_graph_edges(relation=None):
+        edges = list(engine._graph_edges)
+        if relation is None:
+            return edges
+        return [edge for edge in edges if edge.get("relation") == relation]
+
+    engine.list_graph_nodes.side_effect = list_graph_nodes
+    engine.list_graph_edges.side_effect = list_graph_edges
+    engine.iter_memories.side_effect = lambda: iter(engine._memories.values())
+
+
 # ═══════════════════════════════════════════════════════════
 # S1: Claude Code 完整 SuperPowers 开发会话
 # ═══════════════════════════════════════════════════════════
@@ -221,6 +244,7 @@ class TestS1ClaudeCodeFullSession:
         ]
 
         # ── Phase 5: trace 默认过滤 auto_inject ──
+        _bind_public_trace_views(engine)
         trace_result = asyncio.run(
             handle_skill_session_trace(
                 engine,
@@ -245,6 +269,7 @@ class TestS1ClaudeCodeFullSession:
         assert trace_data["chain_complete"] == True
 
         # ── Phase 6: trace 包含 auto_inject ──
+        _bind_public_trace_views(engine)
         trace_all = asyncio.run(
             handle_skill_session_trace(
                 engine,
@@ -601,7 +626,7 @@ class TestS4BugFixWorkflow:
                 "weight": 0.9,
             },
         ]
-
+        _bind_public_trace_views(engine)
         trace_result = asyncio.run(
             handle_skill_session_trace(
                 engine,
@@ -651,7 +676,7 @@ class TestS5ChainIntegrityAudit:
                 "last_accessed": _T(10, 30),
             },
         }
-
+        _bind_public_trace_views(engine)
         trace_result = asyncio.run(
             handle_skill_session_trace(
                 engine,
@@ -690,7 +715,7 @@ class TestS5ChainIntegrityAudit:
                 "last_accessed": _OLD(0.75),  # 45 分钟前
             },
         }
-
+        _bind_public_trace_views(engine)
         trace_result = asyncio.run(
             handle_skill_session_trace(
                 engine,
@@ -748,7 +773,7 @@ class TestS5ChainIntegrityAudit:
                         "relation": "parent_of",
                     }
                 )
-
+        _bind_public_trace_views(engine)
         trace_result = asyncio.run(
             handle_skill_session_trace(
                 engine,
@@ -918,7 +943,7 @@ class TestS7CrossSystemAudit:
             "created_at": _T(15, 0),
             "last_accessed": _T(15, 30),
         }
-
+        _bind_public_trace_views(engine)
         trace = asyncio.run(
             handle_skill_session_trace(
                 engine,
@@ -930,7 +955,7 @@ class TestS7CrossSystemAudit:
         )
         data = json.loads(trace[0].text)
         assert data["total_count"] == 1
-
+        _bind_public_trace_views(engine)
         trace_all = asyncio.run(
             handle_skill_session_trace(
                 engine,

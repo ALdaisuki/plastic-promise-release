@@ -10,17 +10,78 @@
 //! - Domain: 衰减模型 + Worth 计算 + Tier 管理 + 内存合并
 //! - ContextEngine: 主编排器 → supply() 返回 ContextPack
 
+pub mod association_feedback;
+pub mod context_engine;
 pub mod domain;
 pub mod entity_graph;
-pub mod source_tracker;
-pub mod association_feedback;
 pub mod memory_worth;
-pub mod context_engine;
 pub mod principles;
-pub mod storage;
 pub mod retrieval;
+pub mod source_tracker;
+pub mod storage;
 
 use pyo3::prelude::*;
+use pyo3::types::{PyAny, PyBool, PyDict};
+use std::collections::HashMap;
+
+fn config_field<'py>(config: &'py PyAny, name: &str) -> PyResult<&'py PyAny> {
+    if let Ok(dict) = config.downcast::<PyDict>() {
+        return dict
+            .get_item(name)?
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("fusion_config_field_missing"));
+    }
+    config.getattr(name)
+}
+
+#[pyfunction(name = "weighted_rrf_fuse")]
+fn weighted_rrf_fuse_py(
+    rankings: HashMap<String, Vec<(String, f64)>>,
+    config: &PyAny,
+) -> PyResult<Vec<(String, f64)>> {
+    let k_value = config_field(config, "k")?;
+    if k_value.is_instance_of::<PyBool>() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "invalid_k:must_be_positive_integer",
+        ));
+    }
+    let k_u64 = k_value.extract::<u64>().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("invalid_k:must_be_positive_integer")
+    })?;
+    let k = u32::try_from(k_u64).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("invalid_k:must_be_positive_integer:overflow")
+    })?;
+    if k == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "invalid_k:must_be_positive_integer",
+        ));
+    }
+
+    let channels = config_field(config, "channels")?.extract::<Vec<String>>()?;
+    let weights = config_field(config, "weights")?.extract::<HashMap<String, f64>>()?;
+    let windows = config_field(config, "windows")?.extract::<HashMap<String, usize>>()?;
+    let config = retrieval::fusion::WrrfConfig {
+        k,
+        channels: channels.clone(),
+        weights,
+        windows,
+    };
+    let channel_results = channels
+        .iter()
+        .map(|channel| {
+            (
+                channel.clone(),
+                rankings.get(channel).cloned().unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if rankings.len() != channel_results.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "invalid_rankings:channel_mismatch",
+        ));
+    }
+    retrieval::fusion::weighted_rrf_fuse(&channel_results, &config)
+        .map_err(pyo3::exceptions::PyValueError::new_err)
+}
 
 /// Python 模块入口 — `import context_engine_core`
 ///
@@ -50,6 +111,7 @@ fn context_engine_core(_py: Python, m: &PyModule) -> PyResult<()> {
     // Pipeline components
     m.add_class::<source_tracker::SourceTracker>()?;
     m.add_class::<association_feedback::AssociationFeedback>()?;
+    m.add_function(wrap_pyfunction!(weighted_rrf_fuse_py, m)?)?;
 
     Ok(())
 }

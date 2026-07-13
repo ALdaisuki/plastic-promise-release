@@ -143,6 +143,45 @@ fn should_demote_to_project_divergent(
         && project_allowed_for_layer(meta, project_id, project_policy, degraded, "divergent")
 }
 
+fn channel_ranking_rows(
+    rows: &[(String, f64)],
+    window: usize,
+) -> Vec<HashMap<String, String>> {
+    let mut canonical = rows.to_vec();
+    canonical.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    canonical
+        .into_iter()
+        .take(window)
+        .enumerate()
+        .map(|(rank, (memory_id, score))| {
+            HashMap::from([
+                ("memory_id".into(), memory_id),
+                ("score".into(), score.to_string()),
+                ("rank".into(), (rank + 1).to_string()),
+            ])
+        })
+        .collect()
+}
+
+fn rank_channel_state(result_count: usize) -> HashMap<String, String> {
+    HashMap::from([
+        ("planned".into(), "true".into()),
+        ("enabled".into(), "true".into()),
+        ("available".into(), "true".into()),
+        ("executed".into(), "true".into()),
+        ("participating".into(), "true".into()),
+        ("evidence_only".into(), "false".into()),
+        ("reason".into(), "participating".into()),
+        ("result_count".into(), result_count.to_string()),
+    ])
+}
+
 // ============================================================
 // Python-visible ContextPack
 // ============================================================
@@ -176,6 +215,12 @@ pub struct ContextPack {
     /// Debug per-item scoring rows serialized as string maps
     #[pyo3(get)]
     pub per_item_stats: Vec<HashMap<String, String>>,
+    /// Complete admitted pre-fusion rankings by rank-producing channel.
+    #[pyo3(get)]
+    pub channel_rankings: HashMap<String, Vec<HashMap<String, String>>>,
+    /// Planned channel execution and participation state.
+    #[pyo3(get)]
+    pub channel_states: HashMap<String, HashMap<String, String>>,
 }
 
 /// Python-visible methods for ContextPack: construction, prompt rendering, and stats.
@@ -192,6 +237,8 @@ impl ContextPack {
             audit_metadata: HashMap::new(),
             pipeline_stats: HashMap::new(),
             per_item_stats: Vec::new(),
+            channel_rankings: HashMap::new(),
+            channel_states: HashMap::new(),
         }
     }
 
@@ -384,26 +431,22 @@ impl ContextEngine {
     /// For a fully configured engine with storage and retriever backends,
     /// construct via a Rust factory function or call `configure()` after construction.
     #[new]
-    pub fn new() -> Self {
+    pub fn new() -> PyResult<Self> {
         // Placeholder retriever and storage — must be configured before use.
         // In practice, a Rust factory function will construct the full engine
         // with real SQLite and LanceDB backends, then return it to Python.
-        // Use the real plastic_memory.db read-only when available,
-        // fall back to :memory: for tests and isolated environments.
+        // A configured file database must open as such. Silently swapping it
+        // for :memory: would turn Rust into an ungoverned public read surface.
         let db_path = std::env::var("PLASTIC_DB_PATH")
             .unwrap_or_else(|_| "plastic_memory.db".to_string());
-        let storage = if std::path::Path::new(&db_path).exists() {
-            crate::storage::sqlite_impl::SqliteStorage::open_readonly(&db_path)
-                .unwrap_or_else(|_| {
-                    crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
-                        .expect("Failed to create in-memory SQLite storage")
-                })
-        } else {
+        let storage = if db_path == ":memory:" {
             crate::storage::sqlite_impl::SqliteStorage::open(":memory:")
-                .expect("Failed to create in-memory SQLite storage")
-        };
+        } else {
+            crate::storage::sqlite_impl::SqliteStorage::open_readonly(&db_path)
+        }
+        .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
-        Self {
+        Ok(Self {
             graph: RefCell::new(EntityGraph::new()),
             source_tracker: SourceTracker::new(),
             feedback: AssociationFeedback::new(),
@@ -413,7 +456,7 @@ impl ContextEngine {
             current_time: String::new(),
             last_consolidation: Cell::new(Utc::now()),
             bm25_index: RefCell::new(crate::retrieval::bm25::Bm25Index::new()),
-        }
+        })
     }
 
     /// 设置当前时间（用于新鲜度计算）
@@ -486,82 +529,6 @@ impl ContextEngine {
     }
 
     // ============================================================
-    // Storage delegation methods (exposed to Python)
-    // ============================================================
-
-    /// Store a memory record into the persistent backend.
-    /// Returns the record's id on success.
-    pub fn store_memory(&mut self, record: crate::memory_worth::MemoryRecord) -> PyResult<String> {
-        self.storage.store(&record)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
-    }
-
-    /// Retrieve a memory record by id. Returns None if not found.
-    pub fn get_memory(&self, id: String) -> PyResult<Option<crate::memory_worth::MemoryRecord>> {
-        self.storage.get(&id)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
-    }
-
-    /// Update specific fields of a memory record.
-    /// Only provided fields are modified; others are left unchanged.
-    #[pyo3(signature = (id, *, content=None, importance=None, category=None))]
-    pub fn update_memory(
-        &mut self,
-        id: String,
-        content: Option<String>,
-        importance: Option<f64>,
-        category: Option<String>,
-    ) -> PyResult<bool> {
-        let updates = UpdateFields {
-            content,
-            importance,
-            category,
-            ..Default::default()
-        };
-        self.storage.update(&id, &updates)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
-    }
-
-    /// Delete a memory record by id (hard delete).
-    /// Returns true if a row was deleted.
-    pub fn delete_memory(&mut self, id: String) -> PyResult<bool> {
-        self.storage.delete(&id)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
-    }
-
-    /// List memory records with optional filters.
-    /// Results are ordered by last_accessed_at DESC.
-    #[pyo3(signature = (memory_type=None, source=None, min_worth=None, limit=50, scope=None))]
-    pub fn list_memories(
-        &self,
-        memory_type: Option<String>,
-        source: Option<String>,
-        min_worth: Option<f64>,
-        limit: usize,
-        scope: Option<String>,
-    ) -> PyResult<Vec<crate::memory_worth::MemoryRecord>> {
-        let filter = ListFilter {
-            memory_type,
-            source,
-            min_worth,
-            limit,
-            scope,
-            ..Default::default()
-        };
-        self.storage.list(&filter)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
-    }
-
-    /// Return aggregate memory pool statistics as a JSON string.
-    /// Optionally scoped to a namespace.
-    pub fn memory_stats_json(&self, scope: Option<String>) -> PyResult<String> {
-        let stats = self.storage.stats(scope.as_deref())
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-        serde_json::to_string(&stats)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
-    }
-
-    // ============================================================
     // 核心方法: supply()
     // ============================================================
 
@@ -575,7 +542,14 @@ impl ContextEngine {
     ///
     /// # Returns
     /// 包含三层上下文的 ContextPack
-    #[pyo3(signature = (task_description, task_vector, task_type, scope, memories))]
+    #[pyo3(signature = (
+        task_description,
+        task_vector,
+        task_type,
+        scope,
+        memories,
+        fusion_config_json=None
+    ))]
     pub fn supply(
         &self,
         task_description: String,
@@ -583,11 +557,23 @@ impl ContextEngine {
         task_type: String,
         scope: String,
         memories: Vec<PyObject>,
+        fusion_config_json: Option<String>,
     ) -> PyResult<ContextPack> {
         let supply_started = Instant::now();
         let mut stage_timing_ms: HashMap<String, String> = HashMap::new();
         let input_memory_count = memories.len();
         let hard_min_score = env_weight("PP_HARD_MIN_SCORE", 0.20);
+        let fusion_config = fusion_config_json
+            .as_deref()
+            .map(|payload| {
+                serde_json::from_str::<crate::retrieval::fusion::WrrfConfig>(payload)
+                    .map_err(|error| {
+                        pyo3::exceptions::PyValueError::new_err(format!(
+                            "fusion_config_invalid:{error}"
+                        ))
+                    })
+            })
+            .transpose()?;
 
         // ============================================================
         // Phase 0: 原则注入 (P0 任务)
@@ -648,6 +634,33 @@ impl ContextEngine {
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("missing id: {}", e)))?
                     .extract()
                     .map_err(|e| pyo3::exceptions::PyTypeError::new_err(format!("id not a string: {}", e)))?;
+                // Admission must happen before reading content or a derived
+                // vector. SQLite is canonical for file-backed engines; an
+                // explicit :memory: engine is the isolated test exception.
+                let memory_type: String = obj.get_item("memory_type")
+                    .ok()
+                    .and_then(|v| v.extract().ok())
+                    .unwrap_or_else(|| "experience".to_string());
+                if memory_type.trim().eq_ignore_ascii_case("synthesis") {
+                    let mut row = HashMap::new();
+                    row.insert("id".into(), id);
+                    row.insert("filter_decision".into(), "drop".into());
+                    row.insert("filter_reason".into(), "governed_synthesis".into());
+                    parse_debug_rows.push(row);
+                    continue;
+                }
+                let admitted = self
+                    .storage
+                    .admit_snapshot(&id, &memory_type)
+                    .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+                if !admitted {
+                    let mut row = HashMap::new();
+                    row.insert("id".into(), id);
+                    row.insert("filter_decision".into(), "drop".into());
+                    row.insert("filter_reason".into(), "canonical_admission_rejected".into());
+                    parse_debug_rows.push(row);
+                    continue;
+                }
                 let content: String = obj.get_item("content")
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("missing content: {}", e)))?
                     .extract()
@@ -665,10 +678,6 @@ impl ContextEngine {
                     parse_debug_rows.push(row);
                     continue;
                 }
-                let memory_type: String = obj.get_item("memory_type")
-                    .ok()
-                    .and_then(|v| v.extract().ok())
-                    .unwrap_or_else(|| "experience".to_string());
                 let worth_success: u32 = obj.get_item("worth_success")
                     .ok()
                     .and_then(|v| v.extract().ok())
@@ -804,7 +813,10 @@ impl ContextEngine {
         // ============================================================
         // Phase 2: Real retrieval (vector from populated LanceDbStore + BM25 keyword fallback)
         // ============================================================
-        let candidate_pool_size = 20;
+        let candidate_pool_size = fusion_config
+            .as_ref()
+            .and_then(|config| config.windows.values().max().copied())
+            .unwrap_or(20);
 
         // Vector search: use real data from Python objects (replaces NoopVectorIndex)
         let filter = crate::storage::SearchFilter {
@@ -819,16 +831,85 @@ impl ContextEngine {
         let vector_hit_count = vector_hits.len();
         let bm25_hit_count = bm25_hits.len();
 
-        // RRF fusion keeps vector and BM25 channels independent before normalization.
-        let fused_raw = crate::retrieval::fusion::rrf_fuse(&[vector_hits, bm25_hits]);
-        let max_fused_score = fused_raw
-            .first()
-            .map(|(_, score)| *score)
-            .filter(|score| *score > 0.0)
-            .unwrap_or(1.0);
-        let fused: Vec<(String, f64)> = fused_raw.into_iter()
-            .map(|(id, score)| (id, (score / max_fused_score).clamp(0.0, 1.0)))
-            .collect();
+        let channel_windows = fusion_config
+            .as_ref()
+            .map(|config| config.windows.clone())
+            .unwrap_or_else(|| {
+                HashMap::from([
+                    ("vector".into(), candidate_pool_size),
+                    ("bm25".into(), candidate_pool_size),
+                ])
+            });
+        let planned_channels = fusion_config
+            .as_ref()
+            .map(|config| config.channels.clone())
+            .unwrap_or_else(|| vec!["vector".into(), "bm25".into()]);
+        let mut channel_rankings = HashMap::new();
+        let mut channel_states = HashMap::new();
+        for channel in &planned_channels {
+            let (rows, count) = match channel.as_str() {
+                "vector" => (&vector_hits, vector_hit_count),
+                "bm25" => (&bm25_hits, bm25_hit_count),
+                _ => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "rust_capability_missing:{channel}"
+                    )))
+                }
+            };
+            channel_rankings.insert(
+                channel.clone(),
+                channel_ranking_rows(rows, channel_windows[channel]),
+            );
+            channel_states.insert(channel.clone(), rank_channel_state(count));
+        }
+
+        // Legacy retains unweighted K=60 normalization. Versioned WRRF keeps
+        // the exact weighted scores shared with the Python implementation.
+        let (fused, retrieval_fusion_json) = if let Some(config) = fusion_config.as_ref() {
+            let channel_results = config
+                .channels
+                .iter()
+                .map(|channel| match channel.as_str() {
+                    "vector" => (channel.clone(), vector_hits.clone()),
+                    "bm25" => (channel.clone(), bm25_hits.clone()),
+                    _ => (channel.clone(), Vec::new()),
+                })
+                .collect::<Vec<_>>();
+            let fused = crate::retrieval::fusion::weighted_rrf_fuse(
+                &channel_results,
+                config,
+            )
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            let audit = serde_json::json!({
+                "algorithm": "weighted-rrf-v1",
+                "effective_runtime": "rust",
+                "k": config.k,
+                "channels": config.channels,
+                "weights": config.weights,
+                "windows": config.windows,
+            });
+            (fused, audit.to_string())
+        } else {
+            let fused_raw = crate::retrieval::fusion::rrf_fuse(&[
+                vector_hits.clone(),
+                bm25_hits.clone(),
+            ]);
+            let max_fused_score = fused_raw
+                .first()
+                .map(|(_, score)| *score)
+                .filter(|score| *score > 0.0)
+                .unwrap_or(1.0);
+            let fused = fused_raw
+                .into_iter()
+                .map(|(id, score)| (id, (score / max_fused_score).clamp(0.0, 1.0)))
+                .collect();
+            let audit = serde_json::json!({
+                "algorithm": "legacy-unweighted-rrf",
+                "effective_runtime": "rust",
+                "k": 60,
+            });
+            (fused, audit.to_string())
+        };
 
         let scored_for_mmr: Vec<(String, f64, String)> = fused.into_iter()
             .map(|(id, score)| {
@@ -865,6 +946,8 @@ impl ContextEngine {
         if scored_items.is_empty() && !memory_index.is_empty() {
             let mut pack = ContextPack::new();
             pack.activated_principles = activated_principle_names;
+            pack.channel_rankings = channel_rankings.clone();
+            pack.channel_states = channel_states.clone();
 
             // Build a scored list using vector similarity + keyword overlap
             let mut ranked: Vec<(String, f64, String)> = Vec::new();
@@ -998,6 +1081,7 @@ impl ContextEngine {
             audit.insert("engine_mode".into(), "snapshot".into());
             audit.insert("vector_search".into(), "active".into());
             audit.insert("fallback_reason".into(), "empty_rrf_candidates_manual_rescore".into());
+            audit.insert("retrieval_fusion_json".into(), retrieval_fusion_json.clone());
             pack.audit_metadata = audit;
             stage_timing_ms.insert("fallback_filter_and_layer".into(), elapsed_ms(fallback_filter_started));
             stage_timing_ms.insert("total".into(), elapsed_ms(supply_started));
@@ -1059,6 +1143,8 @@ impl ContextEngine {
         // ============================================================
         let mut pack = ContextPack::new();
         pack.activated_principles = activated_principle_names;
+        pack.channel_rankings = channel_rankings;
+        pack.channel_states = channel_states;
 
         let stage_started = Instant::now();
         let mut after_noise_filter = 0usize;
@@ -1178,8 +1264,10 @@ impl ContextEngine {
         if interval_hours > 0 {
             let elapsed = now.signed_duration_since(self.last_consolidation.get());
             if elapsed.num_hours() >= interval_hours as i64 {
-                // Collect all memories for consolidation
-                let all_memories = self.storage.list(&ListFilter::default()).unwrap_or_default();
+                // Consolidation is a derived operation and must never reopen
+                // raw storage. It may only inspect this call's admitted
+                // snapshot, which has already passed canonical governance.
+                let all_memories: Vec<_> = memory_index.values().cloned().collect();
                 if let Some(insight) = self.retriever.consolidator.consolidate(&all_memories) {
                     // Log consolidation for audit (the insight is not auto-stored here;
                     // the caller can decide whether to persist it via StorageBackend::store)
@@ -1200,12 +1288,11 @@ impl ContextEngine {
             pack.activated_principles.len().to_string());
         audit.insert("graph_nodes".into(), self.graph.borrow().node_count().to_string());
         audit.insert("graph_edges".into(), self.graph.borrow().edge_count().to_string());
-        if let Ok(count) = self.storage.total_count() {
-            audit.insert("memory_pool_size".into(), count.to_string());
-        }
+        audit.insert("memory_pool_size".into(), memory_index.len().to_string());
         audit.insert("timestamp".into(), self.current_time.clone());
         audit.insert("engine_mode".into(), "snapshot".into());
         audit.insert("fallback_reason".into(), "none".into());
+        audit.insert("retrieval_fusion_json".into(), retrieval_fusion_json);
         pack.audit_metadata = audit;
 
         // Populate pipeline_stats and per_item_stats for Python debug parity
@@ -1245,7 +1332,8 @@ impl ContextEngine {
         memories,
         project_id,
         project_policy,
-        project_degraded
+        project_degraded,
+        fusion_config_json=None
     ))]
     pub fn supply_with_project_context(
         &self,
@@ -1257,6 +1345,7 @@ impl ContextEngine {
         project_id: String,
         project_policy: String,
         project_degraded: bool,
+        fusion_config_json: Option<String>,
     ) -> PyResult<ContextPack> {
         let metadata_by_id = Python::with_gil(|py| -> PyResult<_> {
             let mut metadata_by_id: HashMap<String, ProjectMemoryMeta> = HashMap::new();
@@ -1281,6 +1370,7 @@ impl ContextEngine {
             task_type,
             scope,
             memories,
+            fusion_config_json,
         )?;
 
         let mut demoted_divergent: Vec<ContextItem> = Vec::new();
@@ -1387,6 +1477,85 @@ impl ContextEngine {
 // ============================================================
 
 impl ContextEngine {
+    // ============================================================
+    // Rust-only storage delegation
+    // ============================================================
+
+    /// Store a memory record for Rust-internal tests and tooling.
+    ///
+    /// This deliberately is not a `#[pymethods]` export: Python's
+    /// ContextEngine is the persistent governance authority.
+    pub fn store_memory(&mut self, record: crate::memory_worth::MemoryRecord) -> PyResult<String> {
+        self.storage
+            .store(&record)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// Retrieve a memory record for Rust-internal tests and tooling.
+    pub fn get_memory(&self, id: String) -> PyResult<Option<crate::memory_worth::MemoryRecord>> {
+        self.storage
+            .get(&id)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// Update specific fields of an ordinary Rust-side test record.
+    pub fn update_memory(
+        &mut self,
+        id: String,
+        content: Option<String>,
+        importance: Option<f64>,
+        category: Option<String>,
+    ) -> PyResult<bool> {
+        let updates = UpdateFields {
+            content,
+            importance,
+            category,
+            ..Default::default()
+        };
+        self.storage
+            .update(&id, &updates)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// Delete a memory record for Rust-internal tests and tooling.
+    pub fn delete_memory(&mut self, id: String) -> PyResult<bool> {
+        self.storage
+            .delete(&id)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// List memory records for Rust-internal tests and tooling.
+    pub fn list_memories(
+        &self,
+        memory_type: Option<String>,
+        source: Option<String>,
+        min_worth: Option<f64>,
+        limit: usize,
+        scope: Option<String>,
+    ) -> PyResult<Vec<crate::memory_worth::MemoryRecord>> {
+        let filter = ListFilter {
+            memory_type,
+            source,
+            min_worth,
+            limit,
+            scope,
+            ..Default::default()
+        };
+        self.storage
+            .list(&filter)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// Return aggregate memory pool statistics for Rust-internal tooling.
+    pub fn memory_stats_json(&self, scope: Option<String>) -> PyResult<String> {
+        let stats = self
+            .storage
+            .stats(scope.as_deref())
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        serde_json::to_string(&stats)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
     /// Create a fully configured ContextEngine with real storage and retriever backends.
     ///
     /// This is the primary constructor for Rust-side factory functions.

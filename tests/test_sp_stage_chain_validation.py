@@ -14,7 +14,9 @@ class _FakeSkillEngine:
     async def exec(self, skill_name, params, caller="claude"):
         self.calls.append((skill_name, params, caller))
         stage = skill_name.removeprefix("sp-")
-        return SimpleNamespace(success=True, data={"skill_name": skill_name, "stage": stage}, errors=[])
+        return SimpleNamespace(
+            success=True, data={"skill_name": skill_name, "stage": stage}, errors=[]
+        )
 
 
 def _set_current_stage(stage):
@@ -120,13 +122,15 @@ def test_sp_stage_wrapper_adds_guidance_to_skill_result(monkeypatch):
     guidance = data["data"]["stage_guidance"]
     assert guidance["stage_summary"]["stage"] == "audit"
     assert guidance["route_summary"]["route_id"] == "audit-review"
-    assert guidance["official_skill"] == "superpowers:audit"
     assert guidance["closure_reminder"]["mode"] == "full"
-    assert "audit_run" in guidance["next_actions"][0]
+    assert guidance["required_artifacts"][0]["path"] == "audit_run(action='full')"
+    assert "stage_session_id" in guidance["route_summary"]["session_isolation"]
+    assert "official_skill" not in json.dumps(guidance)
+    assert "skill_authority" not in json.dumps(guidance)
     assert fake.calls[0][0] == "sp-audit"
 
 
-def test_sp_stage_flow_line_id_isolates_chain_state(monkeypatch):
+def test_sp_stage_new_flow_line_rejects_non_root_entry(monkeypatch):
     fake = _FakeSkillEngine()
     _set_current_stage(None)
     skill_tracking.set_current_stage(
@@ -150,11 +154,50 @@ def test_sp_stage_flow_line_id_isolates_chain_state(monkeypatch):
     )
     data = json.loads(result[0].text)
 
+    assert data["error"] == "chain_violation"
+    assert data["current_stage"] is None
+    assert "brainstorming" in data["valid_next"]
+    assert "requesting-code-review" in data["valid_next"]
+    assert "systematic-debugging" in data["valid_next"]
+    assert fake.calls == []
+
+
+def test_sp_stage_new_scopes_reject_non_root_entrypoints(monkeypatch):
+    for stage in (
+        "writing-plans",
+        "test-driven-development",
+        "finishing-a-development-branch",
+    ):
+        data, fake = _run_sp_stage(
+            monkeypatch,
+            stage,
+            current=None,
+            extra_args={
+                "stage_session_id": f"stage:fresh:{stage}",
+                "route": "normal-development",
+            },
+        )
+
+        assert data["error"] == "chain_violation"
+        assert data["current_stage"] is None
+        assert "brainstorming" in data["valid_next"]
+        assert fake.calls == []
+
+
+def test_sp_stage_new_scope_allows_root_entrypoint(monkeypatch):
+    data, fake = _run_sp_stage(
+        monkeypatch,
+        "brainstorming",
+        current=None,
+        extra_args={
+            "stage_session_id": "stage:fresh:design",
+            "route": "normal-development",
+        },
+    )
+
     assert data["success"] is True
-    assert data["stage_session_id"] == "stage:shared"
-    assert data["flow_line_id"] == "dev"
-    assert data["flow_scope_id"] == "stage:shared::flow:dev"
-    assert fake.calls[0][1]["stage_session_id"] == "stage:shared::flow:dev"
+    assert data["stage"] == "brainstorming"
+    assert fake.calls[0][0] == "sp-brainstorming"
 
 
 def test_sp_stage_allows_meta_root_stages_from_stale_chain(monkeypatch):

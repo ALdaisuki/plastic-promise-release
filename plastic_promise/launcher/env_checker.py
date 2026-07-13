@@ -18,15 +18,31 @@ from typing import overload
 
 from plastic_promise.core.paths import get_db_path
 from plastic_promise.launcher.codex_config import check_project_codex_mcp_config
+from plastic_promise.launcher.service_manager import (
+    canonical_source_root,
+    resolve_source_revision,
+    validate_mcp_health_identity,
+)
 
-
-@overload
-def run_env_checks(skip_ollama: bool = False) -> tuple[bool, list[str]]: ...
+_PROJECT_ROOT = canonical_source_root(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 @overload
 def run_env_checks(
-    skip_ollama: bool = False, *, include_mcp_status: bool
+    skip_ollama: bool = False,
+    *,
+    expected_source_root: str | None = None,
+    expected_source_revision: str | None = None,
+) -> tuple[bool, list[str]]: ...
+
+
+@overload
+def run_env_checks(
+    skip_ollama: bool = False,
+    *,
+    include_mcp_status: bool,
+    expected_source_root: str | None = None,
+    expected_source_revision: str | None = None,
 ) -> tuple[bool, list[str], bool]: ...
 
 
@@ -34,6 +50,8 @@ def run_env_checks(
     skip_ollama: bool = False,
     *,
     include_mcp_status: bool = False,
+    expected_source_root: str | None = None,
+    expected_source_revision: str | None = None,
 ) -> tuple[bool, list[str]] | tuple[bool, list[str], bool]:
     """Run all environment checks.
 
@@ -47,7 +65,7 @@ def run_env_checks(
 
     # 1. Python >= 3.10
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    if sys.version_info >= (3, 10):
+    if sys.version_info >= (3, 10):  # noqa: UP036 - package still supports Python 3.10
         messages.append(f"[ENV]   Python {py_ver} ................ [OK]")
     else:
         messages.append(f"[ENV]   Python {py_ver} ................ [FAIL] (need >= 3.10)")
@@ -82,7 +100,16 @@ def run_env_checks(
         messages.append("[ENV]   Port 9020 ..................... [OK] free")
     except OSError:
         # Port is occupied — check if it's our own MCP server
-        occupant = _identify_port_9020_occupant()
+        source_root = expected_source_root or _PROJECT_ROOT
+        revision = (
+            expected_source_revision
+            if expected_source_revision is not None
+            else resolve_source_revision(source_root)
+        )
+        occupant = _identify_port_9020_occupant(
+            expected_source_root=source_root,
+            expected_source_revision=revision,
+        )
         if occupant:
             mcp_already_running = True
             messages.append(
@@ -112,23 +139,22 @@ def run_env_checks(
     return all_ok, messages
 
 
-def _identify_port_9020_occupant() -> dict | None:
-    """Check if port 9020 is occupied by our own MCP server.
-
-    Hits the /health endpoint. Returns a dict with 'pid' and 'uptime'
-    if the response matches Plastic Promise MCP format, None otherwise.
-    """
+def _identify_port_9020_occupant(
+    *,
+    expected_source_root: str = _PROJECT_ROOT,
+    expected_source_revision: str | None = None,
+) -> dict | None:
+    """Return an occupant only when health proves the expected checkout identity."""
     try:
         req = urllib.request.Request("http://127.0.0.1:9020/health")
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode())
-        # Verify it's our MCP: must have status=ok, version, and pid
-        if (
-            isinstance(data, dict)
-            and data.get("status") == "ok"
-            and "version" in data
-            and "pid" in data
-        ):
+        valid, _reason = validate_mcp_health_identity(
+            data,
+            expected_source_root=expected_source_root,
+            expected_source_revision=expected_source_revision,
+        )
+        if valid and "version" in data:
             return {"pid": data["pid"], "uptime": float(data.get("uptime", 0))}
     except Exception:
         pass

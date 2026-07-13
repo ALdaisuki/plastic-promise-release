@@ -422,6 +422,34 @@ Daemon 扫描器(5个) → 发现问题
 
 ---
 
+## 治理综合记忆运维约定
+
+治理综合记忆默认关闭并采用 fail-closed 语义。SQLite 保存记忆正文、生命周期、来源证据、审核记录和精确索引物料；LanceDB 仅是可重建派生索引。
+
+| 开关 | 默认值 | 说明 |
+|---|---|---|
+| `PP_SYNTHESIS_ARTIFACTS` | `off` | `shadow` 只评估不落综合记忆，`on` 才允许创建受治理草稿。 |
+| `PP_SYNTHESIS_RETRIEVAL` | `0` | `1` 也只允许审核证据完整且来源仍有效的 `verified` 综合记忆。 |
+| `PP_MEMORY_PROPOSALS` | `off` | `shadow` 仅返回哈希诊断，`on` 将公开用户事实、偏好和决策送入审核队列。 |
+| `PP_MEMORY_INDEX_TEXT_POLICY` | `legacy` | `compact-v2` 是需要固定语料 live gate 验收的实验策略。 |
+
+综合记忆状态机为 `draft -> verified -> stale|contested`；修复 stale/contested 会产生下一修订的 `draft`，必须重新审核。审核必须同时记录 `last_verified_at`、`verified_by_actor`、`verified_by_call_id`，缺失任何一项都不可检索。高影响任务只为最终进入三层上下文的综合记忆优先展开来源证据。
+
+提案审核记录 actor、call ID、审核时间和稳定原因码。`pending`、`rejected`、`expired` 提案不得进入普通记忆检索或 LanceDB。维护顺序固定为：memory lifecycle -> proposal expiry -> synthesis integrity -> synthesis index replay -> audit。
+
+deterministic benchmark 只验证指标和门禁，不可用于发布质量结论。可发布对比必须使用同一份隔离安装的版本化双语语料、同一真实非 fallback 模型与维度、相同 runtime/warmup/repeat 元数据、完整相同的 split 集，并通过 store -> recall -> context smoke。
+
+回滚只关闭新路径，保留 SQLite 中的控制、来源、提案和审计记录：
+
+```text
+PP_SYNTHESIS_RETRIEVAL=0
+PP_SYNTHESIS_ARTIFACTS=off
+PP_MEMORY_PROPOSALS=off
+PP_MEMORY_INDEX_TEXT_POLICY=legacy
+```
+
+---
+
 ## 快速开始
 
 ```bash

@@ -40,6 +40,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
         retrieval_mode = str(args.get("retrieval_mode") or "")
+        fusion_policy = str(args.get("fusion_policy") or "").strip()
         debug = bool(args.get("debug", False))
         request_scope = build_request_scope(args, "context_supply")
         project_ctx = infer_project_context(args)
@@ -65,6 +66,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 project_policy=project_ctx.project_policy,
                 project_degraded=project_ctx.degraded,
                 retrieval_mode=retrieval_mode or None,
+                fusion_policy=fusion_policy or None,
                 debug=debug,
             )
         except TypeError:
@@ -72,22 +74,17 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 pack = engine.supply(task_description, task_vector, task_type, scope, debug=debug)
             except TypeError:
                 pack = engine.supply(task_description, task_vector, task_type, scope)
-        from plastic_promise.mcp.tools.memory import _project_allowed
+        from plastic_promise.mcp.tools.memory import (
+            _sanitize_pack_for_project,
+            _serialize_channel_evidence,
+        )
 
-        if all(hasattr(pack, layer) for layer in ("core", "related", "divergent")):
-            pack.core = [
-                item for item in pack.core if _project_allowed(item, project_ctx, "core", engine)
-            ]
-            pack.related = [
-                item
-                for item in pack.related
-                if _project_allowed(item, project_ctx, "related", engine)
-            ]
-            pack.divergent = [
-                item
-                for item in pack.divergent
-                if _project_allowed(item, project_ctx, "divergent", engine)
-            ]
+        pack = _sanitize_pack_for_project(
+            pack,
+            project_ctx,
+            engine,
+            task_type=task_type,
+        )
         pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
         pack.audit_metadata["request_scope"] = request_scope
         pack.audit_metadata["project_context"] = project_ctx.to_dict()
@@ -100,10 +97,6 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         if project_warnings:
             pack.audit_metadata["warnings"] = project_warnings
             pack.audit_metadata["minimum_result"] = "project_restricted_context"
-        from plastic_promise.core.context_recommender import attach_context_recommendations
-
-        attach_context_recommendations(pack, task_type=task_type)
-
         safe_record_call_span(
             engine,
             call_id=call_id,
@@ -120,6 +113,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 "scope": scope,
                 "project_policy": project_ctx.project_policy,
                 "retrieval_mode": retrieval_mode,
+                "fusion_policy": fusion_policy,
                 "debug": debug,
                 "warnings": project_warnings,
             },
@@ -141,6 +135,8 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
 
         prompt = pack.to_prompt()
         if debug:
+            channel_rankings, channel_states = _serialize_channel_evidence(pack)
+
             def _item_to_dict(item: Any) -> dict:
                 return {
                     "id": getattr(item, "id", ""),
@@ -164,6 +160,8 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 "audit_metadata": audit_metadata,
                 "pipeline_stats": getattr(pack, "pipeline_stats", {}),
                 "per_item_stats": getattr(pack, "per_item_stats", []),
+                "channel_rankings": channel_rankings,
+                "channel_states": channel_states,
                 "request_scope": request_scope,
                 "project_context": project_ctx.to_dict(),
                 "trace": audit_metadata.get("trace", {}),
@@ -455,6 +453,7 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
 
     # ── Step 3: memory_store — inject record into memory pool ──
     try:
+        from plastic_promise.core.memory_proposals import trusted_memory_origin
         from plastic_promise.mcp.tools.memory import handle_memory_store
 
         core_count = len(context_pack.get("core", [])) if context_pack else 0
@@ -472,17 +471,18 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
         ]
         if entity_id:
             tags.append(f"entity:{entity_id}")
-        store_result = await handle_memory_store(
-            engine,
-            {
-                "content": content,
-                "memory_type": "experience",
-                "source": "auto_inject",
-                "entity_ids": [entity_id] if entity_id else [],
-                "tags": tags,
-                "max_llm_calls": 0,  # skip LLM classify — auto_inject content is structured already
-            },
-        )
+        with trusted_memory_origin("auto_context_inject"):
+            store_result = await handle_memory_store(
+                engine,
+                {
+                    "content": content,
+                    "memory_type": "experience",
+                    "source": "auto_inject",
+                    "entity_ids": [entity_id] if entity_id else [],
+                    "tags": tags,
+                    "max_llm_calls": 0,  # skip LLM classify — auto_inject content is structured already
+                },
+            )
         if store_result and len(store_result) > 0:
             store_data = json.loads(store_result[0].text)
             inject_memory_id = store_data.get("memory_id") if isinstance(store_data, dict) else None

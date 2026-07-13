@@ -180,6 +180,20 @@ Health check:
 python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:9020/health').read())"
 ```
 
+`/health` is also the deployment identity contract. It returns `pid`,
+`source_root`, `source_revision`, `fusion_policy`, and `fusion_attestation`;
+the attestation carries `schema=retrieval-fusion-identity/v1`, the requested
+policy, candidate ID, and configuration hash. The launcher accepts a newly
+started server only when health matches the spawned PID and current source root,
+plus the expected Git revision when available. It reuses an existing process on
+port 9020 only after the same source-root/revision checks pass; HTTP 200 alone is
+not ownership evidence.
+
+On Windows, `python scripts/init_and_start.py --stop` reads only
+`var/run/mcp_server.pid` and `var/run/maintenance_daemon.pid` from the current
+checkout, then verifies the command line contains that checkout's source root.
+It does not scan for or terminate other Python processes or other worktrees.
+
 ### Connect an MCP client
 
 Stdio example:
@@ -304,21 +318,7 @@ The current source exposes **58 MCP tools** in `plastic_promise/mcp/server.py`, 
 | Market | `market_list`, `market_install`, `market_upgrade`, `market_remove`, `market_enable`, `market_disable`, `market_status` |
 | SuperPowers | `sp-stage` |
 
-`sp-stage` exposes the full installed SuperPowers surface as a single MCP entrypoint. The 16 stages are:
-
-```text
-using-superpowers -> brainstorming -> exemplar-research -> using-git-worktrees
-  -> writing-plans -> executing-plans / subagent-driven-development
-  -> test-driven-development -> verification-before-completion
-  -> finishing-a-development-branch
-
-requesting-code-review -> receiving-code-review -> audit
-systematic-debugging -> test-driven-development
-dispatching-parallel-agents
-writing-skills
-```
-
-`using-superpowers` and `writing-skills` are meta stages. They are still exposed through `sp-stage` so MCP clients can discover the same skill surface that the installed SuperPowers plugin provides.
+`sp-stage` keeps the 16-stage workflow as a compact programmatic governance contract. Clients receive only the current stage and route, required artifacts, and a closure reminder; the server validates every requested transition and returns valid successors when it rejects a chain violation. Clients do not need to load or reproduce detailed SuperPowers skill instructions. Session/flow isolation, review, audit, trust checks, and traceability remain enforced by the runtime.
 
 ---
 
@@ -394,6 +394,103 @@ embedding-only model used for vectors; the default local Ollama reranker uses a
 generation-capable model (`qwen2.5:3b`) before falling back to cosine/original
 ordering. Hosted rerankers remain opt-in through `PP_RERANK_PROVIDERS`.
 
+### Governed synthesis and memory proposals
+
+Governed synthesis is opt-in and fail-closed. SQLite owns canonical memory,
+lifecycle, provenance, proposal review, and exact index material; LanceDB is a
+rebuildable derived index. The default gates preserve legacy behavior:
+
+| Gate | Default | Effect when enabled |
+|---|---|---|
+| `PP_SYNTHESIS_ARTIFACTS` | `off` | `shadow` evaluates eligibility without creating artifacts; `on` permits governed drafts. |
+| `PP_SYNTHESIS_RETRIEVAL` | `0` | `1` admits only current `verified` synthesis with complete verification evidence. |
+| `PP_MEMORY_PROPOSALS` | `off` | `shadow` emits hash-only diagnostics; `on` routes public user facts, preferences, and decisions to review. |
+| `PP_MEMORY_INDEX_TEXT_POLICY` | `legacy` | `compact-v2` is an experimental bounded L0/L1 index-text candidate. |
+
+The synthesis lifecycle is `draft -> verified -> stale|contested`. Refreshing a
+stale or contested artifact creates the next `draft` revision, which must be
+verified again. Verification requires non-empty `last_verified_at`,
+`verified_by_actor`, and `verified_by_call_id`; retrieval treats missing control
+state or evidence as unavailable. High-impact context plans expand sources only
+for synthesis selected into the final context layers.
+
+Retrieval-visible ordinary-memory mutations use a canonical field-scoped
+transaction. Content replacement or unavailability records source lineage,
+marks dependent synthesis stale, increments the canonical memory version, and
+persists checked index jobs before commit. GC merge candidates must have the
+same non-empty project, and the coordinator rechecks both declared and canonical
+project identity inside the transaction. A mismatch fails without partial
+memory, lineage, version, outbox, or cache changes.
+
+Public mutation identity and authority come from server-owned runtime context.
+Caller-declared actor, call, project, or trust fields are audit input only; both
+`smart-remember` aliases require `memory_update` authority before reading or
+changing an existing canonical row. Public `memory_forget` remains a critical
+operation with a `0.80` trust requirement. The lower `0.60` `audit_rollover`
+capability is internal and does not weaken the public delete boundary.
+
+Proposal review records the reviewer actor, call ID, review time, and a stable
+reason code. Pending, rejected, and expired proposals never become recall
+candidates or LanceDB rows. The maintenance daemon runs canonical memory
+lifecycle updates, proposal expiry, synthesis integrity invalidation, synthesis
+index replay, then audit, in that order.
+
+Deterministic recall reports validate metric math and policy gates but are never
+publishable quality evidence. A publishable comparison requires isolated seeding
+of the same versioned bilingual corpus, the same real non-fallback embedding
+model and dimension, equal runtime/warmup/repeat metadata, complete equal split
+sets, and a successful store-to-recall-to-context smoke check.
+
+Fusion defaults to `legacy-auto`. `max-v1` is the fixed comparison baseline;
+an adopted weighted policy is identified as `wrrf-v1:<sha256>` and must match a
+frozen candidate manifest. Bare `wrrf-v1` is accepted by the benchmark CLI only
+with `--candidate-manifest`; unknown, unhashed, mismatched, or malformed policy
+configuration fails closed. Calibration fingerprints held-out bytes before the
+manifest is frozen but does not load or query held-out cases.
+
+For `0.1.15`, the one-shot public calibration produced no eligible WRRF
+candidate. The held-out cases therefore remained unopened and the released
+fusion policy stays `legacy-auto`; no measured fusion-improvement claim is made.
+
+Maintenance supports a production-equivalent one-shot cycle and a real restart
+recovery proof:
+
+```bash
+python daemons/maintenance_daemon.py --once --json
+python scripts/smoke_restart_recovery.py --artifact-dir .artifacts/recovery-smoke --json
+```
+
+The launcher health check treats `maintenance-heartbeat/v1` as the daemon
+liveness contract and binds it to the daemon PID before falling back to legacy
+mtime checks. Checked ordinary index replay reads existing valid
+`memory-index/v2` upserts for compatibility; every new upsert or delete is
+written as `memory-index/v3` with action, project, memory version, material
+revision, and expected embedding hash.
+
+Operational rollback disables all new behavior without deleting canonical
+control, provenance, proposal, or audit rows:
+
+```bash
+PP_SYNTHESIS_RETRIEVAL=0
+PP_SYNTHESIS_ARTIFACTS=off
+PP_MEMORY_PROPOSALS=off
+PP_MEMORY_INDEX_TEXT_POLICY=legacy
+PP_RETRIEVAL_FUSION_POLICY=legacy-auto
+```
+
+Also unset `PP_RETRIEVAL_RRF_K`, `PP_RETRIEVAL_RRF_WEIGHTS_JSON`, and
+`PP_RETRIEVAL_RRF_WINDOWS_JSON`. Keep SQLite, provenance, and outbox rows;
+restart both processes, run one-shot maintenance to replay the default checked
+index policy, then run the HTTP and restart-recovery smokes.
+
+For an upgrade to `0.1.15`, leave these gates at their defaults until the live
+deployment passes its project-isolated smoke checks. Restart the MCP server and
+Maintenance Daemon together so every writer uses the same canonical mutation
+contract. No public MCP tool or parameter was removed; existing SQLite memory
+remains canonical and LanceDB can be repaired from durable checked jobs. The
+minimum LanceDB version is now `0.34.0`; deployments pinned below that version
+must upgrade the dependency before restart.
+
 ---
 
 ## Configuration Notes
@@ -456,6 +553,33 @@ Optional service checks:
 ```bash
 python scripts/init_and_start.py --check-only
 python scripts/init_and_start.py --skip-ollama-check --check-only
+
+# Verify the live Streamable HTTP MCP process after startup or release restart.
+python scripts/smoke_http_mcp.py --expected-version 0.1.15 --expected-mode rust-full
+
+# Run only after explicitly enabling PP_MEMORY_SUMMARY_INDEX=1 and compact-v2.
+python scripts/smoke_http_mcp.py --expected-version 0.1.15 --expected-mode rust-full --check-summary-index
+```
+
+Live release sync has a fail-closed preflight: the release repository must be
+clean, on `main`, bound to the expected `origin`, and the current version tag
+must be absent both locally and remotely. Validation may create runtime files,
+but only the computed release paths are staged; unexpected staged, unstaged, or
+untracked paths block the release. Run a dry-run first, then make the first and
+only live invocation with `--push`. That live process commits, creates the
+annotated tag, revalidates the pinned commit and tag object against the expected
+remote state, and atomically pushes `main` plus the exact tag. Running live
+without `--push` leaves a local commit and tag that make the next preflight fail.
+Do not replace the attested push with a manual push or `git push --tags`.
+
+```bash
+python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
+  --version v0.1.15 --release-repo F:/Agent/plastic-promise-release \
+  --expected-source-branch main \
+  --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
+  --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \
+  --validation-profile full --dry-run
+# After the dry-run and release gates pass, repeat the same command with --push.
 ```
 
 Conventions:
@@ -473,10 +597,10 @@ Conventions:
 | Area | Status | Notes |
 |---|---|---|
 | MCP server | Active | stdio and Streamable HTTP modes are implemented; legacy SSE endpoints remain available. |
-| Memory pipeline | Active | Extraction, quality gate, feature-gated summary index writes, LanceDB dual-write, and decay are implemented. |
-| Context supply | Active | Python remains full fallback and write-side authority; Rust snapshot is optional, request-scoped, used for normal and debug recall in `rust-full`, and guarded against daemon audit telemetry at snapshot ingestion plus native-result conversion. |
+| Memory pipeline | Active | Extraction, quality gate, field-scoped canonical mutations, project isolation, checked LanceDB repair jobs, feature-gated summary index writes, and decay are implemented. |
+| Context supply | Active | Python remains the canonical write-side authority; governed synthesis admission is opt-in and fail-closed, while Rust snapshot recall is optional, request-scoped, and guarded at snapshot ingestion plus native-result conversion. |
 | Hunter Guild | Experimental | Task lifecycle is wired; policy and scanner quality are still evolving. |
-| Skills and SuperPowers | Active | `session-init`, `smart-remember`, `step-closure`, and the 16-stage `sp-stage` surface are exposed. |
+| Skills and governed workflow | Active | `session-init`, `smart-remember`, `step-closure`, and a compact 16-stage `sp-stage` governance contract are exposed; detailed skill instructions are not. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |
 | Release pipeline | Active | PyPI and GitHub Actions release sync are configured. |
 | Documentation | In progress | This release pass reconciles public docs with current source truth. |

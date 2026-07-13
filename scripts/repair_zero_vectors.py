@@ -1,125 +1,66 @@
-"""Repair zero-vector entries in LanceDB by re-embedding with current embedder.
+"""Rebuild canonical LanceDB vectors after an embedder recovery.
 
-Usage:
-    python scripts/repair_zero_vectors.py [--dry-run] [--limit N]
-
-One-shot script. Run after embedder recovery to fix existing corrupted vectors.
+The legacy implementation read derived LanceDB text and wrote it back directly.
+That could resurrect draft, stale, or control-only synthesis.  A repair is now
+a canonical full rebuild, which also removes ineligible derived rows.
 """
+
+from __future__ import annotations
 
 import argparse
 import logging
-import os
-import sys
 
-# Ensure project root is on sys.path
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+from plastic_promise.core.context_engine import ContextEngine
+from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("repair_zero_vectors")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Repair LanceDB zero-vector entries")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Rebuild canonical LanceDB vectors")
     parser.add_argument("--dry-run", action="store_true", help="Preview only, no writes")
-    parser.add_argument("--limit", type=int, default=0, help="Max entries to repair (0 = unlimited)")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Deprecated: canonical repair always rebuilds the complete eligible set",
+    )
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    # Import after arg parsing to keep --help fast
-    from plastic_promise.core.context_engine import ContextEngine
-    from plastic_promise.core.embedder import get_embedder, FallbackEmbedder
+    if args.limit:
+        logger.error("--limit is incompatible with a complete canonical index rebuild")
+        return 2
 
     embedder = get_embedder(fallback_on_error=False)
     if isinstance(embedder, FallbackEmbedder):
-        logger.error("Embedder is FallbackEmbedder -- cannot repair. Fix embedder first.")
-        sys.exit(1)
+        logger.error("Embedder is FallbackEmbedder; cannot rebuild vectors")
+        return 1
+    probe = embedder.embed("canonical index rebuild probe")
+    if not probe or not any(value != 0.0 for value in probe):
+        logger.error("Embedder returns zero vectors; cannot rebuild")
+        return 1
 
-    # Verify embedder produces real vectors
-    test_vec = embedder.embed("test")
-    if not test_vec or not any(v != 0.0 for v in test_vec):
-        logger.error("Embedder returns zero vectors -- cannot repair. Fix embedder first.")
-        sys.exit(1)
-
-    logger.info("Embedder OK (%s, dim=%d)", embedder.model_name, len(test_vec))
-
-    engine = ContextEngine(use_sqlite=False)
-    # Trigger heavy init to load LanceDB
-    engine.register_memory({
-        "id": "__repair_probe__",
-        "content": "repair probe",
-        "memory_type": "task",
-        "source": "repair",
-    })
-
-    ldb = getattr(engine, '_ldb', None)
-    if ldb is None or getattr(ldb, '_table', None) is None:
-        logger.error("LanceDB not available")
-        sys.exit(1)
-
-    table = ldb._table
-    total = table.count_rows()
-    logger.info("LanceDB has %d total rows", total)
-
-    # Scan for zero vectors
-    repaired = 0
-    skipped = 0
-    to_fix = []
-
-    rows = table.search().limit(total).to_list()
-    for row in rows:
-        mid = row["memory_id"]
-        vec = row.get("vector", [])
-        if mid == "__repair_probe__":
-            continue
-        if vec and not any(v != 0.0 for v in vec):
-            to_fix.append((mid, row.get("text", ""), row))
-
-    logger.info("Found %d zero-vector entries out of %d rows", len(to_fix), total)
+    engine = ContextEngine(use_sqlite=True)
+    engine._ensure_heavy_init()
+    ldb = engine._ldb
+    if ldb is None:
+        logger.error("LanceDB is not available")
+        return 1
 
     if args.dry_run:
-        for mid, text, _row in to_fix[:10]:
-            logger.info("  [DRY RUN] would repair: %s (%s...)", mid, text[:60])
-        if len(to_fix) > 10:
-            logger.info("  ... and %d more", len(to_fix) - 10)
-        logger.info("Dry run complete. %d entries would be repaired.", len(to_fix))
-        return
+        canonical = ldb._canonical_engine_memories(engine)
+        if canonical is None:
+            logger.error("Canonical SQLite memories are unavailable")
+            return 1
+        eligible = ldb._eligible_engine_memories(engine, canonical)
+        logger.info("Would rebuild %d canonical eligible memories", len(eligible))
+        return 0
 
-    for mid, text, row in to_fix:
-        if args.limit > 0 and repaired >= args.limit:
-            logger.info("Limit reached (%d), stopping", args.limit)
-            break
-        try:
-            new_vec = embedder.embed(text)
-            if not new_vec or not any(v != 0.0 for v in new_vec):
-                logger.warning("  SKIP %s: embedder returned zero vector", mid)
-                skipped += 1
-                continue
-            # Update LanceDB
-            ldb.update(
-                memory_id=mid,
-                vector=new_vec,
-                text=text,
-                tier=row.get("tier", "L1"),
-                category=row.get("category", "other"),
-                scope=row.get("scope", "global"),
-            )
-            repaired += 1
-            if repaired % 10 == 0:
-                logger.info("  %d/%d repaired...", repaired, len(to_fix))
-        except Exception as e:
-            logger.warning("  FAIL %s: %s", mid, e)
-            skipped += 1
-
-    # Clean up probe
-    try:
-        ldb.delete("__repair_probe__")
-    except Exception:
-        pass
-
-    logger.info("Repair complete: %d repaired, %d skipped, %d remaining",
-                repaired, skipped, len(to_fix) - repaired - skipped)
+    rebuilt = ldb.rebuild_all(engine)
+    logger.info("Canonical vector rebuild complete: %d memories indexed", rebuilt)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -91,7 +91,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
 | Skills | session-init、smart-remember、step-closure |
 | Review | 结构化代码审查入口 |
 | Market | 插件市场管理 |
-| SuperPowers | 16 阶段统一入口 `sp-stage`，覆盖完整已安装 SuperPowers 技能面 |
+| 治理工作流 | 16 阶段统一入口 `sp-stage`，只暴露精简程序化合同，保留链校验、产物、闭环和审计 |
 
 ## 四、12 条核心约定
 
@@ -223,3 +223,25 @@ step-closure(
 - Use `http://127.0.0.1:9020/health` for browser/probe checks. `/mcp` is an MCP protocol endpoint, so plain browser GETs and closed long-poll/SSE clients can produce benign 404 or client-disconnect logs.
 - Windows Proactor client-disconnect tracebacks are filtered at the MCP server event-loop boundary; plain `/mcp` GET 404s remain visible because they identify protocol-mismatched probes.
 - After an MCP process restart, Codex desktop sessions may keep stale dynamic tool handles until the session/tool registry refreshes; the server can be healthy while the current client session still needs reconnect.
+
+## 2026-07-11 Governed Synthesis Retrieval Note
+
+- SQLite remains canonical for synthesis lifecycle, provenance snapshots, proposal review, and exact index material; LanceDB remains derived and rebuildable.
+- New behavior is off by default: `PP_SYNTHESIS_ARTIFACTS=off`, `PP_SYNTHESIS_RETRIEVAL=0`, `PP_MEMORY_PROPOSALS=off`, and `PP_MEMORY_INDEX_TEXT_POLICY=legacy`.
+- Synthesis follows `draft -> verified -> stale|contested`; refresh creates the next draft revision and requires a new actor/call/timestamp verification record before recall.
+- Pending, rejected, and expired proposals are never ordinary recall candidates or LanceDB rows.
+- Governed maintenance order is memory lifecycle, proposal expiry, synthesis integrity, synthesis index replay, then audit.
+- Deterministic bilingual reports test metric and gate behavior only. Publishable evidence requires isolated versioned corpus seeding, a real non-fallback model, complete comparable split sets and environment metadata, plus a successful store-recall-context smoke.
+- Rollback disables all four gates above without deleting canonical control, evidence, proposal, lineage, or audit rows.
+
+## 2026-07-12 Canonical Mutation and Release Note
+
+- Release version `0.1.15` follows the active release-repository `main` package line at `0.1.14` and carries the governed-synthesis corrective hardening.
+- Release warning: the public repository still contains historical `v0.2.14`, which SemVer sorts above `v0.1.15`. Keep `v0.2.14` untouched and do not mark `v0.1.15` as latest; automated SemVer selectors may continue to prefer `v0.2.14`.
+- Retrieval-visible ordinary-memory content and availability changes use one field-scoped SQLite transaction that records lineage, stales dependent synthesis, increments `memory_version`, and persists checked `memory-index/v3` jobs before commit.
+- GC rejects empty and cross-project candidates, checks declared project equality before the transaction, and rechecks canonical source/peer project equality inside it. Spoofed project declarations fail without partial state.
+- Public mutation identity and authority are server-owned. Both `smart-remember` aliases require `memory_update`; public `memory_forget` remains critical at `0.80`, while internal `audit_rollover` uses `0.60` without exposing a weaker public delete path.
+- Upgrade keeps all four synthesis/proposal/index gates at their legacy defaults. Restart MCP Server and Maintenance Daemon together, then run the live HTTP smoke with `--expected-version 0.1.15` before enabling opt-in behavior.
+- This release removes no public MCP tool or parameter. The change is not classified as breaking; SQLite remains canonical and LanceDB remains derived and repairable.
+- Dependency compatibility note: governed retrieval requires LanceDB `>=0.34.0`.
+- Release verification for `0.1.15` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. The one-shot public calibration produced no eligible WRRF candidate, so held-out queries remained unopened and legacy-auto is the released policy.

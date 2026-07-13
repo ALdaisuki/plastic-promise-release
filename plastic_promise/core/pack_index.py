@@ -4,12 +4,56 @@
 
 import gzip
 import json
+import time
 from typing import Any
+
+from plastic_promise.core.context_engine import OrdinaryMemoryConflict
+from plastic_promise.core.synthesis import synthesis_content_hash
+from plastic_promise.core.synthesis_retrieval import (
+    _source_is_available,
+    engine_memory_is_governed_synthesis,
+)
 
 PACK_VERSION_MAP = {
     "1.0": {"domain": {"work": "governing", "life": "reflecting"}},
     "2.0": {},
 }
+
+_PACK_SOURCE_SNAPSHOT_FIELDS = (
+    "access_count",
+    "category",
+    "created_at",
+    "decay_multiplier",
+    "effective_half_life",
+    "embedding_hash",
+    "last_accessed",
+    "metadata_json",
+    "tags",
+    "tier",
+    "worth_failure",
+    "worth_success",
+)
+
+
+def _canonical_pack_memory(engine: Any, memory_id: str) -> dict | None:
+    getter = getattr(engine, "get_memory_dict_for_review", None)
+    if not callable(getter):
+        getter = getattr(engine, "get_memory_dict", None)
+    current = getter(memory_id) if callable(getter) else None
+    return current if isinstance(current, dict) else None
+
+
+def _ensure_pack_policy_preserves_availability(
+    existing: dict, *, tags: list[str], domain: str
+) -> None:
+    candidate = dict(existing)
+    candidate.update({"tags": list(tags), "domain": domain})
+    try:
+        changed = _source_is_available(existing) != _source_is_available(candidate)
+    except Exception as exc:
+        raise OrdinaryMemoryConflict("ordinary_patch_availability_invalid") from exc
+    if changed:
+        raise OrdinaryMemoryConflict("ordinary_patch_availability_change_requires_coordinator")
 
 
 class PackIndex:
@@ -61,6 +105,19 @@ def pack_export_streaming(
 
         if engine:
             for mem in engine.iter_memories():
+                memory_id = str(mem.get("id", ""))
+                memory_type = mem.get("memory_type")
+                if engine_memory_is_governed_synthesis(
+                    engine,
+                    memory_id,
+                    memory_type=memory_type,
+                ):
+                    public_gate = getattr(type(engine), "_public_memory_ids", None)
+                    if not callable(public_gate) or memory_id not in public_gate(
+                        engine,
+                        [memory_id],
+                    ):
+                        continue
                 mem_tags = mem.get("tags", [])
                 if tags and not (set(tags) & set(mem_tags)):
                     continue
@@ -70,7 +127,7 @@ def pack_export_streaming(
                     first = False
                 json.dump(
                     {
-                        "id": mem.get("id", ""),
+                        "id": memory_id,
                         "content": mem.get("content", ""),
                         "memory_type": mem.get("memory_type", ""),
                         "source": mem.get("source", ""),
@@ -117,30 +174,72 @@ def pack_import_with_strategy(
         old_domain = mem.get("domain", "")
         new_domain = domain_map.get(old_domain, old_domain) if old_domain else ""
 
-        existing = engine.get_memory_dict(mid)
+        existing = _canonical_pack_memory(engine, mid)
         if existing:
             if strategy == "skip":
                 skipped += 1
                 continue
             elif strategy == "replace":
-                engine.register_memory(
-                    {
-                        "id": mid,
-                        "content": mem["content"],
-                        "memory_type": mem.get("memory_type", "experience"),
-                        "source": mem.get("source", "user"),
-                        "tags": mem.get("tags", []),
-                        "domain": new_domain,
-                    }
+                replacement_tags = list(mem.get("tags", []))
+                replacement_domain = new_domain or str(existing.get("domain") or "")
+                _ensure_pack_policy_preserves_availability(
+                    existing,
+                    tags=replacement_tags,
+                    domain=replacement_domain,
                 )
+                if str(mem["content"]) == str(existing.get("content") or ""):
+                    engine.patch_ordinary_memory(
+                        mid,
+                        replacements={"tags": replacement_tags, "domain": replacement_domain},
+                        expected_project_id=str(existing.get("project_id") or ""),
+                        expected_tags=list(existing.get("tags") or []),
+                        require_source_available=True,
+                    )
+                else:
+                    engine.mutate_ordinary_source(
+                        mid,
+                        operation="replace_content",
+                        content=mem["content"],
+                        reason="pack_import:replace",
+                        actor="pack_import",
+                        call_id=f"pack:replace:{time.time_ns()}:{mid}",
+                        expected_project_id=str(existing.get("project_id") or ""),
+                        expected_content_hash=synthesis_content_hash(existing.get("content")),
+                        expected_source_snapshot={
+                            field: existing.get(field) for field in _PACK_SOURCE_SNAPSHOT_FIELDS
+                        },
+                        require_source_available=True,
+                        policy_replacements={
+                            "category": str(existing.get("category") or "other"),
+                            "domain": replacement_domain,
+                            "tags": replacement_tags,
+                            "tier": str(existing.get("tier") or "L1"),
+                        },
+                    )
                 imported += 1
             elif strategy == "merge":
                 old_tags = set(existing.get("tags", []))
                 new_tags = set(mem.get("tags", []))
-                engine.update_memory_fields(mid, tags=list(old_tags | new_tags), domain=new_domain)
+                merged_tags = sorted(old_tags | new_tags)
+                merged_domain = new_domain or str(existing.get("domain") or "")
+                _ensure_pack_policy_preserves_availability(
+                    existing,
+                    tags=merged_tags,
+                    domain=merged_domain,
+                )
+                engine.patch_ordinary_memory(
+                    mid,
+                    replacements={
+                        "tags": merged_tags,
+                        "domain": merged_domain,
+                    },
+                    expected_project_id=str(existing.get("project_id") or ""),
+                    expected_tags=list(existing.get("tags") or []),
+                    require_source_available=True,
+                )
                 merged += 1
         else:
-            engine.register_memory(
+            engine.create_ordinary_if_absent(
                 {
                     "id": mid,
                     "content": mem["content"],

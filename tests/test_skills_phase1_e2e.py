@@ -6,15 +6,15 @@ retrievable via the engine's get_memory() interface.
 """
 
 import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from mcp.types import TextContent
 
 from plastic_promise.core.context_engine import ContextEngine, MemoryRecord
 from plastic_promise.skills.engine import SkillEngine
-from plastic_promise.skills.session_lifecycle import skill_session_init
 from plastic_promise.skills.memory_operations import skill_smart_remember
-
+from plastic_promise.skills.session_lifecycle import skill_session_init
 
 # ──────────────────────────────────────────────
 # Mock helpers
@@ -37,7 +37,7 @@ def _response(data: dict) -> list[TextContent]:
 
 def _failing_atom(engine, args):
     """Atom that always raises — simulates a degraded component."""
-    raise RuntimeError(f"Simulated failure: atom not available in test env")
+    raise RuntimeError("Simulated failure: atom not available in test env")
 
 
 # ──────────────────────────────────────────────
@@ -75,7 +75,7 @@ def engine():
 
 
 @pytest.fixture
-def skill_engine(engine):
+def skill_engine(engine, monkeypatch):
     """SkillEngine with real ContextEngine + test atom implementations.
 
     Atoms are overridden with mocks that:
@@ -130,6 +130,10 @@ def skill_engine(engine):
         )
 
     se._atoms["memory_store"] = mock_memory_store
+    monkeypatch.setattr(
+        "plastic_promise.skills.memory_operations.handle_memory_store",
+        mock_memory_store,
+    )
 
     # memory_recall: returns empty results (no duplicates)
     async def mock_memory_recall(ctx, args):
@@ -142,6 +146,10 @@ def skill_engine(engine):
         )
 
     se._atoms["memory_recall"] = mock_memory_recall
+    monkeypatch.setattr(
+        "plastic_promise.skills.memory_operations.handle_memory_recall",
+        mock_memory_recall,
+    )
 
     # domain, system, defense, memory_gc: successful mocks
     async def mock_domain(ctx, args):
@@ -297,11 +305,15 @@ class TestPhase1E2E:
             f"Expected domain failure recorded in degrade_log. Got: {result.degrade_log}"
         )
 
-    async def test_smart_remember_handles_duplicate(self, skill_engine):
-        """smart-remember must update when memory_recall returns a duplicate.
+    async def test_smart_remember_exact_duplicate_is_noop(
+        self,
+        skill_engine,
+        monkeypatch,
+    ):
+        """An exact duplicate succeeds without store, mutation, or reinforcement.
 
         This test pre-seeds a memory in the engine, then checks that
-        smart-remember detects it as a duplicate and reports 'updated'.
+        smart-remember detects the canonical exact content and reports a no-op.
         """
         # Pre-seed a memory so recall finds a duplicate
         record = MemoryRecord(
@@ -310,6 +322,8 @@ class TestPhase1E2E:
             source="test",
         )
         seed_id = skill_engine._ctx.store_memory(record)
+        canonical = skill_engine._ctx.get_memory_dict_for_review(seed_id)
+        assert canonical is not None
 
         # Override memory_recall to return the seeded memory as a duplicate
         async def mock_recall_with_dupe(ctx, args):
@@ -320,14 +334,30 @@ class TestPhase1E2E:
                             "id": seed_id,
                             "content": "E2E duplicate test: tab over spaces",
                             "relevance": 0.92,
+                            "project_id": canonical["project_id"],
+                            "origin_scope": "project",
                         },
                     ],
                     "related": [],
                     "divergent": [],
+                    "project_id": canonical["project_id"],
                 }
             )
 
-        skill_engine._atoms["memory_recall"] = mock_recall_with_dupe
+        monkeypatch.setattr(
+            "plastic_promise.skills.memory_operations.handle_memory_recall",
+            mock_recall_with_dupe,
+        )
+        mutation_spy = MagicMock(wraps=skill_engine._ctx.mutate_ordinary_source)
+        reinforce_spy = MagicMock(wraps=skill_engine._ctx.reinforce_ordinary_duplicate)
+        store_spy = AsyncMock(side_effect=AssertionError("exact duplicate must not store"))
+        monkeypatch.setattr(skill_engine._ctx, "mutate_ordinary_source", mutation_spy)
+        monkeypatch.setattr(skill_engine._ctx, "reinforce_ordinary_duplicate", reinforce_spy)
+        monkeypatch.setattr(
+            "plastic_promise.skills.memory_operations.handle_memory_store",
+            store_spy,
+        )
+        before = skill_engine._ctx.get_memory_dict_for_review(seed_id)
 
         result = await skill_engine.exec(
             "smart-remember",
@@ -342,10 +372,15 @@ class TestPhase1E2E:
         assert result.success is True, (
             f"smart-remember duplicate handling failed. Errors: {result.errors}"
         )
-        assert result.data["action"] == "updated", (
-            f"Expected 'updated', got '{result.data.get('action')}'"
+        assert result.data["action"] == "unchanged", (
+            f"Expected 'unchanged', got '{result.data.get('action')}'"
         )
+        assert result.data["reason"] == "exact_duplicate"
         assert result.data.get("duplicate_of") == seed_id
+        assert skill_engine._ctx.get_memory_dict_for_review(seed_id) == before
+        mutation_spy.assert_not_called()
+        reinforce_spy.assert_not_called()
+        store_spy.assert_not_awaited()
 
     async def test_unknown_skill_returns_error(self, skill_engine):
         """Calling an unregistered skill returns a failure result."""

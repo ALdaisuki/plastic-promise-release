@@ -50,6 +50,12 @@ class TestFTSFusion:
 
         engine = ContextEngine(use_sqlite=False)
         engine._ldb = FakeLDB()
+        engine._memories["m1"] = {
+            "id": "m1",
+            "content": "exact text",
+            "memory_type": "experience",
+            "source": "test",
+        }
 
         assert engine._fts_retrieval("exact") == [("m1", 0.9, "exact text", "fts")]
 
@@ -62,6 +68,12 @@ class TestFTSFusion:
 
         engine = ContextEngine(use_sqlite=False)
         engine._ldb = FakeLDB()
+        engine._memories["m1"] = {
+            "id": "m1",
+            "content": "exact text",
+            "memory_type": "experience",
+            "source": "test",
+        }
 
         assert engine._fts_retrieval("exact") == []
 
@@ -77,6 +89,13 @@ class TestFTSFusion:
 
         engine = ContextEngine(use_sqlite=False)
         engine._ldb = FakeLDB()
+        engine._memories["m1"] = {
+            "id": "m1",
+            "content": "exact text",
+            "memory_type": "experience",
+            "source": "test",
+            "domain": "designing",
+        }
 
         assert engine._fts_retrieval("exact", scope="designing") == [
             ("m1", 0.9, "exact text", "fts")
@@ -106,6 +125,9 @@ class TestFTSFusion:
         store._fts_ready = True
 
         class FakeSearch:
+            def select(self, _columns):
+                return self
+
             def limit(self, k):
                 return self
 
@@ -134,6 +156,9 @@ class TestFTSFusion:
         store._fts_ready = True
 
         class FakeSearch:
+            def select(self, _columns):
+                return self
+
             def limit(self, k):
                 return self
 

@@ -1,13 +1,14 @@
 """Coupling health scanner — tag anomalies, bridge nodes, implicit dependencies."""
 
 import json
-import os
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta
 from itertools import combinations
 
 from plastic_promise.core.paths import get_db_path
+from plastic_promise.core.synthesis import ensure_synthesis_schema
+from plastic_promise.core.synthesis_retrieval import ordinary_memory_sql_predicate
 
 
 def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
@@ -32,13 +33,18 @@ async def scan_coupling(engine) -> dict:
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    ensure_synthesis_schema(conn)
+    conn.commit()
+    ordinary_guard = ordinary_memory_sql_predicate("memories")
     findings = []
 
     try:
         # 1. Tag co-occurrence anomalies: find tag pairs that co-occur
         #    significantly more often than expected by chance
         tag_memory_rows = conn.execute(
-            "SELECT id, tags FROM memories WHERE tags IS NOT NULL AND tags != '[]' AND tags != ''"
+            "SELECT id, tags FROM memories "
+            "WHERE tags IS NOT NULL AND tags != '[]' AND tags != '' "
+            f"AND {ordinary_guard}"
         ).fetchall()
 
         if len(tag_memory_rows) >= 10:
@@ -61,7 +67,7 @@ async def scan_coupling(engine) -> dict:
                         tag_freq[tag] += 1
 
                 # Count all pairs
-                valid_tags = sorted(set(t for t in tag_list if isinstance(t, str)))
+                valid_tags = sorted({tag for tag in tag_list if isinstance(tag, str)})
                 for t1, t2 in combinations(valid_tags, 2):
                     pair = tuple(sorted([t1, t2]))
                     cooccur_freq[pair] += 1
@@ -109,7 +115,8 @@ async def scan_coupling(engine) -> dict:
         entity_domain_rows = conn.execute(
             "SELECT entity_ids, domain FROM memories "
             "WHERE entity_ids IS NOT NULL AND entity_ids != '' "
-            "AND domain IS NOT NULL AND domain != ''"
+            "AND domain IS NOT NULL AND domain != '' "
+            f"AND {ordinary_guard}"
         ).fetchall()
 
         if entity_domain_rows:
@@ -162,6 +169,7 @@ async def scan_coupling(engine) -> dict:
             "FROM memories "
             "WHERE created_at >= ? "
             "AND domain IS NOT NULL AND domain != '' "
+            f"AND {ordinary_guard} "
             "GROUP BY d, domain "
             "ORDER BY d",
             (fourteen_days_ago,),

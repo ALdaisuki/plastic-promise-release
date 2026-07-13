@@ -4,9 +4,104 @@ from __future__ import annotations
 
 import json
 import secrets
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+MEMORY_INDEX_JOB_SCHEMA = "memory-index/v3"
+_MEMORY_INDEX_ACTIONS = frozenset({"upsert", "delete"})
+_MAINTENANCE_CYCLE_STAGES = (
+    "memory_lifecycle",
+    "proposal_expiry",
+    "synthesis_integrity",
+    "memory_index_replay",
+    "synthesis_index_replay",
+    "audit",
+)
+
+
+class TraceabilityStore:
+    """Durable reader for strict maintenance cycle span trees."""
+
+    def __init__(self, db_path: str | Path):
+        self._conn = sqlite3.connect(str(db_path))
+        self._conn.row_factory = sqlite3.Row
+        ensure_traceability_schema(self._conn)
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._conn
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def get_cycle_span_tree(
+        self, cycle_call_id: str
+    ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
+        root_row = self._conn.execute(
+            "SELECT * FROM call_spans WHERE call_id = ?",
+            (cycle_call_id,),
+        ).fetchone()
+        child_rows = self._conn.execute(
+            "SELECT * FROM call_spans WHERE parent_call_id = ? AND call_id <> ?",
+            (cycle_call_id, cycle_call_id),
+        ).fetchall()
+        root = self._span_dict(root_row) if root_row is not None else None
+        children = [self._span_dict(row) for row in child_rows]
+        children.sort(key=self._span_order)
+        if not self._valid_cycle_tree(cycle_call_id, root, children):
+            raise ValueError("invalid_maintenance_cycle_span_tree")
+        return root, tuple(children)
+
+    @staticmethod
+    def _span_order(span: dict[str, Any]) -> int:
+        metadata = span.get("metadata")
+        order = metadata.get("order") if isinstance(metadata, dict) else None
+        return order if type(order) is int else -1
+
+    @staticmethod
+    def _span_dict(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            metadata = None
+        return {
+            "call_id": str(row["call_id"] or ""),
+            "parent_call_id": str(row["parent_call_id"] or ""),
+            "tool_name": str(row["tool_name"] or ""),
+            "stage": str(row["stage_name"] or ""),
+            "status": str(row["status"] or ""),
+            "degraded": bool(row["degraded"]),
+            "metadata": metadata,
+            "started_at": str(row["started_at"] or ""),
+            "ended_at": str(row["ended_at"] or ""),
+        }
+
+    @staticmethod
+    def _valid_cycle_tree(
+        cycle_call_id: str,
+        root: dict[str, Any] | None,
+        children: list[dict[str, Any]],
+    ) -> bool:
+        if root is None or root["call_id"] != cycle_call_id:
+            return False
+        if root["parent_call_id"] == cycle_call_id or root["stage"] != "maintenance_cycle":
+            return False
+        if not isinstance(root["metadata"], dict) or len(children) != 6:
+            return False
+        if [child["stage"] for child in children] != list(_MAINTENANCE_CYCLE_STAGES):
+            return False
+        orders = [
+            child["metadata"].get("order") if isinstance(child["metadata"], dict) else None
+            for child in children
+        ]
+        if orders != list(range(1, 7)):
+            return False
+        return all(
+            child["call_id"] != cycle_call_id and child["parent_call_id"] == cycle_call_id
+            for child in children
+        )
 
 
 def utc_now() -> str:
@@ -27,6 +122,7 @@ def _table_columns(conn, table_name: str) -> set[str]:
 
 
 def ensure_traceability_schema(conn) -> None:
+    caller_owned_transaction = bool(conn.in_transaction)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS call_spans (
@@ -54,6 +150,7 @@ def ensure_traceability_schema(conn) -> None:
         CREATE TABLE IF NOT EXISTS memory_lineage (
             lineage_id INTEGER PRIMARY KEY AUTOINCREMENT,
             memory_id TEXT NOT NULL DEFAULT '',
+            parent_memory_id TEXT NOT NULL DEFAULT '',
             call_id TEXT NOT NULL,
             request_scope_id TEXT NOT NULL DEFAULT '',
             project_id TEXT NOT NULL DEFAULT '',
@@ -123,9 +220,7 @@ def ensure_traceability_schema(conn) -> None:
     )
     call_span_columns = _table_columns(conn, "call_spans")
     if "started_at" not in call_span_columns:
-        conn.execute(
-            "ALTER TABLE call_spans ADD COLUMN started_at TEXT NOT NULL DEFAULT ''"
-        )
+        conn.execute("ALTER TABLE call_spans ADD COLUMN started_at TEXT NOT NULL DEFAULT ''")
         call_span_columns.add("started_at")
     if "ended_at" not in call_span_columns:
         conn.execute("ALTER TABLE call_spans ADD COLUMN ended_at TEXT")
@@ -146,7 +241,76 @@ def ensure_traceability_schema(conn) -> None:
             WHERE (ended_at IS NULL OR ended_at = '') AND updated_at IS NOT NULL
             """
         )
-    conn.commit()
+    lineage_columns = _table_columns(conn, "memory_lineage")
+    if "parent_memory_id" not in lineage_columns:
+        conn.execute(
+            "ALTER TABLE memory_lineage ADD COLUMN parent_memory_id TEXT NOT NULL DEFAULT ''"
+        )
+    outbox_columns = _table_columns(conn, "store_outbox")
+    if "dedupe_key" not in outbox_columns:
+        conn.execute("ALTER TABLE store_outbox ADD COLUMN dedupe_key TEXT NOT NULL DEFAULT ''")
+    if "attempt_count" not in outbox_columns:
+        conn.execute("ALTER TABLE store_outbox ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+    if "updated_at" not in outbox_columns:
+        conn.execute("ALTER TABLE store_outbox ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+    if "next_attempt_at" not in outbox_columns:
+        conn.execute("ALTER TABLE store_outbox ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''")
+    conn.execute("UPDATE store_outbox SET updated_at = created_at WHERE updated_at = ''")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_store_outbox_active_dedupe "
+        "ON store_outbox(dedupe_key) "
+        "WHERE dedupe_key <> '' AND status IN ('pending', 'processing')"
+    )
+    if not caller_owned_transaction and conn.in_transaction:
+        conn.commit()
+
+
+def record_memory_lineage(
+    conn,
+    *,
+    memory_id: str,
+    parent_memory_id: str,
+    relation: str,
+    call_id: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    """Insert one lineage edge without taking ownership of the caller transaction."""
+    project_row = conn.execute(
+        "SELECT project_id FROM memories WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+    project_id = str(project_row[0] or "") if project_row else ""
+    span_row = conn.execute(
+        "SELECT request_scope_id FROM call_spans WHERE call_id = ?",
+        (call_id,),
+    ).fetchone()
+    request_scope_id = str(span_row[0] or "") if span_row else ""
+    cursor = conn.execute(
+        """
+        INSERT INTO memory_lineage (
+            memory_id,
+            parent_memory_id,
+            call_id,
+            request_scope_id,
+            project_id,
+            relation,
+            metadata_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            memory_id,
+            parent_memory_id,
+            call_id,
+            request_scope_id,
+            project_id,
+            relation,
+            _metadata_json(metadata),
+            utc_now(),
+        ),
+    )
+    return int(cursor.lastrowid)
 
 
 def _default_outbox_path() -> Path:
@@ -227,6 +391,196 @@ def record_outbox_event(
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         return outbox_id
+
+
+def enqueue_memory_index_job(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    project_id: str,
+    action: Literal["upsert", "delete"],
+    expected_embedding_hash: str,
+    call_id: str,
+) -> str:
+    """Publish one canonical-state-bound ordinary-memory index job.
+
+    The caller may already own the SQLite transaction that changes the memory.
+    In that case the outbox publication participates in the same transaction;
+    derived LanceDB work remains a post-commit consumer concern.
+    """
+    ensure_traceability_schema(conn)
+    memory_id = str(memory_id or "").strip()
+    project_id = str(project_id or "").strip()
+    action = str(action or "").strip()
+    expected_embedding_hash = str(expected_embedding_hash or "").strip()
+    if action not in _MEMORY_INDEX_ACTIONS:
+        raise ValueError("invalid_memory_index_action")
+    if not memory_id or not project_id or not expected_embedding_hash:
+        raise ValueError("invalid_memory_index_job")
+
+    owns_transaction = not bool(conn.in_transaction)
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        canonical = conn.execute(
+            "SELECT project_id, embedding_hash FROM memories WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        if canonical is None:
+            raise ValueError("memory_index_canonical_missing")
+        if str(canonical[0] or "") != project_id:
+            raise ValueError("memory_index_project_mismatch")
+        if str(canonical[1] or "") != expected_embedding_hash:
+            raise ValueError("memory_index_material_mismatch")
+        version_rows = conn.execute(
+            "SELECT version FROM memory_version WHERE singleton = 1"
+        ).fetchall()
+        if len(version_rows) != 1 or type(version_rows[0][0]) is not int or version_rows[0][0] < 0:
+            raise ValueError("memory_version_unavailable")
+        memory_version = int(version_rows[0][0])
+        dedupe_key = "memory-index:" + json.dumps(
+            {
+                "action": action,
+                "expected_embedding_hash": expected_embedding_hash,
+                "memory_id": memory_id,
+                "memory_version": memory_version,
+                "project_id": project_id,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+        existing = conn.execute(
+            "SELECT outbox_id FROM store_outbox "
+            "WHERE dedupe_key = ? AND status IN ('pending', 'processing') LIMIT 1",
+            (dedupe_key,),
+        ).fetchone()
+        if existing is not None:
+            if owns_transaction:
+                conn.commit()
+            return str(existing[0])
+
+        outbox_id = f"outbox_{secrets.token_hex(8)}"
+        now = utc_now()
+        payload_json = json.dumps(
+            {
+                "action": action,
+                "expected_embedding_hash": expected_embedding_hash,
+                "material_revision": expected_embedding_hash,
+                "memory_id": memory_id,
+                "memory_version": memory_version,
+                "project_id": project_id,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        conn.execute(
+            """
+            INSERT INTO store_outbox (
+                outbox_id, tool_name, project_id, call_id, status, payload_json,
+                error_class, error_message, metadata_json, created_at,
+                dedupe_key, attempt_count, updated_at, next_attempt_at
+            ) VALUES (?, 'memory_index', ?, ?, 'pending', ?, '', '', ?, ?, ?, 0, ?, '')
+            """,
+            (
+                outbox_id,
+                project_id,
+                call_id,
+                payload_json,
+                json.dumps(
+                    {"job_schema": MEMORY_INDEX_JOB_SCHEMA},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                now,
+                dedupe_key,
+                now,
+            ),
+        )
+        if owns_transaction:
+            conn.commit()
+        return outbox_id
+    except sqlite3.IntegrityError:
+        if owns_transaction and conn.in_transaction:
+            conn.rollback()
+        concurrent = conn.execute(
+            "SELECT outbox_id FROM store_outbox "
+            "WHERE dedupe_key = ? AND status IN ('pending', 'processing') LIMIT 1",
+            (dedupe_key,),
+        ).fetchone()
+        if concurrent is not None:
+            return str(concurrent[0])
+        raise
+    except BaseException:
+        if owns_transaction and conn.in_transaction:
+            conn.rollback()
+        raise
+
+
+def _resolve_expected_embedding_hash(
+    *,
+    expected_embedding_hash: str | None,
+    embedding_hash: str | None,
+) -> str:
+    """Accept the former keyword while rejecting ambiguous producer input."""
+    expected = str(expected_embedding_hash or "").strip()
+    legacy = str(embedding_hash or "").strip()
+    if expected and legacy and expected != legacy:
+        raise ValueError("memory_index_material_mismatch")
+    return expected or legacy
+
+
+def enqueue_memory_index_upsert(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    project_id: str,
+    call_id: str,
+    expected_embedding_hash: str | None = None,
+    embedding_hash: str | None = None,
+) -> str:
+    """Enqueue an ordinary-memory index upsert using the V3 contract.
+
+    ``embedding_hash`` remains a compatibility alias for existing producer
+    call sites. New callers should provide ``expected_embedding_hash``.
+    """
+    return enqueue_memory_index_job(
+        conn,
+        memory_id=memory_id,
+        project_id=project_id,
+        action="upsert",
+        expected_embedding_hash=_resolve_expected_embedding_hash(
+            expected_embedding_hash=expected_embedding_hash,
+            embedding_hash=embedding_hash,
+        ),
+        call_id=call_id,
+    )
+
+
+def enqueue_memory_index_delete(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    project_id: str,
+    call_id: str,
+    expected_embedding_hash: str | None = None,
+    embedding_hash: str | None = None,
+) -> str:
+    """Enqueue an ordinary-memory index delete using the V3 contract."""
+    return enqueue_memory_index_job(
+        conn,
+        memory_id=memory_id,
+        project_id=project_id,
+        action="delete",
+        expected_embedding_hash=_resolve_expected_embedding_hash(
+            expected_embedding_hash=expected_embedding_hash,
+            embedding_hash=embedding_hash,
+        ),
+        call_id=call_id,
+    )
 
 
 def record_call_span(

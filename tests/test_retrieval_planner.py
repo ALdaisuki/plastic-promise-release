@@ -1,4 +1,9 @@
-from plastic_promise.core.retrieval_planner import plan_retrieval
+import pytest
+
+from plastic_promise.core.retrieval_planner import (
+    plan_retrieval,
+    requires_synthesis_source_expansion,
+)
 
 
 def test_architecture_uses_mix_mode_with_broad_budget():
@@ -35,3 +40,33 @@ def test_explicit_mode_override_is_validated():
 
     assert plan.mode == "audit"
     assert plan.reason == "caller_override"
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    ["code", "audit", "principle", "governing", "correction", "code_review", "debugging"],
+)
+def test_high_impact_tasks_require_synthesis_source_expansion(task_type: str):
+    plan = plan_retrieval(task_type=task_type)
+
+    assert requires_synthesis_source_expansion(plan, task_type=task_type) is True
+
+
+def test_learning_plan_does_not_force_synthesis_source_expansion():
+    plan = plan_retrieval(task_type="learning")
+
+    assert requires_synthesis_source_expansion(plan, task_type="learning") is False
+
+
+def test_fusion_channels_exclude_graph_and_evidence_layers():
+    plan = plan_retrieval(
+        task_type="code_review",
+        has_vector=True,
+        has_graph=True,
+        has_fts=True,
+    )
+
+    assert plan.fusion_channels == ("vector", "bm25", "fts")
+    assert plan.channel_windows == {"vector": 32, "bm25": 32, "fts": 32}
+    assert {"graph", "code"}.issubset(plan.channels)
+    assert not ({"graph", "code", "audit", "principle"} & set(plan.fusion_channels))

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plastic-promise"
-version = "0.1.14"
+version = "0.1.15"
 description = "AI 行为治理系统 — 以约定工程替代约束工程"
 readme = "README.md"
 license = { text = "MIT" }
@@ -35,7 +35,7 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.0.0,<2.0.0",
-    "lancedb>=0.6.0",
+    "lancedb>=0.34.0",
     "sentence-transformers>=2.2.0",
     "uvicorn[standard]>=0.27.0",
     "starlette>=0.36.0",

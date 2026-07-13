@@ -53,6 +53,58 @@ def test_rust_health_check_initial_state():
     assert result is True or result is None
 
 
+def test_rust_health_check_uses_explicit_canonical_backends(monkeypatch, tmp_path):
+    """The health probe must exercise the same backend constructor as supply."""
+    import sys
+    import types
+
+    from plastic_promise.core.context_engine import ContextEngine
+
+    calls = {"new_with_backends": [], "default_constructor": 0}
+
+    class FakeRustPack:
+        core = []
+        related = []
+        divergent = []
+        activated_principles = []
+
+    class FakeRustEngine:
+        def __init__(self):
+            calls["default_constructor"] += 1
+            raise AssertionError("health probe must not use RustEngine()")
+
+        @staticmethod
+        def new_with_backends(sqlite_path, lancedb_path):
+            calls["new_with_backends"].append((sqlite_path, lancedb_path))
+            instance = object.__new__(FakeRustEngine)
+            return instance
+
+        def set_current_time(self, _timestamp):
+            return None
+
+        def supply(self, *_args):
+            return FakeRustPack()
+
+    db_path = tmp_path / "canonical.db"
+    lancedb_path = tmp_path / "canonical.lancedb"
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(db_path))
+    monkeypatch.setenv("PLASTIC_LANCEDB_PATH", str(lancedb_path))
+    monkeypatch.setitem(
+        sys.modules,
+        "context_engine_core",
+        types.SimpleNamespace(ContextEngine=FakeRustEngine),
+    )
+
+    engine = ContextEngine(use_sqlite=True)
+    engine._ldb = types.SimpleNamespace(_path=str(lancedb_path))
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "decoy.db"))
+    monkeypatch.setenv("PLASTIC_LANCEDB_PATH", str(tmp_path / "decoy.lancedb"))
+
+    assert engine._check_rust_health() is True
+    assert calls["default_constructor"] == 0
+    assert calls["new_with_backends"] == [(str(db_path), str(lancedb_path))]
+
+
 def test_rust_health_cache_ttl():
     """Health check caches result for TTL duration (when Rust is healthy).
 

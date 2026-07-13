@@ -10,6 +10,73 @@ from mcp.types import TextContent
 class TestAutoContextInject:
     """Tests for handle_auto_context_inject."""
 
+    def test_inject_marks_nested_memory_store_as_trusted(self, monkeypatch):
+        from plastic_promise.core.memory_proposals import has_trusted_internal_origin
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
+        monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
+        engine = MagicMock()
+        observed = []
+
+        async def capture_store(_engine, args):
+            trusted = has_trusted_internal_origin(args)
+            observed.append(trusted)
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "stored": trusted,
+                            "status": "canonical" if trusted else "pending",
+                            "memory_id": "mem_auto_context" if trusted else None,
+                        }
+                    ),
+                )
+            ]
+
+        with patch(
+            "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start",
+            return_value=[
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "entity_id": "skill:auto_inject:manual:runtime",
+                            "activated_principles": [],
+                        }
+                    ),
+                )
+            ],
+        ):
+            with patch("plastic_promise.loop.soul_loop.SoulLoop") as loop_class:
+                loop_class.return_value.pre_task_v2.side_effect = RuntimeError("offline")
+                with patch(
+                    "plastic_promise.mcp.tools.principles.handle_principle_activate",
+                    return_value=[TextContent(type="text", text='{"activated": []}')],
+                ):
+                    with patch(
+                        "plastic_promise.mcp.tools.memory.handle_memory_store",
+                        side_effect=capture_store,
+                    ):
+                        with patch(
+                            "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete",
+                            return_value=[TextContent(type="text", text='{"status": "done"}')],
+                        ):
+                            result = asyncio.run(
+                                handle_auto_context_inject(
+                                    engine,
+                                    {
+                                        "task_description": "Inject governed context",
+                                        "source": "manual",
+                                    },
+                                )
+                            )
+
+        payload = json.loads(result[0].text)
+        assert observed == [True]
+        assert payload["inject_memory_id"] == "mem_auto_context"
+        assert has_trusted_internal_origin({}) is False
+
     def test_inject_creates_session_and_returns_context(self):
         """Full inject flow: start -> supply -> store -> complete."""
         from plastic_promise.mcp.tools.context import handle_auto_context_inject

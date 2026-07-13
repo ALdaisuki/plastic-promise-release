@@ -14,6 +14,7 @@
 
 import datetime
 import json
+from contextlib import suppress
 from dataclasses import dataclass
 
 from plastic_promise.core.paths import get_db_path
@@ -157,8 +158,8 @@ class StepAuditor:
             # 当调用方传入的 lesson/improvement 比自动推导更有价值时，存储调用方的版本
             content_to_store = lesson or derived_lesson
             if content_to_store:
-                try:
-                    self._engine.register_memory(
+                with suppress(Exception):
+                    self._engine.create_ordinary_if_absent(
                         {
                             "id": f"reflection_{result.step_id}",
                             "content": content_to_store,
@@ -167,13 +168,11 @@ class StepAuditor:
                             "tier": "L3",
                         }
                     )
-                except Exception:
-                    pass
             # 如果有有价值的改良措施，也一并存储
             improvement_to_store = improvement or derived_improvement
             if improvement_to_store and improvement_to_store != content_to_store:
-                try:
-                    self._engine.register_memory(
+                with suppress(Exception):
+                    self._engine.create_ordinary_if_absent(
                         {
                             "id": f"improvement_{result.step_id}",
                             "content": improvement_to_store,
@@ -182,13 +181,9 @@ class StepAuditor:
                             "tier": "L3",
                         }
                     )
-                except Exception:
-                    pass
 
         # 域联邦自进化: 每次审计后触发衰减检测
         try:
-            import os
-
             from plastic_promise.core.domain_manager import DomainManager
 
             db_path = get_db_path()
@@ -280,10 +275,7 @@ class StepAuditor:
         """
         historical = self._get_historical_benchmark("transparency")
 
-        if git_commit:
-            score = max(0.80, historical or 0.80)
-        else:
-            score = min(0.55, historical or 0.50)
+        score = max(0.80, historical or 0.80) if git_commit else min(0.55, historical or 0.50)
 
         if rationale:
             transparency_keywords = [
@@ -509,7 +501,7 @@ class StepAuditor:
 
     def _load_history(self):
         try:
-            with open(self._audit_log_path, encoding="utf-8") as f:
+            with open(self._audit_log_path, encoding="utf-8"):
                 self._history = []  # lazy — just check file exists
         except FileNotFoundError:
             pass

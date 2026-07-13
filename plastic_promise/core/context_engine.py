@@ -6,6 +6,8 @@
 生产环境应使用 Rust 版本以获得更好性能。
 """
 
+import contextlib
+import copy
 import datetime
 import json
 import logging
@@ -13,9 +15,10 @@ import math
 import os
 import threading
 import time
-from collections.abc import Iterator
+import uuid
 from collections import Counter
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
 from plastic_promise.core.behavior_graph import graph_edge, graph_node, validate_node_type
@@ -27,12 +30,132 @@ from plastic_promise.core.constants import (
     SOURCE_EXCLUDE,
     SYMBOL_RULE_KEYWORDS,
 )
+from plastic_promise.core.fusion_policy import (
+    FusionConfig,
+    FusionDecision,
+    load_fusion_config,
+    weighted_rrf,
+)
 from plastic_promise.core.paths import get_db_path
 from plastic_promise.core.retrieval_planner import RetrievalPlan, plan_retrieval
 
 logger = logging.getLogger(__name__)
 
+
+class OrdinaryMemoryConflict(RuntimeError):
+    """Reject an unsafe or conflicting ordinary-memory mutation."""
+
+
+_ORDINARY_JSON_PATCH_FIELDS = frozenset(
+    {
+        "tags",
+        "entity_ids",
+        "parent_memory_ids",
+        "metadata_json",
+    }
+)
+_ORDINARY_NUMERIC_INCREMENT_FIELDS = frozenset(
+    {
+        "access_count",
+        "worth_success",
+        "worth_failure",
+    }
+)
+_ORDINARY_SCALAR_PATCH_FIELDS = frozenset(
+    {
+        "content",
+        "memory_type",
+        "source",
+        "owner",
+        "tier",
+        "scope",
+        "category",
+        "domain",
+        "importance",
+        "created_at",
+        "access_count",
+        "worth_success",
+        "worth_failure",
+        "activation_weight",
+        "decay_multiplier",
+        "effective_half_life",
+        "last_accessed",
+        "project_id",
+        "visibility",
+        "source_class",
+        "created_by_call_id",
+        "origin_kind",
+        "origin_uri",
+        "origin_ref",
+        "origin_hash",
+        "raw_content",
+        "l0_abstract",
+        "l1_summary",
+        "l2_content",
+        "embedding_text",
+        "embedding_hash",
+        "search_text",
+    }
+)
+_ORDINARY_PATCH_COLUMN_ORDER = (
+    "content",
+    "memory_type",
+    "source",
+    "owner",
+    "tier",
+    "scope",
+    "category",
+    "tags",
+    "domain",
+    "importance",
+    "entity_ids",
+    "created_at",
+    "access_count",
+    "worth_success",
+    "worth_failure",
+    "activation_weight",
+    "decay_multiplier",
+    "effective_half_life",
+    "last_accessed",
+    "project_id",
+    "visibility",
+    "source_class",
+    "created_by_call_id",
+    "origin_kind",
+    "origin_uri",
+    "origin_ref",
+    "origin_hash",
+    "parent_memory_ids",
+    "metadata_json",
+    "raw_content",
+    "l0_abstract",
+    "l1_summary",
+    "l2_content",
+    "embedding_text",
+    "embedding_hash",
+    "search_text",
+)
+_ORDINARY_NUMERIC_REPLACEMENT_FIELDS = frozenset(
+    {
+        "importance",
+        "access_count",
+        "worth_success",
+        "worth_failure",
+        "activation_weight",
+        "decay_multiplier",
+        "effective_half_life",
+    }
+)
+_RETRIEVAL_VISIBLE_PATCH_FIELDS = frozenset(
+    (_ORDINARY_SCALAR_PATCH_FIELDS | _ORDINARY_JSON_PATCH_FIELDS)
+    - {"last_accessed", "created_by_call_id"}
+)
+_ORDINARY_AVAILABILITY_PATCH_FIELDS = frozenset({"tags", "metadata_json"})
+_ORDINARY_INDEX_PROJECTION_PATCH_FIELDS = frozenset({"tier", "scope", "category"})
+
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from plastic_promise.core.exemplar_gap_detector import GapSignal
 
 # ============================================================
@@ -85,6 +208,8 @@ class ContextPack:
     audit_metadata: dict[str, Any] = field(default_factory=dict)
     pipeline_stats: dict[str, Any] = field(default_factory=dict)
     per_item_stats: list[dict[str, Any]] = field(default_factory=list)
+    channel_rankings: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    channel_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     gap_signal: Optional["GapSignal"] = None  # knowledge-gap detection signal
 
     def to_prompt(self) -> str:
@@ -165,6 +290,89 @@ class ContextPack:
     @property
     def total_items(self) -> int:
         return len(self.core) + len(self.related) + len(self.divergent)
+
+
+NONCANONICAL_CONTEXT_PREFIXES = (
+    "principle:",
+    "code:",
+    "mcp_tool:",
+    "task_state:",
+    "bilingual_synonym:",
+)
+_SYNTHESIS_FALLBACK_HARD_DENY_REASONS = frozenset(
+    {
+        "candidate_lookup_error",
+        "candidate_missing",
+        "candidate_state_unavailable",
+        "candidate_type_invalid",
+        "candidate_type_mismatch",
+        "canonical_gate_unavailable",
+        "control_missing",
+        "memory_version_invalid",
+        "memory_version_mismatch",
+        "retrieval_disabled",
+        "synthesis_validation_error",
+        "transaction_open",
+        "verification_evidence_missing",
+    }
+)
+_VERIFIED_SYNTHESIS_FALLBACK_REASONS = frozenset(
+    {
+        "candidate_payload_mismatch",
+        "contradiction_open",
+        "source_fingerprint_mismatch",
+        "source_hash_mismatch",
+        "source_missing",
+        "source_revision_mismatch",
+        "source_superseded",
+        "source_synthesis_invalid",
+        "source_unavailable",
+        "support_count_mismatch",
+        "synthesis_provenance_unavailable",
+    }
+)
+_SYNTHESIS_REVIEW_TASKS = frozenset({"audit", "code_audit", "code_review", "review"})
+
+
+def resolve_project_metadata(engine: Any, item_id: str) -> tuple[dict[str, Any] | None, str]:
+    """Resolve project fields with canonical SQLite precedence when available."""
+    sqlite_storage = getattr(engine, "_sqlite", None) if engine is not None else None
+    conn = getattr(sqlite_storage, "_conn", None)
+    if conn is not None:
+        try:
+            row = conn.execute(
+                "SELECT project_id, visibility, source_class FROM memories WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+        except Exception:
+            return None, "error"
+        if row is None:
+            return None, "canonical_missing"
+        project_id, visibility, source_class = row
+        if (
+            not isinstance(project_id, str)
+            or not project_id.strip()
+            or visibility not in {"project", "shared", "global", "private"}
+            or not isinstance(source_class, str)
+            or not source_class.strip()
+        ):
+            return None, "error"
+        return {
+            "project_id": project_id,
+            "visibility": visibility,
+            "source_class": source_class,
+        }, "canonical"
+
+    memories = getattr(engine, "_memories", None) if engine is not None else None
+    memory = memories.get(item_id) if isinstance(memories, dict) else None
+    if not isinstance(memory, dict):
+        return None, "runtime_missing"
+    metadata: dict[str, Any] = {}
+    nested = memory.get("metadata") or memory.get("metadata_json")
+    if isinstance(nested, dict):
+        metadata.update(nested)
+    metadata.update(memory)
+    return metadata, "runtime"
 
 
 # ============================================================
@@ -257,6 +465,16 @@ class GraphInfo:
 # ============================================================
 
 
+# Persistent storage and public admission live in this facade. Rust is a
+# snapshot-ranking accelerator and must not become an alternate write path.
+class _RustSynthesisFallback(RuntimeError):
+    """Signal that Python must rank a snapshot containing admitted synthesis."""
+
+
+class _RustFusionFallback(RuntimeError):
+    """Signal that the requested fusion policy requires Python."""
+
+
 class ContextEngine:
     """上下文供应引擎 (Python 回退版)
 
@@ -264,8 +482,15 @@ class ContextEngine:
     """
 
     def __init__(self, use_sqlite: bool = None):
+        # Fail at engine startup when the environment-only index fault seam is invalid.
+        from plastic_promise.core.synthesis_maintenance import (
+            validate_test_index_failure_configuration,
+        )
+
+        validate_test_index_failure_configuration()
         self._graph_nodes: dict[str, dict[str, Any]] = {}
         self._graph_edges: list[dict[str, Any]] = []
+        self._edge_feedback_base_weights: dict[tuple[str, ...], float] = {}
         self._feedback: dict[
             str, float
         ] = {}  # item_id -> accumulated delta (P2: 替换为 worth_score)
@@ -283,34 +508,26 @@ class ContextEngine:
         self._ldb: Any = None
         self._code_index: Any = None
         self._code_index_root: str = ""
+        # Canonical snapshots and ordinary writes share one replacement lock.
+        self._write_lock = threading.RLock()
+        self._manual_batch_state: dict[str, Any] | None = None
+        self._loaded_memory_version: int | None = None
+        self.canonical_sync_ok: bool = True
 
         # SQLite write-through — persists every mutation to disk (default ON)
         if use_sqlite is None:
             use_sqlite = os.environ.get("AGENT_USE_SQLITE", "1") != "0"
         self._sqlite = _SQLiteStorage() if use_sqlite else None
         if self._sqlite:
-            # Load existing from disk
-            for mid, data in self._sqlite.iter_all():
-                self._memories[mid] = data
-            if hasattr(self._sqlite, "iter_graph_nodes"):
-                for node_id, node in self._sqlite.iter_graph_nodes():
-                    self._graph_nodes[node_id] = node
-            if hasattr(self._sqlite, "iter_graph_edges"):
-                for edge in self._sqlite.iter_graph_edges():
-                    if not self.has_graph_edge(edge):
-                        self._graph_edges.append(edge)
+            self._refresh_canonical_cache_if_changed(force=True)
+        else:
+            self._rebuild_graph_from_memories()
 
         # P0: Rebuild principle↔memory graph edges from persisted memories
-        self._rebuild_graph_from_memories()
 
         # Heavy init deferred to first supply() call
         self._heavy_init_done = False
         self._heavy_init_lock = threading.Lock()
-        # Write serialization lock — all write paths acquire this.
-        # RLock (reentrant) because increment_field calls update_memory_fields,
-        # and both acquire the lock.
-        self._write_lock = threading.RLock()
-
         # Rust engine integration — stateless accelerator for supply()
         self._rust_healthy: bool | None = None  # None = unchecked, True = healthy, None on failure
         self._rust_health_checked_at: float = 0.0  # epoch timestamp of last health check
@@ -328,7 +545,11 @@ class ContextEngine:
            that reference entity_ids not yet in the graph.
         """
         # Pass 1: memory → entity references edges
+        edge_identities = {self._graph_edge_identity(edge) for edge in self._graph_edges}
+        governed_ids = self._governed_synthesis_ids(self._memories)
         for mid, mem in self._memories.items():
+            if mid in governed_ids:
+                continue
             entity_ids = mem.get("entity_ids", [])
             if not entity_ids:
                 continue
@@ -348,11 +569,15 @@ class ContextEngine:
                     "relation": "references",
                     "weight": 0.6,
                 }
-                if edge not in self._graph_edges:
+                identity = self._graph_edge_identity(edge)
+                if identity not in edge_identities:
                     self._graph_edges.append(edge)
+                    edge_identities.add(identity)
 
         # Pass 2: ensure skill_session nodes exist for orphan entity_ids
         for mid, mem in self._memories.items():
+            if mid in governed_ids:
+                continue
             entity_ids = mem.get("entity_ids", [])
             for eid in entity_ids:
                 if not eid.startswith("skill:"):
@@ -373,7 +598,13 @@ class ContextEngine:
         # Pass 3: principle ↔ memory edges (P0 deep grammar)
         total_edges = 0
         for mid, mem in self._memories.items():
-            total_edges += self._build_principle_edges_for_memory(mid, mem)
+            if mid in governed_ids:
+                continue
+            total_edges += self._build_principle_edges_for_memory(
+                mid,
+                mem,
+                edge_identities=edge_identities,
+            )
         if total_edges > 0:
             logging.info(
                 "_rebuild_graph_from_memories: created %d principle↔memory edges from %d memories",
@@ -516,8 +747,747 @@ class ContextEngine:
 
     # ========== 记忆管理 ==========
 
+    def _governed_synthesis_ids(self, ids) -> set[str]:
+        requested = {str(memory_id) for memory_id in ids}
+        governed = {
+            memory_id
+            for memory_id in requested
+            if str((self._memories.get(memory_id) or {}).get("memory_type") or "")
+            .strip()
+            .casefold()
+            == "synthesis"
+        }
+        conn = getattr(self._sqlite, "_conn", None)
+        if conn is None:
+            return governed
+        try:
+            governed.update(
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT id FROM memories "
+                    "WHERE LOWER(TRIM(COALESCE(memory_type, ''))) = 'synthesis' "
+                    "UNION SELECT memory_id FROM synthesis_artifacts"
+                ).fetchall()
+                if str(row[0]) in requested
+            )
+        except Exception:
+            return requested
+        return governed
+
+    def _synthesis_memory_reserved(self, memory_id: str) -> bool:
+        current = self._memories.get(memory_id)
+        conn = getattr(self._sqlite, "_conn", None)
+        if conn is None:
+            return str((current or {}).get("memory_type") or "").strip().casefold() == "synthesis"
+        from plastic_promise.core.synthesis_retrieval import (
+            is_governed_synthesis_memory,
+        )
+
+        return is_governed_synthesis_memory(
+            conn,
+            memory_id,
+            memory_type=(current or {}).get("memory_type"),
+        )
+
+    def _create_ordinary_memory(
+        self,
+        memory_id: str,
+        data: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        if self._sqlite is None:
+            current = self._memories.get(memory_id)
+            if current is None:
+                return copy.deepcopy(data), True
+            if current != data:
+                raise OrdinaryMemoryConflict("ordinary_memory_already_exists")
+            return copy.deepcopy(current), False
+        create = getattr(self._sqlite, "create_ordinary_if_absent", None)
+        if not callable(create):
+            raise OrdinaryMemoryConflict("ordinary_create_sqlite_required")
+        return create(memory_id, data)
+
+    def patch_ordinary_memory(
+        self,
+        memory_id: str,
+        *,
+        replacements: Mapping[str, Any] | None = None,
+        increments: Mapping[str, int | float] | None = None,
+        expected_project_id: str | None = None,
+        require_source_available: bool = False,
+        expected_tags: list[str] | tuple[str, ...] | None = None,
+        expected_category: str | None = None,
+        expected_content_hash: str | None = None,
+        expected_embedding_hash: str | None = None,
+        expected_snapshot: Mapping[str, Any] | None = None,
+        bump_memory_version: bool | None = None,
+        index_upsert_call_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply one field-scoped patch to the canonical ordinary row."""
+        with self._write_lock:
+            replacement_fields = set(replacements) if isinstance(replacements, Mapping) else set()
+            automatic_index_upsert = (
+                bool(replacement_fields & _ORDINARY_INDEX_PROJECTION_PATCH_FIELDS)
+                and index_upsert_call_id is None
+            )
+            if index_upsert_call_id is not None:
+                if not isinstance(index_upsert_call_id, str) or not index_upsert_call_id.strip():
+                    raise OrdinaryMemoryConflict("ordinary_patch_index_call_id_invalid")
+                index_upsert_call_id = index_upsert_call_id.strip()
+            storage = self._sqlite
+            patch = getattr(storage, "patch_ordinary", None)
+            if storage is None:
+                return self._patch_in_memory_ordinary(
+                    memory_id,
+                    replacements=replacements,
+                    increments=increments,
+                    expected_project_id=expected_project_id,
+                    require_source_available=require_source_available,
+                    expected_tags=expected_tags,
+                    expected_category=expected_category,
+                    expected_content_hash=expected_content_hash,
+                    expected_embedding_hash=expected_embedding_hash,
+                    expected_snapshot=expected_snapshot,
+                    bump_memory_version=bump_memory_version,
+                )
+            if not callable(patch):
+                raise OrdinaryMemoryConflict("ordinary_patch_sqlite_required")
+
+            conn = getattr(storage, "_conn", None)
+            caller_transaction_open = bool(conn is not None and conn.in_transaction)
+            patch_kwargs = {
+                "replacements": replacements,
+                "increments": increments,
+                "expected_project_id": expected_project_id,
+                "require_source_available": require_source_available,
+                "expected_tags": expected_tags,
+                "expected_category": expected_category,
+                "expected_content_hash": expected_content_hash,
+                "expected_embedding_hash": expected_embedding_hash,
+                "expected_snapshot": expected_snapshot,
+                "bump_memory_version": bump_memory_version,
+                "preserve_source_availability": True,
+            }
+            if index_upsert_call_id is not None or automatic_index_upsert:
+
+                def enqueue_projection(canonical: dict[str, Any]) -> None:
+                    from plastic_promise.core.memory_index import (
+                        read_persisted_index_material,
+                    )
+                    from plastic_promise.core.traceability import (
+                        enqueue_memory_index_upsert,
+                    )
+
+                    material = read_persisted_index_material(canonical)
+                    project_id = str(canonical.get("project_id") or "").strip()
+                    embedding_hash = (
+                        material.embedding_hash
+                        if material is not None
+                        else str(canonical.get("embedding_hash") or "").strip()
+                    )
+                    if index_upsert_call_id is not None and material is None:
+                        raise OrdinaryMemoryConflict("ordinary_patch_index_material_invalid")
+                    if not embedding_hash and automatic_index_upsert:
+                        return
+                    if not project_id or not embedding_hash:
+                        raise OrdinaryMemoryConflict("ordinary_patch_index_material_invalid")
+                    enqueue_memory_index_upsert(
+                        conn,
+                        memory_id=memory_id,
+                        project_id=project_id,
+                        expected_embedding_hash=embedding_hash,
+                        call_id=(
+                            index_upsert_call_id or f"ordinary-patch:{memory_id}:{uuid.uuid4().hex}"
+                        ),
+                    )
+
+                patch_kwargs["after_patch"] = enqueue_projection
+            canonical = patch(memory_id, **patch_kwargs)
+            if not caller_transaction_open and not (conn is not None and conn.in_transaction):
+                self._memories[memory_id] = copy.deepcopy(canonical)
+            elif self._manual_batch_state is not None:
+                self._manual_batch_state.setdefault("pending_memory_deletes", set()).discard(
+                    memory_id
+                )
+                self._manual_batch_state.setdefault("pending_memory_updates", {})[memory_id] = (
+                    copy.deepcopy(canonical)
+                )
+            return canonical
+
+    def _patch_in_memory_ordinary(
+        self,
+        memory_id: str,
+        *,
+        replacements: Mapping[str, Any] | None,
+        increments: Mapping[str, int | float] | None,
+        expected_project_id: str | None,
+        require_source_available: bool,
+        expected_tags: list[str] | tuple[str, ...] | None,
+        expected_category: str | None,
+        expected_content_hash: str | None,
+        expected_embedding_hash: str | None,
+        expected_snapshot: Mapping[str, Any] | None,
+        bump_memory_version: bool | None,
+    ) -> dict[str, Any]:
+        """Apply the same narrow CAS contract for an explicitly in-memory engine."""
+        if replacements is not None and not isinstance(replacements, Mapping):
+            raise OrdinaryMemoryConflict("ordinary_patch_field_not_allowed")
+        if increments is not None and not isinstance(increments, Mapping):
+            raise OrdinaryMemoryConflict("ordinary_patch_field_not_allowed")
+        if expected_snapshot is not None and not isinstance(expected_snapshot, Mapping):
+            raise OrdinaryMemoryConflict("ordinary_patch_expected_snapshot_invalid")
+        replacement_values = dict(replacements or {})
+        increment_values = dict(increments or {})
+        if not replacement_values and not increment_values:
+            raise OrdinaryMemoryConflict("ordinary_patch_empty")
+        replacement_fields = set(replacement_values)
+        increment_fields = set(increment_values)
+        if (
+            not replacement_fields <= (_ORDINARY_SCALAR_PATCH_FIELDS | _ORDINARY_JSON_PATCH_FIELDS)
+            or not increment_fields <= _ORDINARY_NUMERIC_INCREMENT_FIELDS
+        ):
+            raise OrdinaryMemoryConflict("ordinary_patch_field_not_allowed")
+        if replacement_fields & increment_fields:
+            raise OrdinaryMemoryConflict("ordinary_patch_field_conflict")
+        if bump_memory_version is not None and not isinstance(bump_memory_version, bool):
+            raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+        if not isinstance(require_source_available, bool):
+            raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+        if expected_project_id is not None:
+            expected_project_id = str(expected_project_id).strip()
+            if not expected_project_id:
+                raise OrdinaryMemoryConflict("ordinary_patch_expected_project_required")
+        if expected_tags is not None and (
+            not isinstance(expected_tags, (list, tuple))
+            or not all(isinstance(tag, str) for tag in expected_tags)
+        ):
+            raise OrdinaryMemoryConflict("ordinary_patch_expected_tags_invalid")
+        if (
+            "memory_type" in replacement_values
+            and str(replacement_values["memory_type"] or "").strip().casefold() == "synthesis"
+        ):
+            raise OrdinaryMemoryConflict("ordinary_memory_reserved")
+
+        for field_name, value in replacement_values.items():
+            if field_name in _ORDINARY_NUMERIC_REPLACEMENT_FIELDS and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or (isinstance(value, float) and not math.isfinite(value))
+            ):
+                raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+            if field_name in _ORDINARY_JSON_PATCH_FIELDS:
+                try:
+                    json.dumps(value, ensure_ascii=False, allow_nan=False)
+                except (TypeError, ValueError) as exc:
+                    raise OrdinaryMemoryConflict("ordinary_patch_value_invalid") from exc
+        for value in increment_values.values():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or (isinstance(value, float) and not math.isfinite(value))
+            ):
+                raise OrdinaryMemoryConflict("ordinary_patch_increment_invalid")
+
+        expected_values = dict(expected_snapshot or {})
+        if not set(expected_values) <= (_ORDINARY_SCALAR_PATCH_FIELDS - {"content"}):
+            raise OrdinaryMemoryConflict("ordinary_patch_expected_snapshot_invalid")
+        current = self._memories.get(memory_id)
+        if not isinstance(current, dict):
+            raise OrdinaryMemoryConflict("ordinary_patch_target_not_found")
+        if str(current.get("memory_type") or "").strip().casefold() == "synthesis":
+            raise OrdinaryMemoryConflict("ordinary_memory_reserved")
+
+        from plastic_promise.core.synthesis import synthesis_content_hash
+        from plastic_promise.core.synthesis_retrieval import _source_is_available
+
+        cas_mismatch = (
+            (
+                expected_project_id is not None
+                and str(current.get("project_id") or "").strip() != str(expected_project_id).strip()
+            )
+            or (
+                expected_content_hash is not None
+                and synthesis_content_hash(current.get("content")) != expected_content_hash
+            )
+            or (
+                expected_embedding_hash is not None
+                and str(current.get("embedding_hash") or "") != expected_embedding_hash
+            )
+            or (
+                expected_tags is not None and list(current.get("tags") or []) != list(expected_tags)
+            )
+            or (
+                expected_category is not None
+                and str(current.get("category") or "other") != expected_category
+            )
+            or any(
+                current.get(field_name) != value for field_name, value in expected_values.items()
+            )
+            or (require_source_available and not _source_is_available(current))
+        )
+        if cas_mismatch:
+            raise OrdinaryMemoryConflict("ordinary_patch_cas_mismatch")
+
+        canonical = copy.deepcopy(current)
+        canonical.update(copy.deepcopy(replacement_values))
+        for field_name, value in increment_values.items():
+            current_value = canonical.get(field_name, 0)
+            if isinstance(current_value, bool) or not isinstance(current_value, (int, float)):
+                raise OrdinaryMemoryConflict("ordinary_patch_increment_invalid")
+            canonical[field_name] = current_value + value
+        if replacement_fields & _ORDINARY_AVAILABILITY_PATCH_FIELDS:
+            try:
+                availability_changed = _source_is_available(current) != _source_is_available(
+                    canonical
+                )
+            except Exception as exc:
+                raise OrdinaryMemoryConflict("ordinary_patch_availability_invalid") from exc
+            if availability_changed:
+                raise OrdinaryMemoryConflict(
+                    "ordinary_patch_availability_change_requires_coordinator"
+                )
+        self._memories[memory_id] = canonical
+        return copy.deepcopy(canonical)
+
+    def apply_ordinary_feedback(
+        self,
+        memory_id: str,
+        feedback_type: str,
+        *,
+        expected_project_id: str | None = None,
+        require_source_available: bool = False,
+    ) -> dict[str, Any]:
+        """Persist one ordinary-memory feedback observation atomically.
+
+        Worth counters influence ranking and graph feedback. Unlike a generic
+        counter increment, this operation therefore always advances the
+        canonical snapshot version so other engine processes reload it.
+        """
+        normalized = str(feedback_type or "").strip().casefold()
+        increments: dict[str, int | float]
+        if normalized == "adopted":
+            increments = {"worth_success": 1}
+        elif normalized == "rejected":
+            increments = {"worth_failure": 1}
+        elif normalized == "ignored":
+            increments = {"worth_failure": 0.5}
+        else:
+            raise OrdinaryMemoryConflict("ordinary_feedback_type_invalid")
+        return self.patch_ordinary_memory(
+            memory_id,
+            increments=increments,
+            expected_project_id=expected_project_id,
+            require_source_available=require_source_available,
+            bump_memory_version=True,
+        )
+
+    def reset_ordinary_worth(self, memory_id: str) -> dict[str, Any]:
+        """Reset ordinary-memory feedback counters without hydrating a record."""
+        return self.patch_ordinary_memory(
+            memory_id,
+            replacements={"worth_success": 0, "worth_failure": 0},
+            bump_memory_version=True,
+        )
+
+    def reinforce_ordinary_duplicate(
+        self,
+        memory_id: str,
+        *,
+        entity_ids: list[str] | tuple[str, ...],
+        last_accessed: str,
+        expected_project_id: str,
+        expected_visibility: str,
+        expected_source_class: str,
+        expected_memory_type: str,
+    ) -> dict[str, Any]:
+        """Atomically merge duplicate provenance and reinforce its worth.
+
+        Deduplication is multi-process work. The entity-id union and numeric
+        reinforcement therefore have to read the canonical row only after the
+        SQLite write transaction has been acquired.
+        """
+        expected_binding = {
+            "project_id": str(expected_project_id or "").strip(),
+            "visibility": str(expected_visibility or "").strip(),
+            "source_class": str(expected_source_class or "").strip(),
+            "memory_type": str(expected_memory_type or "").strip(),
+        }
+        if not all(expected_binding.values()):
+            raise OrdinaryMemoryConflict("ordinary_duplicate_binding_required")
+        with self._write_lock:
+            storage = self._sqlite
+            if storage is None or not callable(getattr(storage, "patch_ordinary", None)):
+                raise OrdinaryMemoryConflict("ordinary_patch_sqlite_required")
+            conn = storage._conn
+            caller_transaction_open = bool(conn.in_transaction)
+            with storage.batch():
+                current = storage.get(memory_id)
+                if current is None:
+                    raise OrdinaryMemoryConflict("ordinary_patch_target_not_found")
+                if any(
+                    str(current.get(field) or "").strip() != expected
+                    for field, expected in expected_binding.items()
+                ):
+                    raise OrdinaryMemoryConflict("ordinary_patch_cas_mismatch")
+                existing_ids = [
+                    str(value) for value in current.get("entity_ids", []) if str(value).strip()
+                ]
+                known_ids = set(existing_ids)
+                merged_ids = existing_ids + sorted(
+                    {
+                        str(value)
+                        for value in entity_ids
+                        if str(value).strip() and str(value) not in known_ids
+                    }
+                )
+                current_last_accessed = str(current.get("last_accessed") or "").strip()
+                requested_last_accessed = str(last_accessed or "").strip()
+                effective_last_accessed = requested_last_accessed or current_last_accessed
+                if current_last_accessed and requested_last_accessed:
+                    try:
+
+                        def parse_timestamp(value: str) -> datetime.datetime:
+                            normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+                            parsed = datetime.datetime.fromisoformat(normalized)
+                            if parsed.tzinfo is None:
+                                return parsed.astimezone(datetime.timezone.utc)
+                            return parsed.astimezone(datetime.timezone.utc)
+
+                        if parse_timestamp(current_last_accessed) >= parse_timestamp(
+                            requested_last_accessed
+                        ):
+                            effective_last_accessed = current_last_accessed
+                    except (TypeError, ValueError):
+                        effective_last_accessed = max(
+                            current_last_accessed,
+                            requested_last_accessed,
+                        )
+
+                new_access_count = int(current.get("access_count", 0) or 0) + 1
+                effective_half_life = current.get("effective_half_life")
+                try:
+                    from plastic_promise.core.constants import DECAY_CONFIG
+                    from plastic_promise.core.decay_engine import AccessReinforcement
+
+                    tier = str(current.get("tier") or "L1")
+                    base_half_life = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])[
+                        "half_life_days"
+                    ]
+                    _, effective_half_life = AccessReinforcement().compute_boost(
+                        access_count=new_access_count,
+                        last_accessed=effective_last_accessed,
+                        base_half_life=base_half_life,
+                        is_auto_recall=False,
+                        current_time_str=effective_last_accessed,
+                    )
+                except Exception:
+                    pass
+                replacements: dict[str, Any] = {
+                    "entity_ids": merged_ids,
+                    "last_accessed": effective_last_accessed,
+                }
+                if effective_half_life is not None:
+                    replacements["effective_half_life"] = effective_half_life
+                canonical = storage.patch_ordinary(
+                    memory_id,
+                    replacements=replacements,
+                    increments={"access_count": 1, "worth_success": 1},
+                    expected_project_id=expected_binding["project_id"],
+                    expected_snapshot={
+                        field: expected_binding[field]
+                        for field in ("visibility", "source_class", "memory_type")
+                    },
+                    require_source_available=True,
+                    bump_memory_version=True,
+                )
+            if not caller_transaction_open and not conn.in_transaction:
+                self._memories[memory_id] = copy.deepcopy(canonical)
+            elif self._manual_batch_state is not None:
+                self._manual_batch_state.setdefault("pending_memory_deletes", set()).discard(
+                    memory_id
+                )
+                self._manual_batch_state.setdefault("pending_memory_updates", {})[memory_id] = (
+                    copy.deepcopy(canonical)
+                )
+            return canonical
+
+    def _delete_ordinary_memory(self, memory_id: str) -> bool:
+        if self._sqlite is None:
+            return True
+        guarded = getattr(self._sqlite, "delete_ordinary", None)
+        if callable(guarded):
+            return bool(guarded(memory_id))
+        if getattr(self._sqlite, "_conn", None) is not None:
+            return False
+        legacy = getattr(self._sqlite, "delete", None)
+        if not callable(legacy):
+            return False
+        return legacy(memory_id) is not False
+
+    def _persist_ordinary_graph_node(
+        self,
+        node_id: str,
+        node: dict[str, Any],
+        *,
+        reservation_ids: tuple[str, ...] = (),
+    ) -> bool:
+        if self._sqlite is None:
+            return True
+        guarded = getattr(self._sqlite, "upsert_graph_node_ordinary", None)
+        if callable(guarded):
+            return bool(
+                guarded(
+                    node_id,
+                    node,
+                    reservation_ids=reservation_ids,
+                )
+            )
+        if hasattr(self._sqlite, "_conn"):
+            return False
+        legacy = getattr(self._sqlite, "upsert_graph_node", None)
+        if not callable(legacy):
+            return False
+        return legacy(node_id, node) is not False
+
+    def _public_memory_ids(
+        self,
+        ids,
+        *,
+        allow_review: bool = False,
+        extra_types: dict[str, object] | None = None,
+    ) -> tuple[str, ...]:
+        """Return ids safe for a public read before content is inspected."""
+        ordered_ids = tuple(dict.fromkeys(str(memory_id) for memory_id in ids if memory_id))
+        if not ordered_ids:
+            return ()
+        memory_types = {
+            memory_id: (self._memories.get(memory_id) or {}).get("memory_type")
+            for memory_id in ordered_ids
+        }
+        memory_types.update(extra_types or {})
+        conn = getattr(self._sqlite, "_conn", None)
+        if conn is None:
+            if self._sqlite is not None and hasattr(self._sqlite, "_conn"):
+                return ()
+            return tuple(
+                memory_id
+                for memory_id in ordered_ids
+                if str(memory_types.get(memory_id) or "").strip().casefold() != "synthesis"
+            )
+
+        from plastic_promise.core.synthesis_retrieval import (
+            evaluate_public_memory_ids,
+            read_memory_version,
+        )
+
+        try:
+            current_memory_version = read_memory_version(conn)
+        except Exception:
+            current_memory_version = -1
+        memory_version = current_memory_version
+        if (
+            self._loaded_memory_version is not None
+            and current_memory_version != self._loaded_memory_version
+        ):
+            memory_version = self._loaded_memory_version
+        if not self.canonical_sync_ok or conn.in_transaction:
+            memory_version = -1
+        return evaluate_public_memory_ids(
+            conn,
+            ordered_ids,
+            allow_review=allow_review,
+            memory_version=memory_version,
+            memory_types=memory_types,
+        ).items
+
+    def _stable_public_memory_read(
+        self,
+        ids,
+        *,
+        allow_review: bool = False,
+        include_rows: bool,
+    ):
+        """Admit public ids and optionally copy rows at one canonical version."""
+        ordered_ids = tuple(dict.fromkeys(str(memory_id) for memory_id in ids if memory_id))
+        if not ordered_ids:
+            return ()
+        with self._write_lock:
+            conn = getattr(self._sqlite, "_conn", None)
+            stable_version: int | None = None
+            version_available = False
+            if conn is not None:
+                try:
+                    from plastic_promise.core.synthesis_retrieval import read_memory_version
+
+                    if conn.in_transaction:
+                        version_available = False
+                    else:
+                        stable_version = read_memory_version(conn)
+                        version_available = True
+                except Exception:
+                    # Legacy databases with an invalid version still expose
+                    # ordinary rows; _public_memory_ids keeps synthesis closed.
+                    version_available = False
+
+            visible_ids = self._public_memory_ids(
+                ordered_ids,
+                allow_review=allow_review,
+            )
+            if not version_available:
+                governed_ids = self._governed_synthesis_ids(visible_ids)
+                visible_ids = tuple(
+                    memory_id for memory_id in visible_ids if memory_id not in governed_ids
+                )
+            result = (
+                tuple(
+                    (memory_id, copy.deepcopy(self._memories[memory_id]))
+                    for memory_id in visible_ids
+                    if memory_id in self._memories
+                )
+                if include_rows
+                else visible_ids
+            )
+
+            if conn is not None and version_available:
+                try:
+                    if conn.in_transaction or read_memory_version(conn) != stable_version:
+                        return ()
+                except Exception:
+                    return ()
+            return result
+
+    def _public_memory_snapshot(
+        self,
+        ids,
+        *,
+        allow_review: bool = False,
+    ) -> tuple[tuple[str, dict[str, Any]], ...]:
+        """Admit and copy public rows against one stable canonical version."""
+        return self._stable_public_memory_read(
+            ids,
+            allow_review=allow_review,
+            include_rows=True,
+        )
+
+    def _stable_public_memory_ids(
+        self,
+        ids,
+        *,
+        allow_review: bool = False,
+    ) -> tuple[str, ...]:
+        """Return public ids only when their canonical version stays stable."""
+        return self._stable_public_memory_read(
+            ids,
+            allow_review=allow_review,
+            include_rows=False,
+        )
+
+    def _public_graph_snapshot(self) -> tuple[dict[str, dict], list[dict]]:
+        """Copy and gate the graph before any public traversal or serialization."""
+        with self._write_lock:
+            conn = getattr(self._sqlite, "_conn", None)
+            stable_version = None
+            if self._sqlite is not None and conn is None and hasattr(self._sqlite, "_conn"):
+                # Lightweight graph-only test adapters have no canonical
+                # connection. A real SQLite backend always exposes _conn,
+                # so only the latter must fail closed.
+                return {}, []
+            if conn is not None:
+                try:
+                    from plastic_promise.core.synthesis_retrieval import read_memory_version
+
+                    if conn.in_transaction:
+                        return {}, []
+                    stable_version = read_memory_version(conn)
+                except Exception:
+                    return {}, []
+            graph_ids = set(self._graph_nodes)
+            extra_types: dict[str, object] = {}
+            for node_id, node in self._graph_nodes.items():
+                metadata = node.get("metadata", {})
+                if node.get("source_kind") == "synthesis" or (
+                    isinstance(metadata, dict) and metadata.get("governed") is True
+                ):
+                    extra_types[node_id] = "synthesis"
+            for edge in self._graph_edges:
+                source = str(edge.get("from") or "")
+                target = str(edge.get("to") or "")
+                graph_ids.update((source, target))
+                if edge.get("source_kind") == "synthesis":
+                    extra_types[source] = "synthesis"
+            visible = set(self._public_memory_ids(graph_ids, extra_types=extra_types))
+            public_nodes = {
+                node_id: copy.deepcopy(node)
+                for node_id, node in self._graph_nodes.items()
+                if node_id in visible
+            }
+            public_edges = [
+                copy.deepcopy(edge)
+                for edge in self._graph_edges
+                if str(edge.get("from") or "") in visible and str(edge.get("to") or "") in visible
+            ]
+            governed = self._governed_synthesis_ids(public_nodes)
+            for node_id in governed:
+                public_nodes[node_id]["description"] = ""
+            if stable_version is not None:
+                try:
+                    if conn.in_transaction or read_memory_version(conn) != stable_version:
+                        return {}, []
+                except Exception:
+                    return {}, []
+        return public_nodes, public_edges
+
+    def create_ordinary_if_absent(
+        self,
+        record: Mapping[str, Any] | MemoryRecord,
+    ) -> str:
+        """Create one ordinary memory or accept an identical canonical replay."""
+        with self._write_lock:
+            if isinstance(record, Mapping):
+                memory_id = str(record.get("id", f"mem_{len(self._memories)}"))
+                requested_type = str(record.get("memory_type") or "").strip().casefold()
+            else:
+                memory_id = str(getattr(record, "id", "") or f"mem_{len(self._memories):08d}")
+                requested_type = str(getattr(record, "memory_type", "") or "").strip().casefold()
+            if requested_type == "synthesis":
+                from plastic_promise.core.synthesis import SynthesisConflict
+
+                raise SynthesisConflict("synthesis_requires_governed_store")
+            if self._synthesis_memory_reserved(memory_id):
+                from plastic_promise.core.synthesis import SynthesisConflict
+
+                raise SynthesisConflict("synthesis_memory_reserved")
+            try:
+                if isinstance(record, Mapping):
+                    return self._register_memory_locked(dict(record))
+                return self._store_memory_locked(record)
+            except OrdinaryMemoryConflict as exc:
+                if str(exc) != "ordinary_memory_reserved":
+                    raise
+                from plastic_promise.core.synthesis import SynthesisConflict
+
+                raise SynthesisConflict("synthesis_memory_reserved") from exc
+
     def register_memory(self, record: dict[str, Any]) -> str:
+        return self.create_ordinary_if_absent(record)
+
+    def _register_memory_locked(self, record: dict[str, Any]) -> str:
         mid = record.get("id", f"mem_{len(self._memories)}")
+        metadata_json = record.get("metadata_json", {})
+        metadata_json = metadata_json if isinstance(metadata_json, dict) else {}
+        get_canonical = getattr(self._sqlite, "get", None)
+        existing = get_canonical(mid) if callable(get_canonical) else self._memories.get(mid)
+        existing = existing if isinstance(existing, dict) else {}
+        created_at = (
+            record.get("created_at")
+            or existing.get("created_at")
+            or datetime.datetime.now().isoformat()
+        )
+
+        def index_field(name: str) -> str:
+            return str(record.get(name) or metadata_json.get(name) or "")
+
         data = {
             "id": mid,
             "content": record.get("content", ""),
@@ -533,10 +1503,12 @@ class ContextEngine:
             "worth_success": record.get("worth_success", 0),
             "worth_failure": record.get("worth_failure", 0),
             "activation_weight": record.get("activation_weight", 0.5),
-            "created_at": record.get("created_at", datetime.datetime.now().isoformat()),
+            "created_at": created_at,
             "decay_multiplier": record.get("decay_multiplier", 1.0),
             "effective_half_life": record.get("effective_half_life", 3.0),
-            "last_accessed": record.get("last_accessed", datetime.datetime.now().isoformat()),
+            "last_accessed": record.get("last_accessed")
+            or existing.get("last_accessed")
+            or created_at,
             "project_id": record.get("project_id", "project:legacy-global"),
             "visibility": record.get("visibility", "project"),
             "source_class": record.get("source_class", "experience"),
@@ -546,27 +1518,41 @@ class ContextEngine:
             "origin_ref": record.get("origin_ref", ""),
             "origin_hash": record.get("origin_hash", ""),
             "parent_memory_ids": record.get("parent_memory_ids", []),
-            "metadata_json": record.get("metadata_json", {}),
+            "metadata_json": metadata_json,
+            "raw_content": index_field("raw_content"),
+            "l0_abstract": index_field("l0_abstract"),
+            "l1_summary": index_field("l1_summary"),
+            "l2_content": index_field("l2_content"),
+            "embedding_text": index_field("embedding_text"),
+            "embedding_hash": index_field("embedding_hash"),
+            "search_text": index_field("search_text"),
         }
-        self._memories[mid] = data
-        if self._sqlite:
-            self._sqlite.upsert(mid, data)
+        canonical, created = self._create_ordinary_memory(mid, data)
+        if self._manual_batch_state is not None:
+            self._manual_batch_state.setdefault("pending_memory_deletes", set()).discard(mid)
+            if created:
+                self._manual_batch_state.setdefault("pending_memory_updates", {})[mid] = (
+                    copy.deepcopy(canonical)
+                )
+        else:
+            self._memories[mid] = copy.deepcopy(canonical)
         # P0: Auto-create principle↔memory graph edges for new memories
-        self._build_principle_edges_for_memory(mid, data)
+        if created:
+            self._build_principle_edges_for_memory(mid, canonical)
         return mid
 
     def register_memories(self, records: list[dict[str, Any]]) -> list[str]:
-        return [self.register_memory(r) for r in records]
+        return [self.create_ordinary_if_absent(record) for record in records]
 
     @property
     def memory_count(self) -> int:
-        return len(self._memories)
+        return len(self._stable_public_memory_ids(self._memories))
 
     # ========== 记忆只读访问 (Rust Core Boundary: 4 read-access methods) ==========
 
     def memory_exists(self, mid: str) -> bool:
         """Check if a memory id exists in the pool."""
-        return mid in self._memories
+        return mid in self._stable_public_memory_ids([mid]) and mid in self._memories
 
     def get_memory_dict(self, mid: str) -> dict | None:
         """Get a memory record as a dict (deep copy).
@@ -575,8 +1561,16 @@ class ContextEngine:
         but mutations have NO effect on engine state.
         Use update_memory_fields() to modify data.
         """
-        import copy
+        snapshot = self._public_memory_snapshot([mid])
+        return snapshot[0][1] if snapshot else None
 
+    def get_memory_dict_for_review(self, mid: str) -> dict | None:
+        """Return a canonically valid draft/contested synthesis for explicit review."""
+        snapshot = self._public_memory_snapshot([mid], allow_review=True)
+        return snapshot[0][1] if snapshot else None
+
+    def _get_memory_dict_unchecked(self, mid: str) -> dict | None:
+        """Copy raw runtime state for lifecycle internals; never expose as a tool API."""
         mem = self._memories.get(mid)
         if mem is None:
             return None
@@ -584,25 +1578,129 @@ class ContextEngine:
 
     def memory_ids(self) -> list[str]:
         """Return all memory IDs in the pool."""
-        return list(self._memories.keys())
+        return list(self._stable_public_memory_ids(self._memories))
+
+    def _refresh_canonical_cache_if_changed(self, force: bool = False) -> bool:
+        """Replace memory and graph caches from one committed SQLite snapshot."""
+        sqlite = self._sqlite
+        if sqlite is None:
+            self.canonical_sync_ok = True
+            return False
+        conn = sqlite._conn
+        with self._write_lock:
+            try:
+                transaction_open = conn.in_transaction
+            except Exception:
+                self.canonical_sync_ok = False
+                return False
+            if transaction_open:
+                if force:
+                    self.canonical_sync_ok = False
+                return False
+            try:
+                from plastic_promise.core.synthesis_retrieval import read_memory_version
+
+                conn.execute("BEGIN")
+                version = read_memory_version(conn)
+                if not force and self.canonical_sync_ok and version == self._loaded_memory_version:
+                    conn.rollback()
+                    self.canonical_sync_ok = True
+                    return False
+                memories = dict(sqlite.iter_all())
+                graph_nodes = dict(sqlite.iter_graph_nodes())
+                graph_edges = list(sqlite.iter_graph_edges())
+                conn.rollback()
+            except Exception as exc:
+                if conn.in_transaction:
+                    conn.rollback()
+                self.canonical_sync_ok = False
+                logger.warning("Canonical cache refresh failed: %s", exc)
+                if self._memories or self._graph_nodes or self._graph_edges:
+                    return False
+                try:
+                    conn.execute("BEGIN")
+                    memories = dict(sqlite.iter_all())
+                    graph_nodes = dict(sqlite.iter_graph_nodes())
+                    graph_edges = list(sqlite.iter_graph_edges())
+                    conn.rollback()
+                except Exception as snapshot_exc:
+                    if conn.in_transaction:
+                        conn.rollback()
+                    logger.warning(
+                        "Degraded canonical snapshot load failed: %s",
+                        snapshot_exc,
+                    )
+                    return False
+                if not self._install_canonical_snapshot(
+                    memories,
+                    graph_nodes,
+                    graph_edges,
+                ):
+                    return False
+                self._loaded_memory_version = None
+                return False
+            if not self._install_canonical_snapshot(memories, graph_nodes, graph_edges):
+                self.canonical_sync_ok = False
+                return False
+            self._loaded_memory_version = version
+            self.canonical_sync_ok = True
+            return True
+
+    def _install_canonical_snapshot(
+        self,
+        memories: dict[str, dict[str, Any]],
+        graph_nodes: dict[str, dict[str, Any]],
+        graph_edges: list[dict[str, Any]],
+    ) -> bool:
+        previous_state = (
+            self._memories,
+            self._graph_nodes,
+            self._graph_edges,
+            self._edge_feedback_base_weights,
+        )
+        try:
+            self._memories = memories
+            self._graph_nodes = graph_nodes
+            self._graph_edges = graph_edges
+            self._edge_feedback_base_weights = {}
+            self._rebuild_graph_from_memories()
+            self._reapply_canonical_edge_feedback()
+        except Exception as exc:
+            (
+                self._memories,
+                self._graph_nodes,
+                self._graph_edges,
+                self._edge_feedback_base_weights,
+            ) = previous_state
+            self.canonical_sync_ok = False
+            logger.warning("Canonical graph overlay rebuild failed: %s", exc)
+            return False
+        return True
 
     def get_memories_batch(self, mids: list[str]) -> list[dict]:
         """Get multiple memory records by id. Missing ids are skipped."""
-        import copy
-
-        results = []
-        for mid in mids:
-            mem = self._memories.get(mid)
-            if mem is not None:
-                results.append(copy.deepcopy(mem))
-        return results
+        return [memory for _memory_id, memory in self._public_memory_snapshot(mids)]
 
     def set_current_time(self, iso_timestamp: str):
         self._current_time = iso_timestamp
 
     # ========== P0: 原则↔记忆图谱边 (深层语法) ==========
 
-    def _build_principle_edges_for_memory(self, memory_id: str, memory_data: dict) -> int:
+    @staticmethod
+    def _graph_edge_identity(edge: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(edge.get("from") or ""),
+            str(edge.get("to") or ""),
+            str(edge.get("relation") or ""),
+        )
+
+    def _build_principle_edges_for_memory(
+        self,
+        memory_id: str,
+        memory_data: dict,
+        *,
+        edge_identities: set[tuple[str, str, str]] | None = None,
+    ) -> int:
         """Create bidirectional principle↔memory edges based on keyword overlap.
 
         For each of the 12 core principles, computes the overlap between
@@ -628,6 +1726,8 @@ class ContextEngine:
         content = memory_data.get("content", "")
         if not content:
             return 0
+        if edge_identities is None:
+            edge_identities = {self._graph_edge_identity(edge) for edge in self._graph_edges}
 
         edges_created = 0
         for p in CORE_PRINCIPLES:
@@ -665,8 +1765,10 @@ class ContextEngine:
                 "relation": "governs",
                 "weight": weight,
             }
-            if edge_g not in self._graph_edges:
+            edge_g_identity = self._graph_edge_identity(edge_g)
+            if edge_g_identity not in edge_identities:
                 self._graph_edges.append(edge_g)
+                edge_identities.add(edge_g_identity)
                 edges_created += 1
 
             # Edge 2: memory → principle (embodies)
@@ -676,8 +1778,10 @@ class ContextEngine:
                 "relation": "embodies",
                 "weight": weight,
             }
-            if edge_e not in self._graph_edges:
+            edge_e_identity = self._graph_edge_identity(edge_e)
+            if edge_e_identity not in edge_identities:
                 self._graph_edges.append(edge_e)
+                edge_identities.add(edge_e_identity)
                 edges_created += 1
 
         return edges_created
@@ -740,7 +1844,7 @@ class ContextEngine:
         """
         if not a or not b or len(a) != len(b):
             return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         norm_a = sum(x * x for x in a) ** 0.5
         norm_b = sum(x * x for x in b) ** 0.5
         if norm_a == 0.0 or norm_b == 0.0:
@@ -750,15 +1854,49 @@ class ContextEngine:
     # ========== 图管理 ==========
 
     def load_graph(self, graph_data: dict[str, Any]):
-        self._graph_nodes = graph_data.get("nodes", {})
-        self._graph_edges = graph_data.get("edges", [])
+        with self._write_lock:
+            if self._sqlite is not None:
+                if getattr(self._sqlite, "_conn", None) is not None:
+                    self._refresh_canonical_cache_if_changed(force=True)
+                return
+            self._graph_nodes = graph_data.get("nodes", {})
+            self._graph_edges = graph_data.get("edges", [])
+            self._edge_feedback_base_weights = {}
 
     def get_graph(self) -> GraphInfo:
-        return GraphInfo(self._graph_nodes, self._graph_edges)
+        nodes, edges = self._public_graph_snapshot()
+        return GraphInfo(nodes, edges)
 
     # ========== Graph CRUD (6 methods, added by Task 4) ==========
 
     def add_graph_edge(
+        self,
+        source: str,
+        target: str,
+        relation: str = "references",
+        weight: float = 0.5,
+        metadata: dict[str, Any] | None = None,
+        source_kind: str = "",
+        evidence_id: str = "",
+    ) -> bool:
+        with self._write_lock:
+            if (
+                str(source_kind or "").strip().casefold() == "synthesis"
+                or self._synthesis_memory_reserved(source)
+                or self._synthesis_memory_reserved(target)
+            ):
+                return False
+            return self._add_graph_edge_locked(
+                source,
+                target,
+                relation=relation,
+                weight=weight,
+                metadata=metadata,
+                source_kind=source_kind,
+                evidence_id=evidence_id,
+            )
+
+    def _add_graph_edge_locked(
         self,
         source: str,
         target: str,
@@ -781,30 +1919,62 @@ class ContextEngine:
             source_kind=source_kind,
             evidence_id=evidence_id,
         )
-        if not self.has_graph_edge(edge):
+        if not self._has_graph_edge_unchecked(edge):
+            if self._sqlite:
+                guarded = getattr(self._sqlite, "upsert_graph_edge_ordinary", None)
+                if callable(guarded):
+                    if not guarded(edge):
+                        return False
+                else:
+                    if hasattr(self._sqlite, "_conn"):
+                        return False
+                    legacy = getattr(self._sqlite, "upsert_graph_edge", None)
+                    if not callable(legacy) or legacy(edge) is False:
+                        return False
             self._graph_edges.append(edge)
-            if self._sqlite and hasattr(self._sqlite, "upsert_graph_edge"):
-                self._sqlite.upsert_graph_edge(edge)
             return True
         return False
 
     def remove_graph_edge(self, source: str, target: str, relation: str = None) -> int:
         """Remove matching edges. Returns number of edges removed."""
-        before = len(self._graph_edges)
-        self._graph_edges[:] = [
-            e
-            for e in self._graph_edges
-            if not (
-                e.get("from") == source
-                and e.get("to") == target
-                and (relation is None or e.get("relation") == relation)
-            )
-        ]
-        return before - len(self._graph_edges)
+        with self._write_lock:
+            if self._synthesis_memory_reserved(source) or self._synthesis_memory_reserved(target):
+                return 0
+            before = len(self._graph_edges)
+            removed = []
+            remaining = []
+            for edge in self._graph_edges:
+                matches = (
+                    edge.get("from") == source
+                    and edge.get("to") == target
+                    and (relation is None or edge.get("relation") == relation)
+                )
+                (removed if matches else remaining).append(edge)
+            if self._sqlite:
+                guarded = getattr(self._sqlite, "delete_graph_edges_ordinary", None)
+                if callable(guarded):
+                    if guarded(source, target, relation) <= 0:
+                        return 0
+                else:
+                    if hasattr(self._sqlite, "_conn"):
+                        return 0
+                    legacy = getattr(self._sqlite, "delete_graph_edges", None)
+                    if not callable(legacy) or legacy(source, target, relation) <= 0:
+                        return 0
+            for edge in removed:
+                self._edge_feedback_base_weights.pop(self._edge_feedback_key(edge), None)
+            self._graph_edges[:] = remaining
+            return before - len(remaining)
 
     def has_graph_edge(self, edge_dict: dict) -> bool:
         """Check if an exact edge dict exists in the graph."""
-        if edge_dict in self._graph_edges:
+        _, edges = self._public_graph_snapshot()
+        return self._has_graph_edge_unchecked(edge_dict, edges=edges)
+
+    def _has_graph_edge_unchecked(self, edge_dict: dict, *, edges=None) -> bool:
+        """Check raw graph state after the caller has established admission."""
+        candidate_edges = self._graph_edges if edges is None else edges
+        if edge_dict in candidate_edges:
             return True
         source = edge_dict.get("from")
         target = edge_dict.get("to")
@@ -813,24 +1983,22 @@ class ContextEngine:
             edge.get("from") == source
             and edge.get("to") == target
             and edge.get("relation") == relation
-            for edge in self._graph_edges
+            for edge in candidate_edges
         )
 
     def get_graph_node(self, node_id: str) -> dict | None:
         """Get a graph node by id. Returns a deep copy."""
-        import copy
-
-        node = self._graph_nodes.get(node_id)
+        nodes, _ = self._public_graph_snapshot()
+        node = nodes.get(node_id)
         if node is None:
             return None
         return copy.deepcopy(node)
 
     def list_graph_nodes(self, node_type: str = None) -> list[dict]:
         """List graph nodes, optionally filtered by type field."""
-        import copy
-
+        nodes, _ = self._public_graph_snapshot()
         results = []
-        for nid, node in self._graph_nodes.items():
+        for nid, node in nodes.items():
             if node_type and node.get("type") != node_type:
                 continue
             node_copy = copy.deepcopy(node)
@@ -840,9 +2008,10 @@ class ContextEngine:
 
     def list_graph_edges(self, relation: str = None) -> list[dict]:
         """List graph edges, optionally filtered by relation."""
+        _, edges = self._public_graph_snapshot()
         if relation is None:
-            return list(self._graph_edges)
-        return [e for e in self._graph_edges if e.get("relation") == relation]
+            return edges
+        return [e for e in edges if e.get("relation") == relation]
 
     # ========== Memory CRUD (Python fallback) ==========
 
@@ -851,9 +2020,24 @@ class ContextEngine:
 
         Returns the memory id (generates one if record.id is empty).
         """
+        return self.create_ordinary_if_absent(record)
+
+    def _store_memory_locked(self, record: MemoryRecord) -> str:
         mid = record.id or f"mem_{len(self._memories):08d}"
         record.id = mid
         meta = getattr(record, "metadata", {}) or {}
+        metadata_json = meta.get("metadata_json", {})
+        metadata_json = metadata_json if isinstance(metadata_json, dict) else {}
+        get_canonical = getattr(self._sqlite, "get", None)
+        existing = get_canonical(mid) if callable(get_canonical) else self._memories.get(mid)
+        existing = existing if isinstance(existing, dict) else {}
+        created_at = (
+            record.created_at or existing.get("created_at") or datetime.datetime.now().isoformat()
+        )
+
+        def index_field(name: str) -> str:
+            return str(metadata_json.get(name) or "")
+
         data = {
             "id": mid,
             "content": record.content,
@@ -863,7 +2047,7 @@ class ContextEngine:
             "category": record.category,
             "importance": record.importance,
             "entity_ids": record.entity_ids,
-            "created_at": record.created_at or datetime.datetime.now().isoformat(),
+            "created_at": created_at,
             "access_count": record.access_count,
             "worth_success": record.worth_success,
             "worth_failure": record.worth_failure,
@@ -873,7 +2057,9 @@ class ContextEngine:
             "domain": record.domain,
             "decay_multiplier": getattr(record, "decay_multiplier", 1.0),
             "effective_half_life": getattr(record, "effective_half_life", 3.0),
-            "last_accessed": getattr(record, "last_accessed", datetime.datetime.now().isoformat()),
+            "last_accessed": (
+                getattr(record, "last_accessed", "") or existing.get("last_accessed") or created_at
+            ),
             "project_id": meta.get("project_id", "project:legacy-global"),
             "visibility": meta.get("visibility", "project"),
             "source_class": meta.get("source_class", "experience"),
@@ -883,20 +2069,46 @@ class ContextEngine:
             "origin_ref": meta.get("origin_ref", ""),
             "origin_hash": meta.get("origin_hash", ""),
             "parent_memory_ids": meta.get("parent_memory_ids", []),
-            "metadata_json": meta.get("metadata_json", {}),
+            "metadata_json": metadata_json,
+            "raw_content": index_field("raw_content"),
+            "l0_abstract": index_field("l0_abstract"),
+            "l1_summary": index_field("l1_summary"),
+            "l2_content": index_field("l2_content"),
+            "embedding_text": index_field("embedding_text"),
+            "embedding_hash": index_field("embedding_hash"),
+            "search_text": index_field("search_text"),
         }
-        self._memories[mid] = data
-        if self._sqlite:
-            self._sqlite.upsert(mid, data)
+        canonical, created = self._create_ordinary_memory(mid, data)
+        if self._manual_batch_state is not None:
+            self._manual_batch_state.setdefault("pending_memory_deletes", set()).discard(mid)
+            if created:
+                self._manual_batch_state.setdefault("pending_memory_updates", {})[mid] = (
+                    copy.deepcopy(canonical)
+                )
+        else:
+            self._memories[mid] = copy.deepcopy(canonical)
         # P0: Auto-create principle↔memory graph edges
-        self._build_principle_edges_for_memory(mid, data)
+        if created:
+            self._build_principle_edges_for_memory(mid, canonical)
         return mid
 
     def get_memory(self, memory_id: str):
         """Retrieve a single MemoryRecord by id. Returns None if not found."""
+        snapshot = self._public_memory_snapshot([memory_id])
+        if not snapshot:
+            return None
+        return self._memory_record_from_dict(snapshot[0][1])
+
+    def _get_memory_unchecked(self, memory_id: str):
+        """Hydrate raw runtime state after the caller has established admission."""
         mem = self._memories.get(memory_id)
         if mem is None:
             return None
+        return self._memory_record_from_dict(mem)
+
+    @staticmethod
+    def _memory_record_from_dict(mem: dict[str, Any]):
+        """Build one public record from an already copied memory payload."""
         record = MemoryRecord(
             id=mem["id"],
             content=mem["content"],
@@ -920,41 +2132,192 @@ class ContextEngine:
         return record
 
     def update_memory(self, memory_id: str, content=None, importance=None, category=None) -> bool:
-        """Update a memory's fields. Returns True if the memory exists."""
-        mem = self._memories.get(memory_id)
-        if mem is None:
-            return False
+        """Update one ordinary source through its canonical mutation owner."""
         if content is not None:
-            mem["content"] = content
-        if importance is not None:
-            mem["importance"] = importance
-        if category is not None:
-            mem["category"] = category
-        if self._sqlite:
-            self._sqlite.upsert(memory_id, mem)
+            if importance is not None or category is not None:
+                return False
+            return self._mutate_ordinary_source_internal(
+                memory_id,
+                operation="replace_content",
+                content=content,
+                reason="context_engine:update_memory",
+                action="update",
+            )
+        fields = {
+            key: value
+            for key, value in {"importance": importance, "category": category}.items()
+            if value is not None
+        }
+        if not fields:
+            return False
+        return self.update_memory_fields(memory_id, **fields)
+
+    def mutate_ordinary_source(
+        self,
+        memory_id: str,
+        *,
+        operation: str,
+        content: str | None = None,
+        reason: str,
+        actor: str,
+        call_id: str,
+        expected_project_id: str | None = None,
+        expected_content_hash: str | None = None,
+        expected_source_snapshot: Mapping[str, Any] | None = None,
+        expected_peer_snapshots: Mapping[str, Mapping[str, Any]] | None = None,
+        peer_metadata_replacements: Mapping[str, Mapping[str, Any]] | None = None,
+        require_source_available: bool = False,
+        metadata_replacements: Mapping[str, int | float] | None = None,
+        policy_replacements: Mapping[str, Any] | None = None,
+    ):
+        """Apply one coordinated ordinary-source content or lifecycle change.
+
+        Existing source rows are never changed through whole-record storage.
+        The coordinator owns the canonical transaction, dependent synthesis
+        invalidation, durable repair jobs, and post-commit cache publication.
+        """
+        from plastic_promise.core.ordinary_memory_mutation import (
+            OrdinaryMemoryMutationCoordinator,
+            OrdinaryMemoryMutationError,
+        )
+
+        normalized_operation = str(operation or "").strip().casefold()
+        coordinator = OrdinaryMemoryMutationCoordinator(self)
+        if normalized_operation == "replace_content":
+            if content is None:
+                raise OrdinaryMemoryMutationError("ordinary_source_content_required")
+            return coordinator.replace_content(
+                memory_id,
+                content=content,
+                reason=reason,
+                actor=actor,
+                call_id=call_id,
+                expected_project_id=expected_project_id,
+                expected_content_hash=expected_content_hash,
+                expected_source_snapshot=expected_source_snapshot,
+                expected_peer_snapshots=expected_peer_snapshots,
+                peer_metadata_replacements=peer_metadata_replacements,
+                require_source_available=require_source_available,
+                metadata_replacements=metadata_replacements,
+                policy_replacements=policy_replacements,
+            )
+        if normalized_operation in {"wrong", "deprecated", "forgotten"}:
+            if content is not None:
+                raise OrdinaryMemoryMutationError("ordinary_source_content_not_allowed")
+            if metadata_replacements is not None:
+                raise OrdinaryMemoryMutationError("ordinary_source_metadata_replacements_invalid")
+            if policy_replacements is not None:
+                raise OrdinaryMemoryMutationError("ordinary_source_policy_replacements_invalid")
+            return coordinator.mark_unavailable(
+                memory_id,
+                state=normalized_operation,
+                reason=reason,
+                actor=actor,
+                call_id=call_id,
+                expected_project_id=expected_project_id,
+                expected_content_hash=expected_content_hash,
+                expected_source_snapshot=expected_source_snapshot,
+                expected_peer_snapshots=expected_peer_snapshots,
+                peer_metadata_replacements=peer_metadata_replacements,
+                require_source_available=require_source_available,
+            )
+        raise OrdinaryMemoryMutationError("ordinary_source_operation_invalid")
+
+    def _mutate_ordinary_source_internal(
+        self,
+        memory_id: str,
+        *,
+        operation: str,
+        content: str | None = None,
+        reason: str,
+        action: str,
+    ) -> bool:
+        """Run a compatibility mutation with process-owned audit evidence."""
+        try:
+            if self._synthesis_memory_reserved(memory_id):
+                return False
+        except Exception:
+            return False
+        preconditions = self._ordinary_source_mutation_preconditions(memory_id)
+        if preconditions is None:
+            return False
+        call_id = f"internal:context_engine:{action}:{uuid.uuid4().hex}"
+        try:
+            self.mutate_ordinary_source(
+                memory_id,
+                operation=operation,
+                content=content,
+                reason=reason,
+                actor="context_engine",
+                call_id=call_id,
+                **preconditions,
+            )
+        except Exception:
+            return False
         return True
 
+    def _ordinary_source_mutation_preconditions(
+        self,
+        memory_id: str,
+    ) -> dict[str, Any] | None:
+        """Capture one admitted canonical row for an internal mutation CAS."""
+        try:
+            self._refresh_canonical_cache_if_changed()
+            canonical = self.get_memory_dict_for_review(memory_id)
+        except Exception:
+            return None
+        if not isinstance(canonical, dict):
+            return None
+        project_id = str(canonical.get("project_id") or "").strip()
+        tags = canonical.get("tags")
+        metadata = canonical.get("metadata_json")
+        if (
+            not project_id
+            or not isinstance(tags, (list, tuple))
+            or not isinstance(metadata, Mapping)
+        ):
+            return None
+        from plastic_promise.core.synthesis import synthesis_content_hash
+
+        return {
+            "expected_project_id": project_id,
+            "expected_content_hash": synthesis_content_hash(canonical.get("content")),
+            "expected_source_snapshot": {
+                "category": canonical.get("category"),
+                "metadata_json": copy.deepcopy(dict(metadata)),
+                "tags": list(tags),
+                "worth_failure": canonical.get("worth_failure"),
+                "worth_success": canonical.get("worth_success"),
+            },
+            "require_source_available": True,
+        }
+
     def update_memory_fields(self, mid: str, **fields) -> bool:
-        """Update arbitrary fields of a memory record.
+        """Patch allowed ordinary-memory metadata fields.
 
-        Unlike update_memory() which only handles content/importance/category,
-        this method handles ALL fields: tags, domain, tier, worth_success,
-        worth_failure, access_count, last_accessed, decay_multiplier,
-        effective_half_life, entity_ids.
-
-        All writes go through the _write_lock for thread safety.
+        Content is coordinator-owned and must be the only requested field.
+        Every admitted metadata update is delegated to the field-scoped
+        canonical patch primitive.
         """
-        with self._write_lock:
-            if mid not in self._memories:
+        if "content" in fields:
+            if len(fields) != 1:
                 return False
-            mem = self._memories[mid]
-            for key, value in fields.items():
-                if key in ("tags", "entity_ids"):
-                    mem[key] = list(value)  # defensive copy
-                else:
-                    mem[key] = value
-            if self._sqlite:
-                self._sqlite.upsert(mid, mem)
+            return self._mutate_ordinary_source_internal(
+                mid,
+                operation="replace_content",
+                content=fields["content"],
+                reason="context_engine:update_memory_fields",
+                action="update",
+            )
+        with self._write_lock:
+            if not fields or self._ordinary_write_requests_synthesis(fields):
+                return False
+            if self._synthesis_memory_reserved(mid):
+                return False
+            try:
+                self.patch_ordinary_memory(mid, replacements=fields)
+            except OrdinaryMemoryConflict:
+                return False
             return True
 
     def increment_field(self, mid: str, field: str, delta: float = 1) -> bool:
@@ -967,40 +2330,51 @@ class ContextEngine:
         within the same lock is safe.
         """
         with self._write_lock:
-            if mid not in self._memories:
+            if self._synthesis_memory_reserved(mid):
                 return False
-            current = self._memories[mid].get(field, 0)
-            mem = self._memories[mid]
-            mem[field] = current + delta
-            if self._sqlite:
-                self._sqlite.upsert(mid, mem)
+            try:
+                self.patch_ordinary_memory(
+                    mid,
+                    increments={field: delta},
+                    bump_memory_version=True,
+                )
+            except OrdinaryMemoryConflict:
+                return False
             return True
 
     # ========== Batch Updates with SAVEPOINT atomicity (Task 5) ==========
 
-    def _maybe_adjust_tier(self, mid: str) -> None:
-        """Real-time tier promotion based on access_count thresholds.
+    @staticmethod
+    def _ordinary_write_requests_synthesis(fields: dict[str, Any]) -> bool:
+        return str(fields.get("memory_type") or "").strip().casefold() == "synthesis"
 
-        Called during _text_retrieval after access_count increment.
-        Only promotes (L1→L2, L2→L3) — demotion is handled by evolve_cycle.
-        Gated by PP_TIER_AUTO_PROMOTE env var (default on).
-        """
+    def _maybe_adjust_tier(self, mid: str, candidate: dict[str, Any]) -> dict[str, Any]:
+        """Persist a tier promotion before returning a candidate for publication."""
         if os.environ.get("PP_TIER_AUTO_PROMOTE", "1") != "1":
-            return
-        mem = self._memories.get(mid)
-        if not mem:
-            return
-        access = mem.get("access_count", 0)
-        tier = mem.get("tier", "L1")
+            return candidate
+        access = candidate.get("access_count", 0)
+        tier = candidate.get("tier", "L1")
         new_tier = tier
         if tier == "L1" and access >= 5:
             new_tier = "L2"
         elif tier == "L2" and access >= 20:
             new_tier = "L3"
-        if new_tier != tier:
-            mem["tier"] = new_tier
-            if self._sqlite:
-                self._sqlite.upsert(mid, mem)
+        if new_tier == tier:
+            return candidate
+        try:
+            current = self._memories.get(mid, {})
+            increments = {
+                field: candidate.get(field, 0) - current.get(field, 0)
+                for field in ("access_count", "worth_success", "worth_failure")
+                if candidate.get(field, 0) != current.get(field, 0)
+            }
+            return self.patch_ordinary_memory(
+                mid,
+                replacements={"tier": new_tier},
+                increments=increments or None,
+            )
+        except OrdinaryMemoryConflict:
+            return candidate
 
     def batch_update(self, updates: list[dict]) -> int:
         """Apply multiple memory field updates atomically.
@@ -1024,76 +2398,153 @@ class ContextEngine:
             if not self._sqlite:
                 return self._batch_update_in_memory(updates)
 
+            staged: dict[str, dict[str, Any]] = {}
+            for upd in updates:
+                upd_copy = dict(upd)
+                mid = upd_copy.pop("id", "")
+                if not mid or not upd_copy or self._ordinary_write_requests_synthesis(upd_copy):
+                    continue
+                if self._synthesis_memory_reserved(mid):
+                    continue
+                if "content" in upd_copy:
+                    continue
+                if mid not in self._memories:
+                    canonical_get = getattr(self._sqlite, "get", None)
+                    if not callable(canonical_get) or canonical_get(mid) is None:
+                        continue
+                staged.setdefault(mid, {}).update(upd_copy)
+
+            persisted: dict[str, dict[str, Any]] = {}
+            caller_transaction_open = bool(self._sqlite._conn.in_transaction)
             with self._sqlite.batch():
-                self._sqlite._conn.execute("SAVEPOINT batch_update")
-                try:
-                    count = 0
-                    for upd in updates:
-                        upd_copy = dict(upd)  # don't mutate caller's dict
-                        mid = upd_copy.pop("id")
-                        if mid in self._memories:
-                            self._memories[mid].update(upd_copy)
-                            self._sqlite.upsert(mid, self._memories[mid])
-                            count += 1
-                    self._sqlite._conn.execute("RELEASE batch_update")
-                    return count
-                except Exception:
-                    self._sqlite._conn.execute("ROLLBACK TO batch_update")
-                    raise
+                for mid, fields in staged.items():
+                    persisted[mid] = self.patch_ordinary_memory(
+                        mid,
+                        replacements=fields,
+                    )
+            if not caller_transaction_open and not self._sqlite._conn.in_transaction:
+                for mid, candidate in persisted.items():
+                    self._memories[mid] = candidate
+            return len(persisted)
 
     def _batch_update_in_memory(self, updates: list[dict]) -> int:
         """Fallback batch_update when SQLite is unavailable."""
+        staged: dict[str, dict[str, Any]] = {}
         count = 0
         for upd in updates:
             upd_copy = dict(upd)
             mid = upd_copy.pop("id")
-            if mid in self._memories:
-                self._memories[mid].update(upd_copy)
-                count += 1
+            if self._ordinary_write_requests_synthesis(upd_copy):
+                continue
+            if self._synthesis_memory_reserved(mid):
+                continue
+            current = staged.get(mid, self._memories.get(mid))
+            if current is None:
+                continue
+            candidate = dict(current)
+            candidate.update(upd_copy)
+            staged[mid] = candidate
+            count += 1
+        self._memories.update(staged)
         return count
 
     def begin_batch(self):
-        """Begin a manual batch transaction. Acquires _write_lock.
-
-        Suppresses auto-commit from _SQLiteStorage.upsert() by incrementing
-        _batch_depth, so the SAVEPOINT survives across multiple writes.
-        """
+        """Begin a manual batch and retain a rollback snapshot of runtime state."""
         self._write_lock.acquire()
-        if self._sqlite:
-            self._sqlite._batch_depth += 1
-            self._sqlite._conn.execute("SAVEPOINT manual_batch")
+        try:
+            if self._manual_batch_state is not None:
+                raise RuntimeError("manual_batch_already_active")
+            if self._sqlite and self._sqlite._conn.in_transaction:
+                raise RuntimeError("manual_batch_requires_clean_transaction")
+            state = {
+                "memories": copy.deepcopy(self._memories),
+                "graph_nodes": copy.deepcopy(self._graph_nodes),
+                "graph_edges": copy.deepcopy(self._graph_edges),
+                "edge_feedback_base_weights": dict(self._edge_feedback_base_weights),
+                "loaded_memory_version": self._loaded_memory_version,
+                "canonical_sync_ok": self.canonical_sync_ok,
+                "batch_context": None,
+                "pending_memory_updates": {},
+                "pending_memory_deletes": set(),
+            }
+            if self._sqlite:
+                batch_context = self._sqlite.batch()
+                batch_context.__enter__()
+                state["batch_context"] = batch_context
+            self._manual_batch_state = state
+        except BaseException:
+            self._write_lock.release()
+            raise
 
     def commit_batch(self):
-        """Commit a manual batch transaction. Releases _write_lock."""
+        """Commit a manual batch, restoring runtime if durability fails."""
+        state = self._manual_batch_state
+        if state is None:
+            raise RuntimeError("manual_batch_not_active")
         try:
-            if self._sqlite:
-                self._sqlite._conn.execute("RELEASE manual_batch")
-                self._sqlite._batch_depth -= 1
-                if self._sqlite._batch_depth <= 0:
-                    self._sqlite._batch_depth = 0
-                    self._sqlite._conn.commit()
+            batch_context = state.get("batch_context")
+            if batch_context is not None:
+                batch_context.__exit__(None, None, None)
+            pending_deletes = set(state.get("pending_memory_deletes", set()))
+            pending_updates = dict(state.get("pending_memory_updates", {}))
+            for memory_id in pending_deletes:
+                pending_updates.pop(memory_id, None)
+            for memory_id, canonical in pending_updates.items():
+                self._memories[memory_id] = copy.deepcopy(canonical)
+            for memory_id in pending_deletes:
+                self._memories.pop(memory_id, None)
+        except BaseException:
+            self._restore_manual_batch_state(state)
+            raise
         finally:
+            self._manual_batch_state = None
             self._write_lock.release()
 
     def rollback_batch(self):
-        """Rollback a manual batch transaction. Releases _write_lock."""
+        """Rollback a manual batch and restore the matching runtime snapshot."""
+        state = self._manual_batch_state
+        if state is None:
+            raise RuntimeError("manual_batch_not_active")
         try:
-            if self._sqlite:
-                self._sqlite._conn.execute("ROLLBACK TO manual_batch")
-                self._sqlite._batch_depth -= 1
-                if self._sqlite._batch_depth <= 0:
-                    self._sqlite._batch_depth = 0
+            batch_context = state.get("batch_context")
+            if batch_context is not None:
+                batch_context.__exit__(RuntimeError, RuntimeError("manual_batch_rollback"), None)
         finally:
+            self._restore_manual_batch_state(state)
+            self._manual_batch_state = None
             self._write_lock.release()
 
+    def _restore_manual_batch_state(self, state: dict[str, Any]) -> None:
+        self._memories = state["memories"]
+        self._graph_nodes = state["graph_nodes"]
+        self._graph_edges = state["graph_edges"]
+        self._edge_feedback_base_weights = state["edge_feedback_base_weights"]
+        self._loaded_memory_version = state["loaded_memory_version"]
+        self.canonical_sync_ok = state["canonical_sync_ok"]
+
     def delete_memory(self, memory_id: str) -> bool:
-        """Delete a memory by id. Returns True if it existed."""
-        if memory_id in self._memories:
-            del self._memories[memory_id]
-            if self._sqlite:
-                self._sqlite.delete(memory_id)
-            return True
-        return False
+        """Tombstone a committed source or cancel a pending in-batch create."""
+        with self._write_lock:
+            if self._synthesis_memory_reserved(memory_id):
+                return False
+            state = self._manual_batch_state
+            if state is not None:
+                pending_updates = state.get("pending_memory_updates", {})
+                existed_before_batch = memory_id in state.get("memories", {})
+                if memory_id not in pending_updates or existed_before_batch:
+                    return False
+                if not self._delete_ordinary_memory(memory_id):
+                    return False
+                pending_updates.pop(memory_id, None)
+                state.setdefault("pending_memory_deletes", set()).add(memory_id)
+                return True
+
+        return self._mutate_ordinary_source_internal(
+            memory_id,
+            operation="forgotten",
+            reason="context_engine:delete_memory",
+            action="delete",
+        )
 
     def list_memories(
         self, memory_type=None, source=None, min_worth=None, limit=50, scope=None, offset=0
@@ -1118,26 +2569,30 @@ class ContextEngine:
 
         results = []
         skip = offset
-        for mid, mem in self._memories.items():
-            if memory_type and mem.get("memory_type") != memory_type:
-                continue
-            if source and mem.get("source") != source:
-                continue
-            if scope and mem.get("scope") != scope:
-                continue
-            if min_worth is not None:
-                s = mem.get("worth_success", 0)
-                f = mem.get("worth_failure", 0)
-                total = s + f
-                ws = (s + 1.0) / (total + 2.0) if total > 0 else 0.5
-                if ws < min_worth:
+        visible_ids = self._stable_public_memory_ids(self._memories)
+        page_size = 200
+        for page_start in range(0, len(visible_ids), page_size):
+            page_ids = visible_ids[page_start : page_start + page_size]
+            for _mid, mem in self._public_memory_snapshot(page_ids):
+                if memory_type and mem.get("memory_type") != memory_type:
                     continue
-            if skip > 0:
-                skip -= 1
-                continue
-            results.append(self.get_memory(mid))
-            if len(results) >= limit:
-                break
+                if source and mem.get("source") != source:
+                    continue
+                if scope and mem.get("scope") != scope:
+                    continue
+                if min_worth is not None:
+                    s = mem.get("worth_success", 0)
+                    f = mem.get("worth_failure", 0)
+                    total = s + f
+                    ws = (s + 1.0) / (total + 2.0) if total > 0 else 0.5
+                    if ws < min_worth:
+                        continue
+                if skip > 0:
+                    skip -= 1
+                    continue
+                results.append(self._memory_record_from_dict(mem))
+                if len(results) >= limit:
+                    return results
         return results
 
     def list_memories_paginated(
@@ -1194,19 +2649,15 @@ class ContextEngine:
         Yields:
             Deep copies of memory dicts, one at a time.
         """
-        import copy
-
-        all_ids = list(self._memories.keys())
+        self._reload_from_sqlite()
+        all_ids = self._stable_public_memory_ids(self._memories)
         offset = 0
         while offset < len(all_ids):
             page_ids = all_ids[offset : offset + page_size]
-            for mid in page_ids:
-                mem = self._memories.get(mid)
-                if mem is None:
-                    continue
+            for _mid, mem in self._public_memory_snapshot(page_ids):
                 if scope and mem.get("scope", "global") != scope:
                     continue
-                yield copy.deepcopy(mem)
+                yield mem
             offset += page_size
 
     def _reload_from_sqlite(self):
@@ -1227,7 +2678,8 @@ class ContextEngine:
         # Refresh in-memory cache from SQLite first (catches external writes)
         self._reload_from_sqlite()
 
-        total = len(self._memories)
+        snapshot = self._public_memory_snapshot(self._memories)
+        total = 0
         by_type: dict[str, int] = {}
         by_category: dict[str, int] = {}
         by_tier: dict[str, int] = {}
@@ -1238,9 +2690,10 @@ class ContextEngine:
         dormant_count = 0
         active_worth_sum = 0.0
 
-        for mid, mem in self._memories.items():
+        for _mid, mem in snapshot:
             if scope and mem.get("scope") != scope:
                 continue
+            total += 1
             mt = mem.get("memory_type", "unknown")
             by_type[mt] = by_type.get(mt, 0) + 1
             mc = mem.get("category", "other")
@@ -1309,6 +2762,7 @@ class ContextEngine:
         project_policy: str = "balanced",
         project_degraded: bool = False,
         retrieval_mode: str | None = None,
+        fusion_policy: str | None = None,
     ) -> ContextPack:
         """Supply context for a task. Rust-accelerated when available.
 
@@ -1320,6 +2774,7 @@ class ContextEngine:
         IMPORTANT: _supply_python is the ORIGINAL independent Python
         implementation. It does NOT call back into supply() — no recursion.
         """
+        self._refresh_canonical_cache_if_changed()
         self._ensure_heavy_init()
 
         # Generate embedding if not provided (backward compatibility)
@@ -1338,16 +2793,45 @@ class ContextEngine:
             retrieval_mode=retrieval_mode,
             has_vector=any(v != 0.0 for v in task_vector),
             has_graph=bool(self._graph_edges),
-            has_fts=self._ldb is not None,
+            has_fts=(
+                self._ldb is not None
+                and os.environ.get("PP_FTS_DISABLED", "") != "1"
+                and os.environ.get("PP_FTS_FUSION", "1") == "1"
+            ),
         )
+
+        requested_policy = str(
+            fusion_policy or os.environ.get("PP_RETRIEVAL_FUSION_POLICY", "legacy-auto")
+        ).strip()
+        fusion_config = load_fusion_config(requested_policy, retrieval_plan)
 
         # PP_FORCE_PYTHON_SUPPLY=1 bypasses Rust entirely.
         # PP_PREFER_RUST_SUPPLY=0 disables Rust primary; default is Rust-first
         # with automatic Python fallback if the extension is unavailable.
         prefer_rust = os.environ.get("PP_PREFER_RUST_SUPPLY", "1") == "1"
         force_python = os.environ.get("PP_FORCE_PYTHON_SUPPLY", "0") == "1"
+        requested_runtime = "python" if force_python or not prefer_rust else "rust"
 
-        if force_python or not prefer_rust:
+        def decision(runtime: str, reason: str) -> FusionDecision:
+            return FusionDecision(
+                requested_policy=requested_policy,
+                effective_policy=requested_policy,
+                requested_runtime=requested_runtime,
+                effective_runtime=runtime,
+                candidate_id=requested_policy if fusion_config is not None else "",
+                capability_reason=reason,
+            )
+
+        policy_python_reason = ""
+        if requested_policy == "max-v1":
+            policy_python_reason = "policy_requires_python:max-v1"
+        elif fusion_config is not None and "fts" in retrieval_plan.fusion_channels:
+            policy_python_reason = "rust_capability_missing:fts"
+
+        if force_python or not prefer_rust or policy_python_reason:
+            reason = policy_python_reason or (
+                "runtime_forced:python" if force_python else "runtime_preferred:python"
+            )
             return self._supply_python(
                 task_description,
                 task_vector,
@@ -1358,6 +2842,8 @@ class ContextEngine:
                 project_id=project_id,
                 project_policy=project_policy,
                 project_degraded=project_degraded,
+                fusion_config=fusion_config,
+                fusion_decision=decision("python", reason),
             )
 
         # Rust accelerator — enabled via PP_PREFER_RUST_SUPPLY=1.
@@ -1372,20 +2858,57 @@ class ContextEngine:
                     project_id=project_id,
                     project_policy=project_policy,
                     project_degraded=project_degraded,
+                    fusion_config=fusion_config,
+                )
+                pack.audit_metadata["retrieval_fusion"] = self._fusion_audit_metadata(
+                    decision("rust", "rust_capability_satisfied"),
+                    fusion_config,
                 )
                 self._enrich_pack_with_code_memory(
                     pack,
                     task_description,
                     retrieval_plan,
                 )
-                self._attach_retrieval_plan(
+                return self._finalize_supply_pack(
                     pack,
                     retrieval_plan,
-                    raw_evidence=self._raw_evidence_from_items(
-                        pack.core + pack.related + pack.divergent,
-                        retrieval_plan.budget.get("raw_evidence", 10),
-                    ),
+                    task_type=task_type,
+                    project_id=project_id,
+                    project_policy=project_policy,
                 )
+            except _RustSynthesisFallback:
+                pack = self._supply_python(
+                    task_description,
+                    task_vector,
+                    task_type,
+                    scope,
+                    debug=debug,
+                    retrieval_plan=retrieval_plan,
+                    project_id=project_id,
+                    project_policy=project_policy,
+                    project_degraded=project_degraded,
+                    fusion_config=fusion_config,
+                    fusion_decision=decision("python", "admitted_governed_synthesis"),
+                )
+                pack.audit_metadata.setdefault(
+                    "rust_fallback_reason", "admitted_governed_synthesis"
+                )
+                return pack
+            except _RustFusionFallback as exc:
+                pack = self._supply_python(
+                    task_description,
+                    task_vector,
+                    task_type,
+                    scope,
+                    debug=debug,
+                    retrieval_plan=retrieval_plan,
+                    project_id=project_id,
+                    project_policy=project_policy,
+                    project_degraded=project_degraded,
+                    fusion_config=fusion_config,
+                    fusion_decision=decision("python", str(exc)),
+                )
+                pack.audit_metadata.setdefault("rust_fallback_reason", str(exc))
                 return pack
             except Exception as e:
                 logger.warning("Rust supply failed, falling back to Python: %s", e)
@@ -1403,7 +2926,36 @@ class ContextEngine:
             project_id=project_id,
             project_policy=project_policy,
             project_degraded=project_degraded,
+            fusion_config=fusion_config,
+            fusion_decision=decision("python", "rust_unavailable_or_failed"),
         )
+
+    @staticmethod
+    def _fusion_audit_metadata(
+        decision: FusionDecision,
+        config: FusionConfig | None,
+    ) -> dict[str, Any]:
+        metadata = asdict(decision)
+        if config is None:
+            metadata["algorithm"] = (
+                "weighted-max-v1"
+                if decision.effective_policy == "max-v1"
+                else "legacy-route-dependent"
+            )
+            if decision.effective_policy == "legacy-auto" and decision.effective_runtime == "rust":
+                metadata["compatibility"] = "unweighted-rrf-k60"
+            return metadata
+        metadata.update(
+            {
+                "algorithm": "weighted-rrf-v1",
+                "k": config.k,
+                "channels": list(config.channels),
+                "weights": dict(config.weights),
+                "windows": dict(config.windows),
+                "config_hash": config.config_hash,
+            }
+        )
+        return metadata
 
     @staticmethod
     def _raw_evidence_from_results(
@@ -1454,6 +3006,733 @@ class ContextEngine:
         pack.audit_metadata["raw_evidence"] = list(raw_evidence or [])
 
     @staticmethod
+    def _synthesis_overfetch_factor() -> int:
+        try:
+            factor = int(os.environ.get("PP_SYNTHESIS_OVERFETCH_FACTOR", "2"))
+        except (TypeError, ValueError):
+            factor = 2
+        return max(1, min(factor, 4))
+
+    @staticmethod
+    def _synthesis_source_fallback_allowed(
+        conn: Any,
+        memory_id: str,
+        *,
+        reasons: set[str],
+        task_type: str,
+        retrieval_mode: str,
+    ) -> bool:
+        normalized_reasons = {
+            str(reason or "").strip() for reason in reasons if str(reason or "").strip()
+        }
+        if (
+            conn is None
+            or not normalized_reasons
+            or normalized_reasons & _SYNTHESIS_FALLBACK_HARD_DENY_REASONS
+        ):
+            return False
+        try:
+            if conn.in_transaction:
+                return False
+            row = conn.execute(
+                "SELECT status FROM synthesis_artifacts WHERE memory_id = ?",
+                (memory_id,),
+            ).fetchone()
+        except Exception:
+            return False
+        if row is None or len(row) != 1 or not isinstance(row[0], str):
+            return False
+
+        status = row[0].strip().casefold()
+        normalized_task = str(task_type or "").strip().casefold()
+        normalized_mode = str(retrieval_mode or "").strip().casefold()
+        if status == "verified":
+            return bool(normalized_reasons & _VERIFIED_SYNTHESIS_FALLBACK_REASONS)
+        has_lifecycle_fallback_reason = bool(
+            normalized_reasons & (_VERIFIED_SYNTHESIS_FALLBACK_REASONS | {"status_not_allowed"})
+        )
+        if status == "contested":
+            return has_lifecycle_fallback_reason and (
+                normalized_mode == "audit" or normalized_task in _SYNTHESIS_REVIEW_TASKS
+            )
+        if status == "stale":
+            return has_lifecycle_fallback_reason and (
+                normalized_mode == "audit" or normalized_task == "debugging"
+            )
+        return False
+
+    @staticmethod
+    def _candidate_budget(retrieval_plan: RetrievalPlan) -> int:
+        layer_budget = sum(
+            max(0, int(retrieval_plan.budget.get(layer, 0)))
+            for layer in ("core", "related", "divergent")
+        )
+        return max(1, layer_budget) * ContextEngine._synthesis_overfetch_factor()
+
+    @staticmethod
+    def _call_with_optional_limit(callable_obj, *args, limit: int):
+        try:
+            return callable_obj(*args, limit=limit)
+        except TypeError as exc:
+            if "limit" not in str(exc):
+                raise
+            return callable_obj(*args)
+
+    def _gate_memory_ids(self, ids: list[str]):
+        """Apply the canonical synthesis evaluator without mutating lifecycle state."""
+        from plastic_promise.core.synthesis_retrieval import (
+            SynthesisGateResult,
+            evaluate_public_memory_ids,
+            read_memory_version,
+        )
+
+        ordered_ids = list(dict.fromkeys(str(item_id) for item_id in ids if item_id))
+        noncanonical_prefixes = (
+            "principle:",
+            "code:",
+            "mcp_tool:",
+            "task_state:",
+            "bilingual_synonym:",
+        )
+        recognized_noncanonical_ids = {
+            item_id for item_id in ordered_ids if item_id.startswith(noncanonical_prefixes)
+        }
+
+        conn = getattr(getattr(self, "_sqlite", None), "_conn", None)
+        if conn is None:
+            if self._sqlite is not None and hasattr(self._sqlite, "_conn"):
+                return SynthesisGateResult(
+                    (),
+                    tuple(ordered_ids),
+                    tuple(
+                        {"id": item_id, "reason": "canonical_gate_unavailable"}
+                        for item_id in ordered_ids
+                    ),
+                )
+            admitted: list[str] = []
+            dropped: list[str] = []
+            degradations: list[dict[str, str]] = []
+            for item_id in ordered_ids:
+                memory = self._memories.get(item_id)
+                memory_type = str((memory or {}).get("memory_type", "")).strip().casefold()
+                if memory is None and item_id in recognized_noncanonical_ids:
+                    admitted.append(item_id)
+                elif memory_type == "synthesis":
+                    dropped.append(item_id)
+                    degradations.append({"id": item_id, "reason": "canonical_gate_unavailable"})
+                elif memory is not None and memory_type:
+                    admitted.append(item_id)
+                else:
+                    dropped.append(item_id)
+                    degradations.append({"id": item_id, "reason": "candidate_state_unavailable"})
+            return SynthesisGateResult(tuple(admitted), tuple(dropped), tuple(degradations))
+
+        try:
+            current_memory_version = read_memory_version(conn)
+        except Exception:
+            current_memory_version = -1
+        memory_version = current_memory_version
+        if (
+            self._loaded_memory_version is not None
+            and current_memory_version != self._loaded_memory_version
+        ):
+            memory_version = self._loaded_memory_version
+        if not self.canonical_sync_ok or conn.in_transaction:
+            memory_version = -1
+
+        result = evaluate_public_memory_ids(
+            conn,
+            ordered_ids,
+            allow_review=False,
+            memory_version=memory_version,
+            memory_types={
+                item_id: (
+                    memory.get("memory_type")
+                    if isinstance(memory := self._memories.get(item_id), Mapping)
+                    else None
+                )
+                for item_id in ordered_ids
+            },
+        )
+        degradation_by_id = {row["id"]: row["reason"] for row in result.degradations}
+        stable_noncanonical_ids: set[str] = set()
+        for item_id in recognized_noncanonical_ids:
+            if degradation_by_id.get(item_id) != "candidate_missing":
+                continue
+            try:
+                has_control = (
+                    conn.execute(
+                        "SELECT 1 FROM synthesis_artifacts WHERE memory_id = ?",
+                        (item_id,),
+                    ).fetchone()
+                    is not None
+                )
+            except Exception:
+                continue
+            if not has_control:
+                stable_noncanonical_ids.add(item_id)
+        admitted_set = set(result.items) | stable_noncanonical_ids
+        admitted = tuple(item_id for item_id in ordered_ids if item_id in admitted_set)
+        dropped_ids = tuple(
+            item_id for item_id in result.dropped_ids if item_id not in stable_noncanonical_ids
+        )
+        degradations = tuple(
+            row for row in result.degradations if row["id"] not in stable_noncanonical_ids
+        )
+        return SynthesisGateResult(
+            admitted,
+            dropped_ids,
+            degradations,
+            tuple(
+                memory_id
+                for memory_id in result.admitted_synthesis_ids
+                if memory_id in admitted_set
+            ),
+        )
+
+    def _filter_synthesis_result_tuples(
+        self,
+        results: list[tuple[str, float, str, str]],
+    ) -> tuple[list[tuple[str, float, str, str]], tuple[dict[str, str], ...]]:
+        decision = self._gate_memory_ids([row[0] for row in results])
+        admitted = set(decision.items)
+        return [row for row in results if row[0] in admitted], decision.degradations
+
+    def _hydrate_ranked_memory_ids(
+        self,
+        rows,
+        *,
+        retrieval_source: str,
+    ) -> tuple[list[tuple[str, float, str, str]], tuple[dict[str, str], ...]]:
+        """Admit derived-index ids before hydrating canonical display content."""
+        decision = self._gate_memory_ids([str(row[0]) for row in rows])
+        admitted = set(decision.items)
+        results: list[tuple[str, float, str, str]] = []
+        with self._write_lock:
+            for row in rows:
+                memory_id = str(row[0])
+                if memory_id not in admitted:
+                    continue
+                memory = self._memories.get(memory_id)
+                if not isinstance(memory, dict):
+                    continue
+                results.append(
+                    (
+                        memory_id,
+                        float(row[1]),
+                        str(memory.get("content") or "")[:300],
+                        retrieval_source,
+                    )
+                )
+        return results, decision.degradations
+
+    def _project_item_allowed(
+        self,
+        item: Any,
+        layer: str,
+        *,
+        project_id: str,
+        project_policy: str,
+    ) -> bool:
+        item_id = str(getattr(item, "id", "") or "")
+        metadata, state = resolve_project_metadata(self, item_id)
+        is_noncanonical = item_id.startswith(NONCANONICAL_CONTEXT_PREFIXES)
+        if state == "error":
+            return False
+        if state == "canonical_missing":
+            return is_noncanonical
+        if state == "runtime_missing":
+            if is_noncanonical:
+                return True
+            item_metadata = getattr(item, "metadata", None)
+            metadata = dict(item_metadata) if isinstance(item_metadata, dict) else {}
+        if not isinstance(metadata, dict):
+            return False
+
+        item_project = str(metadata.get("project_id") or "project:legacy-global")
+        visibility = str(metadata.get("visibility") or "project")
+        source_class = str(metadata.get("source_class") or "experience")
+        if source_class in {"telemetry", "prompt"} and layer in {"core", "related"}:
+            return False
+        if layer == "divergent" and project_policy != "strict":
+            return visibility in {"shared", "global"} or item_project == project_id
+        return item_project == project_id or visibility == "global"
+
+    @staticmethod
+    def _value_mentions_dropped(
+        value: Any,
+        dropped_ids: set[str],
+        dropped_contents: tuple[str, ...],
+    ) -> bool:
+        if is_dataclass(value) and not isinstance(value, type):
+            value = asdict(value)
+        if isinstance(value, str):
+            if value in dropped_ids:
+                return True
+            return any(content and content in value for content in dropped_contents)
+        if isinstance(value, dict):
+            item_id = value.get("id")
+            if isinstance(item_id, str) and item_id in dropped_ids:
+                return True
+            return any(
+                ContextEngine._value_mentions_dropped(item, dropped_ids, dropped_contents)
+                for item in value.values()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(
+                ContextEngine._value_mentions_dropped(item, dropped_ids, dropped_contents)
+                for item in value
+            )
+        return False
+
+    @staticmethod
+    def _sanitize_dropped_values(
+        value: Any,
+        dropped_ids: set[str],
+        dropped_contents: tuple[str, ...],
+    ) -> Any:
+        if is_dataclass(value) and not isinstance(value, type):
+            value = asdict(value)
+        if isinstance(value, list):
+            return [
+                ContextEngine._sanitize_dropped_values(item, dropped_ids, dropped_contents)
+                for item in value
+                if not ContextEngine._value_mentions_dropped(item, dropped_ids, dropped_contents)
+            ]
+        if isinstance(value, tuple):
+            return tuple(
+                ContextEngine._sanitize_dropped_values(item, dropped_ids, dropped_contents)
+                for item in value
+                if not ContextEngine._value_mentions_dropped(item, dropped_ids, dropped_contents)
+            )
+        if isinstance(value, dict):
+            item_id = value.get("id")
+            if isinstance(item_id, str) and item_id in dropped_ids:
+                return {}
+            return {
+                key: ContextEngine._sanitize_dropped_values(item, dropped_ids, dropped_contents)
+                for key, item in value.items()
+                if not ContextEngine._value_mentions_dropped(item, dropped_ids, dropped_contents)
+            }
+        return value
+
+    @staticmethod
+    def _metadata_items(value: Any) -> list[tuple[str, str]]:
+        items: list[tuple[str, str]] = []
+        if is_dataclass(value) and not isinstance(value, type):
+            value = asdict(value)
+        if isinstance(value, dict):
+            item_id = value.get("id")
+            if isinstance(item_id, str) and item_id:
+                content = value.get("content")
+                items.append((item_id, str(content) if isinstance(content, str) else ""))
+            for nested in value.values():
+                items.extend(ContextEngine._metadata_items(nested))
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                items.extend(ContextEngine._metadata_items(nested))
+        return items
+
+    def _finalize_supply_pack(
+        self,
+        pack: ContextPack,
+        retrieval_plan: RetrievalPlan,
+        *,
+        task_type: str,
+        project_id: str,
+        project_policy: str,
+    ) -> ContextPack:
+        """Install the final fail-closed gate and attach public retrieval metadata."""
+        self._refresh_canonical_cache_if_changed()
+        pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
+        pack.channel_states = dict(getattr(pack, "channel_states", {}) or {})
+        for channel in retrieval_plan.channels:
+            if channel in pack.channel_states:
+                continue
+            evidence_only = channel not in retrieval_plan.fusion_channels
+            pack.channel_states[channel] = {
+                "planned": True,
+                "enabled": evidence_only,
+                "available": evidence_only,
+                "executed": evidence_only,
+                "participating": False,
+                "evidence_only": evidence_only,
+                "reason": "evidence_only" if evidence_only else "unavailable",
+                "result_count": 0,
+            }
+        existing_gate = pack.audit_metadata.pop("synthesis_retrieval", None)
+        pack.audit_metadata.pop("synthesis_provenance", None)
+        existing_candidate_ids: list[str] = []
+        if isinstance(existing_gate, dict):
+            rows = existing_gate.get("degradations")
+            if isinstance(rows, list):
+                existing_candidate_ids = [
+                    str(row.get("id", ""))
+                    for row in rows
+                    if isinstance(row, dict) and row.get("id")
+                ]
+        layered_items = [*pack.core, *pack.related, *pack.divergent]
+        ranking_candidate_ids = [
+            str(row.get("memory_id") or "")
+            for rows in dict(getattr(pack, "channel_rankings", {}) or {}).values()
+            for row in rows
+            if isinstance(row, dict) and row.get("memory_id")
+        ]
+        items_by_id = {item.id: item for item in layered_items}
+        layer_by_id = {
+            item.id: layer
+            for layer in ("core", "related", "divergent")
+            for item in getattr(pack, layer, [])
+        }
+        metadata_items: list[tuple[str, str]] = []
+        for surface in (
+            getattr(pack, "per_item_stats", []),
+            getattr(pack, "pipeline_stats", {}),
+            pack.audit_metadata,
+            pack.gap_signal,
+        ):
+            metadata_items.extend(self._metadata_items(surface))
+        candidate_ids = [item.id for item in layered_items]
+        candidate_ids.extend(ranking_candidate_ids)
+        candidate_ids.extend(item_id for item_id, _content in metadata_items)
+        candidate_ids.extend(existing_candidate_ids)
+        decision = self._gate_memory_ids(candidate_ids)
+        payload_mismatch_ids: set[str] = set()
+        admitted_by_gate = set(decision.items)
+        sqlite_get = getattr(getattr(self, "_sqlite", None), "get", None)
+        for item_id in admitted_by_gate:
+            try:
+                canonical = (
+                    sqlite_get(item_id) if callable(sqlite_get) else self._memories.get(item_id)
+                )
+            except Exception:
+                payload_mismatch_ids.add(item_id)
+                continue
+            if not isinstance(canonical, dict):
+                if not item_id.startswith(NONCANONICAL_CONTEXT_PREFIXES):
+                    payload_mismatch_ids.add(item_id)
+                continue
+            canonical_type = str(canonical.get("memory_type") or "").strip().casefold()
+            if canonical_type != "synthesis":
+                continue
+            canonical_content = str(canonical.get("content") or "")
+            allowed_content = {
+                canonical_content,
+                canonical_content[:500],
+                canonical_content[:300],
+                canonical_content[:120],
+            }
+            payload_content = [item.content for item in layered_items if item.id == item_id]
+            payload_content.extend(
+                content
+                for metadata_id, content in metadata_items
+                if metadata_id == item_id and content
+            )
+            if any(content not in allowed_content for content in payload_content):
+                payload_mismatch_ids.add(item_id)
+        decision_degradations = [
+            *decision.degradations,
+            *(
+                {"id": item_id, "reason": "candidate_payload_mismatch"}
+                for item_id in sorted(payload_mismatch_ids)
+            ),
+        ]
+        project_blocked_ids = {
+            item_id
+            for item_id in dict.fromkeys(candidate_ids)
+            if not self._project_item_allowed(
+                items_by_id.get(item_id)
+                or ContextItem(item_id, "", 0.0, source="metadata", layer="related"),
+                layer_by_id.get(item_id, "related"),
+                project_id=project_id,
+                project_policy=project_policy,
+            )
+        }
+        from plastic_promise.core.retrieval_planner import (
+            requires_synthesis_source_expansion,
+        )
+        from plastic_promise.core.synthesis_retrieval import (
+            expand_synthesis_sources,
+            synthesis_provenance,
+        )
+
+        provenance_by_id: dict[str, dict[str, Any]] = {}
+        provenance_failed_ids: set[str] = set()
+        conn = getattr(getattr(self, "_sqlite", None), "_conn", None)
+        for item_id in decision.admitted_synthesis_ids:
+            if item_id in project_blocked_ids or item_id in payload_mismatch_ids:
+                continue
+            provenance = synthesis_provenance(conn, item_id) if conn is not None else {}
+            if provenance:
+                provenance_by_id[item_id] = provenance
+            else:
+                provenance_failed_ids.add(item_id)
+                decision_degradations.append(
+                    {"id": item_id, "reason": "synthesis_provenance_unavailable"}
+                )
+        pre_expansion_admitted_ids = (
+            set(decision.items) - project_blocked_ids - payload_mismatch_ids - provenance_failed_ids
+        )
+        selected_layer_ids: list[str] = []
+        fallback_layer_ids: list[str] = []
+        for layer in ("core", "related", "divergent"):
+            budget = max(0, int(retrieval_plan.budget.get(layer, 0)))
+            layer_items = list(getattr(pack, layer, []))
+            admitted_layer_ids = [
+                item.id for item in layer_items if item.id in pre_expansion_admitted_ids
+            ]
+            project_allowed_layer_ids = [
+                item.id for item in layer_items if item.id not in project_blocked_ids
+            ]
+            selected_layer_ids.extend(admitted_layer_ids[:budget])
+            fallback_layer_ids.extend(project_allowed_layer_ids[:budget])
+        degradation_reasons_by_id: dict[str, set[str]] = {}
+        for row in decision_degradations:
+            item_id = str(row.get("id") or "")
+            reason = str(row.get("reason") or "")
+            if item_id and reason:
+                degradation_reasons_by_id.setdefault(item_id, set()).add(reason)
+        selected_governed_ids = tuple(
+            item_id
+            for item_id in dict.fromkeys(selected_layer_ids)
+            if self._synthesis_memory_reserved(item_id)
+        )
+        fallback_governed_ids = tuple(
+            item_id
+            for item_id in dict.fromkeys(fallback_layer_ids)
+            if item_id not in selected_governed_ids
+            and self._synthesis_memory_reserved(item_id)
+            and self._synthesis_source_fallback_allowed(
+                conn,
+                item_id,
+                reasons=degradation_reasons_by_id.get(item_id, set()),
+                task_type=task_type,
+                retrieval_mode=retrieval_plan.mode,
+            )
+        )
+        raw_evidence_budget = max(
+            0,
+            int(retrieval_plan.budget.get("raw_evidence", 0)),
+        )
+        high_impact_expansion = requires_synthesis_source_expansion(
+            retrieval_plan,
+            task_type=task_type,
+        )
+        allowed_source_evidence: list[dict[str, Any]] = []
+        if high_impact_expansion:
+            expansion_targets = tuple(
+                item_id
+                for item_id in (*selected_governed_ids, *fallback_governed_ids)
+                if item_id not in project_blocked_ids
+            )
+            fallback_governed_id_set = set(fallback_governed_ids)
+            expansion_limit = raw_evidence_budget * self._synthesis_overfetch_factor()
+            source_hydration_failed_ids: set[str] = set()
+            for synthesis_id in expansion_targets:
+                source_evidence = (
+                    expand_synthesis_sources(
+                        conn,
+                        [synthesis_id],
+                        limit=expansion_limit,
+                    )
+                    if conn is not None and expansion_limit > 0
+                    else []
+                )
+                if synthesis_id in fallback_governed_id_set and not (
+                    self._synthesis_source_fallback_allowed(
+                        conn,
+                        synthesis_id,
+                        reasons=degradation_reasons_by_id.get(synthesis_id, set()),
+                        task_type=task_type,
+                        retrieval_mode=retrieval_plan.mode,
+                    )
+                ):
+                    continue
+                allowed_for_synthesis: list[dict[str, Any]] = []
+                for evidence in source_evidence:
+                    try:
+                        source_item = ContextItem(
+                            str(evidence.get("id") or ""),
+                            str(evidence.get("content") or ""),
+                            float(evidence.get("score") or 0.0),
+                            source=str(evidence.get("source") or "synthesis_source"),
+                            layer="related",
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                    if source_item.id and self._project_item_allowed(
+                        source_item,
+                        "related",
+                        project_id=project_id,
+                        project_policy=project_policy,
+                    ):
+                        allowed_for_synthesis.append(evidence)
+                if (
+                    synthesis_id in provenance_by_id
+                    and expansion_limit > 0
+                    and not allowed_for_synthesis
+                ):
+                    source_hydration_failed_ids.add(synthesis_id)
+                allowed_source_evidence.extend(allowed_for_synthesis)
+            for synthesis_id in source_hydration_failed_ids:
+                provenance_by_id.pop(synthesis_id, None)
+                provenance_failed_ids.add(synthesis_id)
+                decision_degradations.append(
+                    {
+                        "id": synthesis_id,
+                        "reason": "synthesis_source_hydration_unavailable",
+                    }
+                )
+        admitted_ids = (
+            set(decision.items) - project_blocked_ids - payload_mismatch_ids - provenance_failed_ids
+        )
+        dropped_ids = (
+            set(decision.dropped_ids)
+            | project_blocked_ids
+            | payload_mismatch_ids
+            | provenance_failed_ids
+        )
+        governed_metadata_ids = {
+            item_id
+            for item_id in dict.fromkeys(candidate_ids)
+            if self._synthesis_memory_reserved(item_id)
+        }
+        metadata_redaction_ids = dropped_ids | governed_metadata_ids
+        dropped_contents = tuple(
+            dict.fromkeys(
+                [item.content for item in layered_items if item.id in dropped_ids and item.content]
+                + [
+                    content
+                    for item_id, content in metadata_items
+                    if item_id in dropped_ids and content
+                ]
+            )
+        )
+
+        for layer in ("core", "related", "divergent"):
+            budget = max(0, int(retrieval_plan.budget.get(layer, 0)))
+            admitted_layer = [item for item in getattr(pack, layer, []) if item.id in admitted_ids]
+            setattr(pack, layer, admitted_layer[:budget])
+
+        admitted_rankings: dict[str, list[dict[str, Any]]] = {}
+        for channel, rows in dict(getattr(pack, "channel_rankings", {}) or {}).items():
+            admitted_rows = [
+                dict(row)
+                for row in rows
+                if isinstance(row, dict) and str(row.get("memory_id") or "") in admitted_ids
+            ]
+            for rank, row in enumerate(admitted_rows, start=1):
+                row["rank"] = rank
+            admitted_rankings[str(channel)] = admitted_rows
+        pack.channel_rankings = admitted_rankings
+
+        pack.per_item_stats = [
+            row
+            for row in list(getattr(pack, "per_item_stats", []) or [])
+            if not self._value_mentions_dropped(row, dropped_ids, dropped_contents)
+        ]
+
+        pack.pipeline_stats = self._sanitize_dropped_values(
+            dict(getattr(pack, "pipeline_stats", {}) or {}),
+            metadata_redaction_ids,
+            dropped_contents,
+        )
+        pack.audit_metadata = self._sanitize_dropped_values(
+            pack.audit_metadata,
+            metadata_redaction_ids,
+            dropped_contents,
+        )
+
+        recommender = pack.audit_metadata.get("context_recommender")
+        if recommender is not None:
+            pack.audit_metadata["context_recommender"] = self._sanitize_dropped_values(
+                recommender,
+                metadata_redaction_ids,
+                dropped_contents,
+            )
+
+        combined_degradations = decision_degradations
+        if combined_degradations:
+            unique_degradations = {
+                (row["id"], row["reason"]): {"id": row["id"], "reason": row["reason"]}
+                for row in combined_degradations
+            }
+            pack.audit_metadata["synthesis_retrieval"] = {
+                "degradations": list(unique_degradations.values())
+            }
+
+        if pack.gap_signal is not None:
+            gap_value: Any = pack.gap_signal
+            gap_type = type(gap_value)
+            if is_dataclass(gap_value):
+                sanitized = self._sanitize_dropped_values(
+                    asdict(gap_value), metadata_redaction_ids, dropped_contents
+                )
+                try:
+                    pack.gap_signal = gap_type(**sanitized)
+                except Exception:
+                    pack.gap_signal = sanitized
+            else:
+                pack.gap_signal = self._sanitize_dropped_values(
+                    gap_value, metadata_redaction_ids, dropped_contents
+                )
+
+        public_memory_ids = set(self._public_memory_ids(self._memories))
+        public_graph_nodes, public_graph_edges = self._public_graph_snapshot()
+        public_ldb_rows = 0
+        if self._ldb is not None:
+            list_ids = getattr(self._ldb, "list_memory_ids", None)
+            if callable(list_ids):
+                try:
+                    public_ldb_rows = len(set(list_ids()) & public_memory_ids)
+                except Exception:
+                    public_ldb_rows = 0
+        pack.audit_metadata["memory_pool_size"] = str(len(public_memory_ids))
+        pack.audit_metadata["graph_nodes"] = str(len(public_graph_nodes))
+        pack.audit_metadata["graph_edges"] = str(len(public_graph_edges))
+        pack.audit_metadata["ldb_rows"] = str(public_ldb_rows)
+
+        final_items = [*pack.core, *pack.related, *pack.divergent]
+        selected_synthesis_ids = tuple(
+            item.id for item in final_items if item.id in provenance_by_id
+        )
+        selected_provenance = {
+            item_id: provenance_by_id[item_id] for item_id in selected_synthesis_ids
+        }
+        if selected_provenance:
+            pack.audit_metadata["synthesis_provenance"] = selected_provenance
+
+        if high_impact_expansion:
+            ordinary_items = [
+                item for item in final_items if not self._synthesis_memory_reserved(item.id)
+            ]
+            ranked_evidence = self._raw_evidence_from_items(
+                ordinary_items,
+                raw_evidence_budget,
+            )
+            raw_evidence: list[dict[str, Any]] = []
+            seen_evidence_ids: set[str] = set()
+            for evidence in [*allowed_source_evidence, *ranked_evidence]:
+                evidence_id = str(evidence.get("id") or "")
+                if not evidence_id or evidence_id in seen_evidence_ids:
+                    continue
+                seen_evidence_ids.add(evidence_id)
+                raw_evidence.append(evidence)
+                if len(raw_evidence) >= raw_evidence_budget:
+                    break
+        else:
+            raw_evidence = self._raw_evidence_from_items(
+                final_items,
+                raw_evidence_budget,
+            )
+        self._attach_retrieval_plan(
+            pack,
+            retrieval_plan,
+            raw_evidence=raw_evidence,
+        )
+        return pack
+
+    @staticmethod
     def _merge_ranked_results(
         primary: list[tuple[str, float, str, str]],
         extra: list[tuple[str, float, str, str]],
@@ -1473,7 +3752,10 @@ class ContextEngine:
         ]
 
     def _code_memory_retrieval(
-        self, task_description: str, retrieval_plan: RetrievalPlan
+        self,
+        task_description: str,
+        retrieval_plan: RetrievalPlan,
+        limit: int | None = None,
     ) -> list[tuple[str, float, str, str]]:
         if os.environ.get("PP_CODE_MEMORY_ENABLED", "1") != "1":
             return []
@@ -1486,7 +3768,7 @@ class ContextEngine:
             return search_code_index(
                 index,
                 task_description,
-                limit=retrieval_plan.budget.get("raw_evidence", 12),
+                limit=limit or retrieval_plan.budget.get("raw_evidence", 12),
             )
         except Exception as exc:
             logger.warning("code_memory retrieval skipped: %s", exc)
@@ -1544,19 +3826,30 @@ class ContextEngine:
         return index
 
     def _register_code_memory_graph(self, index) -> None:
+        with self._write_lock:
+            self._register_code_memory_graph_locked(index)
+
+    def _register_code_memory_graph_locked(self, index) -> None:
         for node in index.nodes:
             node_id = node.get("id", "")
             if not node_id:
                 continue
+            if self._synthesis_memory_reserved(node_id):
+                continue
             node_data = {k: v for k, v in node.items() if k != "id"}
+            if not self._persist_ordinary_graph_node(node_id, node_data):
+                continue
             self._graph_nodes[node_id] = node_data
-            if self._sqlite and hasattr(self._sqlite, "upsert_graph_node"):
-                self._sqlite.upsert_graph_node(node_id, node_data)
         for edge in index.edges:
-            if not self.has_graph_edge(edge):
-                self._graph_edges.append(edge)
-                if self._sqlite and hasattr(self._sqlite, "upsert_graph_edge"):
-                    self._sqlite.upsert_graph_edge(edge)
+            self.add_graph_edge(
+                str(edge.get("from") or ""),
+                str(edge.get("to") or ""),
+                relation=str(edge.get("relation") or "references"),
+                weight=float(edge.get("weight", 0.5)),
+                metadata=(edge.get("metadata") if isinstance(edge.get("metadata"), dict) else None),
+                source_kind=str(edge.get("source_kind") or ""),
+                evidence_id=str(edge.get("evidence_id") or ""),
+            )
 
     @staticmethod
     def _apply_decay_awareness(
@@ -1694,6 +3987,67 @@ class ContextEngine:
         deferred.sort(key=lambda x: x.relevance, reverse=True)
         return selected + deferred
 
+    def _python_channel_states(
+        self,
+        retrieval_plan: RetrievalPlan,
+        *,
+        rank_sources: Mapping[str, list[tuple]],
+        graph_results: list[tuple],
+        code_results: list[tuple],
+        retrieval_degradations: list[dict[str, str]],
+    ) -> dict[str, dict[str, Any]]:
+        states: dict[str, dict[str, Any]] = {}
+        degradation_by_channel = {
+            str(row.get("channel") or ""): str(row.get("reason") or "unavailable")
+            for row in retrieval_degradations
+            if isinstance(row, dict) and row.get("channel")
+        }
+        evidence_results = {
+            "graph": graph_results,
+            "code": code_results,
+            "audit": graph_results,
+            "principle": graph_results,
+        }
+        for channel in retrieval_plan.channels:
+            evidence_only = channel not in retrieval_plan.fusion_channels
+            enabled = True
+            if channel == "fts":
+                enabled = (
+                    os.environ.get("PP_FTS_DISABLED", "") != "1"
+                    and os.environ.get("PP_FTS_FUSION", "1") == "1"
+                )
+            available = enabled
+            if channel == "graph":
+                available = enabled and bool(self._graph_edges)
+            if channel in degradation_by_channel:
+                available = False
+            executed = enabled and available
+            participating = bool(
+                not evidence_only and enabled and available and channel in rank_sources
+            )
+            if evidence_only:
+                reason = "evidence_only"
+            elif not enabled:
+                reason = "disabled"
+            elif not available:
+                reason = degradation_by_channel.get(channel, "unavailable")
+            elif participating:
+                reason = "participating"
+            else:
+                reason = "not_executed"
+            result_count = len(evidence_results.get(channel, rank_sources.get(channel, [])))
+            states[channel] = {
+                "planned": True,
+                "enabled": enabled,
+                "available": available,
+                "executed": executed,
+                "participating": participating,
+                "evidence_only": evidence_only,
+                "reason": reason,
+                "result_count": result_count,
+            }
+        return states
+
     def _supply_python(
         self,
         task_description: str,
@@ -1705,6 +4059,8 @@ class ContextEngine:
         project_id: str = "project:legacy-global",
         project_policy: str = "balanced",
         project_degraded: bool = False,
+        fusion_config: FusionConfig | None = None,
+        fusion_decision: FusionDecision | None = None,
     ) -> ContextPack:
         """供应上下文
 
@@ -1736,9 +4092,24 @@ class ContextEngine:
         except Exception:
             trust_boost = 1.0
 
+        if retrieval_plan is None:
+            retrieval_plan = plan_retrieval(
+                task_type=task_type,
+                scope=scope,
+                project_policy=project_policy,
+                has_vector=any(v != 0.0 for v in task_vector),
+                has_graph=bool(self._graph_edges),
+                has_fts=(
+                    self._ldb is not None
+                    and os.environ.get("PP_FTS_DISABLED", "") != "1"
+                    and os.environ.get("PP_FTS_FUSION", "1") == "1"
+                ),
+            )
+        candidate_limit = self._candidate_budget(retrieval_plan)
+
         # Phase 1: 三路分层检索 — 细→类→粗
         # 细 (graph): 原则关联图谱 — 最精确的信号
-        graph_results = self._graph_traversal(task_type)
+        graph_results = self._graph_traversal(task_type)[:candidate_limit]
 
         # 类 (tier): 文本匹配 + L1 工作记忆优先级提升
         domain_hint = scope if scope and scope != "global" else None
@@ -1754,26 +4125,41 @@ class ContextEngine:
             except Exception:
                 pass  # expansion failure never blocks retrieval
 
-        text_results = self._text_retrieval(expanded_query, trust_boost, domain_hint)
+        text_results = self._text_retrieval(expanded_query, trust_boost, domain_hint)[
+            :candidate_limit
+        ]
 
         # 粗 (vector): 语义向量相关性 (零向量时跳过)
-        vector_results = (
-            self._vector_retrieval(task_vector, domain_hint)
-            if any(v != 0.0 for v in task_vector)
-            else []
-        )
+        vector_results = []
+        if any(v != 0.0 for v in task_vector):
+            vector_results = self._call_with_optional_limit(
+                self._vector_retrieval,
+                task_vector,
+                domain_hint,
+                limit=candidate_limit,
+            )
 
         # FTS: LanceDB full-text search as third retrieval channel
-        fts_results = self._fts_retrieval(task_description, scope)
-
-        if retrieval_plan is None:
-            retrieval_plan = plan_retrieval(
-                task_type=task_type,
-                scope=scope,
-                has_vector=bool(vector_results),
-                has_graph=bool(graph_results),
-                has_fts=bool(fts_results),
-            )
+        fts_results = self._call_with_optional_limit(
+            self._fts_retrieval,
+            task_description,
+            scope,
+            limit=candidate_limit,
+        )
+        retrieval_degradations: list[dict[str, str]] = []
+        if self._ldb is not None:
+            consume_diagnostics = getattr(self._ldb, "consume_search_diagnostics", None)
+            if callable(consume_diagnostics):
+                try:
+                    retrieval_degradations.extend(consume_diagnostics())
+                except Exception as exc:
+                    retrieval_degradations.append(
+                        {
+                            "channel": "fts",
+                            "reason": "retrieval_diagnostics_unavailable",
+                            "error_class": exc.__class__.__name__,
+                        }
+                    )
 
         canonical_hot_enabled = os.environ.get("PP_CANONICAL_HOT_LOOKUP", "0") == "1"
         canonical_hot_enforce = os.environ.get("PP_CANONICAL_HOT_ENFORCE", "0") == "1"
@@ -1800,16 +4186,45 @@ class ContextEngine:
                     task_description,
                     code_index=hot_code_index,
                     domain_hint=domain_hint,
-                    limit=canonical_hot_limit,
+                    limit=min(
+                        candidate_limit,
+                        canonical_hot_limit * self._synthesis_overfetch_factor(),
+                    ),
                 )
                 canonical_hot_results = canonical_hits_to_results(canonical_hot_hits)
             except Exception as exc:
                 logger.warning("canonical_hot lookup skipped: %s", exc)
 
-        code_results = self._code_memory_retrieval(task_description, retrieval_plan)
+        code_results = self._call_with_optional_limit(
+            self._code_memory_retrieval,
+            task_description,
+            retrieval_plan,
+            limit=candidate_limit,
+        )
 
-        # Phase 2: Hybrid fusion (vector + text + fts) then layer with graph
-        if vector_results:
+        # Phase 2: explicit versioned fusion, then layer with graph evidence.
+        if fusion_config is not None:
+            channel_results = {
+                "vector": vector_results,
+                "bm25": text_results,
+                "fts": fts_results,
+            }
+            rankings = {
+                channel: [(str(row[0]), float(row[1])) for row in channel_results[channel]]
+                for channel in fusion_config.channels
+            }
+            fused_scores = weighted_rrf(rankings, fusion_config)
+            hydrated = {
+                str(row[0]): (str(row[2]), str(row[3]))
+                for channel in fusion_config.channels
+                for row in channel_results[channel]
+            }
+            fused_results = [
+                (memory_id, score, *hydrated[memory_id])
+                for memory_id, score in fused_scores
+                if memory_id in hydrated
+            ]
+        elif vector_results:
             vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
             fused_results = self._hybrid_fuse(
                 vector_results,
@@ -1841,16 +4256,8 @@ class ContextEngine:
         all_results = self._merge_ranked_results(all_results, code_results)
         if canonical_hot_enforce:
             all_results = self._merge_ranked_results(all_results, canonical_hot_results)
-        raw_evidence = ContextEngine._raw_evidence_from_results(
-            [
-                graph_results,
-                vector_results,
-                text_results,
-                fts_results,
-                code_results,
-                canonical_hot_results if canonical_hot_enforce else [],
-            ],
-            retrieval_plan.budget.get("raw_evidence", 10),
+        all_results, synthesis_degradations = self._filter_synthesis_result_tuples(
+            all_results[:candidate_limit]
         )
 
         # P2: Evolve edge weights based on feedback patterns
@@ -1884,6 +4291,8 @@ class ContextEngine:
         if context_gate_enabled:
             from plastic_promise.core.context_gate import (
                 CandidateEvidence as CandidateEvidenceClass,
+            )
+            from plastic_promise.core.context_gate import (
                 evaluate_context_gate,
             )
 
@@ -1928,10 +4337,7 @@ class ContextEngine:
             score = min(score * boost, 1.0)
 
             # --- Feedback multiplier (was _apply_feedback) ---
-            if mem:
-                worth = ContextEngine._calc_worth_score_from_memory(mem)
-            else:
-                worth = 0.5
+            worth = ContextEngine._calc_worth_score_from_memory(mem) if mem else 0.5
             multiplier = FEEDBACK_SCORE_MULTIPLIER_MIN + FEEDBACK_SCORE_MULTIPLIER_RANGE * worth
             score = score * multiplier
 
@@ -2116,6 +4522,35 @@ class ContextEngine:
 
         final_items = pack.core + pack.related + pack.divergent
         if debug:
+            rank_sources = {
+                "vector": vector_results,
+                "bm25": text_results,
+                "fts": fts_results,
+            }
+            pack.channel_rankings = {
+                channel: [
+                    {
+                        "memory_id": str(row[0]),
+                        "score": float(row[1]),
+                        "rank": rank,
+                    }
+                    for rank, row in enumerate(
+                        sorted(
+                            rank_sources[channel],
+                            key=lambda item: (-float(item[1]), str(item[0])),
+                        )[: retrieval_plan.channel_windows[channel]],
+                        start=1,
+                    )
+                ]
+                for channel in retrieval_plan.fusion_channels
+            }
+            pack.channel_states = self._python_channel_states(
+                retrieval_plan,
+                rank_sources=rank_sources,
+                graph_results=graph_results,
+                code_results=code_results,
+                retrieval_degradations=retrieval_degradations,
+            )
             pack.pipeline_stats = {
                 "vector_count": len(vector_results),
                 "bm25_count": len(text_results),
@@ -2163,8 +4598,17 @@ class ContextEngine:
                 "limit": canonical_hot_limit,
             },
             "context_gate": context_gate_summary,
+            "retrieval_degradations": retrieval_degradations,
         }
-        ContextEngine._attach_retrieval_plan(pack, retrieval_plan, raw_evidence=raw_evidence)
+        if fusion_decision is not None:
+            pack.audit_metadata["retrieval_fusion"] = self._fusion_audit_metadata(
+                fusion_decision,
+                fusion_config,
+            )
+        if synthesis_degradations:
+            pack.audit_metadata["synthesis_retrieval"] = {
+                "degradations": list(synthesis_degradations)
+            }
 
         # ── Exemplar gap detection ─────────────────────────
         # Middleware: detect knowledge gaps before returning.
@@ -2177,11 +4621,38 @@ class ContextEngine:
         except Exception:
             pass  # gap detection failure must not block context_supply
 
-        return pack
+        return self._finalize_supply_pack(
+            pack,
+            retrieval_plan,
+            task_type=task_type,
+            project_id=project_id,
+            project_policy=project_policy,
+        )
 
     # ========== 实体注册 ==========
 
     def register_entity(
+        self,
+        entity_type: str,
+        entity_id: str,
+        entity_name: str,
+        entity_description: str = "",
+        related_entities: list[str] = None,
+        metadata: dict[str, Any] | None = None,
+        source_kind: str = "",
+    ) -> dict:
+        with self._write_lock:
+            return self._register_entity_locked(
+                entity_type,
+                entity_id,
+                entity_name,
+                entity_description=entity_description,
+                related_entities=related_entities,
+                metadata=metadata,
+                source_kind=source_kind,
+            )
+
+    def _register_entity_locked(
         self,
         entity_type: str,
         entity_id: str,
@@ -2206,6 +4677,11 @@ class ContextEngine:
         validate_node_type(entity_type)
 
         node_id = f"{entity_type}:{entity_id}"
+        reservation_ids = tuple(dict.fromkeys((str(entity_id), node_id)))
+        if any(self._synthesis_memory_reserved(candidate) for candidate in reservation_ids):
+            from plastic_promise.core.synthesis import SynthesisConflict
+
+            raise SynthesisConflict("synthesis_graph_node_reserved")
         is_new = node_id not in self._graph_nodes
 
         # Create or update node
@@ -2217,9 +4693,16 @@ class ContextEngine:
             source_kind=source_kind,
             metadata=metadata,
         )
-        self._graph_nodes[node_id] = {k: v for k, v in node.items() if k != "id"}
-        if self._sqlite and hasattr(self._sqlite, "upsert_graph_node"):
-            self._sqlite.upsert_graph_node(node_id, self._graph_nodes[node_id])
+        node_data = {k: v for k, v in node.items() if k != "id"}
+        if not self._persist_ordinary_graph_node(
+            node_id,
+            node_data,
+            reservation_ids=reservation_ids,
+        ):
+            from plastic_promise.core.synthesis import SynthesisConflict
+
+            raise SynthesisConflict("synthesis_graph_node_reserved")
+        self._graph_nodes[node_id] = node_data
 
         # Create edges to related entities
         edges_created = 0
@@ -2259,23 +4742,24 @@ class ContextEngine:
             dict with nodes, edges, and optional traversal_path.
         """
         max_hops = max(1, min(max_hops, 10))
+        graph_nodes, graph_edges = self._public_graph_snapshot()
 
         if query_type == "full_graph":
             return {
-                "nodes": dict(self._graph_nodes),
-                "edges": list(self._graph_edges),
+                "nodes": graph_nodes,
+                "edges": graph_edges,
             }
 
         if query_type == "node_info":
-            if not start_node or start_node not in self._graph_nodes:
+            if not start_node or start_node not in graph_nodes:
                 return {
                     "error": f"Node '{start_node}' not found",
                     "nodes": {},
                     "edges": [],
                 }
-            node = self._graph_nodes[start_node]
-            in_edges = [e for e in self._graph_edges if e.get("to") == start_node]
-            out_edges = [e for e in self._graph_edges if e.get("from") == start_node]
+            node = graph_nodes[start_node]
+            in_edges = [e for e in graph_edges if e.get("to") == start_node]
+            out_edges = [e for e in graph_edges if e.get("from") == start_node]
             return {
                 "nodes": {start_node: node},
                 "edges": in_edges + out_edges,
@@ -2284,7 +4768,7 @@ class ContextEngine:
             }
 
         if query_type == "neighbors":
-            if not start_node or start_node not in self._graph_nodes:
+            if not start_node or start_node not in graph_nodes:
                 return {
                     "error": f"Node '{start_node}' not found",
                     "nodes": {},
@@ -2292,20 +4776,18 @@ class ContextEngine:
                 }
             neighbor_ids = set()
             edges = []
-            for e in self._graph_edges:
+            for e in graph_edges:
                 if e.get("from") == start_node:
                     neighbor_ids.add(e.get("to"))
                     edges.append(e)
                 elif e.get("to") == start_node:
                     neighbor_ids.add(e.get("from"))
                     edges.append(e)
-            nodes = {
-                nid: self._graph_nodes[nid] for nid in neighbor_ids if nid in self._graph_nodes
-            }
+            nodes = {nid: graph_nodes[nid] for nid in neighbor_ids if nid in graph_nodes}
             return {"nodes": nodes, "edges": edges, "neighbor_count": len(nodes)}
 
         if query_type == "traverse":
-            if not start_node or start_node not in self._graph_nodes:
+            if not start_node or start_node not in graph_nodes:
                 return {
                     "error": f"Node '{start_node}' not found",
                     "nodes": {},
@@ -2327,10 +4809,10 @@ class ContextEngine:
                     continue
                 visited.add(current)
                 traversal_path.append(current)
-                if current in self._graph_nodes:
-                    all_nodes[current] = self._graph_nodes[current]
+                if current in graph_nodes:
+                    all_nodes[current] = graph_nodes[current]
                 # Follow outgoing edges
-                for e in self._graph_edges:
+                for e in graph_edges:
                     if e.get("from") == current:
                         all_edges.append(e)
                         target = e.get("to")
@@ -2354,6 +4836,11 @@ class ContextEngine:
     def ensure_heavy_init(self):
         """Public wrapper for _ensure_heavy_init."""
         self._ensure_heavy_init()
+
+    @property
+    def lancedb_store(self):
+        """Return the active derived vector store, if initialized."""
+        return self._ldb
 
     def refresh_runtime_mode(self, initialize_heavy: bool = False):
         """Refresh cached runtime state after launcher/MCP mode changes."""
@@ -2431,6 +4918,47 @@ class ContextEngine:
 
     # ---- Rust engine health probe -------------------------------------------
 
+    def _rust_backend_paths(self) -> tuple[str, str]:
+        """Return the canonical backend paths shared by probe and live supply."""
+        conn = getattr(getattr(self, "_sqlite", None), "_conn", None)
+        if conn is not None:
+            try:
+                main_database = next(
+                    (
+                        str(row[2] or ":memory:")
+                        for row in conn.execute("PRAGMA database_list").fetchall()
+                        if len(row) >= 3 and row[1] == "main"
+                    ),
+                    "",
+                )
+            except Exception as exc:
+                raise RuntimeError("canonical SQLite path unavailable") from exc
+            if not main_database:
+                raise RuntimeError("canonical SQLite path unavailable")
+            db_path = main_database
+        elif self._sqlite is not None:
+            raise RuntimeError("canonical SQLite backend unavailable")
+        else:
+            db_path = get_db_path()
+
+        if db_path != ":memory:" and not os.path.isabs(db_path):
+            db_path = os.path.abspath(db_path)
+        lancedb_path = getattr(self._ldb, "_path", "") or os.environ.get(
+            "PLASTIC_LANCEDB_PATH",
+            os.path.join(
+                os.path.dirname(db_path or "plastic_memory.db"),
+                "plastic_memory.lancedb",
+            ),
+        )
+        return db_path, lancedb_path
+
+    def _new_rust_engine(self, rust_engine_cls):
+        """Construct Rust with the same canonical backends used for snapshots."""
+        db_path, lancedb_path = self._rust_backend_paths()
+        if hasattr(rust_engine_cls, "new_with_backends"):
+            return rust_engine_cls.new_with_backends(db_path, lancedb_path)
+        raise RuntimeError("Rust engine lacks explicit canonical backend constructor")
+
     def _check_rust_health(self) -> bool | None:
         """Probe Rust core availability. Caches result for TTL seconds.
 
@@ -2467,8 +4995,8 @@ class ContextEngine:
                     _sys.path.insert(0, _rust_path)
                 from context_engine_core import ContextEngine as RustEngine
 
-                # Smoke test: supply with empty memories — validates import + PyO3 bridge
-                engine = RustEngine()
+                # Smoke test: use the same canonical backends as live snapshots.
+                engine = self._new_rust_engine(RustEngine)
                 engine.set_current_time(datetime.datetime.now().isoformat())
                 pack = engine.supply("test", [0.0] * 1024, "general", "global", [])
                 # Validate response shape — must have core + related attributes
@@ -2555,6 +5083,47 @@ class ContextEngine:
             pack.pipeline_stats = dict(rust_pack.pipeline_stats)
         if hasattr(rust_pack, "per_item_stats") and rust_pack.per_item_stats:
             pack.per_item_stats = [dict(row) for row in rust_pack.per_item_stats]
+        if hasattr(rust_pack, "channel_rankings") and rust_pack.channel_rankings:
+            pack.channel_rankings = {
+                str(channel): [
+                    {
+                        "memory_id": str(dict(row).get("memory_id") or ""),
+                        "score": float(dict(row).get("score") or 0.0),
+                        "rank": int(dict(row).get("rank") or 0),
+                    }
+                    for row in rows
+                ]
+                for channel, rows in dict(rust_pack.channel_rankings).items()
+            }
+        if hasattr(rust_pack, "channel_states") and rust_pack.channel_states:
+            pack.channel_states = {
+                str(channel): {
+                    key: (
+                        value == "true"
+                        if key
+                        in {
+                            "planned",
+                            "enabled",
+                            "available",
+                            "executed",
+                            "participating",
+                            "evidence_only",
+                        }
+                        else int(value)
+                        if key == "result_count"
+                        else value
+                    )
+                    for key, value in dict(state).items()
+                }
+                for channel, state in dict(rust_pack.channel_states).items()
+            }
+
+        fusion_json = pack.audit_metadata.pop("retrieval_fusion_json", "")
+        if fusion_json:
+            try:
+                pack.audit_metadata["retrieval_fusion"] = json.loads(fusion_json)
+            except json.JSONDecodeError as exc:
+                raise _RustFusionFallback("rust_fusion_audit_invalid") from exc
 
         return pack
 
@@ -2568,6 +5137,7 @@ class ContextEngine:
         project_id: str = "project:legacy-global",
         project_policy: str = "balanced",
         project_degraded: bool = False,
+        fusion_config: FusionConfig | None = None,
     ) -> ContextPack:
         """Rust-accelerated supply path.
 
@@ -2576,65 +5146,105 @@ class ContextEngine:
         ranking math for this opt-in path, while Python remains the write
         authority and fallback implementation.
         """
+        self._refresh_canonical_cache_if_changed()
+        with self._write_lock:
+            snapshot_decision = self._gate_memory_ids(list(self._memories))
+            admitted_snapshot_ids = set(snapshot_decision.items)
+            if snapshot_decision.admitted_synthesis_ids:
+                # Rust intentionally ranks ordinary snapshot rows only. Preserve
+                # SQLite-approved synthesis by returning to the Python authority
+                # before either snapshot bodies or derived vectors are read.
+                raise _RustSynthesisFallback("admitted_governed_synthesis")
+            memories = [
+                dict(self._memories[mid]) for mid in self._memories if mid in admitted_snapshot_ids
+            ]
+
         from context_engine_core import ContextEngine as RustEngine
 
-        # Ensure Rust engine finds the real database
-        db_path = get_db_path()
-        if db_path != ":memory:" and not os.path.isabs(db_path):
-            db_path = os.path.abspath(db_path)
-        os.environ["PLASTIC_DB_PATH"] = db_path
-
-        lancedb_path = os.environ.get(
-            "PLASTIC_LANCEDB_PATH",
-            os.path.join(
-                os.path.dirname(db_path or "plastic_memory.db"),
-                "plastic_memory.lancedb",
-            ),
-        )
-        if hasattr(RustEngine, "new_with_backends"):
-            rust = RustEngine.new_with_backends(db_path, lancedb_path)
-        else:
-            rust = RustEngine()
+        rust = self._new_rust_engine(RustEngine)
         rust.set_current_time(datetime.datetime.now().isoformat())
 
-        # Load all vectors from LanceDB at once for Rust enrichment
+        # Enrich only admitted rows. Derived vector state never decides admission.
         vector_lookup: dict[str, list[float]] = {}
-        if self._ldb:
-            try:
-                all_rows = self._ldb._table.search().limit(9999).to_list()
-                for row in all_rows:
-                    mid = row.get("memory_id", "")
-                    vec = row.get("vector", [])
-                    if mid and vec and len(vec) == 1024:
-                        vector_lookup[mid] = list(vec)
-            except Exception:
-                pass
+        if self._ldb and admitted_snapshot_ids:
+            get_vector = getattr(self._ldb, "get_vector", None)
+            if callable(get_vector):
+                for memory_id in admitted_snapshot_ids:
+                    try:
+                        vector = get_vector(memory_id)
+                    except Exception:
+                        continue
+                    if vector and len(vector) == 1024:
+                        vector_lookup[memory_id] = list(vector)
+        for memory in memories:
+            memory["_vector"] = vector_lookup.get(str(memory.get("id", "")), [])
 
-        with self._write_lock:
-            memories = []
-            for mid in self._memories:
-                mem = dict(self._memories[mid])
-                mem["_vector"] = vector_lookup.get(mid, [])
-                memories.append(mem)
-
+        fusion_config_json = None
+        if fusion_config is not None:
+            fusion_config_json = json.dumps(
+                {
+                    "k": fusion_config.k,
+                    "channels": list(fusion_config.channels),
+                    "weights": dict(fusion_config.weights),
+                    "windows": dict(fusion_config.windows),
+                },
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
         if hasattr(rust, "supply_with_project_context"):
-            rust_pack = rust.supply_with_project_context(
+            try:
+                rust_pack = rust.supply_with_project_context(
+                    task_description,
+                    task_vector,
+                    task_type,
+                    scope,
+                    memories,
+                    project_id,
+                    project_policy,
+                    project_degraded,
+                    fusion_config_json,
+                )
+            except TypeError as exc:
+                if fusion_config is not None:
+                    raise _RustFusionFallback(
+                        "rust_capability_missing:fusion_config_boundary"
+                    ) from exc
+                rust_pack = rust.supply_with_project_context(
+                    task_description,
+                    task_vector,
+                    task_type,
+                    scope,
+                    memories,
+                    project_id,
+                    project_policy,
+                    project_degraded,
+                )
+        else:
+            if fusion_config is not None:
+                raise _RustFusionFallback("rust_capability_missing:fusion_config_boundary")
+            rust_pack = rust.supply(
                 task_description,
                 task_vector,
                 task_type,
                 scope,
                 memories,
-                project_id,
-                project_policy,
-                project_degraded,
             )
-        else:
-            rust_pack = rust.supply(task_description, task_vector, task_type, scope, memories)
-        return self._convert_rust_pack(rust_pack)
+        pack = self._convert_rust_pack(rust_pack)
+        if snapshot_decision.degradations:
+            pack.audit_metadata["synthesis_retrieval"] = {
+                "degradations": list(snapshot_decision.degradations)
+            }
+        return pack
 
     # ========== 内部方法 ==========
 
     def _inject_activated_to_graph(self, activated_names: list[str], task_type: str) -> int:
+        with self._write_lock:
+            return self._inject_activated_to_graph_locked(activated_names, task_type)
+
+    def _inject_activated_to_graph_locked(self, activated_names: list[str], task_type: str) -> int:
         """Write activated principles into the entity graph.
 
         Called automatically during supply() Phase 0. Creates/updates
@@ -2957,7 +5567,11 @@ class ContextEngine:
         doc_freq: dict[str, int] = {}
         eligible: list[str] = []
 
-        for mid, mem in self._memories.items():
+        visible_ids = self._public_memory_ids(self._memories)
+        for mid in visible_ids:
+            mem = self._memories.get(mid)
+            if mem is None:
+                continue
             mem_owner = mem.get("owner", "")
             if current_owner and mem_owner not in (current_owner, "shared", ""):
                 continue
@@ -3016,20 +5630,32 @@ class ContextEngine:
             content = mem["content"]
             results.append((mid, min(score, 1.0), content[:300], mem["source"]))
 
-        # Deferred access tracking
-        for mid, _, _, _ in results:
-            mem = self._memories.get(mid)
-            if mem:
-                mem["access_count"] = mem.get("access_count", 0) + 1
-                if mem.get("access_count", 0) >= 5:
-                    mem["worth_success"] = mem.get("worth_success", 0) + 1
-                # Real-time tier promotion: check after access_count increment
-                self._maybe_adjust_tier(mid)
+        # Deferred access tracking. Governed synthesis is immutable through this
+        # ordinary read-path telemetry, and promotions publish only after the
+        # canonical write succeeds.
+        with self._write_lock:
+            for mid, _, _, _ in results:
+                if self._synthesis_memory_reserved(mid):
+                    continue
+                current = self._memories.get(mid)
+                if current is None:
+                    continue
+                candidate = dict(current)
+                candidate["access_count"] = candidate.get("access_count", 0) + 1
+                if candidate["access_count"] >= 5:
+                    candidate["worth_success"] = candidate.get("worth_success", 0) + 1
+                candidate = self._maybe_adjust_tier(mid, candidate)
+                self._memories[mid] = candidate
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results
 
-    def _vector_retrieval(self, task_vector: list[float], scope: str | None = None) -> list[tuple]:
+    def _vector_retrieval(
+        self,
+        task_vector: list[float],
+        scope: str | None = None,
+        limit: int | None = None,
+    ) -> list[tuple]:
         """Semantic vector retrieval via LanceDB ANN search.
 
         Falls back to empty list if LanceDB is unavailable.
@@ -3039,19 +5665,23 @@ class ContextEngine:
         try:
             raw_results = self._ldb.search(
                 vector=task_vector,
-                k=20,
+                k=limit or 20,
                 scope=scope,
             )
-            # Convert LanceDB results to internal tuple format
-            return [
-                (mid, score, text[:300], "vector")
-                for mid, score, text, _tier, _scope in raw_results
-            ]
+            return self._hydrate_ranked_memory_ids(
+                raw_results,
+                retrieval_source="vector",
+            )[0]
         except Exception as e:
             logging.warning("_vector_retrieval LanceDB failed, returning empty: %s", e)
             return []
 
-    def _fts_retrieval(self, query: str, scope: str = "global") -> list[tuple]:
+    def _fts_retrieval(
+        self,
+        query: str,
+        scope: str = "global",
+        limit: int | None = None,
+    ) -> list[tuple]:
         """LanceDB full-text search retrieval channel.
 
         Uses the native LanceDB FTS index on the 'text' column.
@@ -3068,10 +5698,11 @@ class ContextEngine:
             return []
         try:
             fts_scope = scope if scope and scope != "global" else None
-            raw_results = self._ldb.fts_search(query, k=20, scope=fts_scope)
-            return [
-                (mid, score, text[:300], "fts") for mid, score, text, _tier, _scope in raw_results
-            ]
+            raw_results = self._ldb.fts_search(query, k=limit or 20, scope=fts_scope)
+            return self._hydrate_ranked_memory_ids(
+                raw_results,
+                retrieval_source="fts",
+            )[0]
         except Exception as e:
             logging.warning("_fts_retrieval LanceDB failed, returning empty: %s", e)
             return []
@@ -3081,7 +5712,7 @@ class ContextEngine:
         vector_results: list[tuple],
         text_results: list[tuple],
         vector_weight: float = 0.7,
-        fts_results: Optional[list[tuple]] = None,
+        fts_results: list[tuple] | None = None,
     ) -> list[tuple]:
         """Fuse vector, text, and optional FTS retrieval results with weighted combination.
 
@@ -3151,22 +5782,23 @@ class ContextEngine:
         visited = set()
         principle_nodes = set()
         target = f"task_type:{task_type}"
+        graph_nodes, graph_edges = self._public_graph_snapshot()
 
         # Pass 1: task_type → principles — must run first to populate principle_nodes
-        for edge in self._graph_edges:
+        for edge in graph_edges:
             src = edge.get("from", "")
             if src == target:
                 dst = edge.get("to", "")
                 visited.add(dst)
                 if dst.startswith("principle:"):
                     principle_nodes.add(dst)
-                node = self._graph_nodes.get(dst, {})
+                node = graph_nodes.get(dst, {})
                 results.append(
                     (dst, edge.get("weight", 0.5), node.get("description", dst), "graph")
                 )
 
         # Pass 2: references + governs — now principle_nodes is fully populated
-        for edge in self._graph_edges:
+        for edge in graph_edges:
             rel = edge.get("relation", "")
             src = edge.get("from", "")
             dst = edge.get("to", "")
@@ -3175,12 +5807,11 @@ class ContextEngine:
                 if dst in visited and src in self._memories:
                     mem = self._memories[src]
                     results.append((src, 0.6, mem.get("content", "")[:300], "entity-link"))
-            elif rel == "governs":
-                if src in principle_nodes and dst in self._memories:
-                    mem = self._memories[dst]
-                    results.append(
-                        (dst, edge.get("weight", 0.3), mem.get("content", "")[:300], "graph")
-                    )
+            elif rel == "governs" and src in principle_nodes and dst in self._memories:
+                mem = self._memories[dst]
+                results.append(
+                    (dst, edge.get("weight", 0.3), mem.get("content", "")[:300], "graph")
+                )
 
         return results
 
@@ -3318,6 +5949,55 @@ class ContextEngine:
         return result
 
     def _apply_edge_feedback(self):
+        with self._write_lock:
+            self._apply_edge_feedback_locked()
+
+    @staticmethod
+    def _edge_feedback_memory_id(edge: dict[str, Any]) -> str | None:
+        source = str(edge.get("from") or "")
+        target = str(edge.get("to") or "")
+        if source and (
+            source.startswith("memory:")
+            or not source.startswith("principle:")
+            and not source.startswith("task_type:")
+        ):
+            return source
+        if target and (
+            target.startswith("memory:")
+            or not target.startswith("principle:")
+            and not target.startswith("task_type:")
+        ):
+            return target
+        return None
+
+    @staticmethod
+    def _edge_feedback_key(edge: dict[str, Any]) -> tuple[str, ...]:
+        return (
+            str(edge.get("id") or ""),
+            str(edge.get("from") or ""),
+            str(edge.get("relation") or ""),
+            str(edge.get("to") or ""),
+            str(edge.get("source_kind") or ""),
+            str(edge.get("evidence_id") or ""),
+        )
+
+    def _feedback_adjusted_edge_weight(self, edge: dict[str, Any], worth: float) -> float:
+        from plastic_promise.core.constants import (
+            FEEDBACK_EDGE_EMA_ALPHA,
+            FEEDBACK_EDGE_WEIGHT_MAX,
+            FEEDBACK_EDGE_WEIGHT_MIN,
+        )
+
+        key = self._edge_feedback_key(edge)
+        base_weight = self._edge_feedback_base_weights.setdefault(
+            key,
+            float(edge.get("weight", 0.5)),
+        )
+        adjusted = (1.0 - FEEDBACK_EDGE_EMA_ALPHA) * base_weight
+        adjusted += FEEDBACK_EDGE_EMA_ALPHA * worth
+        return max(FEEDBACK_EDGE_WEIGHT_MIN, min(FEEDBACK_EDGE_WEIGHT_MAX, adjusted))
+
+    def _apply_edge_feedback_locked(self):
         """P2: Evolve graph edge weights based on memory adoption patterns.
 
         For each edge whose relation involves memories (governs, embodies, references),
@@ -3326,59 +6006,34 @@ class ContextEngine:
 
         Called at the end of each supply() call — lightweight and reactive.
         """
-        from plastic_promise.core.constants import (
-            FEEDBACK_EDGE_EMA_ALPHA,
-            FEEDBACK_EDGE_WEIGHT_MAX,
-            FEEDBACK_EDGE_WEIGHT_MIN,
-        )
-
         memory_relations = {"governs", "embodies", "references"}
-        alpha = FEEDBACK_EDGE_EMA_ALPHA
 
         for edge in self._graph_edges:
             if edge.get("relation") not in memory_relations:
                 continue
 
-            # Determine which node is the memory
-            memory_id = None
-            if (
-                edge["from"].startswith("memory:")
-                or not edge["from"].startswith("principle:")
-                and not edge["from"].startswith("task_type:")
-            ):
-                memory_id = edge["from"]
-            elif (
-                edge["to"].startswith("memory:")
-                or not edge["to"].startswith("principle:")
-                and not edge["to"].startswith("task_type:")
-            ):
-                memory_id = edge["to"]
+            memory_id = self._edge_feedback_memory_id(edge)
 
             if memory_id and memory_id in self._memories:
                 mem = self._memories[memory_id]
                 ws = mem.get("worth_success", 0)
                 wf = mem.get("worth_failure", 0)
                 total = ws + wf
+                if total <= 0:
+                    continue
                 worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
-
-                old_weight = edge.get("weight", 0.5)
-                new_weight = (1.0 - alpha) * old_weight + alpha * worth
-                edge["weight"] = max(
-                    FEEDBACK_EDGE_WEIGHT_MIN, min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight)
-                )
+                edge["weight"] = self._feedback_adjusted_edge_weight(edge, worth)
 
     def _apply_edge_feedback_for_memory(self, memory_id: str):
+        with self._write_lock:
+            self._apply_edge_feedback_for_memory_locked(memory_id)
+
+    def _apply_edge_feedback_for_memory_locked(self, memory_id: str):
         """P2: Update all graph edges involving a specific memory.
 
         Called after handle_feedback_apply() updates a MemoryRecord's worth counters.
         Only recomputes edges connected to the given memory_id — O(E) but focused.
         """
-        from plastic_promise.core.constants import (
-            FEEDBACK_EDGE_EMA_ALPHA,
-            FEEDBACK_EDGE_WEIGHT_MAX,
-            FEEDBACK_EDGE_WEIGHT_MIN,
-        )
-
         if memory_id not in self._memories:
             return
 
@@ -3386,19 +6041,38 @@ class ContextEngine:
         ws = mem.get("worth_success", 0)
         wf = mem.get("worth_failure", 0)
         total = ws + wf
+        if total <= 0:
+            return
         worth = (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
-        alpha = FEEDBACK_EDGE_EMA_ALPHA
 
         memory_relations = {"governs", "embodies", "references"}
         for edge in self._graph_edges:
             if edge.get("relation") not in memory_relations:
                 continue
             if edge.get("from") == memory_id or edge.get("to") == memory_id:
-                old_weight = edge.get("weight", 0.5)
-                new_weight = (1.0 - alpha) * old_weight + alpha * worth
-                edge["weight"] = max(
-                    FEEDBACK_EDGE_WEIGHT_MIN, min(FEEDBACK_EDGE_WEIGHT_MAX, new_weight)
-                )
+                edge["weight"] = self._feedback_adjusted_edge_weight(edge, worth)
+
+    def _reapply_canonical_edge_feedback(self) -> None:
+        self._edge_feedback_base_weights = {}
+        observed: dict[str, float] = {}
+        for memory_id, memory in self._memories.items():
+            worth_success = float(memory.get("worth_success") or 0)
+            worth_failure = float(memory.get("worth_failure") or 0)
+            total = worth_success + worth_failure
+            if total <= 0:
+                continue
+            worth = (worth_success + 1.0) / (total + 2.0)
+            observed[memory_id] = worth
+
+        memory_relations = {"governs", "embodies", "references"}
+        for edge in self._graph_edges:
+            if edge.get("relation") not in memory_relations:
+                continue
+            memory_id = self._edge_feedback_memory_id(edge)
+            if memory_id not in observed:
+                continue
+            worth = observed[memory_id]
+            edge["weight"] = self._feedback_adjusted_edge_weight(edge, worth)
 
     def _calc_freshness(self, item_id: str) -> str:
         mem = self._memories.get(item_id, {})
@@ -3539,6 +6213,80 @@ class ContextEngine:
 # ============================================================
 
 
+def _ensure_memory_version_schema(conn) -> None:
+    """Migrate legacy version rows to one constrained singleton without committing."""
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_version'"
+    ).fetchone()
+    if table_exists is None:
+        conn.execute(
+            """
+            CREATE TABLE memory_version (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                version INTEGER NOT NULL
+                    CHECK(typeof(version) = 'integer' AND version >= 0)
+            )
+            """
+        )
+        conn.execute("INSERT INTO memory_version (singleton, version) VALUES (1, 0)")
+        return
+
+    columns = conn.execute("PRAGMA table_info(memory_version)").fetchall()
+    column_names = {str(row[1]) for row in columns}
+    if "version" not in column_names:
+        raise ValueError("memory_version_invalid")
+    rows = conn.execute("SELECT version, typeof(version) FROM memory_version").fetchall()
+    for version, storage_type in rows:
+        if storage_type != "integer" or type(version) is not int or version < 0:
+            raise ValueError("memory_version_invalid")
+    canonical_version = max((row[0] for row in rows), default=0)
+
+    if "singleton" in column_names:
+        table_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_version'"
+        ).fetchone()
+        normalized_sql = "".join(str(table_sql_row[0] or "").casefold().split())
+        singleton_rows = conn.execute("SELECT singleton, version FROM memory_version").fetchall()
+        singleton_column = next(row for row in columns if row[1] == "singleton")
+        if (
+            singleton_rows == [(1, canonical_version)]
+            and int(singleton_column[5]) == 1
+            and "check(singleton=1)" in normalized_sql
+            and "check(typeof(version)='integer'andversion>=0)" in normalized_sql
+        ):
+            return
+
+    migration_name = "memory_version_legacy_migration"
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (migration_name,),
+    ).fetchone():
+        raise RuntimeError("memory_version_migration_conflict")
+
+    conn.execute("SAVEPOINT ensure_memory_version_schema")
+    try:
+        conn.execute(f"ALTER TABLE memory_version RENAME TO {migration_name}")
+        conn.execute(
+            """
+            CREATE TABLE memory_version (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                version INTEGER NOT NULL
+                    CHECK(typeof(version) = 'integer' AND version >= 0)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO memory_version (singleton, version) VALUES (1, ?)",
+            (canonical_version,),
+        )
+        conn.execute(f"DROP TABLE {migration_name}")
+        conn.execute("RELEASE SAVEPOINT ensure_memory_version_schema")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT ensure_memory_version_schema")
+        conn.execute("RELEASE SAVEPOINT ensure_memory_version_schema")
+        raise
+
+
 class _SQLiteStorage:
     """SQLite write-through backend for ContextEngine memories.
 
@@ -3555,7 +6303,7 @@ class _SQLiteStorage:
 
         if db_path is None:
             db_path = get_db_path()
-        self._conn = sqlite3.connect(db_path)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS memories ("
@@ -3579,44 +6327,35 @@ class _SQLiteStorage:
         )
         self._conn.commit()
         self._batch_depth = 0  # nesting counter for batch mode
+        self._batch_rollback_only = False
+        self._batch_owns_transaction = False
+        self._batch_savepoint = ""
 
         # 迁移: 新增 tags 和 domain 列 (SQLite ALTER TABLE 不支持 IF NOT EXISTS)
-        try:
+        with contextlib.suppress(Exception):
             self._conn.execute("ALTER TABLE memories ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
-        except Exception:
-            pass  # 列已存在
-        try:
+        with contextlib.suppress(Exception):
             self._conn.execute(
                 "ALTER TABLE memories ADD COLUMN domain TEXT NOT NULL DEFAULT 'uncategorized'"
             )
-        except Exception:
-            pass  # 列已存在
         # 迁移: 新增 decay_multiplier 和 effective_half_life 列
-        try:
+        with contextlib.suppress(Exception):
             self._conn.execute(
                 "ALTER TABLE memories ADD COLUMN decay_multiplier REAL NOT NULL DEFAULT 1.0"
             )
-        except Exception:
-            pass  # 列已存在
-        try:
+        with contextlib.suppress(Exception):
             self._conn.execute(
                 "ALTER TABLE memories ADD COLUMN effective_half_life REAL NOT NULL DEFAULT 3.0"
             )
-        except Exception:
-            pass  # 列已存在
         # 迁移: 新增 last_accessed 列 (Fix: pipeline writes to this column for decay tracking)
-        try:
+        with contextlib.suppress(Exception):
             self._conn.execute(
                 "ALTER TABLE memories ADD COLUMN last_accessed TEXT NOT NULL DEFAULT ''"
             )
-        except Exception:
-            pass  # 列已存在
 
         def add_column(name: str, ddl: str) -> None:
-            try:
+            with contextlib.suppress(Exception):
                 self._conn.execute(f"ALTER TABLE memories ADD COLUMN {name} {ddl}")
-            except Exception:
-                pass
 
         add_column("project_id", "TEXT NOT NULL DEFAULT 'project:legacy-global'")
         add_column("visibility", "TEXT NOT NULL DEFAULT 'project'")
@@ -3634,6 +6373,7 @@ class _SQLiteStorage:
         add_column("l2_content", "TEXT NOT NULL DEFAULT ''")
         add_column("embedding_text", "TEXT NOT NULL DEFAULT ''")
         add_column("embedding_hash", "TEXT NOT NULL DEFAULT ''")
+        add_column("search_text", "TEXT NOT NULL DEFAULT ''")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS projects ("
             "project_id TEXT PRIMARY KEY,"
@@ -3673,24 +6413,37 @@ class _SQLiteStorage:
             "UNIQUE(source, target, relation)"
             ")"
         )
+        from plastic_promise.core.memory_proposals import ensure_memory_proposal_schema
+        from plastic_promise.core.synthesis import ensure_synthesis_schema
         from plastic_promise.core.traceability import ensure_traceability_schema
 
         ensure_traceability_schema(self._conn)
+        ensure_synthesis_schema(self._conn)
+        ensure_memory_proposal_schema(self._conn)
         # 迁移: memory_version 表 — Rust 引擎用版本号检测 BM25 索引是否需要刷新
-        self._conn.execute("CREATE TABLE IF NOT EXISTS memory_version (version INTEGER DEFAULT 0)")
-        self._conn.execute("INSERT OR IGNORE INTO memory_version (version) VALUES (0)")
+        try:
+            _ensure_memory_version_schema(self._conn)
+        except ValueError:
+            logger.warning("Invalid legacy memory_version state preserved; synthesis fails closed")
         self._conn.commit()
 
         # 存量迁移: 对已有记忆一次性计算真实衰减值
         try:
             from plastic_promise.core.decay_engine import WeibullDecayCalculator
+            from plastic_promise.core.synthesis_retrieval import (
+                increment_memory_version_if_present,
+                ordinary_memory_sql_predicate,
+            )
 
             decay_calc = WeibullDecayCalculator()
             now = datetime.datetime.now().isoformat()
+            ordinary_guard = ordinary_memory_sql_predicate("memories")
             rows = self._conn.execute(
-                "SELECT id, tier, created_at FROM memories WHERE decay_multiplier = 1.0"
+                "SELECT id, tier, created_at FROM memories "
+                f"WHERE decay_multiplier = 1.0 AND {ordinary_guard}"
             ).fetchall()
             if rows:
+                updated = 0
                 for row in rows:
                     mid, tier, created_at = row
                     dm = decay_calc.compute_decay(
@@ -3698,18 +6451,125 @@ class _SQLiteStorage:
                         created_at=created_at or now,
                         current_time_str=now,
                     )
-                    self._conn.execute(
-                        "UPDATE memories SET decay_multiplier = ? WHERE id = ?", (dm, mid)
+                    cursor = self._conn.execute(
+                        "UPDATE memories SET decay_multiplier = ? "
+                        f"WHERE id = ? AND {ordinary_guard}",
+                        (dm, mid),
                     )
+                    updated += cursor.rowcount
+                if updated:
+                    increment_memory_version_if_present(self._conn)
                 self._conn.commit()
-                logging.info("Bulk decay migration: %d memories updated", len(rows))
+                logging.info("Bulk decay migration: %d memories updated", updated)
         except Exception as e:
+            self._conn.rollback()
             logging.warning("Bulk decay migration skipped: %s", e)
 
-    def upsert(self, mid: str, data: dict):
-        """Insert or update a memory record."""
-        import json
+    def _rollback_quietly(self) -> None:
+        with contextlib.suppress(Exception):
+            self._conn.rollback()
 
+    def _rollback_savepoint_quietly(self, savepoint: str) -> None:
+        with contextlib.suppress(Exception):
+            self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        with contextlib.suppress(Exception):
+            self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+    def _commit_or_rollback(self) -> None:
+        try:
+            self._conn.commit()
+        except BaseException:
+            self._rollback_quietly()
+            raise
+
+    def _execute_write(
+        self,
+        sql: str,
+        params: tuple = (),
+        *,
+        bump_memory_version: bool = False,
+        bump_only_if_changed: bool = False,
+    ):
+        try:
+            cursor = self._conn.execute(sql, params)
+            changed = max(0, int(cursor.rowcount)) > 0
+            if bump_memory_version and (not bump_only_if_changed or changed):
+                self._increment_memory_version()
+            if self._batch_depth <= 0:
+                self._commit_or_rollback()
+            return cursor
+        except BaseException:
+            if self._batch_depth <= 0:
+                self._rollback_quietly()
+            else:
+                self._batch_rollback_only = True
+            raise
+
+    def _begin_batch_scope(self) -> None:
+        if self._batch_depth == 0:
+            self._batch_rollback_only = False
+            self._batch_owns_transaction = not self._conn.in_transaction
+            self._batch_savepoint = ""
+            try:
+                if self._batch_owns_transaction:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                else:
+                    self._batch_savepoint = (
+                        f"storage_batch_{threading.get_ident()}_{time.time_ns()}"
+                    )
+                    self._conn.execute(f"SAVEPOINT {self._batch_savepoint}")
+            except BaseException:
+                self._batch_owns_transaction = False
+                self._batch_savepoint = ""
+                raise
+        self._batch_depth += 1
+
+    def _end_batch_scope(self, failed: bool) -> None:
+        if self._batch_depth <= 0:
+            raise RuntimeError("storage_batch_not_active")
+        if failed:
+            self._batch_rollback_only = True
+        self._batch_depth -= 1
+        if self._batch_depth > 0:
+            return
+
+        owns_transaction = self._batch_owns_transaction
+        savepoint = self._batch_savepoint
+        rollback_only = self._batch_rollback_only
+        rejected_commit = rollback_only and not failed
+        try:
+            if rollback_only:
+                if owns_transaction:
+                    self._rollback_quietly()
+                else:
+                    self._rollback_savepoint_quietly(savepoint)
+            elif owns_transaction:
+                self._commit_or_rollback()
+            else:
+                try:
+                    self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                except BaseException:
+                    self._rollback_savepoint_quietly(savepoint)
+                    raise
+            if rejected_commit:
+                raise RuntimeError("storage_batch_rollback_only")
+        finally:
+            self._batch_depth = 0
+            self._batch_rollback_only = False
+            self._batch_owns_transaction = False
+            self._batch_savepoint = ""
+
+    def upsert(self, mid: str, data: dict) -> bool:
+        """Insert or update a memory record without lifecycle ownership checks."""
+        return self._upsert(mid, data, ordinary_only=False)
+
+    def upsert_ordinary(self, mid: str, data: dict) -> bool:
+        """Compatibility creation facade for an ordinary canonical binding."""
+        self.create_ordinary_if_absent(mid, data)
+        return True
+
+    @staticmethod
+    def _ordinary_write_payload(mid: str, data: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple]:
         metadata_json = data.get("metadata_json", {})
         if isinstance(metadata_json, str):
             try:
@@ -3723,61 +6583,456 @@ class _SQLiteStorage:
             value = data.get(name, "")
             if value:
                 return str(value)
-            value = metadata_json.get(name, "")
-            return str(value or "")
+            return str(metadata_json.get(name, "") or "")
 
-        self._conn.execute(
-            "INSERT OR REPLACE INTO memories (id, content, memory_type, source, owner, "
-            "tier, scope, category, tags, domain, importance, entity_ids, created_at, access_count, "
-            "worth_success, worth_failure, activation_weight, decay_multiplier, effective_half_life, "
-            "last_accessed, project_id, visibility, source_class, created_by_call_id, origin_kind, "
-            "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json, raw_content, "
-            "l0_abstract, l1_summary, l2_content, embedding_text, embedding_hash) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                mid,
-                data.get("content", ""),
-                data.get("memory_type", "experience"),
-                data.get("source", "user"),
-                data.get("owner", ""),
-                data.get("tier", "L1"),
-                data.get("scope", "global"),
-                data.get("category", "other"),
-                json.dumps(data.get("tags", [])),
-                data.get("domain", "uncategorized"),
-                data.get("importance", 0.7),
-                json.dumps(data.get("entity_ids", [])),
-                data.get("created_at", ""),
-                data.get("access_count", 0),
-                data.get("worth_success", 0),
-                data.get("worth_failure", 0),
-                data.get("activation_weight", 0.5),
-                data.get("decay_multiplier", 1.0),
-                data.get("effective_half_life", 3.0),
-                data.get("last_accessed", ""),
-                data.get("project_id", "project:legacy-global"),
-                data.get("visibility", "project"),
-                data.get("source_class", "experience"),
-                data.get("created_by_call_id", ""),
-                data.get("origin_kind", ""),
-                data.get("origin_uri", ""),
-                data.get("origin_ref", ""),
-                data.get("origin_hash", ""),
-                json.dumps(data.get("parent_memory_ids", []), ensure_ascii=False),
-                json.dumps(metadata_json, ensure_ascii=False),
-                summary_field("raw_content"),
-                summary_field("l0_abstract"),
-                summary_field("l1_summary"),
-                summary_field("l2_content"),
-                summary_field("embedding_text"),
-                summary_field("embedding_hash"),
-            ),
+        columns = (
+            "id",
+            "content",
+            "memory_type",
+            "source",
+            "owner",
+            "tier",
+            "scope",
+            "category",
+            "tags",
+            "domain",
+            "importance",
+            "entity_ids",
+            "created_at",
+            "access_count",
+            "worth_success",
+            "worth_failure",
+            "activation_weight",
+            "decay_multiplier",
+            "effective_half_life",
+            "last_accessed",
+            "project_id",
+            "visibility",
+            "source_class",
+            "created_by_call_id",
+            "origin_kind",
+            "origin_uri",
+            "origin_ref",
+            "origin_hash",
+            "parent_memory_ids",
+            "metadata_json",
+            "raw_content",
+            "l0_abstract",
+            "l1_summary",
+            "l2_content",
+            "embedding_text",
+            "embedding_hash",
+            "search_text",
         )
-        if self._batch_depth <= 0:
-            self._conn.commit()
-            # Increment memory_version so Rust engine knows to refresh BM25 index
-            self._conn.execute("UPDATE memory_version SET version = version + 1")
-            self._conn.commit()
+        values = (
+            mid,
+            data.get("content", ""),
+            data.get("memory_type", "experience"),
+            data.get("source", "user"),
+            data.get("owner", ""),
+            data.get("tier", "L1"),
+            data.get("scope", "global"),
+            data.get("category", "other"),
+            json.dumps(data.get("tags", []), ensure_ascii=False),
+            data.get("domain", "uncategorized"),
+            data.get("importance", 0.7),
+            json.dumps(data.get("entity_ids", []), ensure_ascii=False),
+            data.get("created_at", ""),
+            data.get("access_count", 0),
+            data.get("worth_success", 0),
+            data.get("worth_failure", 0),
+            data.get("activation_weight", 0.5),
+            data.get("decay_multiplier", 1.0),
+            data.get("effective_half_life", 3.0),
+            data.get("last_accessed", ""),
+            data.get("project_id", "project:legacy-global"),
+            data.get("visibility", "project"),
+            data.get("source_class", "experience"),
+            data.get("created_by_call_id", ""),
+            data.get("origin_kind", ""),
+            data.get("origin_uri", ""),
+            data.get("origin_ref", ""),
+            data.get("origin_hash", ""),
+            json.dumps(data.get("parent_memory_ids", []), ensure_ascii=False),
+            json.dumps(metadata_json, ensure_ascii=False),
+            summary_field("raw_content"),
+            summary_field("l0_abstract"),
+            summary_field("l1_summary"),
+            summary_field("l2_content"),
+            summary_field("embedding_text"),
+            summary_field("embedding_hash"),
+            summary_field("search_text"),
+        )
+        return columns, values
+
+    @staticmethod
+    def _canonical_binding(columns: tuple[str, ...], values: tuple) -> tuple[tuple[str, Any], ...]:
+        json_columns = {"tags", "entity_ids", "parent_memory_ids", "metadata_json"}
+        binding: list[tuple[str, Any]] = []
+        for column, value in zip(columns, values, strict=True):
+            if column in json_columns:
+                try:
+                    parsed = json.loads(value) if isinstance(value, str) else value
+                    value = json.dumps(
+                        parsed,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise OrdinaryMemoryConflict("ordinary_memory_binding_invalid") from exc
+            binding.append((column, value))
+        return tuple(binding)
+
+    def create_ordinary_if_absent(
+        self,
+        mid: str,
+        data: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Create once and compare every persisted field on replay."""
+        from plastic_promise.core.synthesis_retrieval import is_governed_synthesis_memory
+
+        mid = str(mid or "").strip()
+        if not mid:
+            raise OrdinaryMemoryConflict("ordinary_memory_id_required")
+        columns, values = self._ordinary_write_payload(mid, data)
+        requested_type = str(values[columns.index("memory_type")] or "").strip().casefold()
+        if requested_type == "synthesis":
+            raise OrdinaryMemoryConflict("ordinary_memory_reserved")
+        expected_binding = self._canonical_binding(columns, values)
+        column_sql = ", ".join(columns)
+        placeholders = ",".join("?" for _column in columns)
+        sql = (
+            f"INSERT INTO memories ({column_sql}) SELECT {placeholders} "
+            "WHERE NOT EXISTS ("
+            "SELECT 1 FROM synthesis_artifacts WHERE memory_id = ?"
+            ") ON CONFLICT(id) DO NOTHING"
+        )
+
+        with self.batch():
+            cursor = self._execute_write(
+                sql,
+                (*values, mid),
+                bump_memory_version=True,
+                bump_only_if_changed=True,
+            )
+            created = max(0, int(cursor.rowcount)) > 0
+            quoted_columns = ", ".join(f'"{column}"' for column in columns)
+            row = self._conn.execute(
+                f"SELECT {quoted_columns} FROM memories WHERE id = ?",  # noqa: S608
+                (mid,),
+            ).fetchone()
+            if row is None or is_governed_synthesis_memory(
+                self._conn,
+                mid,
+                memory_type=row[columns.index("memory_type")] if row else None,
+            ):
+                raise OrdinaryMemoryConflict("ordinary_memory_reserved")
+            if not created and self._canonical_binding(columns, tuple(row)) != expected_binding:
+                raise OrdinaryMemoryConflict("ordinary_memory_already_exists")
+            canonical = self._row_to_dict(row)
+        return canonical, created
+
+    def _upsert(self, mid: str, data: dict, *, ordinary_only: bool) -> bool:
+        columns, values = self._ordinary_write_payload(mid, data)
+        column_sql = ", ".join(columns)
+        placeholders = ",".join("?" for _column in columns)
+        params = values
+        if ordinary_only:
+            from plastic_promise.core.synthesis_retrieval import (
+                ordinary_memory_sql_predicate,
+            )
+
+            assignments = ", ".join(
+                f"{column} = excluded.{column}" for column in columns if column != "id"
+            )
+            sql = (
+                f"INSERT INTO memories ({column_sql}) SELECT {placeholders} "
+                "WHERE LOWER(TRIM(COALESCE(?, ''))) <> 'synthesis' "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM synthesis_artifacts WHERE memory_id = ?"
+                ") ON CONFLICT(id) DO UPDATE SET "
+                f"{assignments} WHERE {ordinary_memory_sql_predicate('memories')} "
+                "AND LOWER(TRIM(COALESCE(excluded.memory_type, ''))) <> 'synthesis'"
+            )
+            params = (*values, data.get("memory_type", "experience"), mid)
+        else:
+            sql = f"INSERT OR REPLACE INTO memories ({column_sql}) VALUES ({placeholders})"
+        cursor = self._execute_write(
+            sql,
+            params,
+            bump_memory_version=True,
+            bump_only_if_changed=ordinary_only,
+        )
+        return max(0, int(cursor.rowcount)) > 0
+
+    def _increment_memory_version(self) -> None:
+        from plastic_promise.core.synthesis_retrieval import read_memory_version
+
+        try:
+            read_memory_version(self._conn)
+        except Exception:
+            return
+        self._conn.execute("UPDATE memory_version SET version = version + 1")
+
+    @staticmethod
+    def _ordinary_patch_mapping(
+        value: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise OrdinaryMemoryConflict("ordinary_patch_field_not_allowed")
+        return dict(value)
+
+    @staticmethod
+    def _ordinary_patch_replacement_value(field: str, value: Any) -> Any:
+        if field in _ORDINARY_JSON_PATCH_FIELDS:
+            try:
+                return json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise OrdinaryMemoryConflict("ordinary_patch_value_invalid") from exc
+        if field in _ORDINARY_NUMERIC_REPLACEMENT_FIELDS:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+        return value
+
+    def patch_ordinary(
+        self,
+        mid: str,
+        *,
+        replacements: Mapping[str, Any] | None = None,
+        increments: Mapping[str, int | float] | None = None,
+        expected_project_id: str | None = None,
+        require_source_available: bool = False,
+        expected_tags: list[str] | tuple[str, ...] | None = None,
+        expected_category: str | None = None,
+        expected_content_hash: str | None = None,
+        expected_embedding_hash: str | None = None,
+        expected_snapshot: Mapping[str, Any] | None = None,
+        bump_memory_version: bool | None = None,
+        preserve_source_availability: bool = False,
+        after_patch: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Patch exactly one canonical ordinary row without hydrating defaults."""
+        replacement_values = self._ordinary_patch_mapping(replacements)
+        increment_values = self._ordinary_patch_mapping(increments)
+        if not replacement_values and not increment_values:
+            raise OrdinaryMemoryConflict("ordinary_patch_empty")
+
+        replacement_fields = set(replacement_values)
+        increment_fields = set(increment_values)
+        if (
+            not replacement_fields <= (_ORDINARY_SCALAR_PATCH_FIELDS | _ORDINARY_JSON_PATCH_FIELDS)
+            or not increment_fields <= _ORDINARY_NUMERIC_INCREMENT_FIELDS
+        ):
+            raise OrdinaryMemoryConflict("ordinary_patch_field_not_allowed")
+        if replacement_fields & increment_fields:
+            raise OrdinaryMemoryConflict("ordinary_patch_field_conflict")
+        if (
+            "memory_type" in replacement_values
+            and str(replacement_values["memory_type"] or "").strip().casefold() == "synthesis"
+        ):
+            raise OrdinaryMemoryConflict("ordinary_memory_reserved")
+        if bump_memory_version is not None and not isinstance(bump_memory_version, bool):
+            raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+        if not isinstance(require_source_available, bool):
+            raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+        if not isinstance(preserve_source_availability, bool):
+            raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+        if after_patch is not None and not callable(after_patch):
+            raise OrdinaryMemoryConflict("ordinary_patch_value_invalid")
+        if expected_project_id is not None:
+            expected_project_id = str(expected_project_id).strip()
+            if not expected_project_id:
+                raise OrdinaryMemoryConflict("ordinary_patch_expected_project_required")
+        normalized_expected_tags: list[str] | None = None
+        if expected_tags is not None:
+            if not isinstance(expected_tags, (list, tuple)) or not all(
+                isinstance(tag, str) for tag in expected_tags
+            ):
+                raise OrdinaryMemoryConflict("ordinary_patch_expected_tags_invalid")
+            normalized_expected_tags = list(expected_tags)
+        expected_scalar_values = self._ordinary_patch_mapping(expected_snapshot)
+        if not set(expected_scalar_values) <= (_ORDINARY_SCALAR_PATCH_FIELDS - {"content"}):
+            raise OrdinaryMemoryConflict("ordinary_patch_expected_snapshot_invalid")
+        compiled_expected_snapshot = {
+            field: self._ordinary_patch_replacement_value(field, expected_scalar_values[field])
+            for field in _ORDINARY_PATCH_COLUMN_ORDER
+            if field in expected_scalar_values
+        }
+
+        compiled_replacements = {
+            field: self._ordinary_patch_replacement_value(
+                field,
+                replacement_values[field],
+            )
+            for field in _ORDINARY_PATCH_COLUMN_ORDER
+            if field in replacement_values
+        }
+        compiled_increments: dict[str, int | float] = {}
+        for column in _ORDINARY_PATCH_COLUMN_ORDER:
+            if column not in increment_values:
+                continue
+            value = increment_values[column]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise OrdinaryMemoryConflict("ordinary_patch_increment_invalid")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise OrdinaryMemoryConflict("ordinary_patch_increment_invalid")
+            compiled_increments[column] = value
+
+        should_bump = (
+            bool(replacement_fields & _RETRIEVAL_VISIBLE_PATCH_FIELDS)
+            if bump_memory_version is None
+            else bump_memory_version
+        )
+        from plastic_promise.core.synthesis import synthesis_content_hash
+        from plastic_promise.core.synthesis_retrieval import (
+            _source_is_available,
+            available_ordinary_memory_sql_predicate,
+            ordinary_memory_sql_predicate,
+        )
+
+        canonical: dict[str, Any] | None = None
+        with self.batch():
+            target = self._conn.execute(
+                "SELECT content, memory_type, embedding_hash, project_id, tags, category, "
+                "EXISTS(SELECT 1 FROM synthesis_artifacts "
+                "WHERE synthesis_artifacts.memory_id = memories.id) "
+                "FROM memories WHERE id = ?",
+                (mid,),
+            ).fetchone()
+            if target is None:
+                raise OrdinaryMemoryConflict("ordinary_patch_target_not_found")
+            if str(target[1] or "").strip().casefold() == "synthesis" or bool(target[6]):
+                raise OrdinaryMemoryConflict("ordinary_memory_reserved")
+            if (
+                (
+                    expected_content_hash is not None
+                    and synthesis_content_hash(target[0]) != expected_content_hash
+                )
+                or (
+                    expected_embedding_hash is not None
+                    and str(target[2] or "") != expected_embedding_hash
+                )
+                or (
+                    expected_project_id is not None
+                    and str(target[3] or "").strip() != expected_project_id
+                )
+            ):
+                raise OrdinaryMemoryConflict("ordinary_patch_cas_mismatch")
+            if normalized_expected_tags is not None:
+                try:
+                    current_tags = json.loads(target[4])
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise OrdinaryMemoryConflict("ordinary_patch_cas_mismatch") from exc
+                if (
+                    not isinstance(current_tags, list)
+                    or not all(isinstance(tag, str) for tag in current_tags)
+                    or current_tags != normalized_expected_tags
+                ):
+                    raise OrdinaryMemoryConflict("ordinary_patch_cas_mismatch")
+            if expected_category is not None and (str(target[5] or "") != str(expected_category)):
+                raise OrdinaryMemoryConflict("ordinary_patch_cas_mismatch")
+            current = self.get(mid)
+            if current is None or any(
+                current.get(field) != expected for field, expected in expected_scalar_values.items()
+            ):
+                raise OrdinaryMemoryConflict("ordinary_patch_cas_mismatch")
+            if require_source_available:
+                try:
+                    source_available = bool(current is not None and _source_is_available(current))
+                except Exception as exc:
+                    raise OrdinaryMemoryConflict("ordinary_patch_source_unavailable") from exc
+                if not source_available:
+                    raise OrdinaryMemoryConflict("ordinary_patch_source_unavailable")
+            if preserve_source_availability and (
+                replacement_fields & _ORDINARY_AVAILABILITY_PATCH_FIELDS
+            ):
+                candidate = copy.deepcopy(current)
+                candidate.update(copy.deepcopy(replacement_values))
+                try:
+                    availability_changed = _source_is_available(current) != _source_is_available(
+                        candidate
+                    )
+                except Exception as exc:
+                    raise OrdinaryMemoryConflict("ordinary_patch_availability_invalid") from exc
+                if availability_changed:
+                    raise OrdinaryMemoryConflict(
+                        "ordinary_patch_availability_change_requires_coordinator"
+                    )
+
+            assignments: list[str] = []
+            params: list[Any] = []
+            for column in _ORDINARY_PATCH_COLUMN_ORDER:
+                if column in compiled_replacements:
+                    assignments.append(f"{column} = ?")
+                    params.append(compiled_replacements[column])
+                elif column in compiled_increments:
+                    assignments.append(f"{column} = COALESCE({column}, 0) + ?")
+                    params.append(compiled_increments[column])
+
+            predicates = ["id = ?", ordinary_memory_sql_predicate("memories")]
+            if require_source_available:
+                predicates.append(available_ordinary_memory_sql_predicate("memories"))
+            params.append(mid)
+            if expected_content_hash is not None:
+                predicates.append("content IS ?")
+                params.append(target[0])
+            if expected_embedding_hash is not None:
+                predicates.append("embedding_hash IS ?")
+                params.append(target[2])
+            if expected_project_id is not None:
+                predicates.append("project_id IS ?")
+                params.append(target[3])
+            if normalized_expected_tags is not None:
+                predicates.append("tags IS ?")
+                params.append(target[4])
+            if expected_category is not None:
+                predicates.append("category IS ?")
+                params.append(target[5])
+            for field, expected in compiled_expected_snapshot.items():
+                predicates.append(f"{field} IS ?")
+                params.append(expected)
+            cursor = self._conn.execute(
+                f"UPDATE memories SET {', '.join(assignments)} WHERE {' AND '.join(predicates)}",
+                tuple(params),
+            )
+            if cursor.rowcount != 1:
+                reason = (
+                    "ordinary_patch_cas_mismatch"
+                    if expected_content_hash is not None
+                    or expected_embedding_hash is not None
+                    or expected_project_id is not None
+                    or normalized_expected_tags is not None
+                    or expected_category is not None
+                    or compiled_expected_snapshot
+                    else (
+                        "ordinary_patch_source_unavailable"
+                        if require_source_available
+                        else "ordinary_patch_row_count"
+                    )
+                )
+                raise OrdinaryMemoryConflict(reason)
+            if should_bump:
+                self._increment_memory_version()
+            canonical = self.get(mid)
+            if canonical is None:
+                raise OrdinaryMemoryConflict("ordinary_patch_row_count")
+            if after_patch is not None:
+                after_patch(canonical)
+        return canonical
 
     def get(self, mid: str) -> dict | None:
         """Retrieve a single memory record."""
@@ -3788,7 +7043,8 @@ class _SQLiteStorage:
             "decay_multiplier, effective_half_life, last_accessed, "
             "project_id, visibility, source_class, created_by_call_id, origin_kind, "
             "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json, "
-            "raw_content, l0_abstract, l1_summary, l2_content, embedding_text, embedding_hash "
+            "raw_content, l0_abstract, l1_summary, l2_content, embedding_text, embedding_hash, "
+            "search_text "
             "FROM memories WHERE id = ?",
             (mid,),
         ).fetchone()
@@ -3796,13 +7052,27 @@ class _SQLiteStorage:
             return None
         return self._row_to_dict(row)
 
-    def delete(self, mid: str):
+    def delete(self, mid: str) -> bool:
         """Delete a memory record."""
-        self._conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
-        if self._batch_depth <= 0:
-            self._conn.commit()
-            self._conn.execute("UPDATE memory_version SET version = version + 1")
-            self._conn.commit()
+        cursor = self._execute_write(
+            "DELETE FROM memories WHERE id = ?",
+            (mid,),
+            bump_memory_version=True,
+            bump_only_if_changed=True,
+        )
+        return max(0, int(cursor.rowcount)) > 0
+
+    def delete_ordinary(self, mid: str) -> bool:
+        """Atomically delete only an ordinary, unreserved memory row."""
+        from plastic_promise.core.synthesis_retrieval import ordinary_memory_sql_predicate
+
+        cursor = self._execute_write(
+            f"DELETE FROM memories WHERE id = ? AND {ordinary_memory_sql_predicate('memories')}",
+            (mid,),
+            bump_memory_version=True,
+            bump_only_if_changed=True,
+        )
+        return max(0, int(cursor.rowcount)) > 0
 
     def iter_all(self):
         """Iterate all memory records."""
@@ -3813,7 +7083,8 @@ class _SQLiteStorage:
             "decay_multiplier, effective_half_life, last_accessed, "
             "project_id, visibility, source_class, created_by_call_id, origin_kind, "
             "origin_uri, origin_ref, origin_hash, parent_memory_ids, metadata_json, "
-            "raw_content, l0_abstract, l1_summary, l2_content, embedding_text, embedding_hash "
+            "raw_content, l0_abstract, l1_summary, l2_content, embedding_text, embedding_hash, "
+            "search_text "
             "FROM memories"
         ).fetchall()
         for row in rows:
@@ -3822,53 +7093,213 @@ class _SQLiteStorage:
 
     def commit(self):
         """Explicit commit (useful after batch operations)."""
-        self._conn.commit()
+        self._commit_or_rollback()
 
-    def upsert_graph_node(self, node_id: str, node: dict) -> None:
+    def upsert_graph_node(self, node_id: str, node: dict) -> bool:
+        """Persist a graph node without lifecycle ownership checks."""
+        return self._upsert_graph_node(node_id, node, ordinary_only=False)
+
+    def upsert_graph_node_ordinary(
+        self,
+        node_id: str,
+        node: dict,
+        *,
+        reservation_ids: tuple[str, ...] = (),
+    ) -> bool:
+        """Atomically persist a node only when no supplied id is governed."""
+        return self._upsert_graph_node(
+            node_id,
+            node,
+            ordinary_only=True,
+            reservation_ids=reservation_ids,
+        )
+
+    def _upsert_graph_node(
+        self,
+        node_id: str,
+        node: dict,
+        *,
+        ordinary_only: bool,
+        reservation_ids: tuple[str, ...] = (),
+    ) -> bool:
         import json
 
-        self._conn.execute(
-            "INSERT OR REPLACE INTO behavior_graph_nodes ("
-            "id, node_type, name, description, source_kind, metadata_json, schema_version, updated_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                node_id,
-                node.get("type", ""),
-                node.get("name", ""),
-                node.get("description", ""),
-                node.get("source_kind", ""),
-                json.dumps(node.get("metadata", {}), ensure_ascii=False),
-                node.get("schema_version", "behavior-graph/v1"),
-                datetime.datetime.now().isoformat(),
-            ),
+        values = (
+            node_id,
+            node.get("type", ""),
+            node.get("name", ""),
+            node.get("description", ""),
+            node.get("source_kind", ""),
+            json.dumps(node.get("metadata", {}), ensure_ascii=False),
+            node.get("schema_version", "behavior-graph/v1"),
+            datetime.datetime.now().isoformat(),
         )
-        if self._batch_depth <= 0:
-            self._conn.commit()
+        params = values
+        if ordinary_only:
+            guarded_ids = tuple(
+                dict.fromkeys(
+                    str(candidate) for candidate in (node_id, *reservation_ids) if candidate
+                )
+            )
+            placeholders = ",".join("?" for _candidate in guarded_ids)
+            reservation_guard = (
+                "NOT EXISTS (SELECT 1 FROM memories AS governed_memory "
+                f"WHERE governed_memory.id IN ({placeholders}) "
+                "AND LOWER(TRIM(COALESCE(governed_memory.memory_type, ''))) = 'synthesis') "
+                "AND NOT EXISTS (SELECT 1 FROM synthesis_artifacts AS governed_control "
+                f"WHERE governed_control.memory_id IN ({placeholders}))"
+            )
+            sql = (
+                "INSERT INTO behavior_graph_nodes ("
+                "id, node_type, name, description, source_kind, metadata_json, schema_version, "
+                "updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE "
+                f"{reservation_guard} ON CONFLICT(id) DO UPDATE SET "
+                "node_type = excluded.node_type, name = excluded.name, "
+                "description = excluded.description, source_kind = excluded.source_kind, "
+                "metadata_json = excluded.metadata_json, schema_version = excluded.schema_version, "
+                "updated_at = excluded.updated_at"
+            )
+            params = (*values, *guarded_ids, *guarded_ids)
+        else:
+            sql = (
+                "INSERT OR REPLACE INTO behavior_graph_nodes ("
+                "id, node_type, name, description, source_kind, metadata_json, schema_version, "
+                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+        cursor = self._execute_write(
+            sql,
+            params,
+            bump_memory_version=True,
+            bump_only_if_changed=ordinary_only,
+        )
+        return max(0, int(cursor.rowcount)) > 0
 
-    def upsert_graph_edge(self, edge: dict) -> None:
+    def upsert_graph_edge(self, edge: dict) -> bool:
+        """Persist an edge without lifecycle ownership checks."""
+        return self._upsert_graph_edge(edge, ordinary_only=False)
+
+    def upsert_graph_edge_ordinary(self, edge: dict) -> bool:
+        """Atomically persist an edge only when both endpoints are ordinary."""
+        return self._upsert_graph_edge(edge, ordinary_only=True)
+
+    def _upsert_graph_edge(self, edge: dict, *, ordinary_only: bool) -> bool:
         import json
 
         edge_id = edge.get("id") or f"{edge.get('from')}|{edge.get('relation')}|{edge.get('to')}"
-        self._conn.execute(
-            "INSERT OR REPLACE INTO behavior_graph_edges ("
-            "id, source, target, relation, weight, source_kind, evidence_id, metadata_json, "
-            "schema_version, updated_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                edge_id,
+        values = (
+            edge_id,
+            edge.get("from", ""),
+            edge.get("to", ""),
+            edge.get("relation", ""),
+            float(edge.get("weight", 0.5)),
+            edge.get("source_kind", ""),
+            edge.get("evidence_id", ""),
+            json.dumps(edge.get("metadata", {}), ensure_ascii=False),
+            edge.get("schema_version", "behavior-graph/v1"),
+            datetime.datetime.now().isoformat(),
+        )
+        if ordinary_only:
+            endpoint_predicate = (
+                "NOT EXISTS (SELECT 1 FROM memories AS governed_memory "
+                "WHERE governed_memory.id IN ({source}, {target}) "
+                "AND LOWER(TRIM(COALESCE(governed_memory.memory_type, ''))) = 'synthesis') "
+                "AND NOT EXISTS (SELECT 1 FROM synthesis_artifacts AS governed_control "
+                "WHERE governed_control.memory_id IN ({source}, {target}))"
+            )
+            incoming_guard = endpoint_predicate.format(source="?", target="?")
+            existing_guard = endpoint_predicate.format(
+                source="behavior_graph_edges.source",
+                target="behavior_graph_edges.target",
+            )
+            excluded_guard = endpoint_predicate.format(
+                source="excluded.source",
+                target="excluded.target",
+            )
+            sql = (
+                "INSERT INTO behavior_graph_edges ("
+                "id, source, target, relation, weight, source_kind, evidence_id, metadata_json, "
+                "schema_version, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE "
+                f"{incoming_guard} ON CONFLICT(id) DO UPDATE SET "
+                "source = excluded.source, target = excluded.target, relation = excluded.relation, "
+                "weight = excluded.weight, source_kind = excluded.source_kind, "
+                "evidence_id = excluded.evidence_id, metadata_json = excluded.metadata_json, "
+                "schema_version = excluded.schema_version, updated_at = excluded.updated_at WHERE "
+                f"{existing_guard} AND {excluded_guard}"
+            )
+            params = (
+                *values,
                 edge.get("from", ""),
                 edge.get("to", ""),
-                edge.get("relation", ""),
-                float(edge.get("weight", 0.5)),
-                edge.get("source_kind", ""),
-                edge.get("evidence_id", ""),
-                json.dumps(edge.get("metadata", {}), ensure_ascii=False),
-                edge.get("schema_version", "behavior-graph/v1"),
-                datetime.datetime.now().isoformat(),
-            ),
+                edge.get("from", ""),
+                edge.get("to", ""),
+            )
+        else:
+            sql = (
+                "INSERT OR REPLACE INTO behavior_graph_edges ("
+                "id, source, target, relation, weight, source_kind, evidence_id, metadata_json, "
+                "schema_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            params = values
+        cursor = self._execute_write(
+            sql,
+            params,
+            bump_memory_version=True,
+            bump_only_if_changed=True,
         )
-        if self._batch_depth <= 0:
-            self._conn.commit()
+        return max(0, int(cursor.rowcount)) > 0
+
+    def delete_graph_edges(
+        self,
+        source: str,
+        target: str,
+        relation: str | None = None,
+    ) -> int:
+        if relation is None:
+            cursor = self._execute_write(
+                "DELETE FROM behavior_graph_edges WHERE source = ? AND target = ?",
+                (source, target),
+                bump_memory_version=True,
+                bump_only_if_changed=True,
+            )
+        else:
+            cursor = self._execute_write(
+                "DELETE FROM behavior_graph_edges WHERE source = ? AND target = ? AND relation = ?",
+                (source, target, relation),
+                bump_memory_version=True,
+                bump_only_if_changed=True,
+            )
+        deleted = max(0, int(cursor.rowcount))
+        return deleted
+
+    def delete_graph_edges_ordinary(
+        self,
+        source: str,
+        target: str,
+        relation: str | None = None,
+    ) -> int:
+        endpoint_guard = (
+            "NOT EXISTS (SELECT 1 FROM memories AS governed_memory "
+            "WHERE governed_memory.id IN (behavior_graph_edges.source, "
+            "behavior_graph_edges.target) "
+            "AND LOWER(TRIM(COALESCE(governed_memory.memory_type, ''))) = 'synthesis') "
+            "AND NOT EXISTS (SELECT 1 FROM synthesis_artifacts AS governed_control "
+            "WHERE governed_control.memory_id IN (behavior_graph_edges.source, "
+            "behavior_graph_edges.target))"
+        )
+        sql = (
+            f"DELETE FROM behavior_graph_edges WHERE source = ? AND target = ? AND {endpoint_guard}"
+        )
+        params: tuple = (source, target)
+        if relation is not None:
+            sql += " AND relation = ?"
+            params = (source, target, relation)
+        cursor = self._execute_write(
+            sql,
+            params,
+            bump_memory_version=True,
+            bump_only_if_changed=True,
+        )
+        return max(0, int(cursor.rowcount))
 
     def iter_graph_nodes(self):
         rows = self._conn.execute(
@@ -3913,14 +7344,12 @@ class _SQLiteStorage:
             self._storage = storage
 
         def __enter__(self):
-            self._storage._batch_depth += 1
+            self._storage._begin_batch_scope()
             return self
 
-        def __exit__(self, *args):
-            self._storage._batch_depth -= 1
-            if self._storage._batch_depth <= 0:
-                self._storage._batch_depth = 0
-                self._storage._conn.commit()
+        def __exit__(self, exc_type, _exc, _tb):
+            self._storage._end_batch_scope(exc_type is not None)
+            return False
 
     def batch(self):
         """Return a context manager that batches writes into a single commit.
@@ -3999,6 +7428,7 @@ class _SQLiteStorage:
             "l2_content": row[33] if len(row) > 33 else "",
             "embedding_text": row[34] if len(row) > 34 else "",
             "embedding_hash": row[35] if len(row) > 35 else "",
+            "search_text": row[36] if len(row) > 36 else "",
         }
 
 

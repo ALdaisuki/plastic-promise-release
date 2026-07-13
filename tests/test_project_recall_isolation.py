@@ -6,7 +6,9 @@ import pytest
 
 import plastic_promise.adaptive_retrieval as adaptive_retrieval
 import plastic_promise.core.embedder as embedder_mod
+from plastic_promise.core.context_engine import ContextEngine, ContextItem, ContextPack
 from plastic_promise.mcp.tools import memory as memory_tools
+from plastic_promise.mcp.tools.context import handle_context_supply
 from plastic_promise.mcp.tools.memory import handle_memory_recall
 from plastic_promise.mcp.tools.review import handle_review_run
 
@@ -213,9 +215,6 @@ def test_review_prepare_requires_project_id():
 
 
 def test_context_supply_filters_prompt_layers_by_project_metadata(monkeypatch):
-    from plastic_promise.core.context_engine import ContextItem, ContextPack
-    from plastic_promise.mcp.tools.context import handle_context_supply
-
     class FakeEmbedder:
         async def aembed(self, text):
             return [0.0] * 4
@@ -276,3 +275,242 @@ def test_context_supply_filters_prompt_layers_by_project_metadata(monkeypatch):
     assert "global prompt context" in text
     assert "other project prompt context" not in text
     assert "prompt source context" not in text
+
+
+def _leaky_project_engine():
+    engine = ContextEngine(use_sqlite=False)
+    engine._memories = {
+        "visible-project-item": {
+            "id": "visible-project-item",
+            "memory_type": "experience",
+            "project_id": "project:app",
+            "visibility": "project",
+            "source_class": "experience",
+        },
+        "private-project-item": {
+            "id": "private-project-item",
+            "memory_type": "experience",
+            "project_id": "project:other",
+            "visibility": "project",
+            "source_class": "experience",
+        },
+    }
+    calls = {"count": 0}
+
+    def supply(*args, **kwargs):
+        calls["count"] += 1
+        visible = ContextItem(
+            "visible-project-item",
+            "VISIBLE-PROJECT-CONTENT",
+            0.95,
+            source="user",
+            layer="core",
+        )
+        private = ContextItem(
+            "private-project-item",
+            "PRIVATE-PROJECT-SECRET",
+            0.94,
+            source="user",
+            layer="core",
+        )
+        pack = ContextPack(core=[visible, private])
+        pack.audit_metadata = {
+            "mode": "global",
+            "budget": {"core": 6, "related": 10, "divergent": 6, "raw_evidence": 8},
+            "raw_evidence": [
+                {
+                    "id": "visible-project-item",
+                    "content": "VISIBLE-PROJECT-CONTENT",
+                    "score": 0.95,
+                    "source": "text",
+                },
+                {
+                    "id": "private-project-item",
+                    "content": "PRIVATE-PROJECT-SECRET",
+                    "score": 0.94,
+                    "source": "text",
+                },
+            ],
+            "context_recommender": {
+                "recommendations": [
+                    {"id": "visible-project-item", "reason": "visible"},
+                    {
+                        "id": "private-project-item",
+                        "reason": "PRIVATE-PROJECT-SECRET",
+                    },
+                ]
+            },
+            "private_debug": "PRIVATE-PROJECT-SECRET",
+        }
+        pack.per_item_stats = [
+            {"id": "visible-project-item", "content": "VISIBLE-PROJECT-CONTENT"},
+            {"id": "private-project-item", "content": "PRIVATE-PROJECT-SECRET"},
+        ]
+        pack.pipeline_stats = {
+            "private_debug": "PRIVATE-PROJECT-SECRET",
+        }
+        pack.gap_signal = {
+            "evidence": [
+                {"id": "private-project-item", "content": "PRIVATE-PROJECT-SECRET"}
+            ],
+            "recommendations": ["PRIVATE-PROJECT-SECRET", "safe"],
+        }
+        return pack
+
+    engine.supply = supply
+    return engine, calls
+
+
+def test_memory_recall_scrubs_private_project_from_first_and_cached_response():
+    engine, calls = _leaky_project_engine()
+    args = {
+        "query": "project private exposure",
+        "project_id": "project:app",
+        "project_policy": "strict",
+        "request_id": "project-exposure-cache",
+        "debug": True,
+    }
+
+    first_text = asyncio.run(handle_memory_recall(engine, args))[0].text
+    second_text = asyncio.run(handle_memory_recall(engine, args))[0].text
+    first = json.loads(first_text)
+    second = json.loads(second_text)
+
+    assert calls["count"] == 1
+    assert "PRIVATE-PROJECT-SECRET" not in first_text
+    assert "PRIVATE-PROJECT-SECRET" not in second_text
+    assert [item["id"] for item in first["core"]] == ["visible-project-item"]
+    assert first["core"] == first["data"]["core"]
+    assert second["core"] == second["data"]["core"]
+    assert [row["id"] for row in first["per_item_stats"]] == ["visible-project-item"]
+    assert [row["id"] for row in second["data"]["per_item_stats"]] == [
+        "visible-project-item"
+    ]
+
+
+def test_context_supply_debug_scrubs_private_project_from_all_surfaces(monkeypatch):
+    engine, _calls = _leaky_project_engine()
+    monkeypatch.setattr(
+        embedder_mod,
+        "get_embedder",
+        lambda fallback_on_error=False: FakeEmbedder(),
+    )
+
+    result = asyncio.run(
+        handle_context_supply(
+            engine,
+            {
+                "task_description": "project private exposure",
+                "project_id": "project:app",
+                "project_policy": "strict",
+                "request_id": "project-exposure-context",
+                "debug": True,
+            },
+        )
+    )
+    text = result[0].text
+    payload = json.loads(text)
+
+    assert "PRIVATE-PROJECT-SECRET" not in text
+    assert [item["id"] for item in payload["core"]] == ["visible-project-item"]
+    assert [row["id"] for row in payload["per_item_stats"]] == ["visible-project-item"]
+    assert payload["audit_metadata"]["raw_evidence"][0]["id"] == "visible-project-item"
+
+
+def _stale_sqlite_project_engine(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "stale-project.db"))
+    engine = ContextEngine(use_sqlite=True)
+    engine.register_memory(
+        {
+            "id": "cross-process-private",
+            "content": "CROSS-PROCESS-PROJECT-SECRET",
+            "memory_type": "experience",
+            "source": "user",
+            "project_id": "project:app",
+            "visibility": "global",
+            "source_class": "experience",
+        }
+    )
+    engine._sqlite._conn.execute(
+        """
+        UPDATE memories
+        SET project_id = 'project:other', visibility = 'project', source_class = 'experience'
+        WHERE id = 'cross-process-private'
+        """
+    )
+    engine._sqlite._conn.commit()
+    calls = {"count": 0}
+
+    def supply(*args, **kwargs):
+        calls["count"] += 1
+        item = ContextItem(
+            "cross-process-private",
+            "CROSS-PROCESS-PROJECT-SECRET",
+            0.96,
+            source="user",
+            layer="core",
+        )
+        pack = ContextPack(core=[item])
+        pack.audit_metadata = {
+            "mode": "global",
+            "budget": {"core": 6, "related": 10, "divergent": 6, "raw_evidence": 8},
+            "raw_evidence": [
+                {
+                    "id": "cross-process-private",
+                    "content": "CROSS-PROCESS-PROJECT-SECRET",
+                    "score": 0.96,
+                    "source": "text",
+                }
+            ],
+        }
+        pack.per_item_stats = [
+            {
+                "id": "cross-process-private",
+                "content": "CROSS-PROCESS-PROJECT-SECRET",
+            }
+        ]
+        return pack
+
+    engine.supply = supply
+    return engine, calls
+
+
+def test_cross_process_project_change_scrubs_first_cache_and_context_supply(
+    tmp_path,
+    monkeypatch,
+):
+    engine, calls = _stale_sqlite_project_engine(tmp_path, monkeypatch)
+    recall_args = {
+        "query": "cross process project visibility",
+        "project_id": "project:app",
+        "project_policy": "strict",
+        "request_id": "cross-process-project-cache",
+        "debug": True,
+    }
+
+    first_text = asyncio.run(handle_memory_recall(engine, recall_args))[0].text
+    second_text = asyncio.run(handle_memory_recall(engine, recall_args))[0].text
+    second = json.loads(second_text)
+
+    assert calls["count"] == 1
+    assert "CROSS-PROCESS-PROJECT-SECRET" not in first_text
+    assert "CROSS-PROCESS-PROJECT-SECRET" not in second_text
+    assert second["core"] == []
+    assert second["data"]["core"] == []
+    assert second["raw_evidence"] == []
+    assert second["data"]["raw_evidence"] == []
+
+    context_text = asyncio.run(
+        handle_context_supply(
+            engine,
+            {
+                "task_description": "cross process project visibility",
+                "project_id": "project:app",
+                "project_policy": "strict",
+                "request_id": "cross-process-project-context",
+                "debug": True,
+            },
+        )
+    )[0].text
+
+    assert "CROSS-PROCESS-PROJECT-SECRET" not in context_text

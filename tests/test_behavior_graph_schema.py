@@ -54,6 +54,11 @@ def test_behavior_graph_schema_rejects_unknown_types():
         graph_edge("a", "b", "unknown_relation")
 
 
+def test_behavior_graph_accepts_evidence_relations():
+    for relation in ("derived_from", "contradicts", "supersedes"):
+        assert graph_edge("memory:a", "memory:b", relation)["relation"] == relation
+
+
 def test_context_engine_registers_typed_graph_records():
     engine = ContextEngine(use_sqlite=False)
 

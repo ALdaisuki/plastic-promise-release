@@ -5,15 +5,43 @@ raw → tagged(关键词) → classified(大类L1/L3) → embedded(细分向量)
 """
 
 import datetime
-import hashlib
 import json
 import logging
 import os
 import re
 import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from plastic_promise.core.constants import DEDUP_SIMILARITY_THRESHOLD
+from plastic_promise.core.memory_index import (
+    IndexMaterial,
+    build_index_material,
+    effective_embedding_model_name,
+    index_metadata,
+    initial_index_policy,
+    metadata_with_index_material,
+    read_persisted_index_material,
+    resolve_index_material,
+)
+from plastic_promise.core.synthesis_retrieval import (
+    engine_memory_is_governed_synthesis,
+)
+
+
+@dataclass(frozen=True)
+class PreparedMemory:
+    """Immutable, fully prepared memory candidate with no persistence effects."""
+
+    content: str
+    category: str
+    tier: str
+    tags: tuple[str, ...]
+    vector: tuple[float, ...]
+    index_material: IndexMaterial
+    metadata: Mapping[str, Any]
 
 
 class MemoryPipeline:
@@ -74,6 +102,30 @@ class MemoryPipeline:
         Returns:
             memory_id with 'fuzzy_' prefix, or None if extraction yields nothing.
         """
+        if str(memory_type).strip().casefold() == "synthesis":
+            raise RuntimeError("synthesis_requires_governed_store")
+        from plastic_promise.core.memory_proposals import (
+            PROPOSAL_CATEGORIES,
+            ProposalPolicyError,
+            has_trusted_internal_origin,
+            proposal_mode,
+        )
+
+        protected_class = str(source_class or "").strip().casefold()
+        if (
+            proposal_mode() == "on"
+            and protected_class in PROPOSAL_CATEGORIES | {"user_fact"}
+            and not has_trusted_internal_origin(
+                {
+                    "source": source,
+                    "origin_kind": origin_kind,
+                    "origin_uri": origin_uri,
+                }
+            )
+        ):
+            raise ProposalPolicyError("approval_required")
+        index_policy = initial_index_policy(summary_index_enabled=self._summary_index_enabled())
+
         # Step 0: Smart extraction
         extracted_list = []
         try:
@@ -154,6 +206,9 @@ class MemoryPipeline:
                 raw_content=content,
                 extracted=record.get("extracted", {}),
                 embedder=self.embedder,
+                policy=index_policy,
+                domain=record["domain"],
+                category=record.get("extracted", {}).get("category", "other"),
             )
             record.update(index_fields)
             metadata = dict(record.get("metadata_json", {}))
@@ -169,10 +224,15 @@ class MemoryPipeline:
                 }
             )
             metadata["extracted"] = metadata_extracted
-            metadata["memory_index"] = {
-                "embedding_hash": record["embedding_hash"],
-                "summary_index_enabled": self._summary_index_enabled(),
-            }
+            metadata["memory_index"] = index_metadata(
+                IndexMaterial(
+                    vector_text=record["embedding_text"],
+                    search_text=record["search_text"],
+                    policy=index_policy,
+                    embedding_hash=record["embedding_hash"],
+                    model_name=self._embedding_model_name(self.embedder),
+                )
+            )
             record["metadata_json"] = metadata
 
             self._buffer[mid] = record
@@ -189,6 +249,284 @@ class MemoryPipeline:
 
         return first_mid
 
+    def prepare_approved_candidate(
+        self,
+        content: str,
+        *,
+        category: str,
+        source: str = "user",
+        source_class: str = "user_fact",
+        custom_tags: list[str] | None = None,
+        domain_hint: str | None = None,
+        project_id: str = "project:legacy-global",
+        visibility: str = "project",
+        created_by_call_id: str = "",
+        origin_kind: str = "memory_proposal",
+        origin_uri: str = "",
+        origin_ref: str = "",
+        origin_hash: str = "",
+        metadata_json: Mapping[str, Any] | None = None,
+    ) -> PreparedMemory:
+        """Prepare an approved proposal without mutating any persistence surface."""
+        normalized_content = " ".join(str(content or "").split())
+        normalized_category = str(category or "").strip().casefold()
+        if not normalized_content:
+            raise ValueError("approved_candidate_content_required")
+        if normalized_category not in {"fact", "preference", "decision"}:
+            raise ValueError("approved_candidate_category_invalid")
+        if self.embedder is None:
+            raise RuntimeError("approved_candidate_embedder_unavailable")
+
+        from plastic_promise.smart_extractor import extract_memories
+
+        extracted_items = list(extract_memories(normalized_content, max_llm_calls=3) or [])
+        if len(extracted_items) != 1:
+            raise RuntimeError("approved_candidate_extraction_uncertain")
+        extracted_item = extracted_items[0]
+        extracted_category = str(getattr(extracted_item, "category", "") or "").casefold()
+        if extracted_category and extracted_category != normalized_category:
+            raise RuntimeError("approved_candidate_category_mismatch")
+
+        extracted = {
+            "category": normalized_category,
+            "l0_abstract": str(getattr(extracted_item, "l0_abstract", "") or ""),
+            "l1_summary": str(getattr(extracted_item, "l1_summary", "") or ""),
+            "l2_content": str(getattr(extracted_item, "l2_content", "") or normalized_content),
+            "confidence": float(getattr(extracted_item, "confidence", 0.0) or 0.0),
+            "importance": float(getattr(extracted_item, "importance", 0.7) or 0.7),
+        }
+        tags = [f"cat:{normalized_category}"]
+        if custom_tags:
+            tags.extend(str(tag) for tag in custom_tags if str(tag).strip())
+        tags = list(dict.fromkeys(tags))
+        domain = str(domain_hint or "uncategorized")
+        tier = "L1"
+
+        index_policy = initial_index_policy(summary_index_enabled=self._summary_index_enabled())
+        index_fields = self._build_memory_index_fields(
+            raw_content=normalized_content,
+            extracted=extracted,
+            embedder=self.embedder,
+            policy=index_policy,
+            domain=domain,
+            category=normalized_category,
+        )
+        material = IndexMaterial(
+            vector_text=index_fields["embedding_text"],
+            search_text=index_fields["search_text"],
+            policy=index_policy,
+            embedding_hash=index_fields["embedding_hash"],
+            model_name=self._embedding_model_name(self.embedder),
+        )
+        vector = tuple(float(value) for value in self.embedder.embed(material.vector_text))
+        if not self._has_nonzero_vector(vector):
+            raise RuntimeError("approved_candidate_embedding_failed")
+
+        from plastic_promise.core.quality_gate import QualityGate
+
+        gate = QualityGate()
+        gate_score = gate.score(
+            extracted=extracted,
+            tags=tags,
+            domain_hint=domain,
+            created_at=None,
+            tier=tier,
+        )
+        decision = gate.decide(gate_score)
+        if decision == "discard":
+            raise RuntimeError("approved_candidate_quality_failed")
+
+        metadata = dict(metadata_json or {})
+        metadata.update(
+            {
+                "category": normalized_category,
+                "domain": domain,
+                "importance": extracted["importance"],
+                "raw_content": normalized_content,
+                "l0_abstract": index_fields["l0_abstract"],
+                "l1_summary": index_fields["l1_summary"],
+                "l2_content": index_fields["l2_content"],
+                "gate_score": round(gate_score, 4),
+                "quality": decision,
+                "source": source,
+                "source_class": source_class,
+                "project_id": project_id,
+                "visibility": visibility,
+                "created_by_call_id": created_by_call_id,
+                "origin_kind": origin_kind,
+                "origin_uri": origin_uri,
+                "origin_ref": origin_ref,
+                "origin_hash": origin_hash,
+                "memory_index": index_metadata(material),
+            }
+        )
+        return PreparedMemory(
+            content=normalized_content,
+            category=normalized_category,
+            tier=tier,
+            tags=tuple(tags),
+            vector=vector,
+            index_material=material,
+            metadata=MappingProxyType(metadata),
+        )
+
+    def prepare_correction(
+        self,
+        current: Mapping[str, Any],
+        new_content: str,
+    ) -> PreparedMemory:
+        """Build replacement material for one existing ordinary memory.
+
+        This preparation path has no persistence effects.  It deliberately
+        reuses the source row's index policy and model identity so a content
+        correction does not silently migrate its retrieval contract.
+        """
+        if not isinstance(current, Mapping):
+            raise ValueError("correction_source_invalid")
+        normalized_content = " ".join(str(new_content or "").split())
+        previous_content = " ".join(str(current.get("content") or "").split())
+        if not normalized_content:
+            raise ValueError("correction_content_required")
+        if normalized_content == previous_content:
+            raise ValueError("correction_content_unchanged")
+        if self.embedder is None:
+            raise RuntimeError("correction_embedder_unavailable")
+
+        previous_material = read_persisted_index_material(current)
+        if previous_material is None:
+            try:
+                previous_material, _needs_persist = resolve_index_material(
+                    current,
+                    model_name=self._embedding_model_name(self.embedder),
+                )
+            except Exception as exc:
+                raise RuntimeError("correction_index_material_unavailable") from exc
+        if effective_embedding_model_name(self.embedder) != previous_material.model_name:
+            raise RuntimeError("correction_embedding_model_mismatch")
+
+        category = str(current.get("category") or "other")
+        tier = str(current.get("tier") or "L1")
+        domain = str(current.get("domain") or "uncategorized")
+        l0_abstract = self._safe_summary_text(normalized_content)
+        l1_summary = f"- {l0_abstract}" if l0_abstract else ""
+        index_fields = {
+            "content": normalized_content,
+            "raw_content": normalized_content,
+            "l0_abstract": l0_abstract,
+            "l1_summary": l1_summary,
+            "l2_content": normalized_content,
+            "embedding_text": "\n".join(
+                part
+                for part in (
+                    f"L0: {l0_abstract}" if l0_abstract else "",
+                    f"L1: {l1_summary}" if l1_summary else "",
+                )
+                if part
+            ),
+            "search_text": l0_abstract or normalized_content,
+            "domain": domain,
+            "category": category,
+        }
+        material = build_index_material(
+            index_fields,
+            policy=previous_material.policy,
+            model_name=previous_material.model_name,
+        )
+        try:
+            vector = tuple(float(value) for value in self.embedder.embed(material.vector_text))
+        except Exception as exc:
+            raise RuntimeError("correction_embedding_failed") from exc
+        if not self._has_nonzero_vector(vector):
+            raise RuntimeError("correction_embedding_failed")
+
+        original_tags = current.get("tags")
+        if not isinstance(original_tags, (list, tuple)):
+            raise ValueError("correction_source_tags_invalid")
+        blocked_states = {
+            "conflict",
+            "corrected",
+            "deleted",
+            "deprecated",
+            "expired",
+            "forgotten",
+            "obsolete",
+            "replaced",
+            "rejected",
+            "stale",
+            "wrong",
+        }
+        tags: list[str] = []
+        for value in original_tags:
+            tag = str(value).strip()
+            prefix, separator, state = tag.partition(":")
+            if not tag or tag.casefold() == "decay:pending":
+                continue
+            if (
+                separator
+                and prefix.casefold() in {"lifecycle", "quality", "status"}
+                and state.strip().casefold() in blocked_states
+            ):
+                continue
+            tags.append(tag)
+
+        extracted = {
+            "category": category,
+            "l0_abstract": l0_abstract,
+            "l1_summary": l1_summary,
+            "l2_content": normalized_content,
+            "confidence": 0.5,
+            "importance": float(current.get("importance", 0.7) or 0.7),
+        }
+        from plastic_promise.core.quality_gate import QualityGate
+
+        gate_score = QualityGate().score(
+            extracted=extracted,
+            tags=tags,
+            domain_hint=domain,
+            created_at=None,
+            tier=tier,
+        )
+        decision = QualityGate.decide(gate_score)
+        if decision == "discard":
+            raise RuntimeError("correction_quality_failed")
+
+        metadata = metadata_with_index_material(current.get("metadata_json"), material)
+        for key in (
+            "lifecycle_status",
+            "mark_as",
+            "quality_flag",
+            "quality_status",
+            "state",
+            "status",
+        ):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip().casefold() in blocked_states:
+                metadata.pop(key, None)
+        for state in blocked_states:
+            if metadata.get(state) is True:
+                metadata.pop(state, None)
+        metadata.update(
+            {
+                "category": category,
+                "domain": domain,
+                "gate_score": round(gate_score, 4),
+                "l0_abstract": l0_abstract,
+                "l1_summary": l1_summary,
+                "l2_content": normalized_content,
+                "quality": {"status": "current", "decision": decision},
+                "raw_content": normalized_content,
+            }
+        )
+        return PreparedMemory(
+            content=normalized_content,
+            category=category,
+            tier=tier,
+            tags=tuple(tags),
+            vector=vector,
+            index_material=material,
+            metadata=MappingProxyType(metadata),
+        )
+
     def process_pipeline(self) -> dict[str, Any]:
         """Run the full 4-stage pipeline on all buffered items.
 
@@ -201,6 +539,7 @@ class MemoryPipeline:
             "classified→embedded": 0,
             "embedded→migrated": 0,
         }
+        migration_outcomes: dict[str, dict[str, str]] = {}
 
         # Stage 1: raw → tagged (noise filter + keyword extraction)
         counts["raw→tagged"] = self._process_raw_to_tagged()
@@ -212,11 +551,14 @@ class MemoryPipeline:
         counts["classified→embedded"] = self._process_classified_to_embedded()
 
         # Stage 4: embedded → migrate to main pool
-        counts["embedded→migrated"] = self._process_embedded_to_migrate()
+        counts["embedded→migrated"] = self._process_embedded_to_migrate(
+            migration_outcomes
+        )
 
         self._last_process = datetime.datetime.now().isoformat()
         return {
             "pipeline": counts,
+            "migration_outcomes": migration_outcomes,
             "total_processed": sum(counts.values()),
             "buffer_remaining": len(self._buffer),
             "timestamp": self._last_process,
@@ -274,6 +616,9 @@ class MemoryPipeline:
         raw_content: str,
         extracted: dict[str, Any] | None = None,
         embedder: Any = None,
+        policy: str | None = None,
+        domain: str = "uncategorized",
+        category: str = "other",
     ) -> dict[str, str]:
         extracted = extracted if isinstance(extracted, dict) else {}
         l2_content = str(extracted.get("l2_content") or raw_content or "")
@@ -288,21 +633,34 @@ class MemoryPipeline:
             f"L0: {l0_abstract}" if l0_abstract else "",
             f"L1: {l1_summary}" if l1_summary else "",
         ]
-        embedding_text = "\n".join(part for part in parts if part).strip()
+        summary_embedding_text = "\n".join(part for part in parts if part).strip()
         model_name = cls._embedding_model_name(embedder)
-        embedding_hash = hashlib.sha256(
-            f"{model_name}\n{embedding_text}".encode("utf-8")
-        ).hexdigest()
-
-        return {
+        fields = {
+            "content": l2_content,
             "raw_content": raw_content or "",
             "l0_abstract": l0_abstract,
             "l1_summary": l1_summary,
             "l2_content": l2_content,
-            "embedding_text": embedding_text,
-            "embedding_hash": embedding_hash,
+            "embedding_text": summary_embedding_text,
             "search_text": l0_abstract or cls._safe_summary_text(l1_summary or l2_content),
+            "domain": domain,
+            "category": category,
         }
+        material = build_index_material(
+            fields,
+            policy=policy
+            or initial_index_policy(summary_index_enabled=cls._summary_index_enabled()),
+            model_name=model_name,
+        )
+        fields.update(
+            {
+                "embedding_text": material.vector_text,
+                "embedding_hash": material.embedding_hash,
+                "search_text": material.search_text,
+            }
+        )
+        fields.pop("content")
+        return fields
 
     # ================================================================
     # Internal: Tag Extraction
@@ -411,7 +769,7 @@ class MemoryPipeline:
         """Stage 2: 大类分 — classify tier (L1/L3) for tagged items, then domain assignment."""
         items = [(mid, r) for mid, r in self._buffer.items() if r["stage"] == "tagged"]
         count = 0
-        for mid, record in items:
+        for _mid, record in items:
             if self._tier_manager is not None:
                 try:
                     from plastic_promise.memory.soul_memory import MemoryRecord
@@ -448,18 +806,13 @@ class MemoryPipeline:
         count = 0
         for i in range(0, len(items), self._batch_size):
             batch = items[i : i + self._batch_size]
-            embed_texts = [
-                r.get("embedding_text") or r["content"]
-                if self._summary_index_enabled()
-                else r["content"]
-                for _, r in batch
-            ]
+            embed_texts = [r.get("embedding_text") or r["content"] for _, r in batch]
             # Skip Ollama embed for items marked skip_embed (e.g. auto_inject structured content)
             skip_set = {mid for mid, r in batch if r.get("skip_embed")}
             try:
                 if skip_set:
                     vectors = []
-                    for (mid, r), embed_text in zip(batch, embed_texts):
+                    for (mid, _record), embed_text in zip(batch, embed_texts, strict=True):
                         if mid in skip_set:
                             vectors.append([0.0] * self.embedder.dim)
                         else:
@@ -478,7 +831,7 @@ class MemoryPipeline:
                     if "embed:deferred" not in tags:
                         tags.append("embed:deferred")
                 continue  # stay in classified stage, retry next cycle
-            for (mid, record), vec in zip(batch, vectors):
+            for (mid, record), vec in zip(batch, vectors, strict=True):
                 # Classified-stage guard: if rec_mem is None and vector is zero,
                 # defer to avoid permanent zero-vector storage
                 if self.rec_mem is None and vec and not any(v != 0.0 for v in vec):
@@ -496,7 +849,9 @@ class MemoryPipeline:
                 count += 1
         return count
 
-    def _process_embedded_to_migrate(self) -> int:
+    def _process_embedded_to_migrate(
+        self, migration_outcomes: dict[str, dict[str, str]] | None = None
+    ) -> int:
         """Stage 4: Dedup → QualityGate → Migrate embedded items to main pool.
 
         Direction B enhancements:
@@ -507,6 +862,9 @@ class MemoryPipeline:
         from plastic_promise.core.quality_gate import QualityGate
 
         items = [(mid, r) for mid, r in self._buffer.items() if r["stage"] == "embedded"]
+        migration_outcomes = (
+            migration_outcomes if migration_outcomes is not None else {}
+        )
         count = 0
         gate = QualityGate()
 
@@ -539,89 +897,73 @@ class MemoryPipeline:
                             vec, threshold=DEDUP_SIMILARITY_THRESHOLD
                         )
                         if dup_id and engine is not None:
-                            now_iso = datetime.datetime.now().isoformat()
-                            # Increment access_count + worth_success on existing record
-                            # Fix #2: Guard against dup_id missing from engine._memories (SQLite-only memory)
-                            if engine.memory_exists(dup_id):
-                                engine.increment_field(dup_id, "access_count", 1)
-                                engine.increment_field(dup_id, "worth_success", 1)
-                                engine.update_memory_fields(dup_id, last_accessed=now_iso)
-                                mem = engine.get_memory_dict(dup_id)
-                                existing_eids = set(mem.get("entity_ids", []) if mem else [])
-                                new_eids = set(record.get("entity_ids", []))
-                                if new_eids - existing_eids:
-                                    engine.update_memory_fields(
-                                        dup_id, entity_ids=list(existing_eids | new_eids)
-                                    )
-                            if dup_id in getattr(self.rec_mem, "_records", {}):
-                                py_rec = self.rec_mem._records[dup_id]
-                                py_rec.access_count += 1
-                                py_rec.worth_success += 1
-                                py_rec.last_accessed = now_iso
-                                # Merge entity_ids into Python record as well
-                                py_eids = set(getattr(py_rec, "entity_ids", []))
-                                new_eids = set(record.get("entity_ids", []))
-                                if new_eids - py_eids:
-                                    py_rec.entity_ids = list(py_eids | new_eids)
-                                # ---- Gap 1 fix: Recompute effective_half_life via AccessReinforcement ----
-                                try:
-                                    from plastic_promise.core.constants import DECAY_CONFIG
-                                    from plastic_promise.core.decay_engine import (
-                                        AccessReinforcement,
-                                    )
-
-                                    tier = getattr(py_rec, "tier", "L1")
-                                    base_hl = DECAY_CONFIG.get(tier, DECAY_CONFIG["default"])[
-                                        "half_life_days"
-                                    ]
-                                    reinforcer = AccessReinforcement()
-                                    _, new_hl = reinforcer.compute_boost(
-                                        access_count=py_rec.access_count,
-                                        last_accessed=now_iso,
-                                        base_half_life=base_hl,
-                                        is_auto_recall=False,
-                                        current_time_str=now_iso,
-                                    )
-                                    py_rec.effective_half_life = new_hl
-                                    if engine.memory_exists(dup_id):
-                                        engine.update_memory_fields(
-                                            dup_id, effective_half_life=new_hl
-                                        )
-                                except Exception:
-                                    pass  # Graceful: boost is a quality improvement, not a hard gate
-                            # SQLite incremental update — includes last_accessed (Fix #6) and entity_ids merge (Fix #7)
-                            sqlite = getattr(engine, "_sqlite", None)
-                            if sqlite is not None:
-                                try:
-                                    # Merge entity_ids
-                                    existing_row = sqlite._conn.execute(
-                                        "SELECT entity_ids FROM memories WHERE id = ?", (dup_id,)
-                                    ).fetchone()
-                                    merged_eids = list(set(record.get("entity_ids", [])))
-                                    if existing_row and existing_row[0]:
-                                        try:
-                                            old_eids = (
-                                                json.loads(existing_row[0])
-                                                if isinstance(existing_row[0], str)
-                                                else existing_row[0]
-                                            )
-                                            merged_eids = list(set(old_eids + merged_eids))
-                                        except Exception:
-                                            pass
-                                    sqlite._conn.execute(
-                                        "UPDATE memories SET access_count = access_count + 1, "
-                                        "worth_success = worth_success + 1, "
-                                        "last_accessed = ?, entity_ids = ? WHERE id = ?",
-                                        (now_iso, json.dumps(merged_eids), dup_id),
-                                    )
-                                    sqlite._conn.commit()
-                                except Exception:
-                                    pass
-                            del self._buffer[mid]
-                            logging.info(
-                                "Dedup: %s -> merged into %s (similarity >= 0.85)", mid, dup_id
+                            runtime = getattr(engine, "_memories", {})
+                            existing = runtime.get(dup_id) if isinstance(runtime, dict) else None
+                            py_rec = getattr(self.rec_mem, "_records", {}).get(dup_id)
+                            candidate_type = (
+                                existing.get("memory_type")
+                                if isinstance(existing, dict)
+                                else getattr(py_rec, "memory_type", None)
                             )
-                            continue  # skip store
+                            if engine_memory_is_governed_synthesis(
+                                engine,
+                                dup_id,
+                                memory_type=candidate_type,
+                            ):
+                                logging.info(
+                                    "Dedup ignored governed synthesis candidate %s for %s",
+                                    dup_id,
+                                    mid,
+                                )
+                            else:
+                                now_iso = datetime.datetime.now().isoformat()
+                                reinforce = getattr(
+                                    engine,
+                                    "reinforce_ordinary_duplicate",
+                                    None,
+                                )
+                                canonical = None
+                                updated = False
+                                if callable(reinforce):
+                                    result = reinforce(
+                                        dup_id,
+                                        entity_ids=list(record.get("entity_ids", []) or []),
+                                        last_accessed=now_iso,
+                                        expected_project_id=record.get(
+                                            "project_id", "project:legacy-global"
+                                        ),
+                                        expected_visibility=record.get("visibility", "project"),
+                                        expected_source_class=record.get(
+                                            "source_class", "experience"
+                                        ),
+                                        expected_memory_type=record.get(
+                                            "memory_type", "experience"
+                                        ),
+                                    )
+                                    if isinstance(result, Mapping):
+                                        canonical = result
+                                        updated = True
+                                if updated:
+                                    if py_rec is not None:
+                                        py_rec.access_count = canonical["access_count"]
+                                        py_rec.worth_success = canonical["worth_success"]
+                                        py_rec.last_accessed = canonical["last_accessed"]
+                                        py_rec.entity_ids = list(canonical["entity_ids"])
+                                        py_rec.effective_half_life = canonical.get(
+                                            "effective_half_life",
+                                            py_rec.effective_half_life,
+                                        )
+                                    migration_outcomes[mid] = {
+                                        "status": "deduplicated",
+                                        "canonical_memory_id": dup_id,
+                                    }
+                                    del self._buffer[mid]
+                                    logging.info(
+                                        "Dedup: %s -> merged into %s (similarity >= 0.85)",
+                                        mid,
+                                        dup_id,
+                                    )
+                                    continue  # skip store only after the guarded update succeeds
                     except Exception as e:
                         logging.warning(
                             "Dedup check failed for %s: %s -- proceeding with store", mid, e
@@ -676,9 +1018,10 @@ class MemoryPipeline:
                 extracted_confidence = extracted.get("confidence", 0.5)
 
                 # Tag for background LLM refinement when rule classification is uncertain
-                if extracted_category == "other" or extracted_confidence < 0.5:
-                    if "llm_pending:true" not in tags:
-                        tags.append("llm_pending:true")
+                if (
+                    extracted_category == "other" or extracted_confidence < 0.5
+                ) and "llm_pending:true" not in tags:
+                    tags.append("llm_pending:true")
                 metadata_json = dict(record.get("metadata_json", {}))
                 metadata_json.update(
                     {
@@ -688,6 +1031,7 @@ class MemoryPipeline:
                         "l2_content": record.get("l2_content", ""),
                         "embedding_text": record.get("embedding_text", ""),
                         "embedding_hash": record.get("embedding_hash", ""),
+                        "search_text": record.get("search_text", ""),
                     }
                 )
                 stored = self.rec_mem.store(
@@ -747,27 +1091,29 @@ class MemoryPipeline:
                         engine.update_memory_fields(
                             stored.memory_id, decay_multiplier=dm, effective_half_life=base_hl
                         )
-                    sqlite = getattr(engine, "_sqlite", None)
-                    if sqlite is not None:
-                        sqlite._conn.execute(
-                            "UPDATE memories SET decay_multiplier = ?, effective_half_life = ? WHERE id = ?",
-                            (dm, base_hl, stored.memory_id),
-                        )
-                        sqlite._conn.commit()
                 except Exception:
                     pass  # Graceful: decay init is a quality improvement
 
                 # ---- Existing: vector + tags + domain persistence ----
                 if engine is not None:
+                    update_memory_fields = getattr(engine, "update_memory_fields", None)
                     if has_nonzero_vector:
-                        engine.update_memory_fields(stored.memory_id, _vector=vec)
-                        ldb = getattr(engine, "_ldb", None)
+                        ldb = getattr(engine, "lancedb_store", None)
+                        ensure_heavy_init = getattr(engine, "ensure_heavy_init", None)
+                        if ldb is None and callable(ensure_heavy_init):
+                            try:
+                                ensure_heavy_init()
+                            except Exception as e:
+                                logging.warning(
+                                    "LanceDB init before dual-write failed for %s: %s",
+                                    stored.memory_id,
+                                    e,
+                                )
+                            ldb = getattr(engine, "lancedb_store", None)
                         if ldb is not None:
                             try:
-                                lancedb_text = (
-                                    record.get("search_text", "")
-                                    if self._summary_index_enabled()
-                                    else record.get("content", "")
+                                lancedb_text = record.get("search_text") or record.get(
+                                    "content", ""
                                 )
                                 ldb.insert(
                                     memory_id=stored.memory_id,
@@ -781,47 +1127,29 @@ class MemoryPipeline:
                                 logging.warning(
                                     "LanceDB dual-write failed for %s: %s", stored.memory_id, e
                                 )
-                    engine.update_memory_fields(
-                        stored.memory_id,
-                        tags=tags,
-                        domain=domain_hint,
-                        project_id=record.get("project_id", "project:legacy-global"),
-                        visibility=record.get("visibility", "project"),
-                        source_class=record.get("source_class", "experience"),
-                        created_by_call_id=record.get("created_by_call_id", ""),
-                        origin_kind=record.get("origin_kind", ""),
-                        origin_uri=record.get("origin_uri", ""),
-                        origin_ref=record.get("origin_ref", ""),
-                        origin_hash=record.get("origin_hash", ""),
-                        parent_memory_ids=record.get("parent_memory_ids", []),
-                        metadata_json=metadata_json,
-                    )
-                    sqlite = getattr(engine, "_sqlite", None)
-                    if sqlite is not None:
-                        import json
-
-                        sqlite._conn.execute(
-                            "UPDATE memories SET tags = ?, domain = ?, project_id = ?, "
-                            "visibility = ?, source_class = ?, created_by_call_id = ?, "
-                            "origin_kind = ?, origin_uri = ?, origin_ref = ?, origin_hash = ?, "
-                            "parent_memory_ids = ?, metadata_json = ? WHERE id = ?",
-                            (
-                                json.dumps(tags),
-                                domain_hint,
-                                record.get("project_id", "project:legacy-global"),
-                                record.get("visibility", "project"),
-                                record.get("source_class", "experience"),
-                                record.get("created_by_call_id", ""),
-                                record.get("origin_kind", ""),
-                                record.get("origin_uri", ""),
-                                record.get("origin_ref", ""),
-                                record.get("origin_hash", ""),
-                                json.dumps(record.get("parent_memory_ids", []), ensure_ascii=False),
-                                json.dumps(metadata_json, ensure_ascii=False),
-                                stored.memory_id,
-                            ),
+                    if callable(update_memory_fields):
+                        update_memory_fields(
+                            stored.memory_id,
+                            tags=tags,
+                            domain=domain_hint,
+                            project_id=record.get("project_id", "project:legacy-global"),
+                            visibility=record.get("visibility", "project"),
+                            source_class=record.get("source_class", "experience"),
+                            created_by_call_id=record.get("created_by_call_id", ""),
+                            origin_kind=record.get("origin_kind", ""),
+                            origin_uri=record.get("origin_uri", ""),
+                            origin_ref=record.get("origin_ref", ""),
+                            origin_hash=record.get("origin_hash", ""),
+                            parent_memory_ids=record.get("parent_memory_ids", []),
+                            metadata_json=metadata_json,
+                            raw_content=record.get("raw_content", ""),
+                            l0_abstract=record.get("l0_abstract", ""),
+                            l1_summary=record.get("l1_summary", ""),
+                            l2_content=record.get("l2_content", ""),
+                            embedding_text=record.get("embedding_text", ""),
+                            embedding_hash=record.get("embedding_hash", ""),
+                            search_text=record.get("search_text", ""),
                         )
-                        sqlite._conn.commit()
 
                 # Rebuild entity edges
                 entity_ids = record.get("entity_ids", [])
@@ -838,6 +1166,10 @@ class MemoryPipeline:
                             graph_edges.append(edge)
 
                 del self._buffer[mid]
+                migration_outcomes[mid] = {
+                    "status": "stored",
+                    "canonical_memory_id": stored.memory_id,
+                }
                 count += 1
             except Exception as e:
                 logging.warning("Migrate failed for %s: %s", mid, e)

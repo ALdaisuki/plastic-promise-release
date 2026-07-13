@@ -1,0 +1,24 @@
+{
+  "schema": "wrrf-calibration-grid/v1",
+  "k_values": [2],
+  "weight_sets": [
+    {"vector": 0.55, "bm25": 0.30, "fts": 0.15},
+    {"vector": 0.60, "bm25": 0.25, "fts": 0.15},
+    {"vector": 0.65, "bm25": 0.20, "fts": 0.15}
+  ],
+  "channel_windows": [
+    {"vector": 20, "bm25": 20, "fts": 20},
+    {"vector": 32, "bm25": 24, "fts": 16}
+  ],
+  "primary_quality_metric": "overall.fused.mrr",
+  "minimum_primary_delta": 0.01,
+  "required_split_tolerance": 0.0,
+  "max_p95_ratio": 1.20,
+  "selection_order": [
+    "maximize minimum required-split fused MRR",
+    "maximize overall fused hit@5",
+    "maximize overall fused MRR",
+    "minimize p95 latency",
+    "lexicographically smallest canonical config JSON"
+  ]
+}

@@ -99,13 +99,14 @@ async def _run_async(engine: Any = None) -> dict:
         report["memory_stats"] = {"note": "no engine provided"}
 
     # ── 3. 存储审计报告为记忆 ──
-    if engine is not None and hasattr(engine, "register_memory"):
+    create_ordinary = getattr(engine, "create_ordinary_if_absent", None)
+    if callable(create_ordinary):
         try:
             audit_summary = (
                 f"日审计 {report['date']}: overall={report.get('overall_score', 'N/A')}, "
                 f"findings={len(report.get('findings', []))}"
             )
-            engine.register_memory(
+            create_ordinary(
                 {
                     "id": f"daily_audit_{report['date'].replace('-', '')}",
                     "content": json.dumps(

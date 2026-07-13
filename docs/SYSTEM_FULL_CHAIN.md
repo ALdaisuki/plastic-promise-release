@@ -1,6 +1,8 @@
 # Plastic Promise — System Chain Overview
 
 > Release-facing overview. This document describes the system shape and operating principles without exposing private planning artifacts.
+>
+> 版本: 0.1.15 | 日期: 2026-07-13
 
 ## 1. What this system is
 
@@ -34,7 +36,7 @@ Every serious task should pass through this loop:
 |---|---|
 | MCP Server | Exposes the runtime to Claude Code and other MCP clients over stdio or SSE. |
 | Launcher runtime modes | Select startup depth and Rust acceleration before services start, with MCP hot updates through `runtime_mode`. |
-| Service bootstrap | Launcher child processes inherit runtime-mode env and receive project root on `PYTHONPATH`; the Maintenance Daemon also bootstraps `_project_root` for direct script starts. |
+| Service bootstrap | Launcher child processes inherit runtime-mode env and receive project root on `PYTHONPATH`; MCP health binds PID/source root/revision before startup or reuse is accepted. |
 | Memory | Stores reusable experience, decisions, preferences, task knowledge, and derived signals. |
 | Context | Retrieves the most relevant memory and graph context for the current task. |
 | Principles | Keeps work aligned with the project’s operating commitments. |
@@ -53,6 +55,34 @@ capture -> classify -> embed -> deduplicate -> score -> retrieve -> reinforce or
 ```
 
 Useful memories become easier to retrieve when they are repeatedly relevant. Weak, duplicated, or stale memories are merged or decay over time. This keeps the system from becoming a pile of old notes that drown out current truth.
+
+SQLite is the canonical truth source. Updates that affect retrieval-visible
+content or availability pass through a field-scoped source-mutation transaction:
+
+```text
+validate server authority and declared project
+  -> reload canonical source and peer rows
+  -> recheck canonical project equality
+  -> patch only owned ordinary-memory fields
+  -> write lineage and stale dependent synthesis
+  -> bump canonical memory version
+  -> enqueue checked LanceDB upsert/delete jobs
+  -> commit
+  -> repair the derived index
+```
+
+This boundary covers public update/correct/forget calls, smart duplicate
+replacement, feedback, skills, RecMem, lifecycle scans, duplicate cleanup, GC
+merge, and internal audit rollover. A project or authority mismatch fails before
+partial canonical state becomes visible. Metadata-only patches stay narrow and
+do not rewrite fields owned by provenance, summary, lifecycle, or index policy.
+
+Governed synthesis and memory proposals are opt-in. Only current `verified`
+synthesis with complete actor/call/time evidence can enter recall; source changes
+make dependents stale in the same SQLite transaction. Pending, rejected, and
+expired proposals never enter ordinary recall or LanceDB. The default gates
+preserve legacy behavior, and rollback disables the gates without deleting
+canonical control or audit records.
 
 ## 5. Skill and agent orchestration
 
@@ -89,6 +119,23 @@ The release flow favors a clean public history:
 - Runtime files, generated exports, local agent state, private implementation notes, and heavy design drafts should stay out of the public release tree.
 - Pull requests should be reviewable, conventionally named, and merged only after explicit maintainer approval.
 
+Live `release-sync.py` is fail-closed: the release repository must be clean, on
+`main`, bound to the expected `origin`, and missing the current version tag both
+locally and remotely. After validation it stages only the computed release
+paths and rejects all other staged, unstaged, or untracked changes. Run a
+dry-run first. The first and only live invocation must include `--push`; the
+same process commits, creates the annotated tag, revalidates pinned object IDs
+and remote state, then atomically pushes `main` and the exact tag. A live run
+without `--push` leaves local release state that blocks a clean retry. Never
+replace this attested path with a manual push or `git push --tags`.
+
+```bash
+python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
+  --version v0.1.15 --release-repo F:/Agent/plastic-promise-release \
+  --expected-source-branch main --validation-profile full --dry-run
+# Repeat with the same bound origin arguments and --push only after all gates pass.
+```
+
 ## 8. Public release boundary
 
 The public release repository should show the system’s purpose and safe operating model, not every internal planning artifact.
@@ -109,6 +156,19 @@ Exclude:
 - Temporary diagnostic scripts not part of the supported workflow.
 
 ## 9. Runtime mode boundary
+
+The HTTP `/health` response is a deployment identity record, not only a
+liveness probe. It includes `pid`, `source_root`, `source_revision`,
+`fusion_policy`, and `fusion_attestation`; the latter uses
+`retrieval-fusion-identity/v1` and binds the requested policy, candidate ID, and
+configuration hash. A newly spawned MCP server must match its launcher PID and
+source root, plus the expected Git revision when available. An existing process
+on port 9020 is reused only when the same checkout identity matches.
+
+On Windows, `python scripts/init_and_start.py --stop` consumes only
+`var/run/mcp_server.pid` and `var/run/maintenance_daemon.pid` from the current
+checkout and verifies the command line's source root. It never uses a global
+Python-process scan, so a sibling worktree is outside the stop boundary.
 
 The one-click launcher can start the system in five explicit modes:
 
@@ -145,6 +205,23 @@ Local reranking uses a generation-capable Ollama model (`qwen2.5:3b`) and falls
 back to cosine/original ordering when model output is unavailable or invalid.
 
 ## 11. Operating principles
+
+Operational verification uses `maintenance_daemon.py --once --json` for one
+production-equivalent cycle and `smoke_restart_recovery.py --artifact-dir ...
+--json` for cross-process checked-index recovery. Daemon health is attested by
+the PID-bound `maintenance-heartbeat/v1` record. Existing `memory-index/v2`
+upserts remain replay-compatible, while all new ordinary index writes use V3.
+
+Retrieval fusion stays on `legacy-auto` unless a frozen manifest selects an
+exact `wrrf-v1:<sha256>` candidate; `max-v1` is the comparison baseline and
+invalid or mismatched configuration fails closed. Rollback restores
+`legacy-auto`, unsets the RRF K/weight/window variables, retains canonical
+SQLite/outbox evidence, and replays the default policy before HTTP and restart
+smokes.
+
+The `0.1.15` one-shot public calibration produced no eligible WRRF candidate.
+Held-out queries therefore remained unopened, `legacy-auto` remains the release
+policy, and this release makes no fusion-improvement claim.
 
 1. **Context before action** — retrieve relevant memory before major decisions.
 2. **Scoped heavy context** — pass `stage_session_id`, `flow_line_id`, and `request_id` to concurrent `memory_recall` / `context_supply` calls so the derived `request_scope_id` isolates cache and audit state and remains visible in `context_supply` output.

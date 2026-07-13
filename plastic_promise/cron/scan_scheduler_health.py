@@ -14,6 +14,8 @@ import sqlite3
 from datetime import datetime
 
 from plastic_promise.core.paths import get_db_path
+from plastic_promise.core.synthesis import ensure_synthesis_schema
+from plastic_promise.core.synthesis_retrieval import ordinary_memory_sql_predicate
 
 
 async def scan_scheduler_health(engine) -> dict:
@@ -28,6 +30,9 @@ async def scan_scheduler_health(engine) -> dict:
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    ensure_synthesis_schema(conn)
+    conn.commit()
+    ordinary_guard = ordinary_memory_sql_predicate("memories")
     audit_id = f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     auto_actions = []
     dimensions = {}
@@ -204,12 +209,13 @@ async def scan_scheduler_health(engine) -> dict:
         degradations = []
         follow_up_tasks = []
 
-        prev_rows = conn.execute("""
+        prev_rows = conn.execute(f"""
             SELECT id, content, created_at FROM memories
             WHERE memory_type = 'experience'
               AND content LIKE '%"audit_id"%'
               AND content LIKE '%"scanner":"scan_scheduler_health"%'
               AND created_at >= datetime('now', '-14 days')
+              AND {ordinary_guard}
             ORDER BY created_at DESC
             LIMIT 1
         """).fetchall()
@@ -263,18 +269,24 @@ async def scan_scheduler_health(engine) -> dict:
 
                     # Compare latency
                     prev_lat = prev_dims.get("dispatch_latency", {}).get("top3", [])
-                    prev_lat_map = {l["task_type"]: l["avg_wait_seconds"] for l in prev_lat}
-                    for l in latency_top3:
-                        prev_wait = prev_lat_map.get(l["task_type"], 0)
-                        if prev_wait > 0 and l["avg_wait_seconds"] > prev_wait * 2:
+                    prev_lat_map = {
+                        latency["task_type"]: latency["avg_wait_seconds"] for latency in prev_lat
+                    }
+                    for latency in latency_top3:
+                        prev_wait = prev_lat_map.get(latency["task_type"], 0)
+                        if prev_wait > 0 and latency["avg_wait_seconds"] > prev_wait * 2:
                             degradations.append(
-                                f"dispatch_latency {l['task_type']}: {prev_wait}s→{l['avg_wait_seconds']}s"
+                                f"dispatch_latency {latency['task_type']}: "
+                                f"{prev_wait}s→{latency['avg_wait_seconds']}s"
                             )
                             follow_up_tasks.append(
                                 {
                                     "task_type": "review_dispatch_latency",
-                                    "for_task_type": l["task_type"],
-                                    "reason": f"latency 2x+ increase {prev_wait}s→{l['avg_wait_seconds']}s",
+                                    "for_task_type": latency["task_type"],
+                                    "reason": (
+                                        "latency 2x+ increase "
+                                        f"{prev_wait}s→{latency['avg_wait_seconds']}s"
+                                    ),
                                 }
                             )
             except (json.JSONDecodeError, KeyError, TypeError):
@@ -316,14 +328,14 @@ async def scan_scheduler_health(engine) -> dict:
                     "data": t,
                 }
             )
-    for l in latency_top3:
-        if l["level"] in ("red", "yellow"):
+    for latency in latency_top3:
+        if latency["level"] in ("red", "yellow"):
             total_issues += 1
             findings.append(
                 {
                     "dimension": "dispatch_latency",
-                    "level": l["level"],
-                    "data": l,
+                    "level": latency["level"],
+                    "data": latency,
                 }
             )
     if dimensions["priority_balance"]["level"] in ("red", "yellow"):

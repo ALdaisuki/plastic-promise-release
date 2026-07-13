@@ -19,6 +19,36 @@ class MockEngine:
     pass
 
 
+class MutationSpyEngine:
+    """Record lifecycle calls without performing canonical writes."""
+
+    def __init__(self):
+        self.mutations = []
+
+    def mutate_ordinary_source(self, memory_id, **mutation):
+        self.mutations.append({"memory_id": memory_id, **mutation})
+        return {"memory_id": memory_id}
+
+
+class _PeriodicMaintenanceProbe:
+    received_engine = None
+
+    def __init__(self, engine):
+        type(self).received_engine = engine
+        self._engine = engine
+
+    def update_all_decay(self):
+        return 0
+
+
+class _PeriodicEvolveProbe:
+    def __init__(self, rec_mem):
+        self.rec_mem = rec_mem
+
+    def evolve_cycle(self):
+        return {"promoted": 0, "demoted": 0, "decayed": 0}
+
+
 def create_test_db(db_path: str):
     """Create test database with required tables and sample data."""
     conn = sqlite3.connect(db_path)
@@ -45,6 +75,9 @@ def create_test_db(db_path: str):
         "  last_accessed TEXT,"
         "  tags TEXT NOT NULL DEFAULT '[]',"
         "  domain TEXT NOT NULL DEFAULT 'uncategorized',"
+        "  project_id TEXT NOT NULL DEFAULT 'project:test',"
+        "  metadata_json TEXT NOT NULL DEFAULT '{}',"
+        "  embedding_hash TEXT NOT NULL DEFAULT 'sha256:test-index',"
         "  decay_multiplier REAL NOT NULL DEFAULT 1.0,"
         "  effective_half_life REAL NOT NULL DEFAULT 3.0"
         ")"
@@ -308,6 +341,7 @@ async def test_scan_memory_decay_marks_stale_low_worth_without_hard_delete(monke
         conn.close()
 
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
+        monkeypatch.setenv("PP_PERIODIC_MAINTENANCE", "0")
         monkeypatch.setattr(
             "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
             lambda *args, **kwargs: [],
@@ -315,18 +349,32 @@ async def test_scan_memory_decay_marks_stale_low_worth_without_hard_delete(monke
 
         from plastic_promise.cron.scan_memory_decay import scan_memory_decay
 
-        result = await scan_memory_decay(MockEngine())
+        engine = MutationSpyEngine()
+        result = await scan_memory_decay(engine)
 
         conn = sqlite3.connect(db_path)
         tags_raw = conn.execute("SELECT tags FROM memories WHERE id='stale_low'").fetchone()[0]
         count = conn.execute("SELECT COUNT(*) FROM memories WHERE id='stale_low'").fetchone()[0]
         conn.close()
-        tags = json.loads(tags_raw)
-
         assert result["lifecycle"]["stale_marked"] == 1
         assert count == 1
-        assert "status:forgotten" in tags
-        assert "lifecycle:stale" in tags
+        assert json.loads(tags_raw) == []
+        assert len(engine.mutations) == 1
+        mutation = engine.mutations[0]
+        assert mutation["memory_id"] == "stale_low"
+        assert mutation["operation"] == "forgotten"
+        assert mutation["reason"] == "lifecycle:stale"
+        assert mutation["actor"] == "scan_memory_decay"
+        assert mutation["call_id"].startswith(
+            "internal:scan_memory_decay:lifecycle:stale:"
+        )
+        assert mutation["expected_project_id"] == "project:test"
+        assert mutation["expected_content_hash"]
+        assert mutation["expected_source_snapshot"]["decay_multiplier"] == 0.1
+        assert mutation["expected_source_snapshot"]["embedding_hash"]
+        assert mutation["expected_source_snapshot"]["worth_failure"] == 5
+        assert mutation["expected_peer_snapshots"] == {}
+        assert mutation["require_source_available"] is True
 
     finally:
         os.unlink(db_path)
@@ -359,6 +407,7 @@ async def test_scan_memory_decay_marks_duplicate_conflict_replacement(monkeypatc
         conn.close()
 
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
+        monkeypatch.setenv("PP_PERIODIC_MAINTENANCE", "0")
         monkeypatch.setattr(
             "plastic_promise.mcp.tools.task_queue.handle_task_enqueue",
             lambda *args, **kwargs: [],
@@ -366,7 +415,8 @@ async def test_scan_memory_decay_marks_duplicate_conflict_replacement(monkeypatc
 
         from plastic_promise.cron.scan_memory_decay import scan_memory_decay
 
-        result = await scan_memory_decay(MockEngine())
+        engine = MutationSpyEngine()
+        result = await scan_memory_decay(engine)
 
         conn = sqlite3.connect(db_path)
         tags_raw = conn.execute("SELECT tags FROM memories WHERE id='dup_loser'").fetchone()[0]
@@ -374,13 +424,624 @@ async def test_scan_memory_decay_marks_duplicate_conflict_replacement(monkeypatc
             "SELECT COUNT(*) FROM memories WHERE content='same durable content'"
         ).fetchone()[0]
         conn.close()
-        tags = json.loads(tags_raw)
-
         assert result["lifecycle"]["conflicts_marked"] == 1
         assert count == 2
-        assert "status:replaced" in tags
-        assert "lifecycle:conflict" in tags
+        assert json.loads(tags_raw) == []
+        assert len(engine.mutations) == 1
+        mutation = engine.mutations[0]
+        assert mutation["memory_id"] == "dup_loser"
+        assert mutation["operation"] == "forgotten"
+        assert mutation["reason"] == "lifecycle:duplicate_replacement:dup_winner"
+        assert mutation["actor"] == "scan_memory_decay"
+        assert mutation["call_id"].startswith(
+            "internal:scan_memory_decay:lifecycle:duplicate:"
+        )
+        assert mutation["expected_project_id"] == "project:test"
+        assert mutation["expected_content_hash"]
+        assert mutation["expected_source_snapshot"]["worth_failure"] == 4
+        survivor = mutation["expected_peer_snapshots"]["dup_winner"]
+        assert survivor["project_id"] == "project:test"
+        assert survivor["embedding_hash"]
+        assert survivor["worth_success"] == 5
+        assert survivor["content_hash"]
+        assert mutation["require_source_available"] is True
 
+    finally:
+        os.unlink(db_path)
+
+
+def test_lifecycle_scan_discovers_candidates_without_raw_ordinary_writes(tmp_path):
+    from plastic_promise.cron.scan_memory_decay import _run_lifecycle_maintenance
+
+    db_path = tmp_path / "lifecycle.sqlite"
+    create_test_db(str(db_path))
+    now = datetime.now().isoformat()
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executemany(
+        "INSERT INTO memories (id, content, memory_type, tier, created_at, last_accessed, "
+        "access_count, worth_success, worth_failure, tags, decay_multiplier) "
+        "VALUES (?, ?, 'experience', 'L1', ?, ?, ?, ?, ?, '[]', ?)",
+        [
+            ("stale", "stale body", now, now, 0, 0, 5, 0.1),
+            ("winner", "duplicate body", now, now, 4, 8, 0, 1.0),
+            ("loser", "duplicate body", now, now, 0, 0, 4, 1.0),
+        ],
+    )
+    conn.commit()
+    statements = []
+    conn.set_trace_callback(statements.append)
+    engine = MutationSpyEngine()
+
+    lifecycle = _run_lifecycle_maintenance(conn, engine)
+
+    assert lifecycle["stale_marked"] == 1
+    assert lifecycle["conflicts_marked"] == 1
+    assert {mutation["memory_id"] for mutation in engine.mutations} == {
+        "stale",
+        "loser",
+    }
+    normalized = [" ".join(statement.casefold().split()) for statement in statements]
+    assert not any("update memories set" in statement for statement in normalized)
+    assert not any("delete from memories" in statement for statement in normalized)
+    assert len({mutation["call_id"] for mutation in engine.mutations}) == 2
+    assert all(mutation["actor"] == "scan_memory_decay" for mutation in engine.mutations)
+    conn.close()
+
+
+def test_lifecycle_scan_unindexable_rows_do_not_starve_valid_candidate(tmp_path):
+    from plastic_promise.cron.scan_memory_decay import _run_lifecycle_maintenance
+
+    db_path = tmp_path / "unindexable-lifecycle.sqlite"
+    create_test_db(str(db_path))
+    now = datetime.now().isoformat()
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = [
+        (
+            f"legacy-{index}",
+            f"legacy unindexable {index}",
+            now,
+            now,
+            "",
+        )
+        for index in range(55)
+    ]
+    rows.append(("valid-stale", "valid stale candidate", now, now, "sha256:valid"))
+    conn.executemany(
+        "INSERT INTO memories (id, content, memory_type, tier, created_at, last_accessed, "
+        "access_count, worth_success, worth_failure, tags, decay_multiplier, "
+        "embedding_hash) VALUES (?, ?, 'experience', 'L1', ?, ?, 0, 0, 9, '[]', "
+        "0.1, ?)",
+        rows,
+    )
+    conn.commit()
+    engine = MutationSpyEngine()
+
+    lifecycle = _run_lifecycle_maintenance(conn, engine)
+
+    assert lifecycle["stale_marked"] == 1
+    assert [mutation["memory_id"] for mutation in engine.mutations] == ["valid-stale"]
+    conn.close()
+
+
+def test_lifecycle_scan_projectless_rows_do_not_starve_valid_candidate(tmp_path):
+    from plastic_promise.cron.scan_memory_decay import _run_lifecycle_maintenance
+
+    db_path = tmp_path / "projectless-lifecycle.sqlite"
+    create_test_db(str(db_path))
+    now = datetime.now().isoformat()
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = [
+        (
+            f"projectless-{index}",
+            f"projectless stale {index}",
+            now,
+            now,
+            "",
+            f"sha256:projectless-{index}",
+        )
+        for index in range(55)
+    ]
+    rows.append(
+        (
+            "valid-project-stale",
+            "valid project stale candidate",
+            now,
+            now,
+            "project:test",
+            "sha256:valid-project",
+        )
+    )
+    conn.executemany(
+        "INSERT INTO memories (id, content, memory_type, tier, created_at, last_accessed, "
+        "access_count, worth_success, worth_failure, tags, decay_multiplier, "
+        "project_id, embedding_hash) VALUES (?, ?, 'experience', 'L1', ?, ?, "
+        "0, 0, 9, '[]', 0.1, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    engine = MutationSpyEngine()
+
+    lifecycle = _run_lifecycle_maintenance(conn, engine)
+
+    assert lifecycle["stale_marked"] == 1
+    assert [mutation["memory_id"] for mutation in engine.mutations] == [
+        "valid-project-stale"
+    ]
+    conn.close()
+
+
+def test_lifecycle_malformed_duplicate_clusters_do_not_occupy_fixed_limit(tmp_path):
+    from plastic_promise.cron.scan_memory_decay import _run_lifecycle_maintenance
+
+    db_path = tmp_path / "malformed-duplicate-lifecycle.sqlite"
+    create_test_db(str(db_path))
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    now = "2026-07-12T00:00:00Z"
+    columns = (
+        "id",
+        "content",
+        "memory_type",
+        "tier",
+        "created_at",
+        "last_accessed",
+        "access_count",
+        "worth_success",
+        "worth_failure",
+        "tags",
+        "project_id",
+        "metadata_json",
+        "embedding_hash",
+        "decay_multiplier",
+        "effective_half_life",
+    )
+    malformed_kinds = (
+        "worth_text",
+        "worth_negative",
+        "worth_infinite",
+        "access_text",
+        "access_negative",
+        "access_fractional",
+        "created_blob",
+        "created_empty",
+        "embedding_blob",
+        "embedding_empty",
+        "project_blob",
+        "project_empty",
+        "content_blob",
+        "content_empty",
+        "id_blob",
+        "id_empty",
+        "tags_invalid",
+        "metadata_invalid",
+    )
+    rows = []
+    for cluster_index in range(24):
+        kind = malformed_kinds[cluster_index % len(malformed_kinds)]
+        cluster = f"bad-{cluster_index:02d}"
+        for member in range(3):
+            row = {
+                "id": f"{cluster}-{member}",
+                "content": f"{cluster}-content",
+                "memory_type": "experience",
+                "tier": "L1",
+                "created_at": now,
+                "last_accessed": now,
+                "access_count": 0,
+                "worth_success": member + 1,
+                "worth_failure": 1,
+                "tags": '["status:current"]',
+                "project_id": f"project:{cluster}",
+                "metadata_json": '{"quality":{"status":"current"}}',
+                "embedding_hash": f"sha256:{cluster}-{member}",
+                "decay_multiplier": 1.0,
+                "effective_half_life": 3.0,
+            }
+            if kind == "worth_text":
+                row["worth_success"] = "not-numeric"
+            elif kind == "worth_negative":
+                row["worth_failure"] = -1
+            elif kind == "worth_infinite":
+                row["worth_success"] = float("inf")
+            elif kind == "access_text":
+                row["access_count"] = "not-numeric"
+            elif kind == "access_negative":
+                row["access_count"] = -1
+            elif kind == "access_fractional":
+                row["access_count"] = 0.5
+            elif kind == "created_blob":
+                row["created_at"] = sqlite3.Binary(now.encode())
+            elif kind == "created_empty":
+                row["created_at"] = " "
+            elif kind == "embedding_blob":
+                row["embedding_hash"] = sqlite3.Binary(b"sha256:blob")
+            elif kind == "embedding_empty":
+                row["embedding_hash"] = " "
+            elif kind == "project_blob":
+                row["project_id"] = sqlite3.Binary(cluster.encode())
+            elif kind == "project_empty":
+                row["project_id"] = " "
+            elif kind == "content_blob":
+                row["content"] = sqlite3.Binary(cluster.encode())
+            elif kind == "content_empty":
+                row["content"] = ""
+            elif kind == "id_blob":
+                row["id"] = sqlite3.Binary(f"{cluster}-{member}".encode())
+            elif kind == "id_empty":
+                row["id"] = " " * (member + 1)
+            elif kind == "tags_invalid":
+                row["tags"] = "not-json"
+            elif kind == "metadata_invalid":
+                row["metadata_json"] = "not-json"
+            rows.append(tuple(row[column] for column in columns))
+
+    def valid_row(memory_id, success):
+        return (
+            memory_id,
+            "zz-valid-duplicate-content",
+            "experience",
+            "L1",
+            now,
+            now,
+            0,
+            success,
+            1,
+            '["status:current"]',
+            "project:zz-valid",
+            '{"quality":{"status":"current"}}',
+            f"sha256:{memory_id}",
+            1.0,
+            3.0,
+        )
+
+    rows.extend((valid_row("zz-valid-winner", 9), valid_row("zz-valid-loser", 1)))
+    conn.executemany(
+        f"INSERT INTO memories ({', '.join(columns)}) "
+        f"VALUES ({', '.join('?' for _column in columns)})",
+        rows,
+    )
+    conn.commit()
+    engine = MutationSpyEngine()
+
+    lifecycle = _run_lifecycle_maintenance(conn, engine)
+
+    assert lifecycle["conflicts_marked"] == 1
+    assert [mutation["memory_id"] for mutation in engine.mutations] == [
+        "zz-valid-loser"
+    ]
+    conn.close()
+
+
+def test_lifecycle_fractional_worth_is_not_truncated_during_ranking():
+    from plastic_promise.cron.scan_memory_decay import _worth
+
+    assert _worth(0, 0.5) < _worth(2, 3)
+
+
+def test_lifecycle_scan_repeatedly_leaves_unavailable_sources_byte_stable(tmp_path):
+    from plastic_promise.core.context_engine import ContextEngine, _SQLiteStorage
+    from plastic_promise.core.synthesis_retrieval import read_memory_version
+    from plastic_promise.cron.scan_memory_decay import _run_lifecycle_maintenance
+
+    db_path = tmp_path / "unavailable-lifecycle.sqlite"
+    storage = _SQLiteStorage(str(db_path))
+    engine = ContextEngine(use_sqlite=False)
+    engine._sqlite = storage
+    body = "Unavailable duplicate content must never be lifecycle-mutated again."
+
+    def unavailable(memory_id, state):
+        return {
+            "id": memory_id,
+            "content": body,
+            "memory_type": "experience",
+            "project_id": "project:unavailable",
+            "visibility": "project",
+            "tags": [f"status:{state}"],
+            "metadata_json": {"quality": {"status": state}},
+            "worth_success": 0,
+            "worth_failure": 9,
+            "decay_multiplier": 0.01,
+            "embedding_text": body,
+            "embedding_hash": f"sha256:{memory_id}",
+            "search_text": body,
+        }
+
+    try:
+        assert storage.upsert_ordinary("wrong-source", unavailable("wrong-source", "wrong"))
+        assert storage.upsert_ordinary(
+            "deprecated-source",
+            unavailable("deprecated-source", "deprecated"),
+        )
+        malformed = unavailable("malformed-source", "current")
+        assert storage.upsert_ordinary("malformed-source", malformed)
+        storage._conn.execute(
+            "UPDATE memories SET tags = '{' WHERE id = 'malformed-source'"
+        )
+        storage._conn.commit()
+        discovery = sqlite3.connect(db_path)
+        discovery.row_factory = sqlite3.Row
+        before_rows = discovery.execute(
+            "SELECT * FROM memories ORDER BY id"
+        ).fetchall()
+        before_version = read_memory_version(discovery)
+        before_jobs = discovery.execute(
+            "SELECT * FROM store_outbox ORDER BY outbox_id"
+        ).fetchall()
+        before_lineage = discovery.execute(
+            "SELECT * FROM memory_lineage ORDER BY lineage_id"
+        ).fetchall()
+
+        first = _run_lifecycle_maintenance(discovery, engine)
+        second = _run_lifecycle_maintenance(discovery, engine)
+
+        assert first["stale_marked"] == first["conflicts_marked"] == 0
+        assert second["stale_marked"] == second["conflicts_marked"] == 0
+        assert discovery.execute("SELECT * FROM memories ORDER BY id").fetchall() == before_rows
+        assert read_memory_version(discovery) == before_version
+        assert discovery.execute(
+            "SELECT * FROM store_outbox ORDER BY outbox_id"
+        ).fetchall() == before_jobs
+        assert discovery.execute(
+            "SELECT * FROM memory_lineage ORDER BY lineage_id"
+        ).fetchall() == before_lineage
+    finally:
+        if "discovery" in locals():
+            discovery.close()
+        storage._conn.close()
+
+
+@pytest.mark.parametrize("survivor_change", ["tombstone", "worth"])
+def test_lifecycle_duplicate_rejects_changed_survivor(tmp_path, survivor_change):
+    from plastic_promise.core.context_engine import ContextEngine, _SQLiteStorage
+    from plastic_promise.core.synthesis_retrieval import read_memory_version
+    from plastic_promise.cron.scan_memory_decay import _run_lifecycle_maintenance
+
+    db_path = tmp_path / f"lifecycle-survivor-{survivor_change}.sqlite"
+    storage = _SQLiteStorage(str(db_path))
+    engine = ContextEngine(use_sqlite=False)
+    engine._sqlite = storage
+    body = "The survivor and loser initially form one live duplicate cluster."
+
+    def source(memory_id, success, failure):
+        return {
+            "id": memory_id,
+            "content": body,
+            "memory_type": "experience",
+            "project_id": "project:survivor-race",
+            "visibility": "project",
+            "tags": ["status:current"],
+            "metadata_json": {"quality": {"status": "current"}},
+            "worth_success": success,
+            "worth_failure": failure,
+            "decay_multiplier": 1.0,
+            "embedding_text": body,
+            "embedding_hash": f"sha256:{memory_id}",
+            "search_text": body,
+        }
+
+    survivor_id = "lifecycle-survivor"
+    loser_id = "lifecycle-loser"
+    try:
+        assert storage.upsert_ordinary(survivor_id, source(survivor_id, 9, 0))
+        assert storage.upsert_ordinary(loser_id, source(loser_id, 0, 9))
+        discovery = sqlite3.connect(db_path)
+        discovery.row_factory = sqlite3.Row
+        before_loser = storage._conn.execute(
+            "SELECT * FROM memories WHERE id = ?",
+            (loser_id,),
+        ).fetchone()
+        before_version = read_memory_version(storage._conn)
+        before_lineage = storage._conn.execute(
+            "SELECT COUNT(*) FROM memory_lineage"
+        ).fetchone()[0]
+        before_jobs = storage._conn.execute(
+            "SELECT COUNT(*) FROM store_outbox"
+        ).fetchone()[0]
+
+        class RacingEngine:
+            def mutate_ordinary_source(self, memory_id, **mutation):
+                if survivor_change == "tombstone":
+                    storage._conn.execute(
+                        "UPDATE memories SET tags = ?, metadata_json = ? WHERE id = ?",
+                        (
+                            json.dumps(["status:wrong"]),
+                            json.dumps({"quality": {"status": "wrong"}}),
+                            survivor_id,
+                        ),
+                    )
+                else:
+                    storage._conn.execute(
+                        "UPDATE memories SET worth_success = 0, worth_failure = 100 "
+                        "WHERE id = ?",
+                        (survivor_id,),
+                    )
+                storage._conn.commit()
+                return engine.mutate_ordinary_source(memory_id, **mutation)
+
+        lifecycle = _run_lifecycle_maintenance(discovery, RacingEngine())
+
+        assert lifecycle["conflicts_marked"] == 0
+        assert storage._conn.execute(
+            "SELECT * FROM memories WHERE id = ?",
+            (loser_id,),
+        ).fetchone() == before_loser
+        assert read_memory_version(storage._conn) == before_version
+        assert storage._conn.execute(
+            "SELECT COUNT(*) FROM memory_lineage"
+        ).fetchone()[0] == before_lineage
+        assert storage._conn.execute(
+            "SELECT COUNT(*) FROM store_outbox"
+        ).fetchone()[0] == before_jobs
+    finally:
+        if "discovery" in locals():
+            discovery.close()
+        storage._conn.close()
+
+
+def test_recmem_content_update_and_forget_use_coordinator_evidence():
+    from plastic_promise.memory.soul_memory import MemoryRecord, RecMem
+
+    class Engine:
+        def __init__(self):
+            self.mutations = []
+            self.patch_calls = []
+            self.delete_memory_called = False
+
+        def mutate_ordinary_source(self, memory_id, **mutation):
+            self.mutations.append({"memory_id": memory_id, **mutation})
+            return {"memory_id": memory_id}
+
+        def get_memory_dict_for_review(self, memory_id):
+            record = rec_mem._records.get(memory_id)
+            if record is None:
+                return None
+            return {
+                "id": memory_id,
+                "content": record.content,
+                "category": record.category,
+                "metadata_json": {"quality": {"status": "current"}},
+                "project_id": "project:test",
+                "tags": list(record.tags),
+                "worth_failure": record.worth_failure,
+                "worth_success": record.worth_success,
+            }
+
+        def patch_ordinary_memory(self, memory_id, **patch):
+            self.patch_calls.append({"memory_id": memory_id, **patch})
+            return {
+                "importance": 0.9,
+                "worth_success": 0,
+                "worth_failure": 0,
+            }
+
+        def delete_memory(self, memory_id):
+            self.delete_memory_called = True
+            return True
+
+    engine = Engine()
+    rec_mem = RecMem.__new__(RecMem)
+    rec_mem._engine = engine
+    rec_mem._records = {
+        "source": MemoryRecord(
+            "old body",
+            memory_id="source",
+            activation_weight=0.4,
+            worth_success=2,
+            worth_failure=3,
+        )
+    }
+
+    updated = rec_mem.update(
+        "source",
+        content="new body",
+        importance=0.9,
+        reset_worth=True,
+    )
+
+    assert updated is rec_mem._records["source"]
+    assert updated.content == "new body"
+    assert updated.activation_weight == 0.9
+    assert (updated.worth_success, updated.worth_failure) == (0, 0)
+    update_mutation = engine.mutations[0]
+    assert update_mutation["operation"] == "replace_content"
+    assert update_mutation["reason"] == "recmem:update"
+    assert update_mutation["actor"] == "recmem"
+    assert update_mutation["call_id"].startswith("internal:recmem:update:")
+
+    assert rec_mem.forget("source", reason="operator request") is True
+    forget_mutation = engine.mutations[1]
+    assert forget_mutation["operation"] == "forgotten"
+    assert forget_mutation["reason"] == "recmem:forget:operator request"
+    assert forget_mutation["actor"] == "recmem"
+    assert forget_mutation["call_id"].startswith("internal:recmem:forget:")
+    assert "source" not in rec_mem._records
+    assert engine.delete_memory_called is False
+
+
+@pytest.mark.asyncio
+async def test_scan_memory_decay_binds_periodic_maintenance_to_supplied_engine(monkeypatch):
+    from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+
+    engine = MockEngine()
+    _PeriodicMaintenanceProbe.received_engine = None
+    monkeypatch.setattr(
+        "plastic_promise.memory.soul_memory.RecMem", _PeriodicMaintenanceProbe
+    )
+    monkeypatch.setattr("plastic_promise.memory.soul_memory.EvolveR", _PeriodicEvolveProbe)
+    monkeypatch.setattr(
+        "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", lambda *args, **kwargs: []
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+    try:
+        create_test_db(db_path)
+        monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
+        result = await scan_memory_decay(engine)
+
+        assert _PeriodicMaintenanceProbe.received_engine is engine
+        assert result["scanner"] == "scan_memory_decay"
+    finally:
+        os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reservation_kind", ["type", "control"])
+async def test_scan_memory_decay_never_changes_reserved_synthesis(monkeypatch, reservation_kind):
+    from plastic_promise.core.synthesis import ensure_synthesis_schema
+    from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+    try:
+        create_test_db(db_path)
+        stale = (datetime.now() - timedelta(days=90)).isoformat()
+        memory_id = f"reserved-{reservation_kind}"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO memories (id, content, memory_type, tier, created_at, last_accessed, "
+            "access_count, worth_success, worth_failure, tags, decay_multiplier) "
+            "VALUES (?, 'governed body', ?, 'L1', ?, ?, 0, 0, 10, '[]', 0.0)",
+            (memory_id, "synthesis" if reservation_kind == "type" else "experience", stale, stale),
+        )
+        ensure_synthesis_schema(conn)
+        if reservation_kind == "control":
+            conn.execute(
+                "INSERT INTO synthesis_artifacts ("
+                "memory_id, synthesis_key, status, revision, support_count, validity_scope, "
+                "source_fingerprint, created_by_call_id, metadata_json, created_at, updated_at"
+                ") VALUES (?, ?, 'draft', 1, 0, 'global', 'fingerprint', 'call', '{}', ?, ?)",
+                (memory_id, f"key:{memory_id}", stale, stale),
+            )
+        conn.commit()
+        before_memory = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        before_control = conn.execute(
+            "SELECT * FROM synthesis_artifacts WHERE memory_id = ?", (memory_id,)
+        ).fetchone()
+        conn.close()
+
+        monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
+        monkeypatch.setenv("PP_PERIODIC_MAINTENANCE", "0")
+        monkeypatch.setattr(
+            "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", lambda *args, **kwargs: []
+        )
+        result = await scan_memory_decay(MockEngine())
+
+        conn = sqlite3.connect(db_path)
+        assert conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone() == before_memory
+        assert conn.execute(
+            "SELECT * FROM synthesis_artifacts WHERE memory_id = ?", (memory_id,)
+        ).fetchone() == before_control
+        conn.close()
+        assert result["lifecycle"] == {
+            "stale_marked": 0,
+            "conflicts_marked": 0,
+            "forgotten_candidates": 0,
+        }
+        assert result["findings"] == 0
     finally:
         os.unlink(db_path)
 

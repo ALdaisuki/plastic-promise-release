@@ -6,6 +6,8 @@ import sqlite3
 from collections import defaultdict
 
 from plastic_promise.core.paths import get_db_path
+from plastic_promise.core.synthesis import ensure_synthesis_schema
+from plastic_promise.core.synthesis_retrieval import ordinary_memory_sql_predicate
 
 
 def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
@@ -71,6 +73,9 @@ async def scan_architecture(engine) -> dict:
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    ensure_synthesis_schema(conn)
+    conn.commit()
+    ordinary_guard = ordinary_memory_sql_predicate("memories")
     findings = []
 
     try:
@@ -79,6 +84,7 @@ async def scan_architecture(engine) -> dict:
         domain_counts = conn.execute(
             "SELECT domain, COUNT(*) as cnt FROM memories "
             "WHERE domain IS NOT NULL AND domain != '' "
+            f"AND {ordinary_guard} "
             "GROUP BY domain"
         ).fetchall()
 
@@ -89,7 +95,8 @@ async def scan_architecture(engine) -> dict:
             for domain in domains:
                 rows = conn.execute(
                     "SELECT entity_ids, content FROM memories "
-                    "WHERE domain=? AND entity_ids IS NOT NULL AND entity_ids != ''",
+                    "WHERE domain=? AND entity_ids IS NOT NULL AND entity_ids != '' "
+                    f"AND {ordinary_guard}",
                     (domain,),
                 ).fetchall()
                 for row in rows:
@@ -134,6 +141,7 @@ async def scan_architecture(engine) -> dict:
             "AVG(activation_weight) as avg_weight "
             "FROM memories "
             "WHERE domain IS NOT NULL AND domain != '' "
+            f"AND {ordinary_guard} "
             "GROUP BY domain"
         ).fetchall()
 
@@ -164,7 +172,8 @@ async def scan_architecture(engine) -> dict:
         tag_domain_rows = conn.execute(
             "SELECT tags, domain FROM memories "
             "WHERE tags IS NOT NULL AND tags != '[]' AND tags != '' "
-            "AND domain IS NOT NULL AND domain != ''"
+            "AND domain IS NOT NULL AND domain != '' "
+            f"AND {ordinary_guard}"
         ).fetchall()
 
         if tag_domain_rows:

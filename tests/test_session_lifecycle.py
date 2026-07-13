@@ -33,6 +33,7 @@ class TestSessionInit:
             ]
         ]
         engine.list_tools = MagicMock(return_value=mock_tools)
+        engine.iter_memories = MagicMock(side_effect=lambda: iter([]))
         return engine
 
     @pytest.mark.asyncio
@@ -130,7 +131,21 @@ class TestSessionInit:
                 "source": "test",
                 "tags": [],
             },
+            "draft_synthesis": {
+                "id": "draft_synthesis",
+                "content": "SESSION INIT CONTEXT MODE DRAFT SECRET",
+                "memory_type": "synthesis",
+                "source": "synthesis",
+                "tags": [],
+            },
         }
+        mock_engine.iter_memories = MagicMock(
+            side_effect=lambda: iter(
+                memory
+                for memory in mock_engine._memories.values()
+                if memory["memory_type"] != "synthesis"
+            )
+        )
         se = SkillEngine(mock_engine)
 
         async def ok_atom(data):
@@ -148,7 +163,9 @@ class TestSessionInit:
         se._atoms["skill_session_start"] = await ok_atom({"entity_id": "skill:session-init:..."})
 
         async def fail_if_called(engine, args):
-            raise AssertionError("session-init entity-only mode should skip completion memory lookup")
+            raise AssertionError(
+                "session-init entity-only mode should skip completion memory lookup"
+            )
 
         se._atoms["skill_session_complete"] = fail_if_called
 
@@ -168,6 +185,7 @@ class TestSessionInit:
         assert result.data["context_status"]["status"] == "ready"
         assert result.data["context_status"]["item_count"] == 1
         assert result.data["context_status"]["items"][0]["id"] == "mem_context"
+        assert "DRAFT SECRET" not in json.dumps(result.data["context_status"])
         assert result.data["context_status"]["requires_full_context_before_action"] is True
 
     @pytest.mark.asyncio
@@ -241,10 +259,24 @@ class TestSessionInit:
         assert contract["flow_scope_id"] == f"{stage_session_id}::flow:normal-development"
         assert contract["entry_stage"] == "brainstorming"
         assert contract["stages"][:2] == ["brainstorming", "exemplar-research"]
-        assert "superpowers:<stage>" in contract["skill_authority"]
-        assert "must load/read" in contract["skill_authority"]
+        assert "sp-stage" in contract["governance_contract"]
+        assert "chain transitions" in contract["governance_contract"]
+        assert "required artifacts" in contract["governance_contract"]
+        assert "closure reminder" in contract["governance_contract"]
+        assert "skill_authority" not in contract
+        assert "official_skill" not in json.dumps(contract)
+        assert "load/read" not in json.dumps(contract)
+        assert (
+            result.data["chain_state"]["governance_contract"] == (contract["governance_contract"])
+        )
 
-        for key in ("route", "route_id", "flow_line_id", "flow_scope_id", "entry_stage"):
+        for key in (
+            "route",
+            "route_id",
+            "flow_line_id",
+            "flow_scope_id",
+            "entry_stage",
+        ):
             assert contract[key] is not None
             assert result.data["chain_state"][key] == contract[key]
 

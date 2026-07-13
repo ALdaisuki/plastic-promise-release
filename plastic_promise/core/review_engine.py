@@ -290,10 +290,10 @@ class ReviewEngine:
                         errors="replace",
                     )
             return result.stdout or "(空 diff — 无变更或 commit 范围无效)"
-        except FileNotFoundError:
-            raise RuntimeError("git 不可用 — 请确认 git 已安装且在 PATH 中")
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("git diff 超时 — commit 范围可能过大")
+        except FileNotFoundError as exc:
+            raise RuntimeError("git 不可用 — 请确认 git 已安装且在 PATH 中") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("git diff 超时 — commit 范围可能过大") from exc
 
     def _get_changed_files(self, commit_range: str) -> list:
         """获取变更的文件列表。"""
@@ -792,7 +792,7 @@ class ReviewEngine:
         try:
             # 主审查报告
             report_id = f"review_{ts}"
-            self._engine.register_memory(
+            self._engine.create_ordinary_if_absent(
                 {
                     "id": report_id,
                     "content": json.dumps(report.to_dict(), ensure_ascii=False),
@@ -813,7 +813,7 @@ class ReviewEngine:
             for i, finding in enumerate(report.findings):
                 if finding.severity in ("blocker", "major"):
                     finding_id = f"review_finding_{ts}_{i}"
-                    self._engine.register_memory(
+                    self._engine.create_ordinary_if_absent(
                         {
                             "id": finding_id,
                             "content": json.dumps(finding.to_dict(), ensure_ascii=False),
@@ -861,7 +861,7 @@ class ReviewEngine:
                     f"建议: {finding.suggestion}"
                 )
 
-                self._engine.register_memory(
+                self._engine.create_ordinary_if_absent(
                     {
                         "id": task_id,
                         "content": task_content,

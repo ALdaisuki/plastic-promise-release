@@ -1,13 +1,16 @@
 """Tests for LanceDBStore — vector storage with ANN + FTS."""
 
+import json
 import os
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
+import plastic_promise.core.lancedb_store as lancedb_store_module
 from plastic_promise.core.embedder import FallbackEmbedder
-from plastic_promise.core.lancedb_store import LanceDBStore, EMB_DIM
+from plastic_promise.core.lancedb_store import EMB_DIM, LanceDBStore
 
 
 class VectorTestEmbedder:
@@ -19,6 +22,31 @@ class VectorTestEmbedder:
 
     def embed_batch(self, texts):
         return [[0.1] * EMB_DIM for _ in texts]
+
+
+class RecordingVectorEmbedder(VectorTestEmbedder):
+    def __init__(self):
+        self.texts = []
+
+    def embed(self, text):
+        self.texts.append(text)
+        return super().embed(text)
+
+
+class RepairEngine:
+    def __init__(self, memories, sqlite_store=None):
+        self._memories = memories
+        self._sqlite = sqlite_store
+
+    @property
+    def memory_count(self):
+        return len(self._memories)
+
+    def update_memory_fields(self, memory_id, **fields):
+        self._memories[memory_id].update(fields)
+        if self._sqlite is not None:
+            self._sqlite.upsert(memory_id, self._memories[memory_id])
+        return True
 
 
 class TestLanceDBStore:
@@ -44,6 +72,11 @@ class TestLanceDBStore:
         assert self.store._table is not None
         assert self.store.count_rows() == 0
 
+    def test_init_uses_supported_fts_index_api(self, tmp_path, recwarn):
+        LanceDBStore(str(tmp_path / "supported-fts-api.lancedb"), VectorTestEmbedder())
+
+        assert not [warning for warning in recwarn if "create_fts_index" in str(warning.message)]
+
     def test_insert_and_count(self):
         """Insert a row and verify count increases."""
         self._require_vectors()
@@ -58,6 +91,113 @@ class TestLanceDBStore:
         self.store.insert("mem_001", vec, "hello world")
         self.store.insert("mem_001", [0.2] * EMB_DIM, "duplicate")
         assert self.store.count_rows() == 1
+
+    def test_replace_checked_updates_existing_row_exactly(self, tmp_path):
+        store = LanceDBStore(
+            str(tmp_path / "checked-replace.lancedb"),
+            VectorTestEmbedder(),
+        )
+        vector_v1 = [0.1] * EMB_DIM
+        vector_v2 = [0.9] * EMB_DIM
+        store.insert_checked(
+            "revisioned-memory",
+            vector_v1,
+            "revision one search text",
+            tier="L1",
+            category="fact",
+            scope="global",
+        )
+
+        store.replace_checked(
+            "revisioned-memory",
+            vector_v2,
+            "revision two exact search text",
+            tier="L2",
+            category="decision",
+            scope="project:test",
+        )
+
+        rows = (
+            store._table.search()
+            .where(
+                "memory_id = 'revisioned-memory'",
+                prefilter=True,
+            )
+            .limit(2)
+            .to_list()
+        )
+        assert len(rows) == 1
+        assert rows[0]["text"] == "revision two exact search text"
+        assert rows[0]["tier"] == "L2"
+        assert rows[0]["category"] == "decision"
+        assert rows[0]["scope"] == "project:test"
+        assert list(rows[0]["vector"]) == pytest.approx(vector_v2)
+
+    def test_replace_checked_failure_propagates_and_retry_recovers(self):
+        class ReplaceTable:
+            def __init__(self):
+                self.rows = [
+                    {
+                        "memory_id": "revisioned-memory",
+                        "vector": [0.1] * EMB_DIM,
+                        "text": "revision one",
+                        "tier": "L1",
+                        "category": "fact",
+                        "scope": "global",
+                    }
+                ]
+                self.fail_add_once = True
+                self.add_calls = 0
+                self.delete_calls = 0
+
+            def search(self):
+                return self
+
+            def where(self, *_args, **_kwargs):
+                return self
+
+            def limit(self, _limit):
+                return self
+
+            def to_list(self):
+                return list(self.rows)
+
+            def delete(self, _predicate):
+                self.delete_calls += 1
+                self.rows.clear()
+
+            def add(self, rows):
+                self.add_calls += 1
+                if self.fail_add_once:
+                    self.fail_add_once = False
+                    raise RuntimeError("replacement add failed")
+                self.rows.extend(rows)
+
+        table = ReplaceTable()
+        store = object.__new__(LanceDBStore)
+        store._vectors_disabled = False
+        store._table = table
+        vector_v2 = [0.9] * EMB_DIM
+        replacement = (
+            "revisioned-memory",
+            vector_v2,
+            "revision two",
+            "L2",
+            "decision",
+            "project:test",
+        )
+
+        with pytest.raises(RuntimeError, match="replacement add failed"):
+            store.replace_checked(*replacement)
+        assert table.rows == []
+
+        store.replace_checked(*replacement)
+        assert table.rows[0]["text"] == "revision two"
+        assert table.rows[0]["vector"] == vector_v2
+        writes_after_retry = (table.delete_calls, table.add_calls)
+
+        store.replace_checked(*replacement)
+        assert (table.delete_calls, table.add_calls) == writes_after_retry
 
     def test_insert_with_tier_and_scope(self):
         """Insert with custom tier, category, and scope."""
@@ -112,6 +252,76 @@ class TestLanceDBStore:
         assert len(results) >= 1
         mids = {r[0] for r in results}
         assert "mem_001" in mids
+
+    def test_search_fts_projects_non_vector_columns_and_records_failure(self):
+        class BrokenQuery:
+            def __init__(self):
+                self.selected = None
+
+            def select(self, columns):
+                self.selected = columns
+                return self
+
+            def limit(self, _limit):
+                return self
+
+            def to_list(self):
+                raise RuntimeError("native fts failed")
+
+        class BrokenTable:
+            def __init__(self):
+                self.query = BrokenQuery()
+
+            def search(self, *_args, **_kwargs):
+                return self.query
+
+        store = object.__new__(LanceDBStore)
+        store._vectors_disabled = False
+        store._fts_ready = True
+        store._table = BrokenTable()
+        store._last_search_diagnostics = []
+
+        assert store.search_fts("query") == []
+        assert "vector" not in store._table.query.selected
+        assert "_score" in store._table.query.selected
+        assert store.consume_search_diagnostics() == [
+            {
+                "channel": "fts",
+                "reason": "lancedb_fts_query_failed",
+                "error_class": "RuntimeError",
+            }
+        ]
+        assert store.consume_search_diagnostics() == []
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "\u672a\u7ecf\u786e\u8ba4\u7684\u673a\u5668\u5f52\u7eb3\u4e0d\u80fd\u5f53\u4f5c\u4e8b\u5b9e",
+            "\u6765\u6e90\u53d8\u5316\u540e\u65e7\u7684\u673a\u5668\u7ed3\u8bba\u4e0d\u80fd\u8fd4\u56de",
+        ],
+    )
+    def test_incremental_native_fts_seed_does_not_degrade_on_cjk_queries(
+        self, tmp_path, query
+    ):
+        fixture_path = Path(__file__).parent / "fixtures" / "recall_quality" / "v1.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        store = LanceDBStore(str(tmp_path / "incremental-fts.lancedb"), VectorTestEmbedder())
+
+        for memory in fixture["corpus"]:
+            store.insert_checked(
+                memory["memory_id"],
+                [0.01] * EMB_DIM,
+                memory["content"],
+                tier="L1",
+                category=memory.get("category", "other"),
+                scope=memory.get("project_id", "global"),
+            )
+
+        index_stats = store._table.index_stats("text_idx")
+        assert index_stats is not None
+        assert index_stats.num_unindexed_rows > 0
+        assert isinstance(store.search_fts(query, k=20), list)
+        assert store.consume_search_diagnostics() == []
 
     def test_update_replaces_row(self):
         """Update should replace the row (delete + insert)."""
@@ -263,6 +473,517 @@ class TestLanceDBStore:
         }
         assert store.list_memory_ids() == {"mem_keep", "mem_missing"}
 
+    def test_sync_does_not_count_failed_backend_insert_as_backfilled(self, tmp_path, monkeypatch):
+        store = LanceDBStore(str(tmp_path / "failed-insert.lancedb"), VectorTestEmbedder())
+        engine = RepairEngine(
+            {
+                "mem-missing": {
+                    "id": "mem-missing",
+                    "content": "missing canonical memory",
+                    "memory_type": "experience",
+                }
+            }
+        )
+
+        def fail_insert(*_args, **_kwargs):
+            raise RuntimeError("backend add failed")
+
+        monkeypatch.setattr(store, "insert_checked", fail_insert)
+
+        result = store.sync_with_engine(engine)
+
+        assert result["missing_backfilled"] == 0
+        assert result["missing_skipped"] == 1
+        assert result["diagnostics"] == [
+            {"memory_id": "mem-missing", "reason": "lancedb_insert_failed"}
+        ]
+        assert store.list_memory_ids() == set()
+
+    def test_sync_does_not_count_failed_backend_delete_as_repaired(self, tmp_path, monkeypatch):
+        store = LanceDBStore(str(tmp_path / "failed-delete.lancedb"), VectorTestEmbedder())
+        store.insert_checked("mem-orphan", [0.1] * EMB_DIM, "orphan row")
+        engine = RepairEngine({})
+
+        def fail_delete(*_args, **_kwargs):
+            raise RuntimeError("backend delete failed")
+
+        monkeypatch.setattr(store, "delete_checked", fail_delete)
+
+        result = store.sync_with_engine(engine)
+
+        assert result["orphan_deleted"] == 0
+        assert result["diagnostics"] == [
+            {"memory_id": "mem-orphan", "reason": "lancedb_delete_failed"}
+        ]
+        assert store.list_memory_ids() == {"mem-orphan"}
+
+    def test_rebuild_aborts_when_backend_clear_fails(self, tmp_path, monkeypatch):
+        embedder = RecordingVectorEmbedder()
+        store = LanceDBStore(str(tmp_path / "failed-clear.lancedb"), embedder)
+        store.insert_checked("stale-row", [0.1] * EMB_DIM, "stale vector text")
+        engine = RepairEngine(
+            {
+                "stale-row": {
+                    "id": "stale-row",
+                    "content": "new canonical text",
+                    "memory_type": "experience",
+                }
+            }
+        )
+
+        def fail_clear():
+            raise RuntimeError("backend clear failed")
+
+        monkeypatch.setattr(store, "clear_all_checked", fail_clear)
+
+        assert store.rebuild_all(engine) == 0
+        assert store.index_diagnostics == (
+            {"memory_id": "__table__", "reason": "lancedb_clear_failed"},
+        )
+        assert embedder.texts == []
+        row = store._table.search().where("memory_id = 'stale-row'").limit(1).to_list()[0]
+        assert row["text"] == "stale vector text"
+
+    @pytest.mark.parametrize("repair", ["sync_with_engine", "rebuild_all", "backfill"])
+    def test_repair_reuses_persisted_index_material_byte_for_byte(
+        self, tmp_path, monkeypatch, repair
+    ):
+        from plastic_promise.core.memory_index import (
+            SUMMARY_POLICY,
+            build_index_material,
+            index_metadata,
+        )
+
+        raw = "RAW-L2-MUST-NOT-BE-EMBEDDED"
+        vector_text = "L0: compact vector text\nL1: - governed summary"
+        search_text = "compact search text"
+        embedder = RecordingVectorEmbedder()
+        material = build_index_material(
+            {
+                "content": raw,
+                "embedding_text": vector_text,
+                "search_text": search_text,
+            },
+            policy=SUMMARY_POLICY,
+            model_name=embedder.model_name,
+        )
+        memory = {
+            "id": "compact-memory",
+            "content": raw,
+            "memory_type": "experience",
+            "embedding_text": material.vector_text,
+            "search_text": material.search_text,
+            "embedding_hash": material.embedding_hash,
+            "metadata_json": {"memory_index": index_metadata(material)},
+            "tier": "L1",
+            "category": "fact",
+            "scope": "global",
+        }
+        engine = RepairEngine({"compact-memory": memory})
+        store = LanceDBStore(str(tmp_path / f"{repair}.lancedb"), embedder)
+
+        # The environment may choose a different policy for future writes only.
+        monkeypatch.delenv("PP_MEMORY_SUMMARY_INDEX", raising=False)
+        getattr(store, repair)(engine)
+
+        assert embedder.texts == [vector_text]
+        assert raw not in embedder.texts
+        row = store._table.search().where("memory_id = 'compact-memory'").limit(1).to_list()[0]
+        assert row["text"] == search_text
+        assert memory["metadata_json"]["memory_index"]["policy"] == SUMMARY_POLICY
+
+    def test_legacy_fallback_is_explicit_persisted_and_env_independent(self, tmp_path, monkeypatch):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+        from plastic_promise.core.memory_index import (
+            LEGACY_FALLBACK_POLICY,
+            build_index_material,
+        )
+
+        sqlite_store = _SQLiteMemoryStore(str(tmp_path / "fallback.db"))
+        sqlite_store.upsert(
+            "legacy-memory",
+            {
+                "content": "legacy full content",
+                "memory_type": "experience",
+                "source": "test",
+                "embedding_text": "unused compact summary",
+                "embedding_hash": "unrelated-old-hash",
+                "metadata_json": {
+                    "memory_index": {
+                        "embedding_hash": "unrelated-old-hash",
+                        "summary_index_enabled": False,
+                    }
+                },
+            },
+        )
+        engine = RepairEngine(dict(sqlite_store.iter_all()), sqlite_store)
+        embedder = RecordingVectorEmbedder()
+        store = LanceDBStore(str(tmp_path / "fallback.lancedb"), embedder)
+
+        monkeypatch.setenv("PP_MEMORY_SUMMARY_INDEX", "1")
+        assert store.sync_with_engine(engine)["missing_backfilled"] == 1
+
+        persisted = sqlite_store.get("legacy-memory")
+        assert persisted["embedding_text"] == "legacy full content"
+        assert persisted["search_text"] == "legacy full content"
+        assert persisted["metadata_json"]["memory_index"]["policy"] == LEGACY_FALLBACK_POLICY
+        expected = build_index_material(
+            {"content": "legacy full content"},
+            policy=LEGACY_FALLBACK_POLICY,
+            model_name=embedder.model_name,
+        )
+        assert persisted["embedding_hash"] == expected.embedding_hash
+        assert persisted["embedding_hash"] != "unrelated-old-hash"
+
+        monkeypatch.setenv("PP_MEMORY_SUMMARY_INDEX", "0")
+        assert store.rebuild_all(engine) == 1
+        assert embedder.texts == ["legacy full content", "legacy full content"]
+        row = store._table.search().where("memory_id = 'legacy-memory'").limit(1).to_list()[0]
+        assert row["text"] == "legacy full content"
+
+    def test_partial_compact_material_never_falls_back_to_raw_content(self, tmp_path):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+        from plastic_promise.core.memory_index import SUMMARY_POLICY
+
+        sqlite_store = _SQLiteMemoryStore(str(tmp_path / "partial-compact.db"))
+        sqlite_store.upsert(
+            "partial-compact",
+            {
+                "content": "RAW-L2-DO-NOT-EMBED",
+                "memory_type": "experience",
+                "embedding_text": "COMPACT-VECTOR",
+                "embedding_hash": "legacy-unverified-hash",
+                "l0_abstract": "COMPACT-SEARCH",
+            },
+        )
+        engine = RepairEngine(
+            {"partial-compact": {"content": "STALE-RUNTIME"}},
+            sqlite_store,
+        )
+        embedder = RecordingVectorEmbedder()
+        store = LanceDBStore(str(tmp_path / "partial-compact.lancedb"), embedder)
+
+        assert store.sync_with_engine(engine)["missing_backfilled"] == 1
+
+        persisted = sqlite_store.get("partial-compact")
+        assert embedder.texts == ["COMPACT-VECTOR"]
+        assert persisted["embedding_text"] == "COMPACT-VECTOR"
+        assert persisted["search_text"] == "COMPACT-SEARCH"
+        assert persisted["metadata_json"]["memory_index"]["policy"] == SUMMARY_POLICY
+        assert persisted["embedding_hash"] != "legacy-unverified-hash"
+        row = store._table.search().where("memory_id = 'partial-compact'").limit(1).to_list()[0]
+        assert row["text"] == "COMPACT-SEARCH"
+
+    @pytest.mark.parametrize(
+        ("kind", "expected_reason"),
+        [
+            ("missing", "index_material_incomplete"),
+            ("hash", "index_material_hash_mismatch"),
+            ("model", "index_material_model_mismatch"),
+        ],
+    )
+    def test_repair_skips_invalid_material_with_explicit_diagnostic(
+        self, tmp_path, monkeypatch, kind, expected_reason
+    ):
+        from plastic_promise.core.memory_index import (
+            COMPACT_V2_POLICY,
+            build_index_material,
+            index_metadata,
+        )
+
+        monkeypatch.setenv("PP_MEMORY_INDEX_TEXT_POLICY", "compact-v2")
+        embedder = RecordingVectorEmbedder()
+        material = build_index_material(
+            {
+                "domain": "building",
+                "category": "fact",
+                "l0_abstract": "Persisted compact evidence",
+                "l1_summary": "Keep Identifier_X1",
+            },
+            policy=COMPACT_V2_POLICY,
+            model_name=("Other-Model" if kind == "model" else embedder.model_name),
+        )
+        memory = {
+            "id": f"invalid-{kind}",
+            "content": "RAW-MUST-NOT-BE-REINTERPRETED",
+            "memory_type": "experience",
+            "embedding_text": material.vector_text,
+            "search_text": material.search_text,
+            "embedding_hash": material.embedding_hash,
+            "metadata_json": {"memory_index": index_metadata(material)},
+            "tier": "L1",
+            "category": "fact",
+            "scope": "global",
+        }
+        if kind == "missing":
+            memory["embedding_text"] = ""
+        elif kind == "hash":
+            memory["embedding_hash"] = "tampered-hash"
+        engine = RepairEngine({memory["id"]: memory})
+        store = LanceDBStore(str(tmp_path / f"invalid-{kind}.lancedb"), embedder)
+
+        result = store.sync_with_engine(engine)
+
+        assert result["missing_backfilled"] == 0
+        assert result["missing_skipped"] == 1
+        assert result["diagnostics"] == [{"memory_id": memory["id"], "reason": expected_reason}]
+        assert embedder.texts == []
+        assert store.list_memory_ids() == set()
+
+    def test_repair_uses_persisted_compact_material_despite_environment_change(
+        self, tmp_path, monkeypatch
+    ):
+        from plastic_promise.core.memory_index import (
+            COMPACT_V2_POLICY,
+            build_index_material,
+            index_metadata,
+        )
+
+        embedder = RecordingVectorEmbedder()
+        material = build_index_material(
+            {
+                "domain": "building",
+                "category": "decision",
+                "l0_abstract": "SQLite truth",
+                "l1_summary": "Use Identifier_X1",
+                "content": "RAW-MUST-NOT-BE-USED",
+            },
+            policy=COMPACT_V2_POLICY,
+            model_name=embedder.model_name,
+        )
+        memory = {
+            "id": "persisted-compact-v2",
+            "content": "RAW-MUST-NOT-BE-USED",
+            "memory_type": "experience",
+            "embedding_text": material.vector_text,
+            "search_text": material.search_text,
+            "embedding_hash": material.embedding_hash,
+            "metadata_json": {"memory_index": index_metadata(material)},
+            "tier": "L1",
+            "category": "decision",
+            "scope": "global",
+        }
+        engine = RepairEngine({memory["id"]: memory})
+        store = LanceDBStore(str(tmp_path / "persisted-compact-v2.lancedb"), embedder)
+        monkeypatch.setenv("PP_MEMORY_INDEX_TEXT_POLICY", "legacy")
+
+        assert store.backfill(engine) == 1
+        assert embedder.texts == [material.vector_text]
+        assert "RAW-MUST-NOT-BE-USED" not in embedder.texts
+        row = (
+            store._table.search().where("memory_id = 'persisted-compact-v2'").limit(1).to_list()[0]
+        )
+        assert row["text"] == material.search_text
+
+    @pytest.mark.parametrize("repair", ["sync_with_engine", "rebuild_all", "backfill"])
+    def test_repair_uses_canonical_sqlite_material_and_refreshes_runtime(self, tmp_path, repair):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+        from plastic_promise.core.memory_index import (
+            SUMMARY_POLICY,
+            build_index_material,
+            index_metadata,
+        )
+
+        embedder = RecordingVectorEmbedder()
+        canonical = build_index_material(
+            {
+                "content": "canonical display",
+                "embedding_text": "CANONICAL VECTOR",
+                "search_text": "CANONICAL SEARCH",
+            },
+            policy=SUMMARY_POLICY,
+            model_name=embedder.model_name,
+        )
+        sqlite_store = _SQLiteMemoryStore(str(tmp_path / "canonical.db"))
+        sqlite_store.upsert(
+            "canonical-memory",
+            {
+                "content": "canonical display",
+                "memory_type": "experience",
+                "embedding_text": canonical.vector_text,
+                "search_text": canonical.search_text,
+                "embedding_hash": canonical.embedding_hash,
+                "metadata_json": {"memory_index": index_metadata(canonical)},
+            },
+        )
+        engine = RepairEngine(
+            {
+                "canonical-memory": {
+                    "id": "canonical-memory",
+                    "content": "STALE RAW",
+                    "memory_type": "experience",
+                    "embedding_text": "STALE VECTOR",
+                    "search_text": "STALE SEARCH",
+                    "embedding_hash": "stale-hash",
+                    "metadata_json": {
+                        "memory_index": {
+                            "policy": SUMMARY_POLICY,
+                            "embedding_hash": "stale-hash",
+                        }
+                    },
+                }
+            },
+            sqlite_store,
+        )
+        store = LanceDBStore(str(tmp_path / f"canonical-{repair}.lancedb"), embedder)
+
+        result = getattr(store, repair)(engine)
+        if repair == "sync_with_engine":
+            assert result["missing_backfilled"] == 1
+        else:
+            assert result == 1
+
+        assert embedder.texts == ["CANONICAL VECTOR"]
+        row = store._table.search().where("memory_id = 'canonical-memory'").limit(1).to_list()[0]
+        assert row["text"] == "CANONICAL SEARCH"
+        assert engine._memories["canonical-memory"]["embedding_text"] == "CANONICAL VECTOR"
+        assert sqlite_store.get("canonical-memory")["content"] == "canonical display"
+
+    def test_backfill_compares_eligible_ids_not_raw_row_counts(self, tmp_path, monkeypatch):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+
+        monkeypatch.setenv("PP_SYNTHESIS_RETRIEVAL", "1")
+        sqlite_store = _SQLiteMemoryStore(str(tmp_path / "eligible.db"))
+        sqlite_store.upsert(
+            "ordinary-missing",
+            {"content": "ordinary should be indexed", "memory_type": "experience"},
+        )
+        sqlite_store.upsert(
+            "draft-existing",
+            {"content": "uncontrolled synthesis", "memory_type": "synthesis"},
+        )
+        engine = RepairEngine(dict(sqlite_store.iter_all()), sqlite_store)
+        embedder = RecordingVectorEmbedder()
+        store = LanceDBStore(str(tmp_path / "eligible.lancedb"), embedder)
+        store.insert("draft-existing", [0.1] * EMB_DIM, "must not mask ordinary")
+        store.insert("orphan", [0.1] * EMB_DIM, "count padding")
+
+        assert store.count_rows() == engine.memory_count
+        assert store.backfill(engine) == 1
+        assert "ordinary-missing" in store.list_memory_ids()
+
+        sync_result = store.sync_with_engine(engine)
+        assert "draft-existing" in sync_result["orphan_ids"]
+        assert store.list_memory_ids() == {"ordinary-missing"}
+
+    @pytest.mark.parametrize("repair", ["sync_with_engine", "rebuild_all", "backfill"])
+    def test_control_associated_type_drift_is_never_indexed(self, tmp_path, monkeypatch, repair):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+
+        monkeypatch.setenv("PP_SYNTHESIS_RETRIEVAL", "1")
+        sqlite_store = _SQLiteMemoryStore(str(tmp_path / f"controlled-{repair}.db"))
+        sqlite_store.upsert(
+            "controlled-type-drift",
+            {
+                "id": "controlled-type-drift",
+                "content": "A governed synthesis row drifted to an ordinary type.",
+                "memory_type": "experience",
+            },
+        )
+        sqlite_store._conn.execute(
+            "INSERT INTO synthesis_artifacts "
+            "(memory_id, synthesis_key, status, metadata_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, '{}', 'now', 'now')",
+            ("controlled-type-drift", "key:controlled-type-drift", "verified"),
+        )
+        sqlite_store._conn.commit()
+        memory = sqlite_store.get("controlled-type-drift")
+        engine = RepairEngine({"controlled-type-drift": memory}, sqlite_store)
+        embedder = RecordingVectorEmbedder()
+        store = LanceDBStore(str(tmp_path / f"controlled-{repair}.lancedb"), embedder)
+
+        assert store._memory_is_index_eligible(engine, "controlled-type-drift", memory) is False
+        getattr(store, repair)(engine)
+
+        assert "controlled-type-drift" not in store.list_memory_ids()
+        assert embedder.texts == []
+
+    def test_control_lookup_error_fails_index_eligibility_closed(self, tmp_path):
+        class BrokenConnection:
+            def execute(self, *_args, **_kwargs):
+                raise RuntimeError("control lookup unavailable")
+
+        class BrokenSQLite:
+            _conn = BrokenConnection()
+
+        engine = RepairEngine(
+            {
+                "unknown-governance": {
+                    "id": "unknown-governance",
+                    "content": "Unknown governance state must fail closed.",
+                    "memory_type": "experience",
+                }
+            },
+            BrokenSQLite(),
+        )
+        store = LanceDBStore(str(tmp_path / "broken-control.lancedb"), RecordingVectorEmbedder())
+
+        assert (
+            store._memory_is_index_eligible(
+                engine,
+                "unknown-governance",
+                engine._memories["unknown-governance"],
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize("mutation_point", ["material", "embed"])
+    def test_repair_rechecks_canonical_eligibility_before_vector_insert(
+        self,
+        tmp_path,
+        monkeypatch,
+        mutation_point,
+    ):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+
+        sqlite_store = _SQLiteMemoryStore(str(tmp_path / f"recheck-{mutation_point}.db"))
+        sqlite_store.upsert(
+            "eligibility-race",
+            {
+                "id": "eligibility-race",
+                "content": "ordinary candidate before the indexing race",
+                "memory_type": "experience",
+            },
+        )
+        engine = RepairEngine(dict(sqlite_store.iter_all()), sqlite_store)
+
+        def mutate_to_synthesis_orphan():
+            current = sqlite_store.get("eligibility-race")
+            current["memory_type"] = "synthesis"
+            current["source_class"] = "synthesis"
+            sqlite_store.upsert("eligibility-race", current)
+
+        class MutatingEmbedder(RecordingVectorEmbedder):
+            def embed(self, text):
+                if mutation_point == "embed":
+                    mutate_to_synthesis_orphan()
+                return super().embed(text)
+
+        embedder = MutatingEmbedder()
+        store = LanceDBStore(str(tmp_path / f"recheck-{mutation_point}.lancedb"), embedder)
+        if mutation_point == "material":
+            original_resolve = lancedb_store_module.resolve_index_material
+            mutated = False
+
+            def resolve_and_mutate(*args, **kwargs):
+                nonlocal mutated
+                result = original_resolve(*args, **kwargs)
+                if not mutated:
+                    mutated = True
+                    mutate_to_synthesis_orphan()
+                return result
+
+            monkeypatch.setattr(
+                lancedb_store_module,
+                "resolve_index_material",
+                resolve_and_mutate,
+            )
+
+        assert store.backfill(engine) == 0
+        assert store.list_memory_ids() == set()
+        assert sqlite_store.get("eligibility-race")["memory_type"] == "synthesis"
+        sqlite_store._conn.close()
+
     def test_reopen_persists_data(self):
         """Data should persist across LanceDBStore instances on the same path."""
         self._require_vectors()
@@ -295,7 +1016,7 @@ class TestLanceDBStore:
         # First result should be most similar
         assert results[0][1] >= results[1][1] >= results[2][1]
         # All scores in [0, 1]
-        for mid, score in results:
+        for _mid, score in results:
             assert 0.0 <= score <= 1.0
 
     def test_search_similar_empty_table(self):

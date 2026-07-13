@@ -7,6 +7,7 @@ Public tools:
 - skill_session_audit     : Post-hoc gap scan, auto-remediate
 """
 
+import contextlib
 import datetime
 import json
 import logging
@@ -19,13 +20,19 @@ from mcp.types import TextContent
 
 from plastic_promise.core.constants import (
     DOMAIN_TO_TASK_TYPE,
-    MAX_STILL_IN_PROGRESS_RENEWALS,
     ORPHAN_THRESHOLD_MINUTES,
     SKILL_CHAIN_MAP,
     SKILL_COMPLETE_WORTH_DELTA,
     SKILL_DOMAIN_MAP,
     normalize_stage_name,
 )
+from plastic_promise.core.constants import (
+    MAX_STILL_IN_PROGRESS_RENEWALS as _MAX_STILL_IN_PROGRESS_RENEWALS,
+)
+from plastic_promise.core.synthesis import synthesis_content_hash
+
+# Kept as a module-level compatibility export for callers and tests.
+MAX_STILL_IN_PROGRESS_RENEWALS = _MAX_STILL_IN_PROGRESS_RENEWALS
 
 # ---------------------------------------------------------------------------
 # Module-level state — hook 调用间保持调用链
@@ -279,32 +286,41 @@ async def _store_skill_start(
     must not enter the full memory_store quality pipeline because that can
     synchronously invoke extraction, embedding, LanceDB, and reranking work.
     """
-    try:
-        content = f"[SKILL START] {skill_name}: {task_description}"
-        branch = _get_current_branch()
-        tags = [
-            "task:active",
-            f"skill:{skill_name}",
-            f"domain:{domain}",
-        ]
-        if branch:
-            tags.append(f"branch:{branch}")
-        memory_id = _skill_start_memory_id(entity_id)
-        return engine.register_memory(
-            {
-                "id": memory_id,
-                "content": content,
-                "memory_type": "experience",
-                "source": "superpowers",
-                "entity_ids": [entity_id],
-                "tags": tags,
-                "domain": domain,
-                "tier": "L1",
-                "category": "skill_session",
-            }
-        )
-    except Exception:
-        return "?"
+    content = f"[SKILL START] {skill_name}: {task_description}"
+    branch = _get_current_branch()
+    tags = [
+        "task:active",
+        f"skill:{skill_name}",
+        f"domain:{domain}",
+    ]
+    if branch:
+        tags.append(f"branch:{branch}")
+    memory_id = _skill_start_memory_id(entity_id)
+    _, _, entity_timestamp = entity_id.partition(f"skill:{skill_name}:")
+    stable_timestamp = entity_timestamp or "1970-01-01T00:00:00"
+    created_id = engine.create_ordinary_if_absent(
+        {
+            "id": memory_id,
+            "content": content,
+            "memory_type": "experience",
+            "source": "superpowers",
+            "entity_ids": [entity_id],
+            "tags": tags,
+            "domain": domain,
+            "tier": "L1",
+            "category": "skill_session",
+            "created_at": stable_timestamp,
+            "last_accessed": stable_timestamp,
+        }
+    )
+    if not isinstance(created_id, str):
+        raise TypeError("skill_start_memory_id_invalid")
+    created_id = created_id.strip()
+    if not created_id:
+        raise ValueError("skill_start_memory_id_invalid")
+    if created_id != memory_id:
+        raise RuntimeError("skill_start_memory_id_mismatch")
+    return created_id
 
 
 def _inject_skill_entity(
@@ -403,12 +419,9 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
                 return nodes
         except Exception as e:
             logging.getLogger("plastic-promise").warning(
-                "skill_session_trace: list_graph_nodes() failed, falling back to _graph_nodes: %s",
+                "skill_session_trace: public graph node admission failed: %s",
                 e,
             )
-        raw = getattr(engine, "_graph_nodes", {})
-        if isinstance(raw, dict):
-            return [dict({"id": node_id}, **data) for node_id, data in raw.items()]
         return []
 
     def _graph_edges() -> list[dict]:
@@ -418,24 +431,18 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
                 return edges
         except Exception as e:
             logging.getLogger("plastic-promise").warning(
-                "skill_session_trace: list_graph_edges() failed, falling back to _graph_edges: %s",
+                "skill_session_trace: public graph edge admission failed: %s",
                 e,
             )
-        raw = getattr(engine, "_graph_edges", [])
-        return raw if isinstance(raw, list) else []
+        return []
 
     def _iter_memories() -> list[Any]:
         try:
-            memories = engine.iter_memories()
-            if isinstance(memories, list):
-                return memories
+            return list(engine.iter_memories())
         except Exception as e:
             logging.getLogger("plastic-promise").warning(
-                "skill_session_trace: iter_memories() failed, falling back to _memories: %s", e
+                "skill_session_trace: public memory admission failed: %s", e
             )
-        raw = getattr(engine, "_memories", {})
-        if isinstance(raw, dict):
-            return list(raw.values())
         return []
 
     # -- Collect skill_session entities from graph nodes --------------------
@@ -557,9 +564,10 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
             child_full_id: str = edge.get("to", "")
             parent_full_id: str = edge.get("from", "")
             for s in sessions:
-                if f"skill_session:{s['entity_id']}" == child_full_id:
-                    if parent_full_id.startswith("skill_session:"):
-                        s["parent_skill"] = parent_full_id[len("skill_session:") :]
+                if f"skill_session:{s['entity_id']}" == child_full_id and parent_full_id.startswith(
+                    "skill_session:"
+                ):
+                    s["parent_skill"] = parent_full_id[len("skill_session:") :]
 
     # -- Exclude auto_inject sessions by default ----------------------------
     if not include_auto_inject:
@@ -846,9 +854,7 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
             mem_data = engine.get_memory_dict(memory_id)
         except Exception:
             mem_data = None
-        if not isinstance(mem_data, dict) or "[SKILL START]" not in mem_data.get(
-            "content", ""
-        ):
+        if not isinstance(mem_data, dict) or "[SKILL START]" not in mem_data.get("content", ""):
             mem_data = None
 
     # Compatibility fallback for older records or test doubles.
@@ -871,9 +877,7 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
                 if isinstance(mem, dict):
                     mem_data = dict(mem)  # shallow copy so we can mutate safely
                 else:
-                    mem_data = {
-                        k: getattr(mem, k, None) for k in dir(mem) if not k.startswith("_")
-                    }
+                    mem_data = {k: getattr(mem, k, None) for k in dir(mem) if not k.startswith("_")}
                 break
 
     if not memory_id:
@@ -893,23 +897,152 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
     skill_name = _parse_skill_from_entity_id(entity_id) or "unknown"
     created_at = mem_data.get("created_at", "")
 
-    # ------------------------------------------------------------------
-    # Outcome: abandoned
-    # ------------------------------------------------------------------
+    def _mutation_value(result: Any, field: str, default: Any = None) -> Any:
+        if isinstance(result, dict):
+            return result.get(field, default)
+        return getattr(result, field, default)
+
+    def _mutation_failed(
+        reason: str,
+        committed_result: Any | None = None,
+    ) -> list[TextContent]:
+        payload: dict[str, Any] = {
+            "updated": False,
+            "entity_id": entity_id,
+            "skill_name": skill_name,
+            "memory_id": memory_id,
+            "reason": reason,
+            "tool": "skill_session_complete",
+        }
+        if committed_result is not None:
+            payload.update(
+                {
+                    "committed": True,
+                    "partial": True,
+                    "operation": str(_mutation_value(committed_result, "operation", "corrected")),
+                    "stale_dependents": list(
+                        _mutation_value(
+                            committed_result,
+                            "stale_synthesis_ids",
+                            (),
+                        )
+                    ),
+                    "ordinary_index_job_id": str(
+                        _mutation_value(
+                            committed_result,
+                            "ordinary_index_job_id",
+                            "",
+                        )
+                        or ""
+                    ),
+                    "synthesis_index_job_ids": list(
+                        _mutation_value(
+                            committed_result,
+                            "synthesis_index_job_ids",
+                            (),
+                        )
+                    ),
+                }
+            )
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
+    def _mutate_content(
+        new_content: str,
+        transition: str,
+    ) -> tuple[Any | None, list[TextContent] | None]:
+        mutate = getattr(engine, "mutate_ordinary_source", None)
+        if not callable(mutate):
+            return None, _mutation_failed("ordinary_content_coordinator_unavailable")
+        try:
+            expected_project_id = str(mem_data.get("project_id") or "").strip()
+            expected_tags = mem_data.get("tags")
+            mutation_preconditions: dict[str, Any] = {
+                "expected_content_hash": synthesis_content_hash(mem_data.get("content", "")),
+                "require_source_available": True,
+            }
+            if expected_project_id:
+                mutation_preconditions["expected_project_id"] = expected_project_id
+            if isinstance(expected_tags, (list, tuple)):
+                mutation_preconditions["expected_source_snapshot"] = {"tags": list(expected_tags)}
+            result = mutate(
+                memory_id,
+                operation="replace_content",
+                content=new_content,
+                reason=f"skill_session:{transition}",
+                actor="skill_tracking",
+                call_id=(f"internal:skill_tracking:{transition}:{uuid.uuid4().hex}"),
+                **mutation_preconditions,
+            )
+        except Exception as exc:
+            return None, _mutation_failed(str(exc).strip() or "ordinary_content_mutation_failed")
+        if result is None or result is False:
+            return None, _mutation_failed("ordinary_content_mutation_failed")
+        return result, None
+
+    def _metadata_update_failed(
+        committed_result: Any | None = None,
+    ) -> list[TextContent]:
+        return _mutation_failed(
+            "ordinary_metadata_update_failed",
+            committed_result,
+        )
+
+    def _patch_metadata(
+        replacements: dict[str, Any],
+        *,
+        committed_result: Any | None,
+        expected_content: str,
+    ) -> bool:
+        patch = getattr(engine, "patch_ordinary_memory", None)
+        if not callable(patch):
+            return False
+        expected_project_id = str(mem_data.get("project_id") or "").strip()
+        expected_tags = mem_data.get("tags")
+        if not expected_project_id or not isinstance(expected_tags, (list, tuple)):
+            return False
+        expected_content_hash = str(
+            _mutation_value(committed_result, "current_content_hash", "") or ""
+        ).strip()
+        if not expected_content_hash:
+            expected_content_hash = synthesis_content_hash(expected_content)
+        try:
+            updated = patch(
+                memory_id,
+                replacements=replacements,
+                expected_project_id=expected_project_id,
+                expected_content_hash=expected_content_hash,
+                expected_tags=list(expected_tags),
+                require_source_available=True,
+            )
+        except Exception:
+            return False
+        return bool(updated)
+
     if outcome and outcome.startswith("abandoned:"):
         reason = outcome[len("abandoned:") :].strip()
         tags: list[str] = list(mem_data.get("tags", []))
-
         if "task:active" in tags:
             tags.remove("task:active")
         if "task:abandoned" not in tags:
             tags.append("task:abandoned")
-
         new_content = mem_data.get("content", "") + f"\n[SKILL ABANDONED] {reason}"
-
-        # Persist via public API
-        engine.update_memory_fields(memory_id, tags=tags, content=new_content)
-
+        mutation, failure = _mutate_content(new_content, "abandoned")
+        if failure is not None:
+            return failure
+        if not _patch_metadata(
+            {"tags": tags},
+            committed_result=mutation,
+            expected_content=new_content,
+        ):
+            return _metadata_update_failed(mutation)
         return [
             TextContent(
                 type="text",
@@ -929,30 +1062,26 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
             )
         ]
 
-    # ------------------------------------------------------------------
-    # Outcome: still_in_progress
-    # ------------------------------------------------------------------
     if outcome == "still_in_progress":
         current_content = mem_data.get("content", "")
         renewal_count = current_content.count("[still_in_progress]")
         new_content = current_content + "\n[still_in_progress]"
-
-        tags: list[str] = list(mem_data.get("tags", []))
-
-        overdue = False
-        if renewal_count >= MAX_STILL_IN_PROGRESS_RENEWALS:
-            if "task:overdue" not in tags:
-                tags.append("task:overdue")
-            overdue = True
-
-        # Persist via public API
-        engine.update_memory_fields(
-            memory_id,
-            content=new_content,
-            tags=tags,
-            last_accessed=datetime.datetime.now(datetime.UTC).isoformat(),
-        )
-
+        tags = list(mem_data.get("tags", []))
+        overdue = renewal_count >= MAX_STILL_IN_PROGRESS_RENEWALS
+        if overdue and "task:overdue" not in tags:
+            tags.append("task:overdue")
+        mutation, failure = _mutate_content(new_content, "still_in_progress")
+        if failure is not None:
+            return failure
+        if not _patch_metadata(
+            {
+                "tags": tags,
+                "last_accessed": datetime.datetime.now(datetime.UTC).isoformat(),
+            },
+            committed_result=mutation,
+            expected_content=new_content,
+        ):
+            return _metadata_update_failed(mutation)
         return [
             TextContent(
                 type="text",
@@ -992,22 +1121,26 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
         except Exception:
             duration_ms = None
 
+    current_content = mem_data.get("content", "")
+    mutation = None
+    if "[SKILL COMPLETE]" not in current_content:
+        new_content = current_content + f"\n[SKILL COMPLETE] duration_ms={duration_ms}"
+        mutation, failure = _mutate_content(new_content, "complete")
+        if failure is not None:
+            return failure
+
     # -- tag transition --
     tags: list[str] = list(mem_data.get("tags", []))
     if "task:active" in tags:
         tags.remove("task:active")
     if "task:done" not in tags:
         tags.append("task:done")
-    engine.update_memory_fields(memory_id, tags=tags)
-
-    # -- content update (guard against duplicate [SKILL COMPLETE] markers) --
-    current_content = mem_data.get("content", "")
-    if "[SKILL COMPLETE]" not in current_content:
-        new_content = current_content + f"\n[SKILL COMPLETE] duration_ms={duration_ms}"
-        engine.update_memory_fields(memory_id, content=new_content)
-    else:
-        # Already completed from a prior call — don't append again
-        pass
+    if not _patch_metadata(
+        {"tags": tags},
+        committed_result=mutation,
+        expected_content=(new_content if mutation is not None else current_content),
+    ):
+        return _metadata_update_failed(mutation)
 
     # -- worth update via feedback_apply --
     worth_update = None
@@ -1019,6 +1152,13 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
             {
                 "item_id": memory_id,
                 "feedback_type": "adopted",
+            },
+            _runtime_context={
+                "actor": "skill_tracking",
+                "call_id": f"internal:skill_tracking:feedback:{uuid.uuid4().hex}",
+                "project_id": str(mem_data.get("project_id") or "").strip(),
+                "trust_score": 1.0,
+                "defense_decision": "allow",
             },
         )
         fb_data = json.loads(fb_result[0].text)
@@ -1033,20 +1173,22 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
     artifact_results: list[str] = []
     if artifacts:
         try:
+            from plastic_promise.core.memory_proposals import trusted_memory_origin
             from plastic_promise.mcp.tools.memory import handle_memory_store
 
             for art_path in artifacts:
                 try:
-                    art_result = await handle_memory_store(
-                        engine,
-                        {
-                            "content": (f"[SKILL ARTIFACT] {skill_name}: {art_path}"),
-                            "memory_type": "code",
-                            "source": "superpowers",
-                            "entity_ids": [entity_id],
-                            "tags": ["task:artifact", f"skill:{skill_name}"],
-                        },
-                    )
+                    with trusted_memory_origin("skill_session_complete"):
+                        art_result = await handle_memory_store(
+                            engine,
+                            {
+                                "content": (f"[SKILL ARTIFACT] {skill_name}: {art_path}"),
+                                "memory_type": "code",
+                                "source": "superpowers",
+                                "entity_ids": [entity_id],
+                                "tags": ["task:artifact", f"skill:{skill_name}"],
+                            },
+                        )
                     art_data = json.loads(art_result[0].text)
                     artifact_results.append(art_data.get("memory_id", "?"))
                 except Exception:
@@ -1306,7 +1448,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
 
             # Register entity in context graph (fast, in-memory)
             # Use _parent_entity_id to link to the previous skill in the chain
-            try:
+            with contextlib.suppress(Exception):
                 _inject_skill_entity(
                     engine,
                     entity_id,
@@ -1314,16 +1456,12 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                     f"auto-tracked: {lookup_name}",
                     parent_entity_id,
                 )
-            except Exception:
-                pass
 
             # Activate principles (fast, in-memory)
-            try:
+            with contextlib.suppress(Exception):
                 await _activate_skill_principles(
                     engine, lookup_name, f"auto-tracked: {lookup_name}"
                 )
-            except Exception:
-                pass
 
             # NOTE: memory_recall and memory_store are intentionally SKIPPED here.
             # The SkillEngine atoms (principle_activate + memory_store) run after
@@ -1357,7 +1495,7 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                 state = _stage_sessions.setdefault(scope_id, _empty_stage_state())
                 eid = state.get("current_skill")
             if eid:
-                try:
+                with contextlib.suppress(Exception):
                     # Lightweight complete: run the session_complete handler
                     await handle_skill_session_complete(
                         engine,
@@ -1367,8 +1505,6 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                             "artifacts": [],
                         },
                     )
-                except Exception:
-                    pass
             completed_stage = normalize_stage_name(skill_name)
             if completed_stage in SKILL_CHAIN_MAP:
                 if scope_id == _DEFAULT_STAGE_SESSION_ID:

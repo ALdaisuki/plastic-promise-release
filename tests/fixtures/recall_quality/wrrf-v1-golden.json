@@ -1,0 +1,175 @@
+{
+  "schema_version": "wrrf-golden/v1",
+  "score_tolerance": 1e-15,
+  "valid_cases": [
+    {
+      "name": "one_based_rank",
+      "config": {
+        "k": 2,
+        "channels": ["vector", "bm25"],
+        "weights": {"vector": 0.6, "bm25": 0.4},
+        "windows": {"vector": 3, "bm25": 3}
+      },
+      "rankings": {
+        "vector": [["b", 99.0], ["a", 0.1]],
+        "bm25": [["a", 500.0], ["b", 1.0]]
+      },
+      "expected": [["b", 0.3], ["a", 0.2833333333333333]]
+    },
+    {
+      "name": "zero_weight_channel",
+      "config": {
+        "k": 60,
+        "channels": ["vector", "bm25"],
+        "weights": {"vector": 1.0, "bm25": 0.0},
+        "windows": {"vector": 2, "bm25": 2}
+      },
+      "rankings": {
+        "vector": [["x", 5.0], ["y", 4.0]],
+        "bm25": [["y", 1000.0], ["x", -1000.0]]
+      },
+      "expected": [["x", 0.01639344262295082], ["y", 0.016129032258064516]]
+    },
+    {
+      "name": "missing_item_in_one_channel",
+      "config": {
+        "k": 10,
+        "channels": ["vector", "bm25"],
+        "weights": {"vector": 0.5, "bm25": 0.5},
+        "windows": {"vector": 2, "bm25": 2}
+      },
+      "rankings": {
+        "vector": [["solo", 9.0], ["shared", 8.0]],
+        "bm25": [["shared", 7.0]]
+      },
+      "expected": [["shared", 0.08712121212121213], ["solo", 0.045454545454545456]]
+    },
+    {
+      "name": "input_scores_only_define_order",
+      "config": {
+        "k": 5,
+        "channels": ["vector"],
+        "weights": {"vector": 1.0},
+        "windows": {"vector": 2}
+      },
+      "rankings": {
+        "vector": [["magnitude-does-not-leak", 1e300], ["finite-negative-is-orderable", -1e300]]
+      },
+      "expected": [["magnitude-does-not-leak", 0.16666666666666666], ["finite-negative-is-orderable", 0.14285714285714285]]
+    },
+    {
+      "name": "deterministic_id_tie",
+      "config": {
+        "k": 1,
+        "channels": ["vector", "bm25"],
+        "weights": {"vector": 0.5, "bm25": 0.5},
+        "windows": {"vector": 2, "bm25": 2}
+      },
+      "rankings": {
+        "vector": [["beta", 2.0], ["alpha", 1.0]],
+        "bm25": [["alpha", 2.0], ["beta", 1.0]]
+      },
+      "expected": [["alpha", 0.4166666666666667], ["beta", 0.4166666666666667]]
+    },
+    {
+      "name": "window_truncation",
+      "config": {
+        "k": 2,
+        "channels": ["vector", "bm25"],
+        "weights": {"vector": 0.7, "bm25": 0.3},
+        "windows": {"vector": 1, "bm25": 2}
+      },
+      "rankings": {
+        "vector": [["a", 3.0], ["b", 2.0], ["c", 1.0]],
+        "bm25": [["c", 3.0], ["b", 2.0], ["a", 1.0]]
+      },
+      "expected": [["a", 0.23333333333333334], ["c", 0.1], ["b", 0.075]]
+    }
+  ],
+  "invalid_cases": [
+    {
+      "name": "duplicate_id",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [["dup", 1.0], ["dup", 0.5]], "bm25": []},
+      "expected_error": "invalid_rankings:duplicate_id:vector"
+    },
+    {
+      "name": "missing_weight",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": 1.0}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_weights:channel_mismatch"
+    },
+    {
+      "name": "extra_weight",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4, "fts": 0.1}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_weights:channel_mismatch"
+    },
+    {
+      "name": "all_zero_weights",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": 0.0, "bm25": 0.0}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_weights:all_zero"
+    },
+    {
+      "name": "negative_weight",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": -0.1, "bm25": 1.1}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_weights:must_be_finite_non_negative"
+    },
+    {
+      "name": "nan_weight",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": "NaN", "bm25": 1.0}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_weights:must_be_finite_non_negative"
+    },
+    {
+      "name": "infinite_weight",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": "Infinity", "bm25": 1.0}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_weights:must_be_finite_non_negative"
+    },
+    {
+      "name": "nan_ranking_score",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [["bad", "NaN"]], "bm25": []},
+      "expected_error": "invalid_rankings:score:vector"
+    },
+    {
+      "name": "infinite_ranking_score",
+      "config": {"k": 2, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [["bad", "-Infinity"]], "bm25": []},
+      "expected_error": "invalid_rankings:score:vector"
+    },
+    {
+      "name": "fractional_k",
+      "config": {"k": 2.5, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_k:must_be_positive_integer"
+    },
+    {
+      "name": "boolean_k",
+      "config": {"k": true, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_k:must_be_positive_integer"
+    },
+    {
+      "name": "zero_k",
+      "config": {"k": 0, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_k:must_be_positive_integer"
+    },
+    {
+      "name": "negative_k",
+      "config": {"k": -1, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_k:must_be_positive_integer"
+    },
+    {
+      "name": "u32_overflow_k",
+      "config": {"k": 4294967296, "channels": ["vector", "bm25"], "weights": {"vector": 0.6, "bm25": 0.4}, "windows": {"vector": 3, "bm25": 3}},
+      "rankings": {"vector": [], "bm25": []},
+      "expected_error": "invalid_k:must_be_positive_integer"
+    }
+  ]
+}

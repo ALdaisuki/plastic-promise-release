@@ -13,6 +13,7 @@ Classes:
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import logging
 import uuid
@@ -28,6 +29,10 @@ from plastic_promise.core.constants import (
     WORTH_MIN_OBSERVATIONS,
 )
 from plastic_promise.core.context_engine import ContextEngine, ContextPack
+from plastic_promise.core.synthesis import synthesis_content_hash
+from plastic_promise.core.synthesis_retrieval import (
+    engine_memory_is_governed_synthesis,
+)
 
 # ============================================================
 # MemoryWorthCalculator — 双计数器价值评估
@@ -513,10 +518,10 @@ class MemoryTierManager:
         overflow = len(sorted_records) - l1_max
         evicted = []
         for r in sorted_records[:overflow]:
-            evicted.append(r.memory_id)
             if self.rec_mem is not None:
                 try:
-                    self.rec_mem.forget(r.memory_id, reason="L1 overflow eviction")
+                    if self.rec_mem.forget(r.memory_id, reason="L1 overflow eviction"):
+                        evicted.append(r.memory_id)
                 except Exception:
                     pass
         return evicted
@@ -540,15 +545,36 @@ class RecMem:
         Args:
             engine: 上下文供应引擎实例，默认 None 时内部创建新实例。
         """
-        try:
-            from context_engine_core import ContextEngine as RustContextEngine
-
-            self._engine = engine if engine is not None else RustContextEngine()
-        except ImportError:
-            self._engine = engine if engine is not None else ContextEngine()
+        # RecMem owns lifecycle mutations. Keep those writes on the Python
+        # facade, where SQLite's synthesis control table is the authority and
+        # every ordinary mutation has an atomic reservation guard. Rust stays
+        # a snapshot-ranking accelerator for ContextEngine.supply().
+        self._engine = engine if engine is not None else ContextEngine()
         self._records: dict = {}
         if engine is not None:
             self._load_from_engine()
+
+    def _is_governed_synthesis(
+        self,
+        memory_id: str,
+        *,
+        memory_type: object = None,
+    ) -> bool:
+        return engine_memory_is_governed_synthesis(
+            self._engine,
+            memory_id,
+            memory_type=memory_type,
+        )
+
+    def _ordinary_records_snapshot(self) -> list[MemoryRecord]:
+        return [
+            record
+            for record in list(self._records.values())
+            if not self._is_governed_synthesis(
+                record.memory_id,
+                memory_type=record.memory_type,
+            )
+        ]
 
     def _load_from_engine(self) -> None:
         """Load existing memories from engine._memories into _records.
@@ -567,11 +593,14 @@ class RecMem:
             pass
 
         for mem_id, mem_dict in self._engine._memories.items():
+            if self._is_governed_synthesis(
+                mem_id,
+                memory_type=mem_dict.get("memory_type"),
+            ):
+                continue
             if mem_id not in self._records:
-                try:
+                with contextlib.suppress(Exception):
                     self._records[mem_id] = MemoryRecord.from_dict(mem_dict)
-                except Exception:
-                    pass  # skip corrupted records
 
     def store(
         self,
@@ -614,8 +643,16 @@ class RecMem:
         Returns:
             新创建的 MemoryRecord 实例。
         """
+        memory_id = memory_id or str(uuid.uuid4())
+        if str(memory_type or "").strip().casefold() == "synthesis":
+            from plastic_promise.core.synthesis import SynthesisConflict
+
+            raise SynthesisConflict("synthesis_requires_governed_store")
+        if self._is_governed_synthesis(memory_id, memory_type=memory_type):
+            from plastic_promise.core.synthesis import SynthesisConflict
+
+            raise SynthesisConflict("synthesis_memory_reserved")
         try:
-            memory_id = memory_id or str(uuid.uuid4())
             try:
                 from context_engine_core import MemoryRecord as RustMemoryRecord
 
@@ -639,7 +676,7 @@ class RecMem:
                     "parent_memory_ids": parent_memory_ids or [],
                     "metadata_json": metadata_json or {},
                 }
-                self._engine.store_memory(rust_record)
+                self._engine.create_ordinary_if_absent(rust_record)
             except (ImportError, AttributeError):
                 # Fallback: Python engine
                 record_dict = {
@@ -666,7 +703,7 @@ class RecMem:
                     "parent_memory_ids": parent_memory_ids or [],
                     "metadata_json": metadata_json or {},
                 }
-                self._engine.register_memory(record_dict)
+                self._engine.create_ordinary_if_absent(record_dict)
 
             # Try embedding + storing vector
             try:
@@ -714,7 +751,15 @@ class RecMem:
             )
             self._records[memory_id] = record
             return record
-        except Exception:
+        except Exception as exc:
+            from plastic_promise.core.context_engine import OrdinaryMemoryConflict
+
+            if isinstance(exc, OrdinaryMemoryConflict):
+                raise
+            if self._is_governed_synthesis(memory_id, memory_type=memory_type):
+                from plastic_promise.core.synthesis import SynthesisConflict
+
+                raise SynthesisConflict("synthesis_memory_reserved") from exc
             record = MemoryRecord(
                 content=content,
                 memory_type=memory_type,
@@ -807,34 +852,117 @@ class RecMem:
         Returns:
             更新后的 MemoryRecord，若 memory_id 不存在则返回 None。
         """
+        record = self._records.get(memory_id)
+        if self._is_governed_synthesis(
+            memory_id,
+            memory_type=getattr(record, "memory_type", None),
+        ):
+            return None
+        if record is None:
+            return None
+        mutation_preconditions = self._ordinary_source_preconditions(memory_id)
+        if mutation_preconditions is None:
+            return None
         try:
-            result = self._engine.update_memory(memory_id, content=content, importance=importance)
-            if not result:
+            replacements: dict[str, Any] = {}
+            if importance is not None:
+                replacements["importance"] = importance
+            if reset_worth:
+                replacements.update({"worth_success": 0, "worth_failure": 0})
+
+            canonical = None
+            content_committed = False
+            if content is not None:
+                mutate = getattr(self._engine, "mutate_ordinary_source", None)
+                if not callable(mutate):
+                    return None
+                mutate(
+                    memory_id,
+                    operation="replace_content",
+                    content=content,
+                    reason="recmem:update",
+                    actor="recmem",
+                    call_id=f"internal:recmem:update:{uuid.uuid4().hex}",
+                    metadata_replacements=replacements or None,
+                    **mutation_preconditions,
+                )
+                content_committed = True
+                cached = getattr(self._engine, "_memories", {}).get(memory_id)
+                if isinstance(cached, dict):
+                    canonical = cached
+                canonical_get = getattr(getattr(self._engine, "_sqlite", None), "get", None)
+                if canonical is None and callable(canonical_get):
+                    canonical = canonical_get(memory_id)
+            elif replacements:
+                patch = getattr(self._engine, "patch_ordinary_memory", None)
+                if not callable(patch):
+                    return None
+                canonical = patch(
+                    memory_id,
+                    replacements=replacements,
+                    expected_project_id=mutation_preconditions["expected_project_id"],
+                    expected_content_hash=mutation_preconditions["expected_content_hash"],
+                    expected_tags=mutation_preconditions["expected_source_snapshot"]["tags"],
+                    expected_category=mutation_preconditions["expected_source_snapshot"][
+                        "category"
+                    ],
+                    require_source_available=True,
+                    bump_memory_version=True,
+                )
+            else:
                 return None
-            # Update Python-side record
-            if memory_id in self._records:
-                record = self._records[memory_id]
-                if content is not None:
-                    record.content = content
+            if not isinstance(canonical, dict) and content_committed:
+                record.content = content
                 if importance is not None:
                     record.activation_weight = importance
                 if reset_worth:
                     record.worth_success = 0
                     record.worth_failure = 0
+                return record
+            if not isinstance(canonical, dict):
+                return None
+            if memory_id in self._records:
+                record = self._records[memory_id]
+                refreshed = MemoryRecord.from_dict(canonical)
+                record.__dict__.update(refreshed.__dict__)
+                record.activation_weight = canonical.get("importance", record.activation_weight)
                 return record
             return None
         except Exception:
-            if memory_id in self._records:
-                record = self._records[memory_id]
-                if content is not None:
-                    record.content = content
-                if importance is not None:
-                    record.activation_weight = importance
-                if reset_worth:
-                    record.worth_success = 0
-                    record.worth_failure = 0
-                return record
             return None
+
+    def _ordinary_source_preconditions(
+        self,
+        memory_id: str,
+    ) -> dict[str, Any] | None:
+        getter = getattr(self._engine, "get_memory_dict_for_review", None)
+        if not callable(getter):
+            getter = getattr(self._engine, "get_memory_dict", None)
+        if not callable(getter):
+            return None
+        try:
+            canonical = getter(memory_id)
+        except Exception:
+            return None
+        if not isinstance(canonical, dict):
+            return None
+        project_id = str(canonical.get("project_id") or "").strip()
+        tags = canonical.get("tags")
+        metadata = canonical.get("metadata_json")
+        if not project_id or not isinstance(tags, (list, tuple)) or not isinstance(metadata, dict):
+            return None
+        return {
+            "expected_project_id": project_id,
+            "expected_content_hash": synthesis_content_hash(canonical.get("content")),
+            "expected_source_snapshot": {
+                "category": canonical.get("category"),
+                "metadata_json": dict(metadata),
+                "tags": list(tags),
+                "worth_failure": canonical.get("worth_failure"),
+                "worth_success": canonical.get("worth_success"),
+            },
+            "require_source_available": True,
+        }
 
     def forget(self, memory_id: str, reason: str = "") -> bool:
         """从记忆池中删除指定记忆。
@@ -848,22 +976,34 @@ class RecMem:
         Returns:
             True 表示成功删除，False 表示记忆不存在。
         """
+        record = self._records.get(memory_id)
+        if self._is_governed_synthesis(
+            memory_id,
+            memory_type=getattr(record, "memory_type", None),
+        ):
+            return False
+        if record is None:
+            return False
+        mutation_preconditions = self._ordinary_source_preconditions(memory_id)
+        if mutation_preconditions is None:
+            return False
         try:
-            # Sync delete from LanceDB vector store (A+B: dual-write consistency)
-            ldb = getattr(self._engine, "_ldb", None)
-            if ldb is not None:
-                try:
-                    ldb.delete(memory_id)
-                except Exception:
-                    pass
-            result = self._engine.delete_memory(memory_id)
+            mutate = getattr(self._engine, "mutate_ordinary_source", None)
+            if not callable(mutate):
+                return False
+            reason_text = str(reason or "").strip() or "unspecified"
+            mutate(
+                memory_id,
+                operation="forgotten",
+                reason=f"recmem:forget:{reason_text}",
+                actor="recmem",
+                call_id=f"internal:recmem:forget:{uuid.uuid4().hex}",
+                **mutation_preconditions,
+            )
             if memory_id in self._records:
                 del self._records[memory_id]
-            return result
+            return True
         except Exception:
-            if memory_id in self._records:
-                del self._records[memory_id]
-                return True
             return False
 
     def list_records(
@@ -1002,38 +1142,41 @@ class RecMem:
             - delta: worth_score 变化量
             - feedback_type: 应用的反馈类型
         """
+        record = self._records.get(memory_id)
+        if self._is_governed_synthesis(
+            memory_id,
+            memory_type=getattr(record, "memory_type", None),
+        ):
+            return {
+                "memory_id": memory_id,
+                "old_worth": 0.0,
+                "new_worth": 0.0,
+                "delta": 0.0,
+                "feedback_type": feedback_type,
+                "governed": True,
+            }
         try:
-            # Get old worth
-            old_worth = 0.0
-            try:
-                rust_record = self._engine.get_memory(memory_id)
-                if rust_record is not None:
-                    old_worth = rust_record.worth_score()
-                    # Apply feedback on Rust record
-                    ft = feedback_type.strip().lower()
-                    if ft in ("adopted", "success"):
-                        rust_record.record_adopted()
-                    elif ft in ("rejected", "failure"):
-                        rust_record.record_rejected()
-                    # ignored: no change
-                    self._engine.store_memory(rust_record)
-                    new_worth = rust_record.worth_score()
-                else:
-                    new_worth = old_worth
-            except Exception:
-                new_worth = old_worth
+            normalized = feedback_type.strip().lower()
+            normalized = {
+                "success": "adopted",
+                "failure": "rejected",
+            }.get(normalized, normalized)
+            record = self._records.get(memory_id)
+            old_worth = record.worth_score if record is not None else 0.0
+            apply_feedback = getattr(self._engine, "apply_ordinary_feedback", None)
+            if not callable(apply_feedback):
+                raise RuntimeError("ordinary_feedback_api_required")
+            canonical = apply_feedback(memory_id, normalized)
 
-            # Also update Python-side record
-            if memory_id in self._records:
-                py_record = self._records[memory_id]
-                old_worth = py_record.worth_score
-                ft = feedback_type.strip().lower()
-                if ft in ("adopted", "success"):
-                    py_record.worth_success += 1
-                elif ft in ("rejected", "failure"):
-                    py_record.worth_failure += 1
-                new_worth = py_record.worth_score
-
+            if record is not None:
+                record.worth_success = canonical.get("worth_success", 0)
+                record.worth_failure = canonical.get("worth_failure", 0)
+                new_worth = record.worth_score
+            else:
+                new_worth = MemoryWorthCalculator().calculate_worth(
+                    canonical.get("worth_success", 0),
+                    canonical.get("worth_failure", 0),
+                )
             return {
                 "memory_id": memory_id,
                 "old_worth": old_worth,
@@ -1095,8 +1238,9 @@ class RecMem:
         wdc = WeibullDecayCalculator()
         now = datetime.datetime.now().isoformat()
         updated = 0
+        patch = getattr(self._engine, "patch_ordinary_memory", None)
 
-        for r in self._records.values():
+        for r in self._ordinary_records_snapshot():
             dm = wdc.compute_decay(
                 tier=r.tier,
                 created_at=r.created_at,
@@ -1104,22 +1248,18 @@ class RecMem:
                 current_time_str=now,
             )
             if abs(r.decay_multiplier - dm) > 0.001:
+                if callable(patch):
+                    try:
+                        canonical = patch(
+                            r.memory_id,
+                            replacements={"decay_multiplier": dm},
+                        )
+                    except Exception:
+                        continue
+                    if not isinstance(canonical, dict):
+                        continue
                 r.decay_multiplier = dm
                 updated += 1
-
-        if updated > 0 and self._engine:
-            for r in self._records.values():
-                try:
-                    self._engine.execute_sql(
-                        "UPDATE memories SET decay_multiplier = ? WHERE id = ?",
-                        (r.decay_multiplier, r.memory_id),
-                    )
-                except Exception:
-                    pass
-            try:
-                self._engine.commit_sql()
-            except Exception:
-                pass
 
         return updated
 
@@ -1181,31 +1321,12 @@ class EvolveR:
         try:
             # Phase A: 批量更新 decay_multiplier
             try:
-                import datetime
-
-                from plastic_promise.core.decay_engine import WeibullDecayCalculator
-
-                wdc = WeibullDecayCalculator()
-                records_pre = list(self.rec_mem._records.values()) if self.rec_mem else []
-                if records_pre:
-                    results = wdc.evaluate_all(records_pre)
-                    now = datetime.datetime.now().isoformat()
-                    for mid, dm in results:
-                        if mid in self.rec_mem._records:
-                            self.rec_mem._records[mid].decay_multiplier = dm
-                        # Persist to SQLite
-                        engine = self.rec_mem._engine if self.rec_mem else None
-                        if engine:
-                            engine.execute_sql(
-                                "UPDATE memories SET decay_multiplier = ? WHERE id = ?", (dm, mid)
-                            )
-                    if engine:
-                        engine.commit_sql()
+                self.rec_mem.update_all_decay()
             except Exception as e:
                 logging.warning("EvolveR: decay batch update failed: %s", e)
 
             health_before = self.rec_mem.health_ratio
-            records = list(self.rec_mem._records.values())
+            records = self.rec_mem._ordinary_records_snapshot()
             promoted = 0
             demoted = 0
 
@@ -1230,7 +1351,7 @@ class EvolveR:
             decayed = self.decay_stale()
 
             # Evict L1 overflow
-            l1_after = [r for r in self.rec_mem._records.values() if r.tier == "L1"]
+            l1_after = [r for r in self.rec_mem._ordinary_records_snapshot() if r.tier == "L1"]
             evicted = len(self.tier_manager.evict_l1_overflow(l1_after))
 
             health_after = self.rec_mem.health_ratio
@@ -1271,7 +1392,7 @@ class EvolveR:
         try:
             cutoff = datetime.datetime.now() - datetime.timedelta(days=days_threshold)
             decayed = 0
-            for r in self.rec_mem._records.values():
+            for r in self.rec_mem._ordinary_records_snapshot():
                 if r.tier != "L1":
                     continue
                 try:
@@ -1306,6 +1427,27 @@ class MemoryGC:
         """
         self.rec_mem = rec_mem
         self._last_collect: str | None = None
+
+    def _is_governed_synthesis(
+        self,
+        memory_id: str,
+        *,
+        memory_type: object = None,
+    ) -> bool:
+        rec_mem_guard = getattr(type(self.rec_mem), "_is_governed_synthesis", None)
+        if callable(rec_mem_guard):
+            return bool(
+                rec_mem_guard(
+                    self.rec_mem,
+                    memory_id,
+                    memory_type=memory_type,
+                )
+            )
+        return engine_memory_is_governed_synthesis(
+            getattr(self.rec_mem, "_engine", None),
+            memory_id,
+            memory_type=memory_type,
+        )
 
     def collect(self, dry_run: bool = True, force: bool = False) -> dict[str, Any]:
         """执行垃圾回收，清理衰退记忆。
@@ -1371,8 +1513,8 @@ class MemoryGC:
             for mid in candidates:
                 if self.rec_mem.health_ratio >= MEMORY_HEALTH_THRESHOLD / 100.0:
                     break
-                self.rec_mem.forget(mid, reason="GC: worth below decay threshold")
-                removed += 1
+                if self.rec_mem.forget(mid, reason="GC: worth below decay threshold"):
+                    removed += 1
 
             self._last_collect = datetime.datetime.now().isoformat()
             result["removed"] = removed
@@ -1397,7 +1539,7 @@ class MemoryGC:
             return []
         try:
             decaying = []
-            for r in self.rec_mem._records.values():
+            for r in self.rec_mem._ordinary_records_snapshot():
                 try:
                     # Criterion 1: user negative feedback
                     if r.worth_score < MEMORY_DECAY_THRESHOLD:
@@ -1426,10 +1568,9 @@ class MemoryGC:
           1. For each memory with a vector, query LanceDB for top-k similar
           2. Filter pairs with similarity >= threshold, skip self-matches and already-merged
           3. Survivor = max(worth_score, ties broken by most recent created_at)
-          4. Append merged record's content_abstract to survivor.metadata["merged_from"]
-          5. Tag merged record with metadata["merged_into"] = survivor_id
-          6. Remove merged record from engine._memories (retrieval layer)
-          7. Keep merged record in SQLite for audit trail (cleaned next GC cycle)
+          4. Mark the loser forgotten through the canonical source-mutation coordinator
+          5. Append the loser's content abstract to survivor.metadata["merged_from"]
+          6. Keep the persistent loser tombstone in SQLite and the engine cache
 
         Args:
             threshold: Cosine similarity threshold for merge (default 0.70).
@@ -1476,12 +1617,22 @@ class MemoryGC:
 
             # Gather all memories with vectors
             vec_map: dict[str, list] = {}
+            project_map: dict[str, str] = {}
             for mid, mem in memories.items():
+                if self._is_governed_synthesis(
+                    mid,
+                    memory_type=mem.get("memory_type"),
+                ):
+                    continue
+                project_id = str(mem.get("project_id") or "").strip()
+                if not project_id:
+                    continue
                 vec = mem.get("_vector")
                 if vec and not any(v != 0.0 for v in vec):
                     continue  # skip zero vectors (fallback embedder)
                 if vec:
                     vec_map[mid] = vec
+                    project_map[mid] = project_id
 
             if len(vec_map) < 2:
                 return result
@@ -1498,6 +1649,15 @@ class MemoryGC:
                 for other_id, sim in similar:
                     if other_id == mid:
                         continue  # self-match
+                    other = memories.get(other_id)
+                    if not isinstance(other, dict) or self._is_governed_synthesis(
+                        other_id,
+                        memory_type=other.get("memory_type"),
+                    ):
+                        continue
+                    other_project = str(other.get("project_id") or "").strip()
+                    if not other_project or other_project != project_map[mid]:
+                        continue
                     if sim < threshold:
                         continue
                     pair_key = tuple(sorted([mid, other_id]))
@@ -1518,10 +1678,25 @@ class MemoryGC:
             for mid_a, mid_b, sim in candidates:
                 if mid_a in already_merged or mid_b in already_merged:
                     continue
+                if self._is_governed_synthesis(
+                    mid_a,
+                    memory_type=(memories.get(mid_a) or {}).get("memory_type"),
+                ) or self._is_governed_synthesis(
+                    mid_b,
+                    memory_type=(memories.get(mid_b) or {}).get("memory_type"),
+                ):
+                    continue
 
-                # Get Python records for worth_score comparison
+                # Score the same canonical snapshots guarded at commit time.
                 py_a = self.rec_mem._records.get(mid_a)
                 py_b = self.rec_mem._records.get(mid_b)
+                try:
+                    if memories[mid_a].get("content") is not None:
+                        py_a = MemoryRecord.from_dict(memories[mid_a])
+                    if memories[mid_b].get("content") is not None:
+                        py_b = MemoryRecord.from_dict(memories[mid_b])
+                except Exception:
+                    pass
 
                 # Determine survivor — use Direction A composite_score (wilson+decay+reinforcement)
                 try:
@@ -1559,48 +1734,105 @@ class MemoryGC:
                     "merged_at": datetime.datetime.now().isoformat(),
                     "worth_score": round(merged_worth, 4),
                 }
+                if self._is_governed_synthesis(
+                    survivor,
+                    memory_type=(memories.get(survivor) or {}).get("memory_type"),
+                ) or self._is_governed_synthesis(
+                    merged,
+                    memory_type=(memories.get(merged) or {}).get("memory_type"),
+                ):
+                    continue
 
-                merged_pairs.append(
-                    {
-                        "survivor": survivor,
-                        "merged": [merged],
-                        "similarity": round(sim, 4),
-                    }
-                )
+                pair_summary = {
+                    "survivor": survivor,
+                    "merged": [merged],
+                    "similarity": round(sim, 4),
+                }
 
                 if not dry_run:
-                    # Append to survivor metadata
+                    merged_source = memories.get(merged)
+                    survivor_source = memories.get(survivor)
+                    if not isinstance(merged_source, dict) or not isinstance(
+                        survivor_source,
+                        dict,
+                    ):
+                        continue
+                    mutate = getattr(engine, "mutate_ordinary_source", None)
+                    if not callable(mutate):
+                        result["skipped"] = "canonical source mutation unavailable"
+                        continue
+                    try:
+
+                        def merge_precondition(source):
+                            tags = source.get("tags")
+                            metadata = source.get("metadata_json")
+                            project_id = str(source.get("project_id") or "").strip()
+                            if (
+                                not isinstance(tags, (list, tuple))
+                                or not isinstance(metadata, dict)
+                                or not project_id
+                            ):
+                                raise ValueError("merge source snapshot unavailable")
+                            return {
+                                "project_id": project_id,
+                                "content_hash": synthesis_content_hash(source.get("content")),
+                                "category": source.get("category"),
+                                "tags": list(tags),
+                                "metadata_json": dict(metadata),
+                                "worth_success": source.get("worth_success"),
+                                "worth_failure": source.get("worth_failure"),
+                                "created_at": source.get("created_at"),
+                                "decay_multiplier": source.get("decay_multiplier"),
+                                "tier": source.get("tier"),
+                                "effective_half_life": source.get("effective_half_life"),
+                                "embedding_hash": source.get("embedding_hash"),
+                            }
+
+                        merged_observed = merge_precondition(merged_source)
+                        survivor_observed = merge_precondition(survivor_source)
+                        if merged_observed["project_id"] != survivor_observed["project_id"]:
+                            raise ValueError("merge source project mismatch")
+                        survivor_metadata = dict(survivor_observed["metadata_json"])
+                        merged_from = survivor_metadata.get("merged_from")
+                        merged_from = list(merged_from) if isinstance(merged_from, list) else []
+                        if not any(
+                            isinstance(item, dict) and item.get("memory_id") == merged
+                            for item in merged_from
+                        ):
+                            merged_from.append(merge_entry)
+                        survivor_metadata["merged_from"] = merged_from
+                        mutation = mutate(
+                            merged,
+                            operation="forgotten",
+                            reason=f"memory_gc:merge_similar:merged_into:{survivor}",
+                            actor="memory_gc",
+                            call_id=f"internal:memory_gc:merge:{uuid.uuid4().hex}",
+                            expected_project_id=merged_observed.pop("project_id"),
+                            expected_content_hash=merged_observed.pop("content_hash"),
+                            expected_source_snapshot=merged_observed,
+                            expected_peer_snapshots={survivor: survivor_observed},
+                            peer_metadata_replacements={survivor: survivor_metadata},
+                            require_source_available=True,
+                        )
+                    except Exception as exc:
+                        result["error"] = str(exc)
+                        continue
+                    if mutation is None or mutation is False:
+                        result["error"] = "canonical source mutation did not commit"
+                        continue
+
                     if survivor in self.rec_mem._records:
                         surv_rec = self.rec_mem._records[survivor]
-                        if "merged_from" not in surv_rec.metadata:
-                            surv_rec.metadata["merged_from"] = []
-                        surv_rec.metadata["merged_from"].append(merge_entry)
-
-                    # Tag merged record
-                    if merged in self.rec_mem._records:
-                        self.rec_mem._records[merged].metadata["merged_into"] = survivor
-
-                    # Remove from engine._memories (retrieval layer)
-                    if merged in memories:
-                        # Fix #3: Persist merged_into to SQLite metadata for audit trail
-                        sqlite = getattr(engine, "_sqlite", None)
-                        if sqlite is not None:
-                            try:
-                                mem_data = dict(memories[merged])
-                                mem_data["merged_into"] = survivor
-                                # Ensure metadata dict exists and carries merged_into
-                                if "metadata" not in mem_data:
-                                    mem_data["metadata"] = {}
-                                if isinstance(mem_data["metadata"], dict):
-                                    mem_data["metadata"]["merged_into"] = survivor
-                                else:
-                                    mem_data["metadata"] = {"merged_into": survivor}
-                                sqlite.upsert(merged, mem_data)
-                            except Exception:
-                                pass
-                        del memories[merged]
-
+                        getter = getattr(engine, "get_memory_dict_for_review", None)
+                        if not callable(getter):
+                            getter = getattr(engine, "get_memory_dict", None)
+                        canonical_survivor = getter(survivor) if callable(getter) else None
+                        if isinstance(canonical_survivor, dict):
+                            refreshed = MemoryRecord.from_dict(canonical_survivor)
+                            surv_rec.__dict__.update(refreshed.__dict__)
+                    self.rec_mem._records.pop(merged, None)
                     already_merged.add(merged)
+                merged_pairs.append(pair_summary)
 
             # Deduplicate: count unique merged records
             all_merged = set()

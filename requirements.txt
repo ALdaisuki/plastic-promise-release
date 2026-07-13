@@ -10,7 +10,7 @@ mcp>=1.0.0,<2.0.0
 
 # ---- 向量/全文检索 (必须) ----
 # LanceDB = 向量 + BM25 全文 + 标量过滤, 单库搞定混合检索
-lancedb>=0.6.0
+lancedb>=0.34.0
 # sentence-transformers 用于本地嵌入 (也可走 openai)
 sentence-transformers>=2.2.0
 

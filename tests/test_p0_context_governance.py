@@ -4,6 +4,7 @@ import json
 import plastic_promise.adaptive_retrieval as adaptive_retrieval
 import plastic_promise.core.embedder as embedder_mod
 from plastic_promise.core.context_engine import ContextItem, ContextPack
+from plastic_promise.mcp.tools import memory as memory_tools
 from plastic_promise.mcp.tools.context import handle_context_supply
 from plastic_promise.mcp.tools.memory import handle_memory_recall
 
@@ -88,3 +89,22 @@ def test_context_supply_prompt_renders_planner_metadata(monkeypatch):
     assert "- mode: mix" in text
     assert "- raw_evidence_budget: 10" in text
     assert "[bm25] m1" in text
+
+
+def test_governed_recall_cache_key_tracks_canonical_memory_version():
+    before = memory_tools._cache_key(
+        "architecture context",
+        "architecture",
+        20,
+        "global",
+        memory_version=17,
+    )
+    after = memory_tools._cache_key(
+        "architecture context",
+        "architecture",
+        20,
+        "global",
+        memory_version=18,
+    )
+
+    assert before != after

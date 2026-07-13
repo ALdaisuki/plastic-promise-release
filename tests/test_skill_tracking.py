@@ -2,8 +2,9 @@
 
 import asyncio
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, ANY
 from mcp.types import TextContent
 
 
@@ -69,30 +70,30 @@ class TestSkillSessionStart:
             "edges_created": 1,
         }
 
-        with patch(
-            "plastic_promise.mcp.tools.skill_tracking._activate_skill_principles",
-            return_value=[],
-        ):
-            with patch(
+        with (
+            patch(
+                "plastic_promise.mcp.tools.skill_tracking._activate_skill_principles",
+                return_value=[],
+            ),
+            patch(
                 "plastic_promise.mcp.tools.skill_tracking._recall_skill_memories",
                 return_value=[],
-            ):
-                with patch(
-                    "plastic_promise.mcp.tools.skill_tracking._store_skill_start",
-                    return_value="mem_xyz",
-                ):
-                    result = asyncio.run(
-                        handle_skill_session_start(
-                            engine,
-                            {
-                                "skill_name": "writing-plans",
-                                "task_description": "Plan the module",
-                                "parent_entity_id": (
-                                    "skill:test-driven-development:2026-06-30T14:00:00"
-                                ),
-                            },
-                        )
-                    )
+            ),
+            patch(
+                "plastic_promise.mcp.tools.skill_tracking._store_skill_start",
+                return_value="mem_xyz",
+            ),
+        ):
+            result = asyncio.run(
+                handle_skill_session_start(
+                    engine,
+                    {
+                        "skill_name": "writing-plans",
+                        "task_description": "Plan the module",
+                        "parent_entity_id": ("skill:test-driven-development:2026-06-30T14:00:00"),
+                    },
+                )
+            )
 
         data = json.loads(result[0].text)
         # writing-plans expects predecessor "brainstorming", not "test-driven-development"
@@ -116,32 +117,68 @@ class TestSkillSessionStart:
             "edges_created": 0,
         }
 
-        with patch(
-            "plastic_promise.mcp.tools.skill_tracking._activate_skill_principles",
-            return_value=[],
-        ):
-            with patch(
+        with (
+            patch(
+                "plastic_promise.mcp.tools.skill_tracking._activate_skill_principles",
+                return_value=[],
+            ),
+            patch(
                 "plastic_promise.mcp.tools.skill_tracking._recall_skill_memories",
                 return_value=[],
-            ):
-                with patch(
-                    "plastic_promise.mcp.tools.skill_tracking._store_skill_start",
-                    return_value="mem_xyz",
-                ):
-                    result = asyncio.run(
-                        handle_skill_session_start(
-                            engine,
-                            {
-                                "skill_name": "brainstorming",
-                                "task_description": "Design something",
-                                "parent_entity_id": None,
-                            },
-                        )
-                    )
+            ),
+            patch(
+                "plastic_promise.mcp.tools.skill_tracking._store_skill_start",
+                return_value="mem_xyz",
+            ),
+        ):
+            result = asyncio.run(
+                handle_skill_session_start(
+                    engine,
+                    {
+                        "skill_name": "brainstorming",
+                        "task_description": "Design something",
+                        "parent_entity_id": None,
+                    },
+                )
+            )
 
         data = json.loads(result[0].text)
         assert data["chain_warning"] is None
         assert data["status"] == "active"
+
+    def test_start_rejects_non_string_memory_create_result(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
+
+        engine = MagicMock()
+        engine.create_ordinary_if_absent.return_value = MagicMock()
+
+        with pytest.raises(TypeError, match="skill_start_memory_id_invalid"):
+            asyncio.run(
+                handle_skill_session_start(
+                    engine,
+                    {
+                        "skill_name": "brainstorming",
+                        "task_description": "Reject malformed creation results",
+                    },
+                )
+            )
+
+    def test_start_propagates_memory_create_failure(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
+
+        engine = MagicMock()
+        engine.create_ordinary_if_absent.side_effect = RuntimeError("injected create failure")
+
+        with pytest.raises(RuntimeError, match="injected create failure"):
+            asyncio.run(
+                handle_skill_session_start(
+                    engine,
+                    {
+                        "skill_name": "brainstorming",
+                        "task_description": "Surface persistence failures",
+                    },
+                )
+            )
 
     def test_start_unknown_skill_name_errors(self):
         """Unknown skill name should return an error response."""
@@ -194,8 +231,10 @@ class TestSkillSessionComplete:
             "content": content,
             "memory_type": "experience",
             "source": "superpowers",
+            "project_id": "project:test",
             "entity_ids": [entity_id],
             "tags": tags,
+            "metadata_json": {},
             "created_at": created_at,
             "domain": "designing",
             "worth_success": 0,
@@ -203,8 +242,16 @@ class TestSkillSessionComplete:
         }
         engine = MagicMock()
         engine._memories = {memory_id: mem}
+        engine.source_mutations = []
         # Wire up public API methods
         engine.iter_memories = lambda: iter(engine._memories.values())
+
+        def _mutate_ordinary_source(mid, **mutation):
+            engine.source_mutations.append({"memory_id": mid, **mutation})
+            engine._memories[mid]["content"] = mutation["content"]
+            return {"stale_synthesis_ids": ("dependent-synthesis",)}
+
+        engine.mutate_ordinary_source = _mutate_ordinary_source
 
         def _update_memory_fields(mid, **fields):
             if mid in engine._memories:
@@ -213,6 +260,11 @@ class TestSkillSessionComplete:
             return False
 
         engine.update_memory_fields = _update_memory_fields
+
+        def _patch_ordinary_memory(mid, *, replacements, **_preconditions):
+            return _update_memory_fields(mid, **replacements)
+
+        engine.patch_ordinary_memory = _patch_ordinary_memory
         # Wire up get_memory / store_memory so feedback_apply works
         engine.get_memory.return_value = MagicMock(
             id=memory_id,
@@ -228,6 +280,72 @@ class TestSkillSessionComplete:
     # Test 1: Normal completion → done
     # ------------------------------------------------------------------
 
+    def test_complete_marks_artifact_store_as_trusted(self, monkeypatch):
+        from plastic_promise.core.memory_proposals import has_trusted_internal_origin
+        from plastic_promise.mcp.tools.skill_tracking import (
+            handle_skill_session_complete,
+        )
+
+        monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
+        entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
+        engine, memory_id, _mem = self._make_engine_with_memory(
+            entity_id=entity_id,
+            content="[SKILL START] brainstorming: Design something\n[SKILL COMPLETE] duration_ms=1",
+        )
+        observed = []
+
+        async def capture_store(_engine, args):
+            trusted = has_trusted_internal_origin(args)
+            observed.append(trusted)
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "stored": trusted,
+                            "status": "canonical" if trusted else "pending",
+                            "memory_id": "mem_skill_artifact" if trusted else None,
+                        }
+                    ),
+                )
+            ]
+
+        with (
+            patch(
+                "plastic_promise.mcp.tools.reflection.handle_feedback_apply",
+                return_value=[
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "updated": True,
+                                "item_id": memory_id,
+                                "new_worth_score": 0.52,
+                            }
+                        ),
+                    )
+                ],
+            ),
+            patch(
+                "plastic_promise.mcp.tools.memory.handle_memory_store",
+                side_effect=capture_store,
+            ),
+        ):
+            result = asyncio.run(
+                handle_skill_session_complete(
+                    engine,
+                    {
+                        "entity_id": entity_id,
+                        "artifacts": ["docs/design.md"],
+                    },
+                )
+            )
+
+        payload = json.loads(result[0].text)
+        assert observed == [True]
+        assert payload["artifact_memory_ids"] == ["mem_skill_artifact"]
+        assert has_trusted_internal_origin({}) is False
+
     def test_complete_transitions_status_to_done(self):
         """Normal outcome: status=done, next_skills populated, worth_update ~0.02."""
         from plastic_promise.mcp.tools.skill_tracking import (
@@ -237,6 +355,7 @@ class TestSkillSessionComplete:
         entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
         engine, memory_id, mem = self._make_engine_with_memory(
             entity_id=entity_id,
+            content="[SKILL START] brainstorming: Design something\n[SKILL COMPLETE] duration_ms=1",
         )
 
         with patch(
@@ -308,12 +427,71 @@ class TestSkillSessionComplete:
         assert "task:active" not in engine_mem["tags"]
         assert "[SKILL COMPLETE]" in engine_mem["content"]
 
+    def test_complete_skips_feedback_when_metadata_patch_fails(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
+
+        entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
+        engine, memory_id, _mem = self._make_engine_with_memory(
+            entity_id=entity_id,
+            content="[SKILL START] brainstorming: Design something\n[SKILL COMPLETE] duration_ms=1",
+        )
+        engine.patch_ordinary_memory = MagicMock(return_value=False)
+
+        with patch("plastic_promise.mcp.tools.reflection.handle_feedback_apply") as feedback:
+            result = asyncio.run(handle_skill_session_complete(engine, {"entity_id": entity_id}))
+
+        data = json.loads(result[0].text)
+        assert data == {
+            "updated": False,
+            "entity_id": entity_id,
+            "skill_name": "brainstorming",
+            "memory_id": memory_id,
+            "reason": "ordinary_metadata_update_failed",
+            "tool": "skill_session_complete",
+        }
+        feedback.assert_not_called()
+
+    def test_complete_reports_partial_when_content_commits_before_metadata_failure(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
+
+        entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
+        engine, memory_id, _mem = self._make_engine_with_memory(entity_id=entity_id)
+        engine.mutate_ordinary_source = MagicMock(
+            return_value={
+                "operation": "corrected",
+                "stale_synthesis_ids": ("dependent-synthesis",),
+                "ordinary_index_job_id": "ordinary-job",
+                "synthesis_index_job_ids": ("synthesis-job",),
+            }
+        )
+        engine.patch_ordinary_memory = MagicMock(return_value=False)
+
+        with patch("plastic_promise.mcp.tools.reflection.handle_feedback_apply") as feedback:
+            result = asyncio.run(handle_skill_session_complete(engine, {"entity_id": entity_id}))
+
+        data = json.loads(result[0].text)
+        assert data == {
+            "updated": False,
+            "entity_id": entity_id,
+            "skill_name": "brainstorming",
+            "memory_id": memory_id,
+            "reason": "ordinary_metadata_update_failed",
+            "tool": "skill_session_complete",
+            "committed": True,
+            "partial": True,
+            "operation": "corrected",
+            "stale_dependents": ["dependent-synthesis"],
+            "ordinary_index_job_id": "ordinary-job",
+            "synthesis_index_job_ids": ["synthesis-job"],
+        }
+        feedback.assert_not_called()
+
     # ------------------------------------------------------------------
     # Test 2: still_in_progress resets timer
     # ------------------------------------------------------------------
 
-    def test_still_in_progress_resets_timer(self):
-        """still_in_progress: status=still_active, no worth_update, last_accessed set."""
+    def test_still_in_progress_routes_content_through_coordinator(self):
+        """A renewal marker carries generated internal mutation evidence."""
         from plastic_promise.mcp.tools.skill_tracking import (
             handle_skill_session_complete,
         )
@@ -324,8 +502,6 @@ class TestSkillSessionComplete:
             content="[SKILL START] systematic-debugging: Debug issue #42",
             tags=["task:active", "skill:systematic-debugging", "domain:fixing"],
         )
-
-        # No patches needed — still_in_progress doesn't call other handlers
         result = asyncio.run(
             handle_skill_session_complete(
                 engine,
@@ -338,34 +514,29 @@ class TestSkillSessionComplete:
 
         data = json.loads(result[0].text)
         assert data["status"] == "still_active"
-        assert data["next_skills"] == []
-        assert data["worth_update"] is None
         assert data["memory_id"] == memory_id
         assert data["renewal_count"] == 1
-        assert data["overdue"] is False
-
-        # last_accessed should be refreshed
-        engine_mem = engine._memories[memory_id]
-        assert "last_accessed" in engine_mem
-        import datetime as dt_mod
-
-        # Should be a recent ISO timestamp
-        assert "2026" in engine_mem["last_accessed"]
-
-        # Content should contain the [still_in_progress] marker
-        assert "[still_in_progress]" in engine_mem["content"]
-        # Tags unchanged (still task:active)
-        assert "task:active" in engine_mem["tags"]
+        assert "[still_in_progress]" in engine._memories[memory_id]["content"]
+        assert len(engine.source_mutations) == 1
+        mutation = engine.source_mutations[0]
+        assert mutation["operation"] == "replace_content"
+        assert mutation["reason"] == "skill_session:still_in_progress"
+        assert mutation["actor"] == "skill_tracking"
+        assert mutation["call_id"].startswith("internal:skill_tracking:still_in_progress:")
+        assert mutation["expected_content_hash"]
+        assert mutation["expected_project_id"] == "project:test"
+        assert mutation["expected_source_snapshot"] == {"tags": mem["tags"]}
+        assert mutation["require_source_available"] is True
 
     # ------------------------------------------------------------------
     # Test 3: still_in_progress exceeds max renewals → overdue
     # ------------------------------------------------------------------
 
-    def test_still_in_progress_exceeds_max_renewals(self):
-        """After MAX_STILL_IN_PROGRESS_RENEWALS markers, overdue is detected."""
+    def test_still_in_progress_adds_overdue_after_coordinated_content(self):
+        """The metadata patch follows a successful coordinated marker write."""
         from plastic_promise.mcp.tools.skill_tracking import (
-            handle_skill_session_complete,
             MAX_STILL_IN_PROGRESS_RENEWALS,
+            handle_skill_session_complete,
         )
 
         entity_id = "skill:writing-plans:2026-06-30T12:00:00.222222"
@@ -378,7 +549,6 @@ class TestSkillSessionComplete:
             content=content,
             tags=["task:active", "skill:writing-plans", "domain:designing"],
         )
-
         result = asyncio.run(
             handle_skill_session_complete(
                 engine,
@@ -392,19 +562,15 @@ class TestSkillSessionComplete:
         data = json.loads(result[0].text)
         assert data["status"] == "still_active"
         assert data["overdue"] is True
-        # renewal_count should be 4 (3 existing + this call)
-        assert data["renewal_count"] == MAX_STILL_IN_PROGRESS_RENEWALS + 1
-
-        engine_mem = engine._memories[memory_id]
-        assert "task:overdue" in engine_mem["tags"]
-        assert "task:active" in engine_mem["tags"]  # still active, just also overdue
+        assert "task:overdue" in engine._memories[memory_id]["tags"]
+        assert len(engine.source_mutations) == 1
 
     # ------------------------------------------------------------------
     # Test 4: Abandoned outcome
     # ------------------------------------------------------------------
 
-    def test_abandoned_outcome_transitions_correctly(self):
-        """abandoned: status=abandoned, task:abandoned tag, no worth_update."""
+    def test_abandoned_outcome_routes_content_before_tag_transition(self):
+        """Abandonment appends content through the coordinator before metadata."""
         from plastic_promise.mcp.tools.skill_tracking import (
             handle_skill_session_complete,
         )
@@ -413,7 +579,6 @@ class TestSkillSessionComplete:
         engine, memory_id, mem = self._make_engine_with_memory(
             entity_id=entity_id,
         )
-
         result = asyncio.run(
             handle_skill_session_complete(
                 engine,
@@ -426,15 +591,112 @@ class TestSkillSessionComplete:
 
         data = json.loads(result[0].text)
         assert data["status"] == "abandoned"
-        assert data["reason"] == "requirement changed"
-        assert data["next_skills"] == []
-        assert data["worth_update"] is None
         assert data["memory_id"] == memory_id
+        assert data["reason"] == "requirement changed"
+        assert "task:abandoned" in engine._memories[memory_id]["tags"]
+        assert "task:active" not in engine._memories[memory_id]["tags"]
+        assert "[SKILL ABANDONED] requirement changed" in engine._memories[memory_id]["content"]
+        mutation = engine.source_mutations[0]
+        assert mutation["operation"] == "replace_content"
+        assert mutation["reason"] == "skill_session:abandoned"
+        assert mutation["actor"] == "skill_tracking"
+        assert mutation["call_id"].startswith("internal:skill_tracking:abandoned:")
+        assert mutation["expected_content_hash"]
+        assert mutation["expected_project_id"] == "project:test"
+        assert mutation["require_source_available"] is True
 
-        engine_mem = engine._memories[memory_id]
-        assert "task:abandoned" in engine_mem["tags"]
-        assert "task:active" not in engine_mem["tags"]
-        assert "[SKILL ABANDONED] requirement changed" in engine_mem["content"]
+    def test_normal_completion_content_cannot_bypass_source_invalidation(self):
+        from plastic_promise.mcp.tools.skill_tracking import (
+            handle_skill_session_complete,
+        )
+
+        entity_id = "skill:brainstorming:2026-06-30T13:00:00.333333"
+        engine, memory_id, _mem = self._make_engine_with_memory(entity_id=entity_id)
+
+        with patch(
+            "plastic_promise.mcp.tools.reflection.handle_feedback_apply",
+            return_value=[
+                TextContent(
+                    type="text",
+                    text=json.dumps({"updated": True, "new_worth_score": 0.52}),
+                )
+            ],
+        ):
+            result = asyncio.run(handle_skill_session_complete(engine, {"entity_id": entity_id}))
+
+        data = json.loads(result[0].text)
+        assert data["status"] == "done"
+        assert "[SKILL COMPLETE]" in engine._memories[memory_id]["content"]
+        mutation = engine.source_mutations[0]
+        assert mutation["operation"] == "replace_content"
+        assert mutation["reason"] == "skill_session:complete"
+        assert mutation["actor"] == "skill_tracking"
+        assert mutation["call_id"].startswith("internal:skill_tracking:complete:")
+        assert mutation["expected_content_hash"]
+        assert mutation["expected_project_id"] == "project:test"
+        assert mutation["require_source_available"] is True
+
+    def test_skill_content_append_rejects_concurrent_source_change(self):
+        from plastic_promise.mcp.tools.skill_tracking import (
+            handle_skill_session_complete,
+        )
+
+        entity_id = "skill:brainstorming:2026-06-30T13:00:00.333333"
+        engine, memory_id, mem = self._make_engine_with_memory(entity_id=entity_id)
+        observed_content = mem["content"]
+        before_tags = list(mem["tags"])
+
+        def reject_stale_append(mid, **mutation):
+            assert mid == memory_id
+            assert mutation["expected_content_hash"]
+            assert mutation["expected_project_id"] == "project:test"
+            assert mutation["expected_source_snapshot"] == {"tags": before_tags}
+            assert mutation["require_source_available"] is True
+            engine._memories[mid]["content"] = observed_content + "\nconcurrent update"
+            raise RuntimeError("ordinary_source_precondition_mismatch")
+
+        engine.mutate_ordinary_source = reject_stale_append
+        engine.patch_ordinary_memory = MagicMock(return_value=True)
+
+        result = asyncio.run(
+            handle_skill_session_complete(
+                engine,
+                {"entity_id": entity_id, "outcome": "still_in_progress"},
+            )
+        )
+
+        payload = json.loads(result[0].text)
+        assert payload["updated"] is False
+        assert payload["reason"] == "ordinary_source_precondition_mismatch"
+        assert engine._memories[memory_id]["content"].endswith("concurrent update")
+        assert engine._memories[memory_id]["tags"] == before_tags
+        engine.patch_ordinary_memory.assert_not_called()
+
+    def test_skill_content_failure_does_not_apply_metadata(self):
+        from plastic_promise.mcp.tools.skill_tracking import (
+            handle_skill_session_complete,
+        )
+
+        entity_id = "skill:brainstorming:2026-06-30T13:00:00.333333"
+        engine, memory_id, mem = self._make_engine_with_memory(entity_id=entity_id)
+        before_tags = list(mem["tags"])
+        engine.mutate_ordinary_source = MagicMock(
+            side_effect=RuntimeError("ordinary_source_cas_mismatch")
+        )
+        engine.update_memory_fields = MagicMock(return_value=True)
+
+        result = asyncio.run(
+            handle_skill_session_complete(
+                engine,
+                {"entity_id": entity_id, "outcome": "still_in_progress"},
+            )
+        )
+
+        payload = json.loads(result[0].text)
+        assert payload["updated"] is False
+        assert payload["reason"] == "ordinary_source_cas_mismatch"
+        assert engine._memories[memory_id]["tags"] == before_tags
+        engine.update_memory_fields.assert_not_called()
 
 
 class TestSkillSessionTrace:
@@ -538,6 +800,36 @@ class TestSkillSessionTrace:
         assert f_sess["status"] == "done"
         assert entity_b in f_sess["parent_skill"]
         assert f_sess["child_skills"] == []
+
+    def test_trace_never_falls_back_to_raw_memories_when_public_iterator_is_generator(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
+
+        engine = MagicMock()
+        entity_id = "skill:brainstorming:2026-07-10T12:00:00.000000"
+        engine._memories = {
+            "draft-synthesis": {
+                "id": "draft-synthesis",
+                "content": "[SKILL COMPLETE] DRAFT-SYNTHESIS-SECRET duration_ms=99",
+                "entity_ids": [entity_id],
+                "tags": ["task:done", "skill:brainstorming"],
+                "memory_type": "synthesis",
+            }
+        }
+        engine.list_graph_nodes = lambda: [
+            {
+                "id": f"skill_session:{entity_id}",
+                "type": "skill_session",
+                "name": "brainstorming",
+            }
+        ]
+        engine.list_graph_edges = lambda: []
+        engine.iter_memories = lambda: iter([])
+
+        result = asyncio.run(handle_skill_session_trace(engine, {"session_scope": "all"}))
+        payload = json.loads(result[0].text)
+
+        assert "DRAFT-SYNTHESIS-SECRET" not in json.dumps(payload)
+        assert payload["sessions"][0]["tracking_persistence"] == "entity_only"
 
     def test_trace_detects_orphan_active(self):
         """Mock 1 active session with last_accessed 45 min ago,

@@ -10,7 +10,8 @@ use crate::domain::Tier;
 use crate::memory_worth::MemoryRecord;
 use crate::storage::schema::{
     SQL_COUNT_ALL, SQL_CREATE_ENTITIES, SQL_CREATE_ENTITY_EDGES, SQL_CREATE_INDEX,
-    SQL_CREATE_MEMORIES, SQL_DELETE_BY_ID, SQL_GET_BY_ID, SQL_UPSERT_MEMORY,
+    SQL_CREATE_MEMORIES, SQL_DELETE_BY_ID, SQL_GET_BY_ID, SQL_MEMORY_COLUMNS,
+    SQL_UPSERT_MEMORY,
 };
 use crate::storage::{ListFilter, MemoryStats, StorageBackend, UpdateFields};
 
@@ -20,6 +21,9 @@ use crate::storage::{ListFilter, MemoryStats, StorageBackend, UpdateFields};
 /// for full CRUD + statistics queries.
 pub struct SqliteStorage {
     conn: Connection,
+    /// `:memory:` is explicit detached-test mode. File-backed databases must
+    /// consult Python's governance tables before admitting snapshot rows.
+    detached: bool,
 }
 
 impl SqliteStorage {
@@ -31,7 +35,10 @@ impl SqliteStorage {
         let conn = Connection::open(path).map_err(|e| format!("Failed to open SQLite: {}", e))?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(|e| format!("Failed to enable WAL: {}", e))?;
-        let mut storage = Self { conn };
+        let mut storage = Self {
+            conn,
+            detached: path == ":memory:",
+        };
         storage.create_tables()?;
         Ok(storage)
     }
@@ -47,7 +54,10 @@ impl SqliteStorage {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
         )
         .map_err(|e| format!("Failed to open SQLite read-only: {}", e))?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            detached: false,
+        })
     }
 
     /// Execute all DDL statements to create tables and indexes if they do not exist.
@@ -55,6 +65,11 @@ impl SqliteStorage {
         self.conn
             .execute_batch(SQL_CREATE_MEMORIES)
             .map_err(|e| format!("create memories: {}", e))?;
+        // Earlier Rust-only databases used `last_accessed_at`; add the
+        // canonical Python name before issuing explicit projection queries.
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE memories ADD COLUMN last_accessed TEXT DEFAULT '';");
         self.conn
             .execute_batch(SQL_CREATE_INDEX)
             .map_err(|e| format!("create index: {}", e))?;
@@ -76,11 +91,11 @@ impl SqliteStorage {
         serde_json::from_str(raw).unwrap_or_default()
     }
 
-    /// Map a single SQLite row (18 columns, in CREATE TABLE order) to a [`MemoryRecord`].
+    /// Map the explicit canonical SQLite projection to a [`MemoryRecord`].
     ///
-    /// Column indices: id(0), content(1), memory_type(2), source(3), category(4),
-    /// tier(5), importance(6), worth_success(7), worth_failure(8), access_count(9),
-    /// last_accessed_at(10), created_at(11), scope(12), metadata_json(13),
+    /// Column indices: id(0), content(1), memory_type(2), source(3), tier(4),
+    /// scope(5), category(6), importance(7), worth_success(8), worth_failure(9),
+    /// access_count(10), last_accessed(11), created_at(12), metadata_json(13),
     /// tags(14), domain(15), decay_multiplier(16), effective_half_life(17).
     fn row_to_record(row: &rusqlite::Row) -> std::result::Result<MemoryRecord, rusqlite::Error> {
         let tags_raw: String = row.get::<_, String>(14).unwrap_or_default();
@@ -89,15 +104,15 @@ impl SqliteStorage {
             row.get::<_, String>(1)?,   // content
             row.get::<_, String>(2)?,   // memory_type
             row.get::<_, String>(3)?,   // source
-            row.get::<_, String>(5)?,   // tier
-            row.get::<_, String>(12)?,  // scope
-            row.get::<_, String>(4)?,   // category
-            row.get::<_, f64>(6)?,      // importance
-            row.get::<_, u32>(7)?,      // worth_success
-            row.get::<_, u32>(8)?,      // worth_failure
-            row.get::<_, u32>(9)?,      // access_count
-            row.get::<_, String>(10)?,  // last_accessed_at
-            row.get::<_, String>(11)?,  // created_at
+            row.get::<_, String>(4)?,   // tier
+            row.get::<_, String>(5)?,   // scope
+            row.get::<_, String>(6)?,   // category
+            row.get::<_, f64>(7)?,      // importance
+            row.get::<_, u32>(8)?,      // worth_success
+            row.get::<_, u32>(9)?,      // worth_failure
+            row.get::<_, u32>(10)?,     // access_count
+            row.get::<_, String>(11)?,  // last_accessed
+            row.get::<_, String>(12)?,  // created_at
             row.get::<_, String>(13)?,  // metadata_json
             Self::parse_tags(&tags_raw),
             row.get::<_, String>(15).unwrap_or_else(|_| "uncategorized".to_string()),
@@ -133,7 +148,7 @@ impl StorageBackend for SqliteStorage {
                     record.worth_success,
                     record.worth_failure,
                     record.access_count,
-                    record.last_accessed_at,
+                    record.last_accessed,
                     created_at,
                     record.scope,
                     record.metadata_json,
@@ -207,7 +222,7 @@ impl StorageBackend for SqliteStorage {
             param_vals.push(Box::new(v as i64));
         }
         if let Some(ref v) = updates.last_accessed_at {
-            sets.push("last_accessed_at = ?".into());
+            sets.push("last_accessed = ?".into());
             param_vals.push(Box::new(v.clone()));
         }
         if let Some(ref v) = updates.scope {
@@ -239,7 +254,7 @@ impl StorageBackend for SqliteStorage {
     ///
     /// Supports filtering by scope, tier, category, memory_type, source,
     /// minimum importance, and minimum worth score. Results are ordered by
-    /// `last_accessed_at DESC` with pagination via limit/offset.
+    /// `last_accessed DESC` with pagination via limit/offset.
     fn list(&self, filter: &ListFilter) -> Result<Vec<MemoryRecord>, String> {
         let mut conditions: Vec<String> = Vec::new();
         let mut param_vals: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -283,8 +298,8 @@ impl StorageBackend for SqliteStorage {
         };
 
         let sql = format!(
-            "SELECT * FROM memories WHERE {} ORDER BY last_accessed_at DESC LIMIT ? OFFSET ?",
-            where_clause
+            "SELECT {} FROM memories WHERE {} ORDER BY last_accessed DESC LIMIT ? OFFSET ?",
+            SQL_MEMORY_COLUMNS, where_clause
         );
         param_vals.push(Box::new(filter.limit as i64));
         param_vals.push(Box::new(filter.offset as i64));
@@ -412,6 +427,46 @@ impl StorageBackend for SqliteStorage {
             .query_row(sql, [], |row| row.get::<_, i64>(0))
             .map(|v| v as u64)
             .map_err(|e| format!("query_scalar '{}': {}", sql, e))
+    }
+
+    fn admit_snapshot(&self, id: &str, supplied_memory_type: &str) -> Result<bool, String> {
+        if supplied_memory_type.trim().eq_ignore_ascii_case("synthesis") {
+            return Ok(false);
+        }
+        if self.detached {
+            return Ok(true);
+        }
+
+        // The control table is part of the canonical admission proof. A
+        // missing table, missing row, or query failure is unknown state and
+        // must fail closed rather than letting a derived snapshot bypass it.
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT LOWER(TRIM(COALESCE(memories.memory_type, ''))), \
+                        EXISTS(SELECT 1 FROM synthesis_artifacts \
+                               WHERE synthesis_artifacts.memory_id = memories.id) \
+                 FROM memories WHERE memories.id = ?",
+            )
+            .map_err(|e| format!("snapshot admission prepare: {}", e))?;
+        let mut rows = stmt
+            .query(params![id])
+            .map_err(|e| format!("snapshot admission query: {}", e))?;
+        match rows
+            .next()
+            .map_err(|e| format!("snapshot admission row: {}", e))?
+        {
+            Some(row) => {
+                let canonical_type: String = row
+                    .get(0)
+                    .map_err(|e| format!("snapshot admission type: {}", e))?;
+                let has_control: i64 = row
+                    .get(1)
+                    .map_err(|e| format!("snapshot admission control: {}", e))?;
+                Ok(canonical_type != "synthesis" && has_control == 0)
+            }
+            None => Ok(false),
+        }
     }
 }
 
