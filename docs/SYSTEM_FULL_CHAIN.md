@@ -2,7 +2,7 @@
 
 > Release-facing overview. This document describes the system shape and operating principles without exposing private planning artifacts.
 >
-> 版本: 0.1.15 | 日期: 2026-07-13
+> 版本: 0.1.16 | 日期: 2026-07-14
 
 ## 1. What this system is
 
@@ -131,7 +131,7 @@ replace this attested path with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.15 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.16 --release-repo F:/Agent/plastic-promise-release \
   --expected-source-branch main --validation-profile full --dry-run
 # Repeat with the same bound origin arguments and --push only after all gates pass.
 ```
@@ -183,6 +183,13 @@ The one-click launcher can start the system in five explicit modes:
 Interactive launcher runs ask for the mode when `--mode` is omitted. Non-interactive runs default to `rust-full`, preserving the most complete Rust-first path for automation. A running MCP process can be inspected or changed with `runtime_mode(action="get")` and `runtime_mode(action="set", mode="light")`; the server refreshes Rust health and heavy initialization state after a change.
 
 For `full` and `rust-full`, LanceDB backfill/rebuild is startup warmup owned by the launcher. In the long-running MCP process, request-time heavy initialization should open LanceDB/domain backends while leaving `LDB_BACKFILL_ON_INIT=0` and `LDB_REBUILD_ON_INIT=0`, so `context_supply` and `memory_recall(debug=true)` stay out of maintenance work on the hot path.
+
+`context_supply` runs synchronous context assembly on a bounded worker pool
+with configurable embedding and supply deadlines. A deadline returns an
+auditable degraded result instead of blocking the MCP HTTP event loop. The Rust
+snapshot path batches LanceDB vector reads only for memory IDs that already
+passed canonical admission; it must not use an unrestricted table scan or
+reintroduce one query per memory.
 
 Rust context supply is currently a snapshot accelerator, not the persistent
 storage authority. Python still owns SQLite/LanceDB, code-memory enrichment,

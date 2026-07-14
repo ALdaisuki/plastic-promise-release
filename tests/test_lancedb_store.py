@@ -225,6 +225,22 @@ class TestLanceDBStore:
         results = self.store.search([0.5] * EMB_DIM, k=10)
         assert results == []
 
+    def test_get_vectors_returns_only_requested_rows(self, tmp_path):
+        store = LanceDBStore(str(tmp_path / "bulk-vectors.lancedb"), VectorTestEmbedder())
+        vectors = {
+            "mem_001": [0.1] * EMB_DIM,
+            "mem_002": [0.2] * EMB_DIM,
+            "mem_003": [0.3] * EMB_DIM,
+        }
+        for memory_id, vector in vectors.items():
+            store.insert(memory_id, vector, memory_id)
+
+        result = store.get_vectors(["mem_001", "mem_003", "missing", "mem_001"])
+
+        assert set(result) == {"mem_001", "mem_003"}
+        assert result["mem_001"] == pytest.approx(vectors["mem_001"])
+        assert result["mem_003"] == pytest.approx(vectors["mem_003"])
+
     def test_search_scope_filter(self):
         """Scope filter should exclude non-matching rows."""
         self._require_vectors()

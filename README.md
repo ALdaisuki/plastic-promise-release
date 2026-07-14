@@ -483,7 +483,7 @@ Also unset `PP_RETRIEVAL_RRF_K`, `PP_RETRIEVAL_RRF_WEIGHTS_JSON`, and
 restart both processes, run one-shot maintenance to replay the default checked
 index policy, then run the HTTP and restart-recovery smokes.
 
-For an upgrade to `0.1.15`, leave these gates at their defaults until the live
+For an upgrade to `0.1.16`, leave these gates at their defaults until the live
 deployment passes its project-isolated smoke checks. Restart the MCP server and
 Maintenance Daemon together so every writer uses the same canonical mutation
 contract. No public MCP tool or parameter was removed; existing SQLite memory
@@ -555,10 +555,10 @@ python scripts/init_and_start.py --check-only
 python scripts/init_and_start.py --skip-ollama-check --check-only
 
 # Verify the live Streamable HTTP MCP process after startup or release restart.
-python scripts/smoke_http_mcp.py --expected-version 0.1.15 --expected-mode rust-full
+python scripts/smoke_http_mcp.py --expected-version 0.1.16 --expected-mode rust-full
 
 # Run only after explicitly enabling PP_MEMORY_SUMMARY_INDEX=1 and compact-v2.
-python scripts/smoke_http_mcp.py --expected-version 0.1.15 --expected-mode rust-full --check-summary-index
+python scripts/smoke_http_mcp.py --expected-version 0.1.16 --expected-mode rust-full --check-summary-index
 ```
 
 Live release sync has a fail-closed preflight: the release repository must be
@@ -574,7 +574,7 @@ Do not replace the attested push with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.15 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.16 --release-repo F:/Agent/plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \

@@ -244,4 +244,12 @@ step-closure(
 - Upgrade keeps all four synthesis/proposal/index gates at their legacy defaults. Restart MCP Server and Maintenance Daemon together, then run the live HTTP smoke with `--expected-version 0.1.15` before enabling opt-in behavior.
 - This release removes no public MCP tool or parameter. The change is not classified as breaking; SQLite remains canonical and LanceDB remains derived and repairable.
 - Dependency compatibility note: governed retrieval requires LanceDB `>=0.34.0`.
-- Release verification for `0.1.15` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. The one-shot public calibration produced no eligible WRRF candidate, so held-out queries remained unopened and legacy-auto is the released policy.
+- Release verification for `0.1.15` is **audited and approved**. Tasks 6-12 and the public HTTP calibration/held-out runner are implemented, including canonical CAS migration, recovery, versioned fusion, opaque held-out binding, and strict comparison. The one-shot public calibration completed with no eligible WRRF candidate; held-out queries remained unopened and `legacy-auto` stayed active.
+
+## 2026-07-14 Context Supply Reliability Release Note
+
+- Release version `0.1.16` follows the immutable public `v0.1.15` release and carries the `context_supply` responsiveness fix.
+- Synchronous context assembly runs behind a bounded worker pool with explicit embedding and supply deadlines; timeout responses are degraded and traceable rather than blocking the MCP HTTP event loop.
+- Rust snapshot enrichment reads LanceDB vectors in admitted-ID-only batches, preserving canonical admission while removing the per-memory N+1 query pattern.
+- No public MCP tool or parameter changed, no dependency changed, and retrieval fusion remains `legacy-auto`.
+- Release verification for `0.1.16` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. The one-shot public calibration produced no eligible WRRF candidate, so held-out queries remained unopened and legacy-auto is the released policy.

@@ -7,6 +7,7 @@ Vector dim: 1024 (mxbai-embed-large), configurable via PP_EMBEDDING_DIM.
 import logging
 import math
 import os
+from collections.abc import Iterable
 
 import lancedb
 import pyarrow as pa
@@ -25,6 +26,7 @@ logger = logging.getLogger("plastic-promise.lancedb")
 
 EMB_DIM = int(os.environ.get("PP_EMBEDDING_DIM", "1024"))
 TABLE_NAME = "memory_vectors"
+_BULK_VECTOR_CHUNK_SIZE = 256
 
 _MEMORY_VECTORS_SCHEMA = pa.schema(
     [
@@ -302,6 +304,36 @@ class LanceDBStore:
             return None
         except Exception:
             return None
+
+    def get_vectors(self, memory_ids: Iterable[str]) -> dict[str, list[float]]:
+        """Return stored vectors for the requested memory IDs in bounded batches."""
+        if self._table is None:
+            return {}
+
+        requested_ids = list(dict.fromkeys(str(memory_id) for memory_id in memory_ids))
+        vectors: dict[str, list[float]] = {}
+        for offset in range(0, len(requested_ids), _BULK_VECTOR_CHUNK_SIZE):
+            batch = requested_ids[offset : offset + _BULK_VECTOR_CHUNK_SIZE]
+            if not batch:
+                continue
+            quoted_ids = ", ".join(f"'{memory_id.replace(chr(39), chr(39) * 2)}'" for memory_id in batch)
+            try:
+                rows = (
+                    self._table.search()
+                    .where(f"memory_id IN ({quoted_ids})", prefilter=True)
+                    .select(["memory_id", "vector"])
+                    .limit(len(batch))
+                    .to_list()
+                )
+            except Exception as exc:
+                logger.warning("LanceDB bulk vector lookup failed: %s", exc)
+                continue
+            for row in rows:
+                memory_id = str(row.get("memory_id", ""))
+                vector = row.get("vector")
+                if memory_id in batch and vector:
+                    vectors[memory_id] = list(vector)
+        return vectors
 
     def check_duplicate(
         self,

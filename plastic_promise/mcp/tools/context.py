@@ -7,10 +7,115 @@
 - auto_context_inject : 统一自动化上下文注入
 """
 
+import asyncio
 import json
+import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from mcp.types import TextContent
+
+logger = logging.getLogger(__name__)
+
+_CONTEXT_SUPPLY_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.environ.get("PP_CONTEXT_SUPPLY_MAX_WORKERS", "2"))),
+    thread_name_prefix="context-supply",
+)
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _call_engine_supply(engine: Any, supply_args: dict[str, Any]):
+    try:
+        return engine.supply(**supply_args)
+    except TypeError:
+        legacy_args = {
+            "task_description": supply_args["task_description"],
+            "task_vector": supply_args["task_vector"],
+            "task_type": supply_args["task_type"],
+            "scope": supply_args["scope"],
+            "debug": supply_args["debug"],
+        }
+        try:
+            return engine.supply(**legacy_args)
+        except TypeError:
+            return engine.supply(
+                supply_args["task_description"],
+                supply_args["task_vector"],
+                supply_args["task_type"],
+                supply_args["scope"],
+            )
+
+
+def _degraded_context_response(
+    *,
+    reason: str,
+    task_description: str,
+    task_type: str,
+    scope: str,
+    request_scope: dict[str, Any],
+    project_ctx: Any,
+    call_id: str,
+    debug: bool,
+) -> list[TextContent]:
+    audit_metadata = {
+        "engine_version": "context_supply-degraded",
+        "task_type": task_type,
+        "scope": scope,
+        "minimum_result": "degraded_context",
+        "degraded": True,
+        "reason": reason,
+        "request_scope": request_scope,
+        "project_context": project_ctx.to_dict(),
+        "trace": {
+            "call_id": call_id,
+            "request_scope_id": request_scope["request_scope_id"],
+            "project_id": project_ctx.project_id,
+        },
+    }
+    if debug:
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "prompt": "",
+                        "core": [],
+                        "related": [],
+                        "divergent": [],
+                        "activated_principles": [],
+                        "audit_metadata": audit_metadata,
+                        "pipeline_stats": {},
+                        "per_item_stats": [],
+                        "channel_rankings": {},
+                        "channel_states": {},
+                        "request_scope": request_scope,
+                        "project_context": project_ctx.to_dict(),
+                        "trace": audit_metadata["trace"],
+                        "error": reason,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        ]
+    prompt = "\n".join(
+        [
+            "## [CONTEXT_SUPPLY_DEGRADED]",
+            f"- reason: {reason}",
+            f"- task_type: {task_type}",
+            f"- scope: {scope}",
+            f"- request_scope_id: {request_scope['request_scope_id']}",
+            f"- task: {task_description[:200]}",
+        ]
+    )
+    return [TextContent(type="text", text=prompt)]
 
 
 async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
@@ -45,35 +150,79 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         request_scope = build_request_scope(args, "context_supply")
         project_ctx = infer_project_context(args)
         call_id = args.get("call_id") or new_call_id()
+        embed_timeout = _float_env("PP_CONTEXT_EMBED_TIMEOUT_SEC", 3.0)
+        supply_timeout = _float_env("PP_CONTEXT_SUPPLY_TIMEOUT_SEC", 12.0)
 
         try:
             embedder = get_embedder(fallback_on_error=False)
-            task_vector = await embedder.aembed(task_description)
+            task_vector = await asyncio.wait_for(
+                embedder.aembed(task_description),
+                timeout=embed_timeout,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning("context_supply embedding timed out after %.2fs", embed_timeout)
+            task_vector = FallbackEmbedder().embed(task_description)
         except Exception:
             # Embedding service unavailable — use zero-vector fallback.
             # ContextEngine._text_retrieval uses pure text matching
             # (CJK bigrams / word split) which works without embeddings.
-            embedder = FallbackEmbedder()
-            task_vector = await embedder.aembed(task_description)
+            task_vector = FallbackEmbedder().embed(task_description)
 
         try:
-            pack = engine.supply(
-                task_description,
-                task_vector,
-                task_type,
-                scope,
+            supply_args = {
+                "task_description": task_description,
+                "task_vector": task_vector,
+                "task_type": task_type,
+                "scope": scope,
+                "project_id": project_ctx.project_id,
+                "project_policy": project_ctx.project_policy,
+                "project_degraded": project_ctx.degraded,
+                "retrieval_mode": retrieval_mode or None,
+                "fusion_policy": fusion_policy or None,
+                "debug": debug,
+            }
+            loop = asyncio.get_running_loop()
+            pack = await asyncio.wait_for(
+                loop.run_in_executor(
+                    _CONTEXT_SUPPLY_EXECUTOR,
+                    _call_engine_supply,
+                    engine,
+                    supply_args,
+                ),
+                timeout=supply_timeout,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            reason = f"engine.supply timed out after {supply_timeout:.2f}s"
+            logger.error("context_supply degraded: %s", reason)
+            safe_record_degradation_event(
+                engine,
+                call_id=call_id,
+                request_scope_id=request_scope["request_scope_id"],
                 project_id=project_ctx.project_id,
-                project_policy=project_ctx.project_policy,
-                project_degraded=project_ctx.degraded,
-                retrieval_mode=retrieval_mode or None,
-                fusion_policy=fusion_policy or None,
+                tool_name="context_supply",
+                link_name="engine.supply",
+                policy="timeout",
+                level="error",
+                fallback_used="degraded_context",
+                minimum_result="degraded_context",
+                metadata={
+                    "timeout_sec": supply_timeout,
+                    "task_type": task_type,
+                    "scope": scope,
+                    "retrieval_mode": retrieval_mode,
+                    "fusion_policy": fusion_policy,
+                },
+            )
+            return _degraded_context_response(
+                reason=reason,
+                task_description=task_description,
+                task_type=task_type,
+                scope=scope,
+                request_scope=request_scope,
+                project_ctx=project_ctx,
+                call_id=call_id,
                 debug=debug,
             )
-        except TypeError:
-            try:
-                pack = engine.supply(task_description, task_vector, task_type, scope, debug=debug)
-            except TypeError:
-                pack = engine.supply(task_description, task_vector, task_type, scope)
         from plastic_promise.mcp.tools.memory import (
             _sanitize_pack_for_project,
             _serialize_channel_evidence,

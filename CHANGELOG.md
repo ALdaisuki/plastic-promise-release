@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Released version: `0.1.15`.
+Released version: `0.1.16`.
+
+## [0.1.16] - 2026-07-14
+
+### Fixed
+
+- Isolated synchronous `context_supply` work behind a bounded executor with
+  configurable embedding and supply timeouts, so a slow retrieval path cannot
+  block the MCP HTTP event loop and instead returns an auditable degraded result.
+- Replaced per-memory LanceDB vector lookups in the Rust snapshot path with
+  bounded batch queries filtered to admitted memory IDs, eliminating the N+1
+  query pattern without crossing the canonical admission boundary.
+
+### Verification
+
+- Release status for `0.1.16` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. The one-shot public calibration produced no eligible WRRF candidate, so held-out queries remained unopened and legacy-auto is the released policy.
 
 ## [0.1.15] - 2026-07-13
 
@@ -89,7 +104,9 @@ Released version: `0.1.15`.
 - Historical Tasks 1-5 slice evidence remains: the stable 17-file matrix passed
   `688` tests twice, a read-only reviewer ran `95` focused tests, and the local
   audit fallback scored `0.6987` against its `0.60` slice gate.
-- Release status for `0.1.15` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. The one-shot public calibration produced no eligible WRRF candidate, so held-out queries remained unopened and legacy-auto is the released policy.
+- Release status for `0.1.15` is **audited and approved**. The one-shot public
+  calibration produced no eligible WRRF candidate, so held-out queries remained
+  unopened and `legacy-auto` was the released policy.
 
 ## [0.1.14] - 2026-07-09
 
@@ -339,6 +356,7 @@ Released version: `0.1.15`.
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.16]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.12...v0.1.13

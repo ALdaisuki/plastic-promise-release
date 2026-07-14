@@ -214,10 +214,10 @@ python scripts/smoke_restart_recovery.py --artifact-dir .artifacts/recovery-smok
 
 `maintenance-heartbeat/v1` 将心跳绑定到 daemon PID；旧心跳仅保留 mtime 兼容。索引重放继续读取既有合法 `memory-index/v2` upsert，但所有新 upsert/delete 都写为带 action、project、memory version、material revision 和 expected embedding hash 的 `memory-index/v3`。
 
-升级到 `0.1.15` 时，应先保持四个开关为默认值，同时重启 MCP Server 和 Maintenance Daemon，避免不同版本的写入进程混用事务约定。公开 MCP 工具和参数没有删除；已有 SQLite 记忆继续作为权威数据，LanceDB 可由持久化校验任务修复。LanceDB 最低版本已提高到 `0.34.0`，固定在更早版本的环境必须先升级依赖。重启后执行：
+升级到 `0.1.16` 时，应先保持四个开关为默认值，同时重启 MCP Server 和 Maintenance Daemon，避免不同版本的写入进程混用事务约定。公开 MCP 工具和参数没有删除；已有 SQLite 记忆继续作为权威数据，LanceDB 可由持久化校验任务修复。LanceDB 最低版本已提高到 `0.34.0`，固定在更早版本的环境必须先升级依赖。重启后执行：
 
 ```bash
-python scripts/smoke_http_mcp.py --expected-version 0.1.15 --expected-mode rust-full
+python scripts/smoke_http_mcp.py --expected-version 0.1.16 --expected-mode rust-full
 ```
 
 回滚时关闭四个开关即可，不要删除 SQLite 中的控制、来源、提案、lineage 或审计记录：
@@ -319,7 +319,7 @@ commit/tag 对象和远端状态，再原子推送 `main` 与精确 tag。不要
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.15 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.16 --release-repo F:/Agent/plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \

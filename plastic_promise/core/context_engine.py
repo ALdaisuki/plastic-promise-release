@@ -5167,15 +5167,27 @@ class ContextEngine:
         # Enrich only admitted rows. Derived vector state never decides admission.
         vector_lookup: dict[str, list[float]] = {}
         if self._ldb and admitted_snapshot_ids:
-            get_vector = getattr(self._ldb, "get_vector", None)
-            if callable(get_vector):
-                for memory_id in admitted_snapshot_ids:
-                    try:
-                        vector = get_vector(memory_id)
-                    except Exception:
-                        continue
-                    if vector and len(vector) == 1024:
-                        vector_lookup[memory_id] = list(vector)
+            get_vectors = getattr(self._ldb, "get_vectors", None)
+            if callable(get_vectors):
+                try:
+                    vector_lookup = {
+                        str(memory_id): list(vector)
+                        for memory_id, vector in get_vectors(admitted_snapshot_ids).items()
+                        if vector and len(vector) == 1024
+                    }
+                except Exception:
+                    vector_lookup = {}
+            else:
+                # Compatibility for alternate stores that only expose single-row lookup.
+                get_vector = getattr(self._ldb, "get_vector", None)
+                if callable(get_vector):
+                    for memory_id in admitted_snapshot_ids:
+                        try:
+                            vector = get_vector(memory_id)
+                        except Exception:
+                            continue
+                        if vector and len(vector) == 1024:
+                            vector_lookup[memory_id] = list(vector)
         for memory in memories:
             memory["_vector"] = vector_lookup.get(str(memory.get("id", "")), [])
 
