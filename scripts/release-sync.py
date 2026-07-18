@@ -125,6 +125,7 @@ EXCLUDE_RUNTIME_GLOB: list[str] = [
 
 TRANSFORM: dict[str, str] = {
     "pyproject.toml": "update_version",
+    "plastic_promise/__init__.py": "update_runtime_version",
     "CHANGELOG.md": "prepend_entry",
     "docs/GOAL.md": "promote_release_status",
     "docs/SYSTEM_FULL_CHAIN.md": "update_header",
@@ -604,6 +605,17 @@ def apply_transform(
         )
         if version_count != 1 or f'version = "{new_ver}"' not in content:
             raise ValueError(f"release_package_version_not_promoted:{new_ver}")
+    elif transform_type == "update_runtime_version":
+        new_ver = version.lstrip("v")
+        content, version_count = re.subn(
+            r'^__version__\s*=\s*"[^"]*"',
+            f'__version__ = "{new_ver}"',
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if version_count != 1 or f'__version__ = "{new_ver}"' not in content:
+            raise ValueError(f"release_runtime_version_not_promoted:{new_ver}")
     elif transform_type == "prepend_entry":
         new_ver = version.lstrip("v")
         today = datetime.now().strftime("%Y-%m-%d")

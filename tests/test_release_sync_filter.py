@@ -167,6 +167,19 @@ def test_release_sync_rejects_pyproject_without_version_assignment(tmp_path):
         release_sync.apply_transform("pyproject.toml", "v0.1.15", tmp_path)
 
 
+def test_release_sync_promotes_runtime_package_version(tmp_path):
+    release_sync = _load_release_sync()
+    package_init = tmp_path / "plastic_promise" / "__init__.py"
+    package_init.parent.mkdir(parents=True)
+    package_init.write_text('__version__ = "0.1.16"\n', encoding="utf-8")
+
+    transformed = release_sync.apply_transform(
+        "plastic_promise/__init__.py", "v0.1.17", tmp_path
+    )
+
+    assert transformed == '__version__ = "0.1.17"\n'
+
+
 def test_release_sync_does_not_duplicate_existing_changelog_version(tmp_path):
     release_sync = _load_release_sync()
     changelog = tmp_path / "CHANGELOG.md"
