@@ -445,10 +445,17 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
             )
         return []
 
+    # Snapshot public graph/memory data once per trace.  Each public graph
+    # accessor deep-copies the complete gated graph, so calling it inside the
+    # session/edge loops turns a linear scan into an accidental O(N^2) walk.
+    graph_nodes = _graph_nodes()
+    graph_edges = _graph_edges()
+    memories = _iter_memories()
+
     # -- Collect skill_session entities from graph nodes --------------------
     sessions: list[dict] = []
 
-    for node in _graph_nodes():
+    for node in graph_nodes:
         node_id = node.get("id", "")
         if not isinstance(node, dict):
             continue
@@ -466,7 +473,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
 
         # -- Find associated memory record ----------------------------------
         memory: dict[str, Any] | None = None
-        for mem in _iter_memories():
+        for mem in memories:
             # Normalize to dict (handle both dict and object memories)
             if isinstance(mem, dict):
                 mem_dict = mem
@@ -527,7 +534,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
 
         # -- Child sessions via graph edges ---------------------------------
         child_skills: list[str] = []
-        for edge in _graph_edges():
+        for edge in graph_edges:
             if not isinstance(edge, dict):
                 continue
             # Edge goes FROM parent TO child with relation "parent_of"
@@ -557,7 +564,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
         )
 
     # -- Build parent relationships from edges ------------------------------
-    for edge in _graph_edges():
+    for edge in graph_edges:
         if not isinstance(edge, dict):
             continue
         if edge.get("relation") == "parent_of":

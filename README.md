@@ -342,6 +342,37 @@ but oversized review/audit text is split by `EMBEDDER_CHUNK_CHARS`, capped by
 `EMBEDDER_MAX_CHUNKS`, mean-pooled, and normalized so a single large record does
 not turn into an Ollama 500 during launcher warmup or backfill.
 
+`PP_MEMORY_CHUNKING=shadow` keeps the legacy embedding requests and index identity,
+while recording a deterministic structure-aware candidate manifest for comparison.
+`PP_MEMORY_CHUNKING=structure-v1` enables that structural baseline for Ollama
+embedding input. It recognizes Markdown heading paths,
+paragraphs, fenced code, lists, and tables; isolates atomic blocks; preserves
+verbatim source spans; and processes the complete tail within the bounded
+`EMBEDDER_STRUCTURE_MAX_CHUNKS` request budget. When the budget is exceeded, it
+keeps the beginning and tail and marks the middle coverage as resource-limited.
+`EMBEDDER_CHUNK_CHARS` becomes the soft packing target and
+`EMBEDDER_STRUCTURE_HARD_CHARS` is the oversized-block limit. The current budget
+unit is explicitly `characters-fallback` because the Ollama embeddings endpoint
+does not expose model tokenizer counts. `EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS`
+is a hard input guard. The mode remains off by default; shadow does not create
+child rows or change retrieval identity, while structure-v1 binds all chunking
+configuration into the persisted embedding model identity so enabling or
+rolling back the active baseline triggers derived-index migration.
+
+The read-only shadow report can be run against the canonical SQLite memories
+or an explicit JSON/JSONL corpus. It reports truncation, candidate coverage,
+block kinds, chunk-count ratio, and local planning latency without calling an
+embedding model or writing any index:
+
+```powershell
+python scripts/benchmark_chunking_shadow.py --source data/db/plastic_memory.db
+python scripts/benchmark_chunking_shadow.py --source tests/fixtures/recall_quality/v1.json
+```
+
+The report keeps record ids and diagnostics only; source text is not emitted.
+Use the report to choose the next real-model recall benchmark, not as a release
+quality conclusion by itself.
+
 `PP_MEMORY_SUMMARY_INDEX=1` enables the feature-gated summary index write path.
 SQLite remains the truth source for `raw_content`, L0/L1/L2 summary layers, and
 the exact summary-only `embedding_text` / `embedding_hash` used for indexing.
@@ -483,13 +514,23 @@ Also unset `PP_RETRIEVAL_RRF_K`, `PP_RETRIEVAL_RRF_WEIGHTS_JSON`, and
 restart both processes, run one-shot maintenance to replay the default checked
 index policy, then run the HTTP and restart-recovery smokes.
 
-For an upgrade to `0.1.16`, leave these gates at their defaults until the live
+For an upgrade to `0.1.17`, leave these gates at their defaults until the live
 deployment passes its project-isolated smoke checks. Restart the MCP server and
 Maintenance Daemon together so every writer uses the same canonical mutation
 contract. No public MCP tool or parameter was removed; existing SQLite memory
 remains canonical and LanceDB can be repaired from durable checked jobs. The
 minimum LanceDB version is now `0.34.0`; deployments pinned below that version
 must upgrade the dependency before restart.
+
+When changing `PP_MEMORY_CHUNKING`, rebuild the derived index before enabling
+traffic, and repeat the rebuild after rollback to `off`:
+
+```powershell
+$env:PP_MEMORY_CHUNKING = "structure-v1"
+python scripts/rebuild_lancedb.py
+$env:PP_MEMORY_CHUNKING = "off"
+python scripts/rebuild_lancedb.py
+```
 
 ---
 
@@ -555,10 +596,10 @@ python scripts/init_and_start.py --check-only
 python scripts/init_and_start.py --skip-ollama-check --check-only
 
 # Verify the live Streamable HTTP MCP process after startup or release restart.
-python scripts/smoke_http_mcp.py --expected-version 0.1.16 --expected-mode rust-full
+python scripts/smoke_http_mcp.py --expected-version 0.1.17 --expected-mode rust-full
 
 # Run only after explicitly enabling PP_MEMORY_SUMMARY_INDEX=1 and compact-v2.
-python scripts/smoke_http_mcp.py --expected-version 0.1.16 --expected-mode rust-full --check-summary-index
+python scripts/smoke_http_mcp.py --expected-version 0.1.17 --expected-mode rust-full --check-summary-index
 ```
 
 Live release sync has a fail-closed preflight: the release repository must be
@@ -574,7 +615,7 @@ Do not replace the attested push with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.16 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.17 --release-repo F:/Agent/plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \

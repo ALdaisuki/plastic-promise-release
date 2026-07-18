@@ -248,8 +248,9 @@ step-closure(
 
 ## 2026-07-14 Context Supply Reliability Release Note
 
-- Release version `0.1.16` follows the immutable public `v0.1.15` release and carries the `context_supply` responsiveness fix.
+- Release version `0.1.17` follows the immutable public `v0.1.16` release and carries structure-aware embedding chunking behind an opt-in flag.
 - Synchronous context assembly runs behind a bounded worker pool with explicit embedding and supply deadlines; timeout responses are degraded and traceable rather than blocking the MCP HTTP event loop.
 - Rust snapshot enrichment reads LanceDB vectors in admitted-ID-only batches, preserving canonical admission while removing the per-memory N+1 query pattern.
 - No public MCP tool or parameter changed, no dependency changed, and retrieval fusion remains `legacy-auto`.
-- Release verification for `0.1.16` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. The one-shot public calibration produced no eligible WRRF candidate, so held-out queries remained unopened and legacy-auto is the released policy.
+- `PP_MEMORY_CHUNKING=shadow` is the default evaluation path; `structure-v1` remains opt-in until versioned real-model recall evidence passes the release gates.
+- Release verification for `0.1.17` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.

@@ -33,9 +33,10 @@ MINIMUM_DEPENDENCY_VERSIONS = {"lancedb": Version("0.34.0")}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{7,64}$")
 
-# The held-out file stays opaque during calibration. Its byte fingerprint is
-# the lookup key for the independently frozen report contract used later by
-# the comparator, so two reports cannot validate each other's forged metadata.
+# The held-out file stays opaque during calibration. Its normalized text
+# fingerprint is the lookup key for the independently frozen report contract
+# used later by the comparator, so line-ending changes cannot invalidate a
+# legitimate report and two reports cannot validate each other's forged metadata.
 _KNOWN_HELDOUT_REPORT_CONTRACTS: Mapping[str, Mapping[str, Any]] = MappingProxyType(
     {
         "cbf31d0be739d7f4cbb5313be86a8b267e12addc729804414d9a968717a71036": MappingProxyType(
@@ -87,13 +88,22 @@ def _sha256(value: Any) -> str:
 
 
 def opaque_file_fingerprint(path: str | Path) -> str:
-    """Hash held-out bytes without parsing or exposing their semantic content."""
+    """Hash opaque held-out text with platform-neutral line endings."""
 
     digest = hashlib.sha256()
+    pending_cr = False
     try:
         with Path(path).open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
+                if pending_cr:
+                    chunk = b"\r" + chunk
+                    pending_cr = False
+                if chunk.endswith(b"\r"):
+                    chunk = chunk[:-1]
+                    pending_cr = True
+                digest.update(chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+            if pending_cr:
+                digest.update(b"\n")
     except OSError as exc:
         raise ValueError("opaque_fingerprint_unavailable") from exc
     return digest.hexdigest()

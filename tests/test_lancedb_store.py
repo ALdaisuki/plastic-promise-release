@@ -33,6 +33,13 @@ class RecordingVectorEmbedder(VectorTestEmbedder):
         return super().embed(text)
 
 
+class StructuredVectorEmbedder(RecordingVectorEmbedder):
+    index_model_name = (
+        "mxbai-embed-large|chunking=structure-v1|target_chars=512|"
+        "hard_chars=1024|max_chunks=64|max_source_chars=2000000|budget=characters-fallback"
+    )
+
+
 class RepairEngine:
     def __init__(self, memories, sqlite_store=None):
         self._memories = memories
@@ -488,6 +495,94 @@ class TestLanceDBStore:
             "missing_ids": ["mem_missing"],
         }
         assert store.list_memory_ids() == {"mem_keep", "mem_missing"}
+
+    def test_sync_reindexes_existing_rows_when_chunking_model_changes(self, tmp_path):
+        from plastic_promise.core.memory_index import build_index_material, index_metadata
+
+        embedder = StructuredVectorEmbedder()
+        old_material = build_index_material(
+            {"content": "long memory body"},
+            model_name="mxbai-embed-large",
+        )
+        memory = {
+            "id": "migrated-memory",
+            "content": "long memory body",
+            "embedding_text": old_material.vector_text,
+            "search_text": old_material.search_text,
+            "embedding_hash": old_material.embedding_hash,
+            "metadata_json": {"memory_index": index_metadata(old_material)},
+            "memory_type": "experience",
+            "tier": "L1",
+            "category": "other",
+            "scope": "global",
+        }
+        engine = RepairEngine({memory["id"]: memory})
+        store = LanceDBStore(str(tmp_path / "chunking-migration.lancedb"), embedder)
+        store.insert_checked(memory["id"], [0.1] * EMB_DIM, old_material.search_text)
+
+        result = store.sync_with_engine(engine)
+
+        assert result["stale_reindexed"] == 1
+        assert result["stale_ids"] == [memory["id"]]
+        assert embedder.texts == [old_material.vector_text]
+        assert engine._memories[memory["id"]]["metadata_json"]["memory_index"]["model_name"] == (
+            embedder.index_model_name
+        )
+
+    def test_synthesis_chunking_model_migration_is_deferred_without_lancedb_churn(
+        self, tmp_path, monkeypatch
+    ):
+        from plastic_promise.core.memory_index import build_index_material, index_metadata
+
+        embedder = StructuredVectorEmbedder()
+        old_material = build_index_material(
+            {"content": "governed synthesis body"},
+            model_name="mxbai-embed-large",
+        )
+        memory = {
+            "id": "stale-synthesis",
+            "content": "governed synthesis body",
+            "embedding_text": old_material.vector_text,
+            "search_text": old_material.search_text,
+            "embedding_hash": old_material.embedding_hash,
+            "metadata_json": {"memory_index": index_metadata(old_material)},
+            "memory_type": "synthesis",
+            "tier": "L1",
+            "category": "decision",
+            "scope": "global",
+        }
+        engine = RepairEngine({memory["id"]: memory})
+        store = LanceDBStore(str(tmp_path / "synthesis-migration.lancedb"), embedder)
+        monkeypatch.setattr(store, "_memory_is_index_eligible", lambda *_args: True)
+        store.insert_checked(memory["id"], [0.1] * EMB_DIM, old_material.search_text)
+        replace_calls = []
+        delete_calls = []
+
+        original_replace = store.replace_checked
+        original_delete = store.delete_checked
+
+        def record_replace(*args, **kwargs):
+            replace_calls.append((args, kwargs))
+            return original_replace(*args, **kwargs)
+
+        def record_delete(*args, **kwargs):
+            delete_calls.append((args, kwargs))
+            return original_delete(*args, **kwargs)
+
+        store.replace_checked = record_replace
+        store.delete_checked = record_delete
+
+        assert store._insert_engine_memory(engine, memory["id"], memory, replace_existing=True) is False
+        assert replace_calls == []
+        assert delete_calls == []
+        assert embedder.texts == []
+        assert store.index_diagnostics == (
+            {
+                "memory_id": memory["id"],
+                "reason": "synthesis_index_material_migration_deferred",
+            },
+        )
+        assert store.list_memory_ids() == {memory["id"]}
 
     def test_sync_does_not_count_failed_backend_insert_as_backfilled(self, tmp_path, monkeypatch):
         store = LanceDBStore(str(tmp_path / "failed-insert.lancedb"), VectorTestEmbedder())

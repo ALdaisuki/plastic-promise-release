@@ -118,6 +118,33 @@ def test_release_sync_keeps_internal_superpowers_docs_excluded():
     assert excluded == ["docs/superpowers/plans/2026-07-05-sp-stage-guidance.md"]
 
 
+def test_release_sync_includes_authoritative_retrieval_plan_exception():
+    release_sync = _load_release_sync()
+
+    included, excluded = release_sync.filter_files(
+        [
+            "docs/superpowers/plans/2026-07-12-corrective-governed-retrieval-plan.md",
+            "docs/superpowers/specs/2026-07-18-rag-shadow-chunking-benchmark-design.md",
+        ]
+    )
+
+    assert included == ["docs/superpowers/plans/2026-07-12-corrective-governed-retrieval-plan.md"]
+    assert excluded == ["docs/superpowers/specs/2026-07-18-rag-shadow-chunking-benchmark-design.md"]
+
+
+def test_release_sync_includes_engineering_pattern_records():
+    release_sync = _load_release_sync()
+
+    included, excluded = release_sync.filter_files(
+        ["docs/engineering-patterns/2026-07-12-ordinary-memory-caller-inventory.md"]
+    )
+
+    assert included == [
+        "docs/engineering-patterns/2026-07-12-ordinary-memory-caller-inventory.md"
+    ]
+    assert excluded == []
+
+
 def test_release_sync_normalizes_https_and_ssh_github_origins():
     release_sync = _load_release_sync()
 
@@ -184,9 +211,32 @@ def test_release_sync_promotes_prepared_draft_without_replacing_notes(tmp_path):
     assert "Draft/BLOCK" not in transformed
     assert "Released version: `0.1.15`." in transformed
     assert "**audited and approved**" in transformed
-    assert "held-out queries remained unopened" in transformed
-    assert "legacy-auto is the released policy" in transformed
+    assert "Release-specific benchmark and runtime evidence" in transformed
     assert "Prepared release note." in transformed
+
+
+def test_release_sync_ignores_draft_status_in_older_changelog_sections(tmp_path):
+    release_sync = _load_release_sync()
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        "# Changelog\n\n"
+        "## [Unreleased]\n\n"
+        "Prepared release target: `0.1.17` (Draft/BLOCK).\n\n"
+        "## [0.1.17] - Draft (unreleased)\n\n"
+        "### Verification\n\n"
+        "- Overall release status is **Draft/BLOCK**. Final verification remains pending.\n\n"
+        "## [0.1.16] - Draft (unreleased)\n\n"
+        "### Verification\n\n"
+        "- Overall release status is **Draft/BLOCK**. Older release remains pending.\n",
+        encoding="utf-8",
+    )
+
+    transformed = release_sync.apply_transform("CHANGELOG.md", "v0.1.17", tmp_path)
+
+    assert transformed is not None
+    assert "## [0.1.17] - Draft (unreleased)" not in transformed
+    assert "## [0.1.16] - Draft (unreleased)" in transformed
+    assert "Older release remains pending." in transformed
 
 
 def test_release_sync_promotes_prepared_system_header(tmp_path):
@@ -222,8 +272,7 @@ def test_release_sync_promotes_goal_release_status_without_changing_dev_file(tmp
     assert transformed is not None
     assert "Draft/BLOCK" not in transformed
     assert "Release verification for `0.1.15` is **audited and approved**" in transformed
-    assert "held-out queries remained unopened" in transformed
-    assert "legacy-auto is the released policy" in transformed
+    assert "Release-specific benchmark and runtime evidence" in transformed
     assert goal.read_text(encoding="utf-8") == original
 
 

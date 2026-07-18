@@ -28,7 +28,11 @@ class IndexMaterialError(ValueError):
 def effective_embedding_model_name(embedder: object | None = None) -> str:
     """Return the model identity that owns newly generated index material."""
     if embedder is not None:
-        value = getattr(embedder, "model_name", None) or getattr(embedder, "model", None)
+        value = (
+            getattr(embedder, "index_model_name", None)
+            or getattr(embedder, "model_name", None)
+            or getattr(embedder, "model", None)
+        )
         if value:
             return _model_name(value)
     legacy = os.environ.get("EMBED_MODEL")
@@ -42,6 +46,12 @@ def effective_embedding_model_name(embedder: object | None = None) -> str:
     if provider == "fallback":
         return "fallback-zero"
     return _model_name(os.environ.get("EMBEDDER_MODEL", "mxbai-embed-large"))
+
+
+def embedding_model_family(model_name: object) -> str:
+    """Return the base provider/model identity without chunking configuration."""
+
+    return _model_name(model_name).split("|chunking=", 1)[0]
 
 
 @dataclass(frozen=True)

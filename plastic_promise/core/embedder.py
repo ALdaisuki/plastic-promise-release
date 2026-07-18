@@ -18,6 +18,12 @@ Environment variables:
   EMBEDDER_CACHE_SIZE=256          (default: 256, set to 0 to disable)
   EMBEDDER_CACHE_TTL=300           (TTL in seconds, default: 300)
   EMBEDDER_TIMEOUT=5               (HTTP timeout for Ollama/OpenAI, default: 5)
+  PP_MEMORY_CHUNKING=off|shadow|structure-v1  (default: off)
+  EMBEDDER_CHUNK_CHARS=512         (legacy size / structure-v1 soft target)
+  EMBEDDER_MAX_CHUNKS=8            (legacy cap only)
+  EMBEDDER_STRUCTURE_HARD_CHARS=1024  (structure-v1 oversized-block limit)
+  EMBEDDER_STRUCTURE_MAX_CHUNKS=64    (structure-v1 request cap)
+  EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS=2000000  (structure-v1 input guard)
 """
 
 import asyncio
@@ -30,6 +36,14 @@ import time
 from abc import ABC, abstractmethod
 
 import requests
+
+from plastic_promise.core.chunking import (
+    has_uncovered_content,
+    legacy_character_chunks,
+    limit_chunk_materials,
+    shadow_chunking_diagnostics,
+    structure_aware_chunks,
+)
 
 
 class Embedder(ABC):
@@ -56,6 +70,11 @@ class Embedder(ABC):
     @abstractmethod
     def model_name(self) -> str:
         """Model identifier."""
+
+    @property
+    def index_model_name(self) -> str:
+        """Versioned identity for derived index material."""
+        return self.model_name
 
 
 class CachedEmbedder(Embedder):
@@ -107,8 +126,9 @@ class CachedEmbedder(Embedder):
         # already FallbackEmbedder, try Ollama as live recovery path.
         # This detects lazy-init failures (e.g., LocalSentenceEmbedder
         # constructor succeeded but _lazy_load() failed at embed time).
-        if vec and not any(v != 0.0 for v in vec):
-            if not isinstance(self._delegate, FallbackEmbedder):
+        if vec and not any(v != 0.0 for v in vec) and not isinstance(
+            self._delegate, FallbackEmbedder
+        ):
                 import logging
 
                 _log = logging.getLogger("plastic-promise.embedder")
@@ -183,7 +203,7 @@ class CachedEmbedder(Embedder):
         if uncached_texts:
             new_vecs = self._delegate.embed_batch(uncached_texts)
             with self._lock:
-                for j, vec in zip(uncached_indices, new_vecs):
+                for j, vec in zip(uncached_indices, new_vecs, strict=True):
                     key = self._key(texts[j])
                     if len(self._cache) >= self._max_size:
                         oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
@@ -201,6 +221,15 @@ class CachedEmbedder(Embedder):
     @property
     def model_name(self) -> str:
         return self._delegate.model_name
+
+    @property
+    def index_model_name(self) -> str:
+        return self._delegate.index_model_name
+
+    @property
+    def last_chunking_diagnostics(self) -> dict[str, object]:
+        diagnostics = getattr(self._delegate, "last_chunking_diagnostics", None)
+        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
 
     @property
     def stats(self) -> dict:
@@ -238,12 +267,85 @@ class OllamaEmbedder(Embedder):
         self._model = model or os.getenv("EMBEDDER_MODEL", "mxbai-embed-large")
         self._chunk_chars = _int_env("EMBEDDER_CHUNK_CHARS", 512, minimum=1)
         self._max_chunks = _int_env("EMBEDDER_MAX_CHUNKS", 8, minimum=1)
+        self._chunking_mode = os.getenv("PP_MEMORY_CHUNKING", "off").strip().lower()
+        if self._chunking_mode not in {"off", "shadow", "structure-v1"}:
+            logging.warning("Unknown PP_MEMORY_CHUNKING=%r; using off", self._chunking_mode)
+            self._chunking_mode = "off"
+        self._structure_hard_chars = _int_env(
+            "EMBEDDER_STRUCTURE_HARD_CHARS", max(self._chunk_chars * 2, self._chunk_chars), minimum=1
+        )
+        self._structure_max_chunks = _int_env(
+            "EMBEDDER_STRUCTURE_MAX_CHUNKS", 64, minimum=1
+        )
+        self._structure_max_source_chars = _int_env(
+            "EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS", 2_000_000, minimum=1
+        )
+        self._last_chunking_diagnostics: dict[str, object] = {}
 
     def embed(self, text: str) -> list[float]:
-        chunks = _embedding_chunks(text, self._chunk_chars, self._max_chunks)
+        if self._chunking_mode == "structure-v1":
+            if len(text or "") > self._structure_max_source_chars:
+                self._last_chunking_diagnostics = {
+                    "mode": "structure-v1",
+                    "source_chars": len(text or ""),
+                    "resource_limited": True,
+                    "error": "structure_chunking_source_too_large",
+                }
+                raise ValueError("structure_chunking_source_too_large")
+            all_materials = structure_aware_chunks(
+                text,
+                target_chars=self._chunk_chars,
+                hard_chars=self._structure_hard_chars,
+            )
+            resource_limited = len(all_materials) > self._structure_max_chunks
+            materials = limit_chunk_materials(all_materials, self._structure_max_chunks)
+            chunks = [material.text for material in materials]
+            last_source_end = max((material.source_end for material in materials), default=0)
+            meaningful_source_end = len((text or "").rstrip())
+            self._last_chunking_diagnostics = {
+                "mode": "structure-v1",
+                "source_chars": len(text or ""),
+                "chunk_count": len(materials),
+                "covered_source_chars": sum(
+                    max(material.source_end - material.source_start, 0) for material in materials
+                ),
+                "last_source_end": last_source_end,
+                "budget_unit": "characters-fallback",
+                "truncated": last_source_end < meaningful_source_end
+                or resource_limited
+                or has_uncovered_content(text or "", materials)
+                or any(material.context_truncated for material in materials),
+                "max_chunks": self._structure_max_chunks,
+                "resource_limited": resource_limited,
+                "context_truncated": any(material.context_truncated for material in materials),
+            }
+        else:
+            chunks = legacy_character_chunks(text, self._chunk_chars, self._max_chunks)
+            if self._chunking_mode == "shadow":
+                self._last_chunking_diagnostics = shadow_chunking_diagnostics(
+                    text,
+                    target_chars=self._chunk_chars,
+                    hard_chars=self._structure_hard_chars,
+                    max_chunks=self._max_chunks,
+                    legacy_chunks=chunks,
+                    max_source_chars=self._structure_max_source_chars,
+                )
+            else:
+                self._last_chunking_diagnostics = {
+                    "mode": "legacy",
+                    "source_chars": len(text or ""),
+                    "chunk_count": len(chunks),
+                    "covered_source_chars": sum(len(chunk) for chunk in chunks),
+                    "budget_unit": "characters",
+                    "truncated": len(text or "") > sum(len(chunk) for chunk in chunks),
+                }
         if len(chunks) == 1:
             return self._embed_chunk(chunks[0])
         return _mean_pool_vectors([self._embed_chunk(chunk) for chunk in chunks])
+
+    @property
+    def last_chunking_diagnostics(self) -> dict[str, object]:
+        return dict(self._last_chunking_diagnostics)
 
     def _embed_chunk(self, text: str) -> list[float]:
         resp = requests.post(
@@ -265,6 +367,19 @@ class OllamaEmbedder(Embedder):
     def model_name(self) -> str:
         return self._model
 
+    @property
+    def index_model_name(self) -> str:
+        if self._chunking_mode != "structure-v1":
+            return self._model
+        return (
+            f"{self._model}|chunking=structure-v1"
+            f"|target_chars={self._chunk_chars}"
+            f"|hard_chars={self._structure_hard_chars}"
+            f"|max_chunks={self._structure_max_chunks}"
+            f"|max_source_chars={self._structure_max_source_chars}"
+            "|budget=characters-fallback"
+        )
+
 
 def _int_env(name: str, default: int, minimum: int = 0) -> int:
     try:
@@ -274,17 +389,9 @@ def _int_env(name: str, default: int, minimum: int = 0) -> int:
 
 
 def _embedding_chunks(text: str, chunk_chars: int, max_chunks: int) -> list[str]:
-    text = text or ""
-    if len(text) <= chunk_chars:
-        return [text]
-    chunks = []
-    for start in range(0, len(text), chunk_chars):
-        if len(chunks) >= max_chunks:
-            break
-        chunk = text[start : start + chunk_chars]
-        if chunk:
-            chunks.append(chunk)
-    return chunks or [""]
+    """Compatibility wrapper for callers that used the old private helper."""
+
+    return legacy_character_chunks(text, chunk_chars, max_chunks)
 
 
 def _mean_pool_vectors(vectors: list[list[float]]) -> list[float]:
@@ -370,8 +477,7 @@ class LocalSentenceEmbedder(Embedder):
             return
         from sentence_transformers import SentenceTransformer
 
-        # Use HF mirror in China if set, with 120s timeout
-        download_timeout = int(os.getenv("EMBEDDER_DOWNLOAD_TIMEOUT", "120"))
+        # Use HF mirror in China if set.
         self._model = SentenceTransformer(
             self._model_name,
             trust_remote_code=True,
@@ -504,8 +610,5 @@ def get_embedder(fallback_on_error: bool = True) -> Embedder:
 
         # Wrap in cache unless explicitly disabled
         cache_size = int(os.environ.get("EMBEDDER_CACHE_SIZE", "256"))
-        if cache_size > 0:
-            _embedder_singleton = CachedEmbedder(delegate)
-        else:
-            _embedder_singleton = delegate
+        _embedder_singleton = CachedEmbedder(delegate) if cache_size > 0 else delegate
         return _embedder_singleton

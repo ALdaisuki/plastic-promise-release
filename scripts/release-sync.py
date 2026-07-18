@@ -49,6 +49,7 @@ INCLUDE: list[str] = [
     "docs/DEVELOPER.md",
     "docs/README.zh-CN.md",
     "docs/architecture/",
+    "docs/engineering-patterns/",
     "docs/TODO List/",
     "data/db/.gitkeep",
     "data/lancedb/.gitkeep",
@@ -75,6 +76,15 @@ INCLUDE: list[str] = [
     "package.json",
     "skills-lock.json",
 ]
+
+# A small set of source-controlled design records are authoritative inputs for
+# release-shipped regression tests. Keep the broader internal superpowers tree
+# excluded while allowing only these required records through the filter.
+INCLUDE_EXCEPTIONS: frozenset[str] = frozenset(
+    {
+        "docs/superpowers/plans/2026-07-12-corrective-governed-retrieval-plan.md",
+    }
+)
 
 EXCLUDE_DEV: list[str] = [
     "docs/superpowers/",
@@ -442,6 +452,9 @@ _GIT_NO_INTERACTIVE = {
 
 def is_included(filepath: str) -> bool:
     """Check if a filepath matches any INCLUDE rule and no EXCLUDE rules."""
+    if filepath in INCLUDE_EXCEPTIONS:
+        return True
+
     # Check explicit dev excludes first
     for pattern in EXCLUDE_DEV:
         if filepath.startswith(pattern) or filepath == pattern:
@@ -528,7 +541,7 @@ def _require_promoted_status(filepath: str, content: str, version: str) -> None:
         if heading is None:
             raise ValueError(f"release_heading_missing:{version}")
         _section_end, section = _release_section(content, heading.start())
-        if "Draft/BLOCK" in content or "Draft (unreleased)" in content or "Draft/BLOCK" in section:
+        if "Draft/BLOCK" in section or "Draft (unreleased)" in section:
             raise ValueError(f"release_status_not_promoted:{version}")
     elif filepath == "docs/GOAL.md":
         marker = f"- Release version `{version}`"
@@ -617,9 +630,8 @@ def apply_transform(
                 (
                     f"- Release status for `{new_ver}` is **audited and approved**. "
                     "Final whole-repository verification and mandatory high-risk review "
-                    "completed before release synchronization. The one-shot public calibration "
-                    "produced no eligible WRRF candidate, so held-out queries remained unopened "
-                    "and legacy-auto is the released policy."
+                    "completed before release synchronization. Release-specific benchmark "
+                    "and runtime evidence are recorded in the release notes."
                 ),
                 section,
                 count=1,
@@ -651,9 +663,8 @@ def apply_transform(
             (
                 f"- Release verification for `{new_ver}` is **audited and approved**. "
                 "Final whole-repository verification and mandatory high-risk review completed "
-                "before release synchronization. The one-shot public calibration produced no "
-                "eligible WRRF candidate, so held-out queries remained unopened and legacy-auto "
-                "is the released policy."
+                "before release synchronization. Release-specific benchmark and runtime evidence "
+                "are recorded in the release notes."
             ),
             section,
             count=1,

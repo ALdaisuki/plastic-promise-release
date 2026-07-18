@@ -30,6 +30,8 @@ from plastic_promise.core.synthesis_retrieval import (
     engine_memory_is_governed_synthesis,
 )
 
+_TERMINAL_EMBED_ERRORS = frozenset({"structure_chunking_source_too_large"})
+
 
 @dataclass(frozen=True)
 class PreparedMemory:
@@ -65,6 +67,7 @@ class MemoryPipeline:
         self._lancedb = lancedb  # vector dedup (None → graceful skip)
         self._last_process: str | None = None
         self._batch_size = 10
+        self._rejections: dict[str, dict[str, str]] = {}
 
     # ================================================================
     # Public API
@@ -559,6 +562,7 @@ class MemoryPipeline:
         return {
             "pipeline": counts,
             "migration_outcomes": migration_outcomes,
+            "rejections": dict(self._rejections),
             "total_processed": sum(counts.values()),
             "buffer_remaining": len(self._buffer),
             "timestamp": self._last_process,
@@ -602,13 +606,7 @@ class MemoryPipeline:
 
     @staticmethod
     def _embedding_model_name(embedder: Any) -> str:
-        return str(
-            getattr(embedder, "model_name", None)
-            or getattr(embedder, "model", None)
-            or embedder.__class__.__name__
-            if embedder is not None
-            else "unknown"
-        )
+        return effective_embedding_model_name(embedder)
 
     @classmethod
     def _build_memory_index_fields(
@@ -820,6 +818,32 @@ class MemoryPipeline:
                 else:
                     vectors = self.embedder.embed_batch(embed_texts)
             except Exception as e:
+                if self._is_terminal_embed_error(e):
+                    # A batch can contain both valid and oversized sources.
+                    # Retry item-by-item so one deterministic rejection does
+                    # not defer otherwise healthy records forever.
+                    for mid, record in batch:
+                        try:
+                            embed_text = record.get("embedding_text") or record["content"]
+                            vec = (
+                                [0.0] * self.embedder.dim
+                                if mid in skip_set
+                                else self.embedder.embed(embed_text)
+                            )
+                        except Exception as item_error:
+                            if self._is_terminal_embed_error(item_error):
+                                self._reject_embedding(mid, record, item_error)
+                            else:
+                                self._defer_embedding(record)
+                            continue
+                        if self.rec_mem is None and vec and not any(v != 0.0 for v in vec):
+                            self._defer_embedding(record)
+                            continue
+                        record["vector"] = vec
+                        record["stage"] = "embedded"
+                        record["processed_at"] = datetime.datetime.now().isoformat()
+                        count += 1
+                    continue
                 logging.warning(
                     "Embed batch failed, deferring %d items (skip_set=%d): %s",
                     len(batch),
@@ -848,6 +872,28 @@ class MemoryPipeline:
                 record["processed_at"] = datetime.datetime.now().isoformat()
                 count += 1
         return count
+
+    @staticmethod
+    def _is_terminal_embed_error(error: Exception) -> bool:
+        return str(error).strip().casefold() in _TERMINAL_EMBED_ERRORS
+
+    def _defer_embedding(self, record: dict[str, Any]) -> None:
+        tags = record.setdefault("tags", [])
+        if "embed:deferred" not in tags:
+            tags.append("embed:deferred")
+
+    def _reject_embedding(
+        self,
+        memory_id: str,
+        record: dict[str, Any],
+        error: Exception,
+    ) -> None:
+        reason = str(error).strip() or "embedding_rejected"
+        self._rejections[memory_id] = {"reason": reason}
+        record.setdefault("tags", []).append("embed:rejected")
+        record["rejection_reason"] = reason
+        record["stage"] = "rejected"
+        self._buffer.pop(memory_id, None)
 
     def _process_embedded_to_migrate(
         self, migration_outcomes: dict[str, dict[str, str]] | None = None

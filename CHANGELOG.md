@@ -7,9 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Released version: `0.1.16`.
+Released version: `0.1.17`.
 
-## [0.1.16] - 2026-07-14
+## [0.1.17] - 2026-07-18
+
+### Added
+
+- Added feature-gated structure-aware embedding chunking for Markdown headings,
+  paragraphs, fenced code, lists, and tables.
+- Added a read-only shadow benchmark that reports legacy truncation and
+  structure-aware coverage without calling an embedding model or writing an index.
+
+### Changed
+
+- `PP_MEMORY_CHUNKING=shadow` preserves legacy embedding requests and index
+  identity while emitting candidate diagnostics; `structure-v1` is opt-in and
+  binds its configuration into the persisted embedding model identity.
+- Structure-aware mode preserves the tail within a bounded request budget and
+  reports middle coverage when the budget is exceeded instead of silently
+  pretending the full source was embedded.
+- Pipeline and LanceDB repair paths now bind the complete chunking identity and
+  migrate existing same-model-family material before replacing derived vectors.
+- Opaque held-out report fingerprints now normalize text line endings, keeping
+  frozen recall contracts stable across Windows `autocrlf` without parsing or
+  exposing held-out content.
+
+### Verification
+
+- Default behavior remains legacy-compatible and is unchanged unless the new
+  feature flag is explicitly enabled.
+- Long-text validation uses a real local Ollama embedding sample; publishable
+  recall claims still require the versioned real-model benchmark and store to
+  recall to context smoke.
+- Rollback keeps `PP_MEMORY_CHUNKING=off` and requires rebuilding the derived
+  LanceDB index after the flag change; SQLite remains the canonical source.
+- Release status for `0.1.17` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+
+## [0.1.16] - Draft (unreleased)
 
 ### Fixed
 
@@ -22,7 +56,9 @@ Released version: `0.1.16`.
 
 ### Verification
 
-- Release status for `0.1.16` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. The one-shot public calibration produced no eligible WRRF candidate, so held-out queries remained unopened and legacy-auto is the released policy.
+- Overall release status is **Draft/BLOCK**. Targeted context, LanceDB, Rust,
+  canonical-admission, live HTTP, restart, and release-sync gates must pass
+  before publishing `v0.1.16`.
 
 ## [0.1.15] - 2026-07-13
 
@@ -356,6 +392,7 @@ Released version: `0.1.16`.
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.17]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.13...v0.1.14

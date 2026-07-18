@@ -74,6 +74,47 @@ class TestPipelineQuality:
             # Tags should include cat:preference
             assert any("cat:preference" in tag for tag in record["tags"])
 
+    def test_oversized_structure_embedding_is_rejected_without_retry_loop(self):
+        class OversizedEmbedder:
+            dim = 4
+
+            def __init__(self):
+                self.batch_calls = 0
+                self.embed_calls = []
+
+            def embed_batch(self, texts):
+                self.batch_calls += 1
+                raise ValueError("structure_chunking_source_too_large")
+
+            def embed(self, text):
+                self.embed_calls.append(text)
+                if len(text) > 8:
+                    raise ValueError("structure_chunking_source_too_large")
+                return [1.0] * self.dim
+
+        embedder = OversizedEmbedder()
+        pipeline = MemoryPipeline(rec_mem=None, embedder=embedder)
+        pipeline._buffer = {
+            "short": {"stage": "classified", "content": "short", "tags": []},
+            "oversized": {
+                "stage": "classified",
+                "content": "x" * 32,
+                "tags": [],
+            },
+        }
+
+        assert pipeline._process_classified_to_embedded() == 1
+        assert pipeline._buffer["short"]["stage"] == "embedded"
+        assert "oversized" not in pipeline._buffer
+        assert pipeline._rejections == {
+            "oversized": {"reason": "structure_chunking_source_too_large"}
+        }
+
+        # A later maintenance cycle must not attempt the rejected item again.
+        assert pipeline._process_classified_to_embedded() == 0
+        assert embedder.batch_calls == 1
+        assert embedder.embed_calls == ["short", "x" * 32]
+
     def test_store_urgent_builds_summary_index_fields_from_extraction(self, monkeypatch):
         monkeypatch.setenv("PP_MEMORY_SUMMARY_INDEX", "1")
         raw = "User said they like Rust, with extra source wording."

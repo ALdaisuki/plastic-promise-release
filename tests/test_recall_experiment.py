@@ -253,6 +253,18 @@ def test_known_heldout_report_contract_matches_frozen_fixture():
     )
 
 
+def test_opaque_fingerprint_is_line_ending_invariant_but_content_sensitive(tmp_path):
+    lf = tmp_path / "heldout-lf.json"
+    crlf = tmp_path / "heldout-crlf.json"
+    changed = tmp_path / "heldout-changed.json"
+    lf.write_bytes(b'{"heldout":true}\n{"case":1}\n')
+    crlf.write_bytes(b'{"heldout":true}\r\n{"case":1}\r\n')
+    changed.write_bytes(b'{"heldout":false}\n{"case":1}\n')
+
+    assert opaque_file_fingerprint(lf) == opaque_file_fingerprint(crlf)
+    assert opaque_file_fingerprint(lf) != opaque_file_fingerprint(changed)
+
+
 def test_v1_is_rejected_as_heldout_evidence():
     calibration = load_dataset_bundle(V1_PATH)
     assert calibration.evidence_role == "calibration"

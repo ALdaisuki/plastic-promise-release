@@ -17,7 +17,11 @@ from plastic_promise.core.embedder import Embedder
 from plastic_promise.core.memory_index import (
     IndexMaterial,
     IndexMaterialError,
+    build_index_material,
+    effective_embedding_model_name,
+    embedding_model_family,
     metadata_with_index_material,
+    read_persisted_index_material,
     resolve_index_material,
 )
 from plastic_promise.core.synthesis_retrieval import synthesis_index_eligible
@@ -526,6 +530,22 @@ class LanceDBStore:
 
         orphan_ids = sorted(ldb_ids - sqlite_ids)
         missing_ids = [mid for mid in eligible_memories if mid not in ldb_ids]
+        model_name = self._embedding_model_name()
+        # Ordinary index material is owned by this repair path. Governed
+        # synthesis material is owned by synthesis_maintenance and may be
+        # stale while its durable outbox job is pending; do not replace or
+        # delete that row as a side effect of ordinary chunking migration.
+        stale_ids = [
+            mid
+            for mid in sorted(sqlite_ids & ldb_ids)
+            if str(eligible_memories[mid].get("memory_type") or "").strip().casefold()
+            != "synthesis"
+            if read_persisted_index_material(
+                eligible_memories[mid], model_name=model_name
+            )
+            is None
+            and read_persisted_index_material(eligible_memories[mid]) is not None
+        ]
 
         orphan_deleted = 0
         for mid in orphan_ids:
@@ -539,6 +559,16 @@ class LanceDBStore:
                 missing_backfilled += 1
             else:
                 missing_skipped += 1
+
+        stale_reindexed = 0
+        for mid in stale_ids:
+            if self._insert_engine_memory(
+                engine,
+                mid,
+                eligible_memories.get(mid, {}),
+                replace_existing=True,
+            ):
+                stale_reindexed += 1
 
         # Legacy materialization can change a source embedding hash. Recheck
         # after repair so a synthesis that became stale during this pass cannot
@@ -561,6 +591,9 @@ class LanceDBStore:
         }
         if self._index_failures:
             result["diagnostics"] = list(self._index_failures)
+        if stale_ids:
+            result["stale_reindexed"] = stale_reindexed
+            result["stale_ids"] = stale_ids
         return result
 
     def clear_all(self) -> int:
@@ -612,15 +645,30 @@ class LanceDBStore:
             logger.warning("LanceDB rebuild: canonical SQLite memories unavailable")
             return 0
 
+        eligible_memories = self._eligible_engine_memories(engine, canonical_memories)
+        eligible_synthesis_ids = {
+            mid
+            for mid, memory in eligible_memories.items()
+            if str(memory.get("memory_type") or "").strip().casefold() == "synthesis"
+        }
         try:
-            removed = self.clear_all_checked()
+            if eligible_synthesis_ids:
+                # Synthesis rows are maintained by the durable synthesis
+                # index queue. Preserve currently eligible rows so a model or
+                # chunking migration cannot erase a usable derived index.
+                removed = 0
+                for memory_id in sorted(self.list_memory_ids() - eligible_synthesis_ids):
+                    if self._delete_repair_row(memory_id):
+                        removed += 1
+            else:
+                removed = self.clear_all_checked()
         except Exception as exc:
             self._record_index_diagnostic("__table__", "lancedb_clear_failed", failed=True)
             logger.error("LanceDB rebuild: clear failed: %s", exc)
             return 0
         logger.info("LanceDB rebuild: removed %d rows, starting re-index", removed)
 
-        memories = self._eligible_engine_memories(engine, canonical_memories)
+        memories = eligible_memories
         if not memories:
             logger.warning("LanceDB rebuild: engine._memories is empty — nothing to rebuild")
             return 0
@@ -646,25 +694,57 @@ class LanceDBStore:
         logger.info("LanceDB rebuild: complete — %d memories re-indexed", rebuilt)
         return rebuilt
 
-    def _insert_engine_memory(self, engine: object, mid: str, mem_data: dict) -> bool:
+    def _insert_engine_memory(
+        self,
+        engine: object,
+        mid: str,
+        mem_data: dict,
+        *,
+        replace_existing: bool = False,
+    ) -> bool:
         if not self._memory_is_index_eligible(engine, mid, mem_data):
             return False
 
         model_name = self._embedding_model_name()
+        is_governed_synthesis = (
+            str(mem_data.get("memory_type") or "").strip().casefold() == "synthesis"
+        )
+        migrating_model = False
         try:
             material, needs_persist = resolve_index_material(
                 mem_data,
                 model_name=model_name,
             )
         except IndexMaterialError as exc:
-            self._record_index_diagnostic(mid, str(exc), failed=True)
-            logger.warning("LanceDB sync: skipped %s (%s)", mid, exc)
-            return False
+            if str(exc) != "index_material_model_mismatch":
+                self._record_index_diagnostic(mid, str(exc), failed=True)
+                logger.warning("LanceDB sync: skipped %s (%s)", mid, exc)
+                return False
+            persisted = read_persisted_index_material(mem_data)
+            if persisted is None or embedding_model_family(persisted.model_name) != embedding_model_family(model_name):
+                self._record_index_diagnostic(mid, str(exc), failed=True)
+                logger.warning("LanceDB sync: skipped %s (%s)", mid, exc)
+                return False
+            if is_governed_synthesis:
+                self._record_index_diagnostic(
+                    mid,
+                    "synthesis_index_material_migration_deferred",
+                    failed=False,
+                )
+                return False
+            material = build_index_material(
+                mem_data,
+                policy=persisted.policy,
+                model_name=model_name,
+            )
+            needs_persist = True
+            migrating_model = True
+            self._record_index_diagnostic(mid, "index_material_model_migrated", failed=False)
         if not material.vector_text.strip() or not material.search_text.strip():
             self._record_index_diagnostic(mid, "index_material_incomplete", failed=True)
             return False
         try:
-            if needs_persist:
+            if needs_persist and not migrating_model:
                 self._record_index_diagnostic(
                     mid,
                     "index_material_legacy_materialized",
@@ -687,12 +767,19 @@ class LanceDBStore:
                     )
                     return False
             vector = self._embedder.embed(material.vector_text)
-            canonical = self._validated_canonical_index_memory(
-                engine,
-                mid,
-                material,
-                model_name=model_name,
-            )
+            if migrating_model:
+                canonical = self._canonical_index_memory(engine, mid)
+                if canonical is not None and not self._memory_is_index_eligible(
+                    engine, mid, canonical
+                ):
+                    canonical = None
+            else:
+                canonical = self._validated_canonical_index_memory(
+                    engine,
+                    mid,
+                    material,
+                    model_name=model_name,
+                )
             if canonical is None:
                 self._record_index_diagnostic(
                     mid,
@@ -701,7 +788,8 @@ class LanceDBStore:
                 )
                 return False
             try:
-                self.insert_checked(
+                insert = self.replace_checked if replace_existing else self.insert_checked
+                insert(
                     memory_id=mid,
                     vector=vector,
                     text=material.search_text,
@@ -712,6 +800,12 @@ class LanceDBStore:
             except Exception as exc:
                 self._record_index_diagnostic(mid, "lancedb_insert_failed", failed=True)
                 logger.warning("LanceDB sync: insert failed for %s: %s", mid, exc)
+                return False
+            if migrating_model and not self._persist_index_material(
+                engine, mid, mem_data, material
+            ):
+                self._delete_repair_row(mid)
+                self._record_index_diagnostic(mid, "index_material_persist_failed", failed=True)
                 return False
             if (
                 self._validated_canonical_index_memory(
@@ -906,11 +1000,7 @@ class LanceDBStore:
         return True
 
     def _embedding_model_name(self) -> str:
-        return str(
-            getattr(self._embedder, "model_name", None)
-            or getattr(self._embedder, "model", None)
-            or self._embedder.__class__.__name__
-        )
+        return effective_embedding_model_name(self._embedder)
 
     @staticmethod
     def _persist_index_material(

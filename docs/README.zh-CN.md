@@ -174,6 +174,13 @@ http://127.0.0.1:9020/sse
 | P1 治理运行时 | 工具清单图、`runtime_events`、`mgp_shadow_bridge`、Context Recommender 为审计和推荐提供可解释元数据。 |
 | 插件与市场 | 通过 pack 元数据加载知识、工作流、能力和适配器扩展。 |
 
+长文本嵌入默认仍使用兼容的 legacy 切片。设置 `PP_MEMORY_CHUNKING=shadow` 时，正式向量请求和索引身份不变，只生成结构感知候选诊断；设置 `PP_MEMORY_CHUNKING=structure-v1` 才启用标题路径、段落、代码块、列表和表格感知的嵌入输入，并在有界请求预算内保留尾部。超过 `EMBEDDER_STRUCTURE_MAX_CHUNKS` 时会保留开头和尾部，并标记中间覆盖受资源限制。shadow 报告是只读观测，不调用 embedding 模型、不写 SQLite/LanceDB，也不能单独作为召回质量结论：
+
+```powershell
+python scripts/benchmark_chunking_shadow.py --source data/db/plastic_memory.db
+python scripts/benchmark_chunking_shadow.py --source tests/fixtures/recall_quality/v1.json
+```
+
 当前 `plastic_promise/mcp/server.py` 暴露 58 个 MCP 工具，包含 `session_init` / `sp_stage` 等兼容别名。`mgp_shadow_bridge` 是 MGP 兼容语义桥；P1 阶段只做 off/shadow/inject 模式管理与审计映射，不直接改写长期记忆。
 
 `sp-stage` 保留 16 阶段流程，但对客户端只返回当前阶段与路由、必需产物和闭环提醒；服务端会校验每次转换，并在链违规时返回有效后继。Agent 不再需要加载或复述事无巨细的 SuperPowers 技能说明；会话/flow 隔离、审查、审计、信任检查和可追溯性仍由运行时执行。
@@ -214,10 +221,10 @@ python scripts/smoke_restart_recovery.py --artifact-dir .artifacts/recovery-smok
 
 `maintenance-heartbeat/v1` 将心跳绑定到 daemon PID；旧心跳仅保留 mtime 兼容。索引重放继续读取既有合法 `memory-index/v2` upsert，但所有新 upsert/delete 都写为带 action、project、memory version、material revision 和 expected embedding hash 的 `memory-index/v3`。
 
-升级到 `0.1.16` 时，应先保持四个开关为默认值，同时重启 MCP Server 和 Maintenance Daemon，避免不同版本的写入进程混用事务约定。公开 MCP 工具和参数没有删除；已有 SQLite 记忆继续作为权威数据，LanceDB 可由持久化校验任务修复。LanceDB 最低版本已提高到 `0.34.0`，固定在更早版本的环境必须先升级依赖。重启后执行：
+升级到 `0.1.17` 时，应先保持四个开关为默认值，同时重启 MCP Server 和 Maintenance Daemon，避免不同版本的写入进程混用事务约定。公开 MCP 工具和参数没有删除；已有 SQLite 记忆继续作为权威数据，LanceDB 可由持久化校验任务修复。LanceDB 最低版本已提高到 `0.34.0`，固定在更早版本的环境必须先升级依赖。重启后执行：
 
 ```bash
-python scripts/smoke_http_mcp.py --expected-version 0.1.16 --expected-mode rust-full
+python scripts/smoke_http_mcp.py --expected-version 0.1.17 --expected-mode rust-full
 ```
 
 回滚时关闭四个开关即可，不要删除 SQLite 中的控制、来源、提案、lineage 或审计记录：
@@ -231,6 +238,15 @@ PP_RETRIEVAL_FUSION_POLICY=legacy-auto
 ```
 
 同时取消 `PP_RETRIEVAL_RRF_K`、`PP_RETRIEVAL_RRF_WEIGHTS_JSON`、`PP_RETRIEVAL_RRF_WINDOWS_JSON`。保留 SQLite、来源与 outbox 数据，重启两类进程，运行 one-shot maintenance 重放默认索引策略，再执行 HTTP 与 restart-recovery smoke。
+
+切换 `PP_MEMORY_CHUNKING` 后，应在放量前重建派生 LanceDB；回滚到 `off` 后也要再次重建，确保不会混用不同切片身份的向量：
+
+```powershell
+$env:PP_MEMORY_CHUNKING = "structure-v1"
+python scripts/rebuild_lancedb.py
+$env:PP_MEMORY_CHUNKING = "off"
+python scripts/rebuild_lancedb.py
+```
 
 ## 架构概览
 
@@ -319,7 +335,7 @@ commit/tag 对象和远端状态，再原子推送 `main` 与精确 tag。不要
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.16 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.17 --release-repo F:/Agent/plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \
