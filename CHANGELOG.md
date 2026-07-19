@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Released version: `0.1.17`.
+Released version: `0.1.18`.
+
+## [0.1.18] - 2026-07-19
+
+### Added
+
+- Added optional post-chunk local semantic enrichment for `structure-v1` chunks,
+  using Ollama structured output, strict source grounding, deterministic
+  identifier checks, and a content-addressed SQLite cache.
+- Added `off`, bounded background `shadow`, and synchronous `on` modes through
+  `PP_MEMORY_CHUNK_ENRICHMENT`; `on` is activated by an offline rebuild and
+  remains the serving identity for matching document writes and repairs.
+
+### Changed
+
+- Active enrichment now binds its model, prompt, and schema identity into
+  derived embedding material while preserving canonical chunk text and source
+  spans. Invalid, truncated, timed-out, or unavailable model output falls back
+  to the original chunk.
+
+### Verification
+
+- Targeted unit and integration tests cover schema/source rejection, cache
+  persistence and identity, shadow vector compatibility, model migration,
+  legacy repair, and fail-closed fallback. A real local `qwen3:8b` smoke
+  produced one validated enriched chunk in 6.05s; the direct query path took
+  0.144s and called only the embedding endpoint.
+- Whole-repository regression passes on the declared minimum LanceDB `0.34.0`
+  with `2024 passed, 22 skipped`; the only warning is the pre-existing
+  `test_recall_quality` return-value warning. The formal system audit score is
+  `0.6752`, and the high-risk ten-item code checklist has no blocking finding.
+- Release status for `0.1.18` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
 
 ## [0.1.17] - 2026-07-18
 
@@ -41,9 +72,12 @@ Released version: `0.1.17`.
   recall to context smoke.
 - Rollback keeps `PP_MEMORY_CHUNKING=off` and requires rebuilding the derived
   LanceDB index after the flag change; SQLite remains the canonical source.
-- Release status for `0.1.17` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+- Release status for `0.1.17` is **audited and approved**. Final
+  whole-repository verification and mandatory high-risk review completed before
+  release synchronization. Release-specific benchmark and runtime evidence are
+  recorded in the release notes.
 
-## [0.1.16] - Draft (unreleased)
+## [0.1.16] - 2026-07-14
 
 ### Fixed
 
@@ -56,9 +90,9 @@ Released version: `0.1.17`.
 
 ### Verification
 
-- Overall release status is **Draft/BLOCK**. Targeted context, LanceDB, Rust,
-  canonical-admission, live HTTP, restart, and release-sync gates must pass
-  before publishing `v0.1.16`.
+- Release status for `0.1.16` is **audited and approved**. Targeted context,
+  LanceDB, Rust, canonical-admission, live HTTP, restart, and release-sync gates
+  completed before publication.
 
 ## [0.1.15] - 2026-07-13
 
@@ -392,6 +426,7 @@ Released version: `0.1.17`.
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.18]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.14...v0.1.15

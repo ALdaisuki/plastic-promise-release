@@ -40,6 +40,18 @@ class StructuredVectorEmbedder(RecordingVectorEmbedder):
     )
 
 
+class PreparingVectorEmbedder(RecordingVectorEmbedder):
+    index_model_name = "vector-test|chunking=structure-v1|enrichment=semantic-v1"
+
+    def __init__(self):
+        super().__init__()
+        self.prepared = []
+
+    def prepare_index_text(self, text):
+        self.prepared.append(text)
+        return f"PLAN::{text}"
+
+
 class RepairEngine:
     def __init__(self, memories, sqlite_store=None):
         self._memories = memories
@@ -323,9 +335,7 @@ class TestLanceDBStore:
             "\u6765\u6e90\u53d8\u5316\u540e\u65e7\u7684\u673a\u5668\u7ed3\u8bba\u4e0d\u80fd\u8fd4\u56de",
         ],
     )
-    def test_incremental_native_fts_seed_does_not_degrade_on_cjk_queries(
-        self, tmp_path, query
-    ):
+    def test_incremental_native_fts_seed_does_not_degrade_on_cjk_queries(self, tmp_path, query):
         fixture_path = Path(__file__).parent / "fixtures" / "recall_quality" / "v1.json"
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         store = LanceDBStore(str(tmp_path / "incremental-fts.lancedb"), VectorTestEmbedder())
@@ -572,7 +582,10 @@ class TestLanceDBStore:
         store.replace_checked = record_replace
         store.delete_checked = record_delete
 
-        assert store._insert_engine_memory(engine, memory["id"], memory, replace_existing=True) is False
+        assert (
+            store._insert_engine_memory(engine, memory["id"], memory, replace_existing=True)
+            is False
+        )
         assert replace_calls == []
         assert delete_calls == []
         assert embedder.texts == []
@@ -751,6 +764,26 @@ class TestLanceDBStore:
         assert embedder.texts == ["legacy full content", "legacy full content"]
         row = store._table.search().where("memory_id = 'legacy-memory'").limit(1).to_list()[0]
         assert row["text"] == "legacy full content"
+
+    def test_pre_v2_repair_prepares_exact_document_material_before_persisting(self, tmp_path):
+        embedder = PreparingVectorEmbedder()
+        memory = {
+            "id": "pre-v2-memory",
+            "content": "legacy full content",
+            "memory_type": "experience",
+            "tier": "L1",
+            "category": "fact",
+            "scope": "global",
+        }
+        engine = RepairEngine({memory["id"]: memory})
+        store = LanceDBStore(str(tmp_path / "pre-v2-prepared.lancedb"), embedder)
+
+        result = store.sync_with_engine(engine)
+
+        assert result["missing_backfilled"] == 1
+        assert embedder.prepared == ["legacy full content"]
+        assert embedder.texts == ["PLAN::legacy full content"]
+        assert memory["embedding_text"] == "PLAN::legacy full content"
 
     def test_partial_compact_material_never_falls_back_to_raw_content(self, tmp_path):
         from plastic_promise.core.context_engine import _SQLiteMemoryStore

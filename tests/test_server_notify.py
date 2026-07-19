@@ -27,6 +27,13 @@ class _RecordingQueue:
         self.items.append(item)
 
 
+class _PreparingEmbedder:
+    index_model_name = "vector-test|chunking=structure-v1|enrichment=semantic-v1"
+
+    def prepare_index_text(self, text):
+        return f"PREPARED::{text}"
+
+
 def _runtime(**overrides):
     runtime = {
         "actor": "maintenance_daemon",
@@ -219,6 +226,29 @@ def test_consecutive_real_audit_notifications_replace_indexable_source(tmp_path)
         second_row = storage.get(second["memory_id"])
         assert second_row["embedding_hash"]
         assert _source_is_available(second_row) is True
+    finally:
+        storage._conn.close()
+
+
+def test_audit_notification_uses_current_document_index_preparation(tmp_path):
+    storage = _SQLiteStorage(str(tmp_path / "audit-notify-prepared.db"))
+    engine = ContextEngine(use_sqlite=False)
+    engine._sqlite = storage
+    engine._memories = {}
+    engine._embedder = _PreparingEmbedder()
+    try:
+        result = _persist_audit_report_notification(
+            engine,
+            {"type": "audit_report", "content": "prepared audit", "overall": 0.81},
+            _runtime(call_id="call:prepared-audit"),
+        )
+
+        assert result["committed"] is True
+        row = storage.get(result["memory_id"])
+        assert row["embedding_text"] == "PREPARED::prepared audit"
+        assert row["metadata_json"]["memory_index"]["model_name"] == (
+            engine._embedder.index_model_name
+        )
     finally:
         storage._conn.close()
 

@@ -359,6 +359,29 @@ child rows or change retrieval identity, while structure-v1 binds all chunking
 configuration into the persisted embedding model identity so enabling or
 rolling back the active baseline triggers derived-index migration.
 
+After `structure-v1` has produced canonical chunks, an optional local semantic
+enrichment layer can add retrieval-only metadata without changing chunk text,
+order, heading paths, or source spans. Set `PP_MEMORY_CHUNK_ENRICHMENT=shadow`
+to enqueue bounded daemon analysis with Ollama `qwen3:8b`; vectors and index
+identity remain unchanged. Valid results are stored in a content-addressed
+SQLite cache adjacent to the canonical database by default. Set the mode to
+`on` for the initial offline rebuild or migration. Once that derived index
+identity is serving, keep `on` enabled so new document writes and index repairs
+synchronously prepare the same exact plan; query embeddings never invoke the
+enrichment model. Validated summaries, keywords, entities, and identifiers are
+prepended to derived embedding input, and the model, prompt, and schema versions
+are bound into index identity. Pin `PP_MEMORY_CHUNK_ENRICHMENT_MODEL_DIGEST`
+when reproducible deployment identity is required; otherwise the digest is
+resolved from Ollama `/api/tags`.
+
+The Ollama `/api/chat` request disables thinking, uses temperature zero, and
+requests a strict JSON Schema. The response is still independently validated:
+unknown or missing fields, a non-verbatim summary/evidence/keyword/entity,
+identifier mismatches, invalid JSON, timeouts, and unavailable models all fail
+closed to the original chunk. The
+default remains `off`; enrichment is inactive unless
+`PP_MEMORY_CHUNKING=structure-v1` is also enabled.
+
 The read-only shadow report can be run against the canonical SQLite memories
 or an explicit JSON/JSONL corpus. It reports truncation, candidate coverage,
 block kinds, chunk-count ratio, and local planning latency without calling an
@@ -514,7 +537,7 @@ Also unset `PP_RETRIEVAL_RRF_K`, `PP_RETRIEVAL_RRF_WEIGHTS_JSON`, and
 restart both processes, run one-shot maintenance to replay the default checked
 index policy, then run the HTTP and restart-recovery smokes.
 
-For an upgrade to `0.1.17`, leave these gates at their defaults until the live
+For an upgrade to `0.1.18`, leave these gates at their defaults until the live
 deployment passes its project-isolated smoke checks. Restart the MCP server and
 Maintenance Daemon together so every writer uses the same canonical mutation
 contract. No public MCP tool or parameter was removed; existing SQLite memory
@@ -532,6 +555,24 @@ $env:PP_MEMORY_CHUNKING = "off"
 python scripts/rebuild_lancedb.py
 ```
 
+Roll out semantic enrichment in two phases. Shadow mode can run with normal
+traffic because it does not change vectors. Active mode starts with an offline
+rebuild, then remains enabled while serving the enriched index:
+
+```powershell
+$env:PP_MEMORY_CHUNKING = "structure-v1"
+$env:PP_MEMORY_CHUNK_ENRICHMENT = "shadow"
+# Run representative writes/backfills, then inspect enrichment diagnostics/cache.
+
+$env:PP_MEMORY_CHUNK_ENRICHMENT = "on"
+python scripts/rebuild_lancedb.py
+
+# Rollback preserves canonical SQLite content; disable enrichment and rebuild
+# the derived index to return to the legacy index identity.
+$env:PP_MEMORY_CHUNK_ENRICHMENT = "off"
+python scripts/rebuild_lancedb.py
+```
+
 ---
 
 ## Configuration Notes
@@ -544,6 +585,7 @@ python scripts/rebuild_lancedb.py
 | Launcher modes | `light`, `normal`, `rust-normal`, `full`, `rust-full`; non-interactive default is `rust-full` |
 | Maintenance daemon | `daemons/maintenance_daemon.py` |
 | Default local embedding path | Ollama `mxbai-embed-large`, with chunked long-text pooling and fallback embedder when configured |
+| Optional chunk enrichment | Off by default; local Ollama `qwen3:8b`, strict grounded schema, SQLite cache; `on` is activated with an offline rebuild and stays enabled for matching writes/repairs |
 | Structured database | `data/db/plastic_memory.db` unless `PLASTIC_DB_PATH` overrides it |
 | Vector database | `data/lancedb` unless `PLASTIC_LANCEDB_PATH` overrides it |
 | Codex repo skills | `.agents/skills/*/SKILL.md` |
@@ -596,10 +638,10 @@ python scripts/init_and_start.py --check-only
 python scripts/init_and_start.py --skip-ollama-check --check-only
 
 # Verify the live Streamable HTTP MCP process after startup or release restart.
-python scripts/smoke_http_mcp.py --expected-version 0.1.17 --expected-mode rust-full
+python scripts/smoke_http_mcp.py --expected-version 0.1.18 --expected-mode rust-full
 
 # Run only after explicitly enabling PP_MEMORY_SUMMARY_INDEX=1 and compact-v2.
-python scripts/smoke_http_mcp.py --expected-version 0.1.17 --expected-mode rust-full --check-summary-index
+python scripts/smoke_http_mcp.py --expected-version 0.1.18 --expected-mode rust-full --check-summary-index
 ```
 
 Live release sync has a fail-closed preflight: the release repository must be
@@ -615,7 +657,7 @@ Do not replace the attested push with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.17 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.18 --release-repo F:/Agent/plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \

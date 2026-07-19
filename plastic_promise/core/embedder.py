@@ -19,6 +19,9 @@ Environment variables:
   EMBEDDER_CACHE_TTL=300           (TTL in seconds, default: 300)
   EMBEDDER_TIMEOUT=5               (HTTP timeout for Ollama/OpenAI, default: 5)
   PP_MEMORY_CHUNKING=off|shadow|structure-v1  (default: off)
+  PP_MEMORY_CHUNK_ENRICHMENT=off|shadow|on  (default: off; structure-v1 only)
+  PP_MEMORY_CHUNK_ENRICHMENT_MODEL=qwen3:8b
+  PP_MEMORY_CHUNK_ENRICHMENT_TIMEOUT=45
   EMBEDDER_CHUNK_CHARS=512         (legacy size / structure-v1 soft target)
   EMBEDDER_MAX_CHUNKS=8            (legacy cap only)
   EMBEDDER_STRUCTURE_HARD_CHARS=1024  (structure-v1 oversized-block limit)
@@ -43,6 +46,11 @@ from plastic_promise.core.chunking import (
     limit_chunk_materials,
     shadow_chunking_diagnostics,
     structure_aware_chunks,
+)
+from plastic_promise.core.semantic_chunk_enrichment import (
+    SemanticChunkEnricher,
+    decode_embedding_plan,
+    is_embedding_plan,
 )
 
 
@@ -75,6 +83,14 @@ class Embedder(ABC):
     def index_model_name(self) -> str:
         """Versioned identity for derived index material."""
         return self.model_name
+
+    def prepare_index_text(self, text: str) -> str:
+        """Prepare exact persisted document material; queries should call embed directly."""
+        return text
+
+    def close(self) -> None:
+        """Release optional provider resources."""
+        return None
 
 
 class CachedEmbedder(Embedder):
@@ -126,28 +142,30 @@ class CachedEmbedder(Embedder):
         # already FallbackEmbedder, try Ollama as live recovery path.
         # This detects lazy-init failures (e.g., LocalSentenceEmbedder
         # constructor succeeded but _lazy_load() failed at embed time).
-        if vec and not any(v != 0.0 for v in vec) and not isinstance(
-            self._delegate, FallbackEmbedder
+        if (
+            vec
+            and not any(v != 0.0 for v in vec)
+            and not isinstance(self._delegate, FallbackEmbedder)
         ):
-                import logging
+            import logging
 
-                _log = logging.getLogger("plastic-promise.embedder")
-                _log.warning(
-                    "CachedEmbedder: delegate %s returned zero vector, "
-                    "attempting runtime fallback to Ollama",
-                    type(self._delegate).__name__,
-                )
-                try:
-                    ollama_vec = OllamaEmbedder().embed(text)
-                    if ollama_vec and any(v != 0.0 for v in ollama_vec):
-                        _log.info(
-                            "CachedEmbedder: Ollama runtime fallback succeeded, "
-                            "switching delegate permanently"
-                        )
-                        self._delegate = OllamaEmbedder()
-                        vec = ollama_vec
-                except Exception as e:
-                    _log.warning("CachedEmbedder: Ollama runtime fallback also failed: %s", e)
+            _log = logging.getLogger("plastic-promise.embedder")
+            _log.warning(
+                "CachedEmbedder: delegate %s returned zero vector, "
+                "attempting runtime fallback to Ollama",
+                type(self._delegate).__name__,
+            )
+            try:
+                ollama_vec = OllamaEmbedder().embed(text)
+                if ollama_vec and any(v != 0.0 for v in ollama_vec):
+                    _log.info(
+                        "CachedEmbedder: Ollama runtime fallback succeeded, "
+                        "switching delegate permanently"
+                    )
+                    self._delegate = OllamaEmbedder()
+                    vec = ollama_vec
+            except Exception as e:
+                _log.warning("CachedEmbedder: Ollama runtime fallback also failed: %s", e)
 
         with self._lock:
             if len(self._cache) >= self._max_size:
@@ -226,9 +244,22 @@ class CachedEmbedder(Embedder):
     def index_model_name(self) -> str:
         return self._delegate.index_model_name
 
+    def prepare_index_text(self, text: str) -> str:
+        return self._delegate.prepare_index_text(text)
+
+    def close(self) -> None:
+        close = getattr(self._delegate, "close", None)
+        if callable(close):
+            close()
+
     @property
     def last_chunking_diagnostics(self) -> dict[str, object]:
         diagnostics = getattr(self._delegate, "last_chunking_diagnostics", None)
+        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+
+    @property
+    def last_index_preparation_diagnostics(self) -> dict[str, object]:
+        diagnostics = getattr(self._delegate, "last_index_preparation_diagnostics", None)
         return dict(diagnostics) if isinstance(diagnostics, dict) else {}
 
     @property
@@ -272,18 +303,43 @@ class OllamaEmbedder(Embedder):
             logging.warning("Unknown PP_MEMORY_CHUNKING=%r; using off", self._chunking_mode)
             self._chunking_mode = "off"
         self._structure_hard_chars = _int_env(
-            "EMBEDDER_STRUCTURE_HARD_CHARS", max(self._chunk_chars * 2, self._chunk_chars), minimum=1
+            "EMBEDDER_STRUCTURE_HARD_CHARS",
+            max(self._chunk_chars * 2, self._chunk_chars),
+            minimum=1,
         )
-        self._structure_max_chunks = _int_env(
-            "EMBEDDER_STRUCTURE_MAX_CHUNKS", 64, minimum=1
-        )
+        self._structure_max_chunks = _int_env("EMBEDDER_STRUCTURE_MAX_CHUNKS", 64, minimum=1)
         self._structure_max_source_chars = _int_env(
             "EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS", 2_000_000, minimum=1
         )
         self._last_chunking_diagnostics: dict[str, object] = {}
+        self._last_index_preparation_diagnostics: dict[str, object] = {}
+        self._chunk_enricher = SemanticChunkEnricher(host=self._host)
+        if self._chunk_enricher.mode != "off" and self._chunking_mode != "structure-v1":
+            logging.warning(
+                "PP_MEMORY_CHUNK_ENRICHMENT=%s requires PP_MEMORY_CHUNKING=structure-v1; "
+                "enrichment is inactive",
+                self._chunk_enricher.mode,
+            )
 
     def embed(self, text: str) -> list[float]:
-        if self._chunking_mode == "structure-v1":
+        if is_embedding_plan(text):
+            plan = decode_embedding_plan(text)
+            if self._chunk_enricher.mode != "on":
+                raise ValueError("embedding_plan_mode_mismatch")
+            if plan.get("model_identity") != self._chunk_enricher.model_identity:
+                raise ValueError("embedding_plan_model_mismatch")
+            plan_chunks = plan["chunks"]
+            assert isinstance(plan_chunks, list)
+            chunks = [str(chunk["embedding_text"]) for chunk in plan_chunks]
+            self._last_chunking_diagnostics = {
+                "mode": "embedding-plan-v1",
+                "chunk_count": len(chunks),
+                "source_text_hash": plan.get("source_text_hash", ""),
+                "model_identity": plan.get("model_identity", ""),
+                "enriched": sum(1 for chunk in plan_chunks if chunk.get("status") == "enriched"),
+                "fallbacks": sum(1 for chunk in plan_chunks if chunk.get("status") == "fallback"),
+            }
+        elif self._chunking_mode == "structure-v1":
             if len(text or "") > self._structure_max_source_chars:
                 self._last_chunking_diagnostics = {
                     "mode": "structure-v1",
@@ -343,9 +399,39 @@ class OllamaEmbedder(Embedder):
             return self._embed_chunk(chunks[0])
         return _mean_pool_vectors([self._embed_chunk(chunk) for chunk in chunks])
 
+    def prepare_index_text(self, text: str) -> str:
+        """Prepare exact document-only material before SQLite hashing/persistence."""
+
+        if self._chunking_mode != "structure-v1" or self._chunk_enricher.mode == "off":
+            self._last_index_preparation_diagnostics = {
+                "mode": self._chunk_enricher.mode,
+                "active": False,
+            }
+            return text
+        if len(text or "") > self._structure_max_source_chars:
+            raise ValueError("structure_chunking_source_too_large")
+        all_materials = structure_aware_chunks(
+            text,
+            target_chars=self._chunk_chars,
+            hard_chars=self._structure_hard_chars,
+        )
+        materials = limit_chunk_materials(all_materials, self._structure_max_chunks)
+        batch = self._chunk_enricher.prepare_chunks(materials, source_text=text or "")
+        self._last_index_preparation_diagnostics = dict(batch.diagnostics)
+        if self._chunk_enricher.mode == "shadow":
+            return text
+        return self._chunk_enricher.build_embedding_plan(text or "", materials, batch)
+
+    def close(self) -> None:
+        self._chunk_enricher.close()
+
     @property
     def last_chunking_diagnostics(self) -> dict[str, object]:
         return dict(self._last_chunking_diagnostics)
+
+    @property
+    def last_index_preparation_diagnostics(self) -> dict[str, object]:
+        return dict(self._last_index_preparation_diagnostics)
 
     def _embed_chunk(self, text: str) -> list[float]:
         resp = requests.post(
@@ -371,7 +457,7 @@ class OllamaEmbedder(Embedder):
     def index_model_name(self) -> str:
         if self._chunking_mode != "structure-v1":
             return self._model
-        return (
+        identity = (
             f"{self._model}|chunking=structure-v1"
             f"|target_chars={self._chunk_chars}"
             f"|hard_chars={self._structure_hard_chars}"
@@ -379,6 +465,9 @@ class OllamaEmbedder(Embedder):
             f"|max_source_chars={self._structure_max_source_chars}"
             "|budget=characters-fallback"
         )
+        if self._chunk_enricher.mode == "on":
+            identity = f"{identity}|{self._chunk_enricher.index_identity}"
+        return identity
 
 
 def _int_env(name: str, default: int, minimum: int = 0) -> int:
@@ -543,7 +632,10 @@ def reset_embedder():
     """
     global _embedder_singleton
     with _embedder_lock:
+        previous = _embedder_singleton
         _embedder_singleton = None
+    if previous is not None:
+        previous.close()
     logging.getLogger("plastic-promise.embedder").info(
         "Embedder singleton reset — will re-probe on next get_embedder()"
     )

@@ -1087,13 +1087,13 @@ class SynthesisStore:
         memory_metadata = dict(metadata or {})
         policy = initial_index_policy(summary_index_enabled=False)
         self._require_current_compact_summary(metadata, policy=policy)
+        embedder = getattr(self.engine, "_embedder", None) if self.engine is not None else None
         material = self._build_synthesis_index_material(
             content=content,
             metadata=memory_metadata,
             policy=policy,
-            model_name=effective_embedding_model_name(
-                getattr(self.engine, "_embedder", None) if self.engine is not None else None
-            ),
+            model_name=effective_embedding_model_name(embedder),
+            embedder=embedder,
             compact_policy=COMPACT_V2_POLICY,
         )
         memory_metadata.update(
@@ -1204,6 +1204,7 @@ class SynthesisStore:
             metadata=memory_metadata,
             policy=persisted_material.policy,
             model_name=model_name,
+            embedder=embedder,
             compact_policy=COMPACT_V2_POLICY,
         )
         memory_metadata = metadata_with_index_material(memory_metadata, material)
@@ -1282,19 +1283,27 @@ class SynthesisStore:
         metadata: Mapping[str, Any],
         policy: str,
         model_name: str,
+        embedder: object | None,
         compact_policy: str,
     ) -> Any:
-        from plastic_promise.core.memory_index import build_index_material
+        from plastic_promise.core.memory_index import (
+            build_index_material,
+            prepare_index_material,
+        )
 
         try:
-            return build_index_material(
-                {
-                    "content": content,
-                    "domain": metadata.get("domain"),
-                    "category": metadata.get("category"),
-                    "l0_abstract": metadata.get("l0_abstract"),
-                    "l1_summary": metadata.get("l1_summary"),
-                },
+            record = {
+                "content": content,
+                "domain": metadata.get("domain"),
+                "category": metadata.get("category"),
+                "l0_abstract": metadata.get("l0_abstract"),
+                "l1_summary": metadata.get("l1_summary"),
+            }
+            if embedder is None:
+                return build_index_material(record, policy=policy, model_name=model_name)
+            return prepare_index_material(
+                record,
+                embedder=embedder,
                 policy=policy,
                 model_name=model_name,
             )

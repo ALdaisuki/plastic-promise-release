@@ -17,10 +17,10 @@ from plastic_promise.core.embedder import Embedder
 from plastic_promise.core.memory_index import (
     IndexMaterial,
     IndexMaterialError,
-    build_index_material,
     effective_embedding_model_name,
     embedding_model_family,
     metadata_with_index_material,
+    prepare_index_material,
     read_persisted_index_material,
     resolve_index_material,
 )
@@ -320,7 +320,9 @@ class LanceDBStore:
             batch = requested_ids[offset : offset + _BULK_VECTOR_CHUNK_SIZE]
             if not batch:
                 continue
-            quoted_ids = ", ".join(f"'{memory_id.replace(chr(39), chr(39) * 2)}'" for memory_id in batch)
+            quoted_ids = ", ".join(
+                f"'{memory_id.replace(chr(39), chr(39) * 2)}'" for memory_id in batch
+            )
             try:
                 rows = (
                     self._table.search()
@@ -540,10 +542,7 @@ class LanceDBStore:
             for mid in sorted(sqlite_ids & ldb_ids)
             if str(eligible_memories[mid].get("memory_type") or "").strip().casefold()
             != "synthesis"
-            if read_persisted_index_material(
-                eligible_memories[mid], model_name=model_name
-            )
-            is None
+            if read_persisted_index_material(eligible_memories[mid], model_name=model_name) is None
             and read_persisted_index_material(eligible_memories[mid]) is not None
         ]
 
@@ -721,7 +720,9 @@ class LanceDBStore:
                 logger.warning("LanceDB sync: skipped %s (%s)", mid, exc)
                 return False
             persisted = read_persisted_index_material(mem_data)
-            if persisted is None or embedding_model_family(persisted.model_name) != embedding_model_family(model_name):
+            if persisted is None or embedding_model_family(
+                persisted.model_name
+            ) != embedding_model_family(model_name):
                 self._record_index_diagnostic(mid, str(exc), failed=True)
                 logger.warning("LanceDB sync: skipped %s (%s)", mid, exc)
                 return False
@@ -732,14 +733,22 @@ class LanceDBStore:
                     failed=False,
                 )
                 return False
-            material = build_index_material(
+            material = prepare_index_material(
                 mem_data,
+                embedder=self._embedder,
                 policy=persisted.policy,
                 model_name=model_name,
             )
             needs_persist = True
             migrating_model = True
             self._record_index_diagnostic(mid, "index_material_model_migrated", failed=False)
+        if needs_persist and not migrating_model:
+            material = prepare_index_material(
+                mem_data,
+                embedder=self._embedder,
+                policy=material.policy,
+                model_name=model_name,
+            )
         if not material.vector_text.strip() or not material.search_text.strip():
             self._record_index_diagnostic(mid, "index_material_incomplete", failed=True)
             return False

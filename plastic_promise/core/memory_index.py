@@ -85,7 +85,7 @@ def build_index_material(
         policy = initial_index_policy(summary_index_enabled=_summary_index_enabled_from_env())
     policy = str(policy or "").strip().casefold()
     if policy == SUMMARY_POLICY:
-        vector_text = _text(record.get("embedding_text"))
+        vector_text = _summary_vector_text(record)
         search_text = (
             _text(record.get("search_text"))
             or _text(record.get("l0_abstract"))
@@ -107,6 +107,34 @@ def build_index_material(
         policy=policy,
         embedding_hash=_embedding_hash(policy, effective_model, vector_text),
         model_name=effective_model,
+    )
+
+
+def prepare_index_material(
+    record: Mapping[str, Any],
+    *,
+    embedder: object | None,
+    policy: str | None = None,
+    model_name: str | None = None,
+) -> IndexMaterial:
+    """Build and prepare exact document material before persistence and embedding."""
+
+    effective_model = model_name or effective_embedding_model_name(embedder)
+    material = build_index_material(record, policy=policy, model_name=effective_model)
+    prepare = getattr(embedder, "prepare_index_text", None)
+    if not callable(prepare):
+        return material
+    prepared_text = prepare(material.vector_text)
+    if not isinstance(prepared_text, str) or not prepared_text.strip():
+        raise IndexMaterialError("index_material_preparation_failed")
+    if prepared_text == material.vector_text:
+        return material
+    return IndexMaterial(
+        vector_text=prepared_text,
+        search_text=material.search_text,
+        policy=material.policy,
+        embedding_hash=_embedding_hash(material.policy, material.model_name, prepared_text),
+        model_name=material.model_name,
     )
 
 
@@ -199,14 +227,20 @@ def _require_persisted_index_material(
     )
 
 
-def index_metadata(material: IndexMaterial) -> dict[str, str]:
-    return {
+def index_metadata(material: IndexMaterial) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
         "embedding_hash": material.embedding_hash,
         "hash_schema": material.hash_schema,
         "model_name": material.model_name,
         "policy": material.policy,
         "search_text_hash": _search_text_hash(material.search_text),
     }
+    from plastic_promise.core.semantic_chunk_enrichment import embedding_plan_metadata
+
+    plan = embedding_plan_metadata(material.vector_text)
+    if plan is not None:
+        metadata["embedding_plan"] = plan
+    return metadata
 
 
 def metadata_with_index_material(
@@ -295,6 +329,27 @@ def _legacy_summary_search_text(record: Mapping[str, Any]) -> str:
         or _text(record.get("l1_summary"))
         or _text(metadata.get("l1_summary"))
     )
+
+
+def _summary_vector_text(record: Mapping[str, Any]) -> str:
+    vector_text = _text(record.get("embedding_text"))
+    from plastic_promise.core.semantic_chunk_enrichment import is_embedding_plan
+
+    if not is_embedding_plan(vector_text):
+        return vector_text
+
+    metadata = _metadata_dict(record.get("metadata_json"))
+    l0_abstract = _text(record.get("l0_abstract")) or _text(metadata.get("l0_abstract"))
+    l1_summary = _text(record.get("l1_summary")) or _text(metadata.get("l1_summary"))
+    rebuilt = "\n".join(
+        part
+        for part in (
+            f"L0: {l0_abstract}" if l0_abstract else "",
+            f"L1: {l1_summary}" if l1_summary else "",
+        )
+        if part
+    )
+    return rebuilt or _text(record.get("l2_content")) or _text(record.get("content"))
 
 
 def _compact_v2_text(record: Mapping[str, Any]) -> str:

@@ -705,16 +705,6 @@ class RecMem:
                 }
                 self._engine.create_ordinary_if_absent(record_dict)
 
-            # Try embedding + storing vector
-            try:
-                from plastic_promise.core.embedder import get_embedder
-
-                embedder = get_embedder()
-                vec = embedder.embed(content)
-                _ = vec  # Vector stored via engine internals
-            except Exception:
-                pass
-
             record = MemoryRecord(
                 content=content,
                 memory_type=memory_type,

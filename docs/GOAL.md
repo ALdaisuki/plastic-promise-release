@@ -253,4 +253,14 @@ step-closure(
 - Rust snapshot enrichment reads LanceDB vectors in admitted-ID-only batches, preserving canonical admission while removing the per-memory N+1 query pattern.
 - No public MCP tool or parameter changed, no dependency changed, and retrieval fusion remains `legacy-auto`.
 - `PP_MEMORY_CHUNKING=shadow` is the default evaluation path; `structure-v1` remains opt-in until versioned real-model recall evidence passes the release gates.
-- Release verification for `0.1.17` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+- Release verification for `0.1.17` is **audited and approved**. Targeted chunking, full regression, live HTTP, restart, and release-sync gates completed before publication.
+
+## 2026-07-19 Semantic Chunk Enrichment Release Note
+
+- Release version `0.1.18` follows the immutable public `v0.1.17` release and adds optional local semantic metadata after deterministic `structure-v1` chunking.
+- `structure-v1` remains the sole owner of chunk boundaries. The local model cannot change source text, order, heading paths, or source spans.
+- `PP_MEMORY_CHUNK_ENRICHMENT=shadow` performs bounded background analysis without changing vectors or index identity. `on` is activated by an offline rebuild and remains enabled for matching writes and repairs.
+- Active plans bind the Ollama model digest, prompt hash, schema hash, exact embedding inputs, and fallback state. Query embeddings never call the enrichment model.
+- Default behavior remains `off`; rollback disables enrichment and rebuilds the derived LanceDB index while preserving canonical SQLite content and audit material.
+- Whole-repository regression passes on LanceDB `0.34.0` with `2024 passed, 22 skipped`; the formal system audit score is `0.6752`, and the high-risk ten-item code checklist has no blocking finding.
+- Release verification for `0.1.18` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.

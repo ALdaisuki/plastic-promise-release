@@ -276,6 +276,7 @@ def notify_issue_change(data: dict[str, Any]) -> None:
         with suppress(Exception):
             queue.put_nowait(data)
 
+
 _CODEX_DISCOVERY_HINTS = {
     "session-init": (
         "Plastic Promise MCP; Codex tool_search discovery; bootstrap; session init; "
@@ -2094,8 +2095,9 @@ def _persist_audit_report_notification(
 ) -> dict[str, Any]:
     """Persist one authorized audit report with explicit partial evidence."""
     from plastic_promise.core.memory_index import (
-        build_index_material,
+        effective_embedding_model_name,
         metadata_with_index_material,
+        prepare_index_material,
     )
     from plastic_promise.core.synthesis import synthesis_content_hash
     from plastic_promise.core.synthesis_retrieval import _source_is_available
@@ -2139,10 +2141,12 @@ def _persist_audit_report_notification(
     except (TypeError, ValueError):
         overall = 0.0
     try:
-        material = build_index_material(
+        embedder = vars(engine).get("_embedder") if hasattr(engine, "__dict__") else None
+        material = prepare_index_material(
             {"content": audit_content},
+            embedder=embedder,
             policy="legacy",
-            model_name="audit-notification",
+            model_name=effective_embedding_model_name(embedder),
         )
         audit_memory = {
             "content": audit_content,

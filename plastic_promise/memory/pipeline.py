@@ -18,11 +18,11 @@ from typing import Any
 from plastic_promise.core.constants import DEDUP_SIMILARITY_THRESHOLD
 from plastic_promise.core.memory_index import (
     IndexMaterial,
-    build_index_material,
     effective_embedding_model_name,
     index_metadata,
     initial_index_policy,
     metadata_with_index_material,
+    prepare_index_material,
     read_persisted_index_material,
     resolve_index_material,
 )
@@ -430,8 +430,9 @@ class MemoryPipeline:
             "domain": domain,
             "category": category,
         }
-        material = build_index_material(
+        material = prepare_index_material(
             index_fields,
+            embedder=self.embedder,
             policy=previous_material.policy,
             model_name=previous_material.model_name,
         )
@@ -554,9 +555,7 @@ class MemoryPipeline:
         counts["classified→embedded"] = self._process_classified_to_embedded()
 
         # Stage 4: embedded → migrate to main pool
-        counts["embedded→migrated"] = self._process_embedded_to_migrate(
-            migration_outcomes
-        )
+        counts["embedded→migrated"] = self._process_embedded_to_migrate(migration_outcomes)
 
         self._last_process = datetime.datetime.now().isoformat()
         return {
@@ -644,8 +643,9 @@ class MemoryPipeline:
             "domain": domain,
             "category": category,
         }
-        material = build_index_material(
+        material = prepare_index_material(
             fields,
+            embedder=embedder,
             policy=policy
             or initial_index_policy(summary_index_enabled=cls._summary_index_enabled()),
             model_name=model_name,
@@ -908,9 +908,7 @@ class MemoryPipeline:
         from plastic_promise.core.quality_gate import QualityGate
 
         items = [(mid, r) for mid, r in self._buffer.items() if r["stage"] == "embedded"]
-        migration_outcomes = (
-            migration_outcomes if migration_outcomes is not None else {}
-        )
+        migration_outcomes = migration_outcomes if migration_outcomes is not None else {}
         count = 0
         gate = QualityGate()
 
