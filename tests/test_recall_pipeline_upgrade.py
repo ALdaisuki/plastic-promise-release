@@ -505,6 +505,13 @@ class TestDebugOutput:
 
         assert pack.pipeline_stats["vector_count"] == 1
         assert pack.pipeline_stats["core_count"] == 1
+        assert set(pack.pipeline_stats["stage_timing_ms"]) == {
+            "principle_injection",
+            "candidate_retrieval",
+            "filter_and_layer",
+            "total",
+        }
+        assert all(value > 0 for value in pack.pipeline_stats["stage_timing_ms"].values())
         assert len(pack.per_item_stats) == 1
 
     def test_debug_false_does_not_return_extra_fields(self, monkeypatch):

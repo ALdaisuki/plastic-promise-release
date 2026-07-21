@@ -14,7 +14,6 @@
 所有工具共享 ContextEngine 单例，通过依赖注入传递给各工具模块。
 """
 
-import importlib.util
 import json
 import logging
 import math
@@ -166,6 +165,27 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
     }
 
 
+def _dashboard_process_identity(environ=None) -> dict[str, Any]:
+    """Return runtime identity without initializing retrieval dependencies."""
+    from plastic_promise.launcher.runtime_mode import runtime_mode_status
+
+    env = environ if environ is not None else os.environ
+    identity = {
+        "status": "ok",
+        "version": PLASTIC_PROMISE_VERSION,
+        "pid": os.getpid(),
+        "source_root": _SOURCE_ROOT,
+        "source_revision": _SOURCE_REVISION or "",
+        "transport": str(env.get("PLASTIC_MCP_TRANSPORT") or "streamable_http"),
+        "runtime": runtime_mode_status(env),
+        "retrieval_initialized": _engine is not None,
+    }
+    refresh = getattr(_engine, "_runtime_refresh_status", None) if _engine is not None else None
+    if isinstance(refresh, dict):
+        identity["runtime_refresh"] = refresh
+    return identity
+
+
 def _is_windows_client_disconnect(context: dict[str, Any]) -> bool:
     """Identify benign Windows Proactor disconnect noise from closed HTTP clients."""
     if sys.platform != "win32":
@@ -224,7 +244,9 @@ def get_engine():
 
     # 预导入 Rust 加速器（如果可用），供 _supply_rust 路径使用
     try:
-        if importlib.util.find_spec("context_engine_core") is None:
+        from plastic_promise.core.rust_extension import try_load_context_engine_core
+
+        if try_load_context_engine_core() is None:
             raise ImportError("context_engine_core")
 
         logging.info("ContextEngine: Rust 加速器可用（待 supply 路径启用）")
@@ -2666,6 +2688,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     plastic_promise.mcp.tools.* for clean separation of concerns.
     Handlers are lazily imported on first call.
     """
+    from plastic_promise.core.traceability import bind_call_span_start, reset_call_span_start
+
     engine = get_engine()
     mutation_tool_name = "memory_update" if name in {"smart-remember", "smart_remember"} else name
     mutation_runtime_context = (
@@ -2689,6 +2713,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     runtime_status = "completed"
     _record_tool_runtime_event(engine, runtime_ctx, "pending")
     _record_tool_runtime_event(engine, runtime_ctx, "running")
+    span_start_token = bind_call_span_start()
 
     try:
         # Memory domain
@@ -3318,6 +3343,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         ]
     finally:
         _record_tool_runtime_event(engine, runtime_ctx, runtime_status)
+        reset_call_span_start(span_start_token)
 
 
 # ===================================================================
@@ -3481,6 +3507,34 @@ async def main():
     import sys
 
     configure_default_environment(_PROJECT_ROOT)
+    # A directly launched server does not pass through ``init_and_start.py``.
+    # Apply coupled switches for an explicit mode so reported and effective
+    # runtime capabilities cannot diverge.
+    explicit_mode = os.environ.get("PLASTIC_RUNTIME_MODE")
+    applied_mode = None
+    if explicit_mode:
+        from plastic_promise.launcher.runtime_mode import apply_runtime_mode
+
+        applied_mode = apply_runtime_mode(explicit_mode)
+    if applied_mode is not None and applied_mode.runs_lancedb_warmup:
+        import asyncio as _asyncio
+
+        refresh = await _asyncio.to_thread(
+            get_engine().refresh_runtime_mode,
+            initialize_heavy=True,
+            synchronize_index=True,
+        )
+        index_sync = refresh.get("index_sync") if isinstance(refresh, dict) else None
+        if not isinstance(index_sync, dict) or not index_sync.get("ready"):
+            # Full mode remains available as a diagnosed text-only service when
+            # the derived vector index cannot be synchronized.  The engine has
+            # already fail-closed the vector channel; refusing to start here
+            # would make a recoverable index repair take the whole MCP offline.
+            logging.warning(
+                "Runtime mode %s started degraded: derived index requires maintenance (%s)",
+                applied_mode.key,
+                index_sync.get("status") if isinstance(index_sync, dict) else "unknown",
+            )
 
     transport_flag, port = _parse_streamable_http_port(sys.argv)
     if transport_flag:
@@ -3515,6 +3569,8 @@ async def run_streamable_http(port: int = 9020):
     from starlette.requests import Request
     from starlette.responses import Response
     from starlette.routing import Route
+
+    from plastic_promise.mcp.dashboard_v2 import DashboardSettings, create_dashboard_v2_routes
 
     logger = logging.getLogger("plastic-promise-streamable-http")
     _install_windows_client_disconnect_filter(logger)
@@ -3874,6 +3930,24 @@ setInterval(refresh, 5000);
         await streamable_http.handle_request(request.scope, request.receive, request._send)
         return _NoOpResponse()
 
+    dashboard_settings = DashboardSettings.from_env(bind_host="127.0.0.1")
+
+    def _dashboard_issue_projection() -> list[dict[str, object]]:
+        """Expose the existing process-local issue board to Dashboard V2.
+
+        Dashboard V2 remains read-only.  The route labels this as a system
+        projection because IssueManager records do not carry project IDs.
+        """
+        return get_engine().get_issue_manager().list()
+
+    dashboard_v2_routes = create_dashboard_v2_routes(
+        dashboard_settings,
+        version=PLASTIC_PROMISE_VERSION,
+        identity_provider=_dashboard_process_identity,
+        issue_provider=_dashboard_issue_projection,
+    )
+    dashboard_routes = dashboard_v2_routes or [Route("/dashboard", endpoint=dashboard)]
+
     app = Starlette(
         routes=[
             Route("/mcp", endpoint=handle_mcp, methods=["GET", "POST", "DELETE"]),
@@ -3886,7 +3960,7 @@ setInterval(refresh, 5000);
             Route("/api/issues", endpoint=api_issues),
             Route("/api/trust", endpoint=api_trust),
             Route("/api/skill-track", endpoint=api_skill_track, methods=["POST"]),
-            Route("/dashboard", endpoint=dashboard),
+            *dashboard_routes,
         ],
         lifespan=lifespan,
     )

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from plastic_promise.core.chunking import build_chunk_manifest
 from plastic_promise.core.context_engine import ContextEngine, ContextItem, ContextPack
 from plastic_promise.core.fusion_policy import (
     FusionConfig,
@@ -305,6 +306,116 @@ def isolated_env(monkeypatch, tmp_path):
 def rust_core():
     _ensure_rust_extension_importable()
     return pytest.importorskip("context_engine_core")
+
+
+_CHUNK_PARITY_FIELDS = (
+    "ordinal",
+    "kind",
+    "source_start",
+    "source_end",
+    "source_hash",
+    "text_hash",
+    "text",
+    "context_truncated",
+)
+
+
+def _normalized_chunk_rows(rows):
+    return [
+        {
+            **{field: row.get(field) for field in _CHUNK_PARITY_FIELDS},
+            "heading_path": row.get("heading_path", row.get("header_path", [])),
+            "chunk_id": row.get("chunk_id"),
+        }
+        for row in rows
+    ]
+
+
+def test_python_and_rust_structure_chunks_have_exact_unicode_parity(rust_core):
+    """The Rust projection must remain a byte-for-byte-compatible index material."""
+
+    projection = getattr(rust_core, "structure_chunk_projection", None)
+    if not callable(projection):
+        pytest.skip("context_engine_core lacks structure_chunk_projection")
+
+    # Keep this fixture deliberately mixed: heading context, CJK text, lists, tables,
+    # fenced code, and a tail paragraph exercise the source-span contract together.
+    sample = (
+        "# \u8bb0\u5fc6\u7cfb\u7edf\n\n"
+        "\u8fd9\u662f\u7b2c\u4e00\u6bb5\u4e2d\u6587\uff0c\u7528\u4e8e\u9a8c\u8bc1\u7ed3\u6784\u5316\u5207\u7247\u4e0e Unicode \u504f\u79fb\u3002\n\n"
+        "## \u68c0\u7d22\u89e3\u91ca\n\n"
+        "- \u547d\u4e2d\u8bc1\u636e\n"
+        "- \u6765\u6e90\u8c31\u7cfb\n\n"
+        "| \u5b57\u6bb5 | \u503c |\n"
+        "| --- | --- |\n"
+        "| \u7c7b\u578b | \u4e8b\u5b9e |\n\n"
+        "```python\n"
+        "value = 1\n"
+        "# \u8fd9\u4e0d\u662f\u6807\u9898\n"
+        "```\n\n"
+        "\u5c3e\u90e8\u5185\u5bb9\u5fc5\u987b\u4fdd\u7559\u3002\n"
+    )
+    expected = build_chunk_manifest(
+        sample,
+        target_chars=32,
+        hard_chars=64,
+        max_chunks=16,
+    )["chunks"]
+    actual = projection(sample, 32, 64, 16)
+
+    assert _normalized_chunk_rows(actual) == _normalized_chunk_rows(expected)
+
+
+@pytest.mark.parametrize(
+    "sample",
+    (
+        "\t# Tab-prefixed heading\nbody",
+        "\u00a0# NBSP-prefixed heading\nbody",
+        "# \nbody",
+        "# \n?",
+        "*\tx",
+        "-\tx",
+        "+\tx",
+        "1.\tx",
+        "1)\tx",
+        "# CR only\r\rbody\r## nested\rtext",
+        "# Unicode separator\u2028\u2028body\u2028## nested\u2028text",
+        "# Form feed\f\fbody\f## nested\ftext",
+        "# CRLF\r\n\r\n\u4e2d\u6587\r\n",
+    ),
+    ids=(
+        "tab-is-not-heading-indent",
+        "nbsp-is-not-heading-indent",
+        "empty-heading-is-not-heading",
+        "empty-heading-before-body-is-not-heading",
+        "asterisk-tab-list",
+        "dash-tab-list",
+        "plus-tab-list",
+        "ordered-dot-tab-list",
+        "ordered-paren-tab-list",
+        "cr-is-not-a-line-separator",
+        "unicode-separator-is-not-a-line-separator",
+        "form-feed-is-not-a-line-separator",
+        "crlf-is-a-line-separator",
+    ),
+)
+def test_python_and_rust_structure_chunks_share_narrow_markdown_boundaries(
+    rust_core,
+    sample,
+):
+    projection = getattr(rust_core, "structure_chunk_projection", None)
+    if not callable(projection):
+        pytest.skip("context_engine_core lacks structure_chunk_projection")
+
+    expected = build_chunk_manifest(
+        sample,
+        target_chars=32,
+        hard_chars=64,
+        max_chunks=16,
+    )["chunks"]
+    actual = projection(sample, 32, 64, 16)
+
+    assert _normalized_chunk_rows(actual) == _normalized_chunk_rows(expected)
 
 
 @pytest.mark.parametrize(

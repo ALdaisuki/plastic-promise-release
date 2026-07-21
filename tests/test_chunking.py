@@ -1,4 +1,5 @@
 from plastic_promise.core.chunking import (
+    build_chunk_manifest,
     legacy_character_chunks,
     shadow_chunking_diagnostics,
     structure_aware_chunks,
@@ -108,3 +109,37 @@ def test_structure_chunks_bounded_plan_keeps_tail_and_reports_gap():
 
     assert len(chunks) == 3
     assert "Body 7" in chunks[-1].text
+
+
+def test_chunk_manifest_is_stable_parent_projection_for_chinese_markdown():
+    text = (
+        "# 检索\n\n这是第一段，用来验证中文边界。\n\n"
+        "## 代码\n\n```python\nvalue = '记忆'\n```\n\n"
+        "- 保留标题路径\n- 保留来源跨度"
+    )
+
+    first = build_chunk_manifest(text, target_chars=32, hard_chars=72, max_chunks=16)
+    second = build_chunk_manifest(text, target_chars=32, hard_chars=72, max_chunks=16)
+
+    assert first == second
+    assert first["schema_version"] == "structure-v1"
+    assert first["source_chars"] == len(text)
+    assert first["chunk_count"] == len(first["chunks"])
+    assert first["truncated"] is False
+    assert {chunk["kind"] for chunk in first["chunks"]} >= {"paragraph", "code", "list"}
+    assert all(chunk["source_hash"] == first["source_hash"] for chunk in first["chunks"])
+    assert all(chunk["chunk_id"].startswith("chunk_") for chunk in first["chunks"])
+    assert all(len(chunk["text_hash"]) == 64 for chunk in first["chunks"])
+    assert any(chunk["header_path"] == ["检索", "代码"] for chunk in first["chunks"])
+    assert any("来源跨度" in chunk["text"] for chunk in first["chunks"])
+
+
+def test_chunk_manifest_marks_bounded_middle_omission_as_resource_limited():
+    text = "\n\n".join(f"# Section {index}\n\nBody {index}" for index in range(10))
+
+    manifest = build_chunk_manifest(text, target_chars=20, hard_chars=40, max_chunks=3)
+
+    assert manifest["chunk_count"] == 3
+    assert manifest["resource_limited"] is True
+    assert manifest["truncated"] is True
+    assert "Body 9" in manifest["chunks"][-1]["text"]

@@ -1,14 +1,17 @@
 import asyncio
-import sqlite3
 import json
+import sqlite3
 
 from plastic_promise.core import traceability
 from plastic_promise.core.traceability import (
+    bind_call_span_start,
     build_envelope,
+    current_call_span_start,
     ensure_traceability_schema,
     new_call_id,
     record_call_span,
     record_degradation_event,
+    reset_call_span_start,
 )
 
 
@@ -126,6 +129,101 @@ def test_record_call_span_updates_without_replacing_started_at(tmp_path, monkeyp
     assert span[1] == "2026-01-01T00:01:00Z"
     assert span[2:5] == ("success", 1, "call_parent_updated")
     assert json.loads(span[5]) == {"route": "second"}
+    conn.close()
+
+
+def test_record_call_span_uses_dispatcher_start_and_final_write_time(tmp_path, monkeypatch):
+    conn = sqlite3.connect(tmp_path / "trace.db")
+    ensure_traceability_schema(conn)
+    monkeypatch.setattr(traceability, "utc_now", lambda: "2026-01-01T00:00:01.250Z")
+    token = bind_call_span_start("2026-01-01T00:00:00Z")
+    try:
+        record_call_span(
+            conn,
+            call_id="call_duration",
+            project_id="project:test",
+            tool_name="memory_recall",
+        )
+    finally:
+        reset_call_span_start(token)
+
+    assert conn.execute(
+        "SELECT started_at, ended_at FROM call_spans WHERE call_id = 'call_duration'"
+    ).fetchone() == ("2026-01-01T00:00:00Z", "2026-01-01T00:00:01.250Z")
+    conn.close()
+
+
+def test_record_call_span_repairs_equal_wall_clock_with_monotonic_elapsed(
+    tmp_path, monkeypatch
+):
+    from plastic_promise.mcp.dashboard_v2.repository import _span_duration
+
+    conn = sqlite3.connect(tmp_path / "trace.db")
+    ensure_traceability_schema(conn)
+    monotonic_times = iter([100.0, 100.125])
+    monkeypatch.setattr(traceability, "perf_counter", lambda: next(monotonic_times))
+    monkeypatch.setattr(traceability, "utc_now", lambda: "2026-01-01T00:00:00Z")
+
+    token = bind_call_span_start()
+    try:
+        record_call_span(
+            conn,
+            call_id="call_fast",
+            project_id="project:test",
+            tool_name="memory_recall",
+        )
+    finally:
+        reset_call_span_start(token)
+
+    started_at, ended_at = conn.execute(
+        "SELECT started_at, ended_at FROM call_spans WHERE call_id = 'call_fast'"
+    ).fetchone()
+    duration_ms, duration_status = _span_duration(started_at, ended_at)
+
+    assert started_at == "2026-01-01T00:00:00Z"
+    assert ended_at == "2026-01-01T00:00:00.125000Z"
+    assert duration_status == "measured"
+    assert duration_ms == 125.0
+    conn.close()
+
+
+def test_record_call_span_repairs_backwards_wall_clock_and_restores_nested_context(
+    tmp_path, monkeypatch
+):
+    from plastic_promise.mcp.dashboard_v2.repository import _span_duration
+
+    conn = sqlite3.connect(tmp_path / "trace.db")
+    ensure_traceability_schema(conn)
+    monotonic_times = iter([200.0, 201.0, 201.04])
+    monkeypatch.setattr(traceability, "perf_counter", lambda: next(monotonic_times))
+    monkeypatch.setattr(traceability, "utc_now", lambda: "2025-12-31T23:59:59Z")
+
+    outer_token = bind_call_span_start("2026-01-01T00:00:00Z")
+    inner_token = bind_call_span_start("2026-01-01T00:00:01Z")
+    assert current_call_span_start() == "2026-01-01T00:00:01Z"
+    reset_call_span_start(inner_token)
+    try:
+        assert current_call_span_start() == "2026-01-01T00:00:00Z"
+        record_call_span(
+            conn,
+            call_id="call_clock_skew",
+            project_id="project:test",
+            tool_name="memory_store",
+            started_at="2026-01-01T00:00:00Z",
+        )
+    finally:
+        reset_call_span_start(outer_token)
+
+    started_at, ended_at = conn.execute(
+        "SELECT started_at, ended_at FROM call_spans WHERE call_id = 'call_clock_skew'"
+    ).fetchone()
+    duration_ms, duration_status = _span_duration(started_at, ended_at)
+
+    assert current_call_span_start() is None
+    assert started_at == "2026-01-01T00:00:00Z"
+    assert ended_at == "2026-01-01T00:00:01.040000Z"
+    assert duration_status == "measured"
+    assert duration_ms == 1040.0
     conn.close()
 
 

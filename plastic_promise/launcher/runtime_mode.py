@@ -125,6 +125,18 @@ def apply_runtime_mode(
         _set_env(target_env, "PP_FORCE_PYTHON_SUPPLY", "1")
         _set_env(target_env, "PP_PREFER_RUST_SUPPLY", "0")
 
+    configured_chunking = str(target_env.get("PP_MEMORY_CHUNKING") or "off").strip().casefold()
+    if resolved.depth == "full":
+        effective_chunking = "structure-v1"
+    else:
+        effective_chunking = "shadow" if configured_chunking == "shadow" else "off"
+    _set_env(target_env, "PP_MEMORY_CHUNKING", effective_chunking)
+    _set_env(
+        target_env,
+        "PP_MEMORY_CHUNK_ENGINE",
+        "rust" if resolved.rust_accelerated else "python",
+    )
+
     if resolved.depth == "light":
         _set_env(target_env, "LDB_INIT_ON_HEAVY_INIT", "0")
         _set_env(target_env, "LDB_BACKFILL_ON_INIT", "0")
@@ -179,6 +191,7 @@ def runtime_mode_status(environ: Mapping[str, str] | None = None) -> dict[str, o
         "depth": mode.depth,
         "rust_accelerated": mode.rust_accelerated,
         "runs_lancedb_warmup": mode.runs_lancedb_warmup,
+        "chunking": _structured_chunking_status(env),
         "env": {
             "PP_FORCE_PYTHON_SUPPLY": env.get("PP_FORCE_PYTHON_SUPPLY"),
             "PP_PREFER_RUST_SUPPLY": env.get("PP_PREFER_RUST_SUPPLY"),
@@ -186,8 +199,130 @@ def runtime_mode_status(environ: Mapping[str, str] | None = None) -> dict[str, o
             "LDB_BACKFILL_ON_INIT": env.get("LDB_BACKFILL_ON_INIT"),
             "LDB_REBUILD_ON_INIT": env.get("LDB_REBUILD_ON_INIT"),
             "PLASTIC_SKIP_LANCEDB_WARMUP": env.get("PLASTIC_SKIP_LANCEDB_WARMUP"),
+            "PP_MEMORY_CHUNKING": env.get("PP_MEMORY_CHUNKING"),
+            "PP_MEMORY_CHUNK_ENGINE": env.get("PP_MEMORY_CHUNK_ENGINE"),
         },
     }
+
+
+def _structured_chunking_status(env: Mapping[str, str]) -> dict[str, object]:
+    configured_mode = str(env.get("PP_MEMORY_CHUNKING") or "off").strip().casefold()
+    requested_engine = str(env.get("PP_MEMORY_CHUNK_ENGINE") or "python").strip().casefold()
+    status: dict[str, object] = {
+        "schema_version": "structure-v1",
+        "configured_mode": configured_mode,
+        "effective_mode": "off",
+        "requested_engine": requested_engine,
+        "effective_engine": "disabled",
+        "enabled": False,
+        "parity_status": "not_applicable",
+        "capability_reason": "configured_off",
+    }
+    if configured_mode != "structure-v1":
+        if configured_mode not in {"off", "shadow"}:
+            status["capability_reason"] = "invalid_chunking_mode"
+        return status
+
+    status.update(
+        {
+            "effective_mode": "structure-v1",
+            "effective_engine": "python",
+            "enabled": True,
+            "rust_artifact": _rust_artifact_identity() if requested_engine == "rust" else None,
+        }
+    )
+    if requested_engine != "rust":
+        status.update(
+            {
+                "parity_status": "not_required",
+                "capability_reason": "python_structure_v1_active",
+            }
+        )
+        return status
+
+    parity = _rust_chunking_parity()
+    status["parity_status"] = parity["status"]
+    status["capability_reason"] = parity["reason"]
+    if parity["status"] == "matched":
+        status["effective_engine"] = "rust"
+    return status
+
+
+def _rust_chunking_parity() -> dict[str, str]:
+    try:
+        from plastic_promise.core.rust_extension import load_context_engine_core
+
+        rust_core = load_context_engine_core()
+        projection = getattr(rust_core, "structure_chunk_projection", None)
+        if not callable(projection):
+            return {"status": "unavailable", "reason": "rust_chunking_api_unavailable"}
+        from plastic_promise.core.chunking import (
+            STRUCTURE_CHUNK_PARITY_PROBE,
+            build_chunk_manifest,
+        )
+
+        sample = STRUCTURE_CHUNK_PARITY_PROBE
+        expected = build_chunk_manifest(
+            sample,
+            target_chars=32,
+            hard_chars=64,
+            max_chunks=16,
+        )["chunks"]
+        actual = projection(sample, 32, 64, 16)
+        fields = (
+            "chunk_id",
+            "ordinal",
+            "kind",
+            "source_start",
+            "source_end",
+            "source_hash",
+            "text_hash",
+            "text",
+            "context_truncated",
+        )
+        expected_rows = [
+            {
+                **{field: row.get(field) for field in fields},
+                "heading_path": row.get("header_path", []),
+            }
+            for row in expected
+        ]
+        actual_rows = [
+            {
+                **{field: row.get(field) for field in fields},
+                "heading_path": row.get("heading_path", row.get("header_path", [])),
+            }
+            for row in actual
+            if isinstance(row, dict)
+        ]
+        if actual_rows != expected_rows:
+            return {"status": "mismatch", "reason": "rust_python_chunking_mismatch"}
+        return {"status": "matched", "reason": "rust_python_chunking_parity_matched"}
+    except Exception:
+        return {"status": "unavailable", "reason": "rust_chunking_probe_failed"}
+
+
+def _rust_artifact_identity() -> dict[str, object]:
+    """Expose the exact optional Rust artifact used by the health probe."""
+    try:
+        from plastic_promise.core.rust_extension import load_context_engine_core
+
+        module = load_context_engine_core()
+        path = getattr(module, "__file__", None)
+        identity: dict[str, object] = {
+            "module": getattr(module, "__name__", "context_engine_core"),
+            "version": getattr(module, "__version__", None),
+            "path": str(path) if path else "",
+        }
+        if path:
+            from pathlib import Path
+
+            artifact = Path(path)
+            stat = artifact.stat()
+            identity.update({"size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+        return identity
+    except Exception as exc:
+        return {"module": "context_engine_core", "error": exc.__class__.__name__}
 
 
 def select_runtime_mode(

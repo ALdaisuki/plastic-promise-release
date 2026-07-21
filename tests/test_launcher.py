@@ -1172,6 +1172,34 @@ def test_direct_mcp_server_streamable_http_configures_default_project_identity(m
     assert os.environ["PLASTIC_LANCEDB_PATH"].endswith(os.path.join("data", "lancedb"))
 
 
+def test_direct_mcp_server_applies_explicit_full_runtime_mode(monkeypatch):
+    from plastic_promise.mcp import server as mcp_server
+
+    class FakeEngine:
+        def refresh_runtime_mode(self, initialize_heavy=False, *, synchronize_index=False):
+            assert initialize_heavy is True
+            assert synchronize_index is True
+            return {"index_sync": {"requested": True, "ready": True, "status": "ready"}}
+
+    async def fake_run_streamable_http(_port):
+        return None
+
+    monkeypatch.setenv("PLASTIC_RUNTIME_MODE", "rust-full")
+    # setenv records an absent original value so additions made by main() are
+    # removed during teardown; delenv(..., raising=False) cannot track an
+    # already-absent key and leaks full-mode state into later tests.
+    monkeypatch.setenv("PP_MEMORY_CHUNKING", "off")
+    monkeypatch.setenv("PP_MEMORY_CHUNK_ENGINE", "python")
+    monkeypatch.setattr(sys, "argv", ["server.py", "--streamable-http", "9020"])
+    monkeypatch.setattr(mcp_server, "run_streamable_http", fake_run_streamable_http)
+    monkeypatch.setattr(mcp_server, "get_engine", lambda: FakeEngine())
+
+    asyncio.run(mcp_server.main())
+
+    assert os.environ["PP_MEMORY_CHUNKING"] == "structure-v1"
+    assert os.environ["PP_MEMORY_CHUNK_ENGINE"] == "rust"
+
+
 def test_direct_mcp_server_legacy_sse_alias_still_routes_to_streamable_http(monkeypatch):
     from plastic_promise.mcp import server as mcp_server
 

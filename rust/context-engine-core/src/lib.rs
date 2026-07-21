@@ -11,6 +11,7 @@
 //! - ContextEngine: 主编排器 → supply() 返回 ContextPack
 
 pub mod association_feedback;
+pub mod chunking;
 pub mod context_engine;
 pub mod domain;
 pub mod entity_graph;
@@ -83,6 +84,34 @@ fn weighted_rrf_fuse_py(
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
+#[pyfunction(name = "structure_chunk_projection", signature = (text, target_chars, hard_chars=None, max_chunks=None))]
+fn structure_chunk_projection_py(
+    py: Python<'_>,
+    text: &str,
+    target_chars: usize,
+    hard_chars: Option<usize>,
+    max_chunks: Option<usize>,
+) -> PyResult<Vec<PyObject>> {
+    chunking::structure_chunk_projection(text, target_chars, hard_chars, max_chunks)
+        .into_iter()
+        .map(|row| {
+            let item = PyDict::new(py);
+            item.set_item("schema_version", row.schema_version)?;
+            item.set_item("chunk_id", row.chunk_id)?;
+            item.set_item("ordinal", row.ordinal)?;
+            item.set_item("text", row.text)?;
+            item.set_item("kind", row.kind)?;
+            item.set_item("heading_path", row.heading_path)?;
+            item.set_item("source_start", row.source_start)?;
+            item.set_item("source_end", row.source_end)?;
+            item.set_item("source_hash", row.source_hash)?;
+            item.set_item("text_hash", row.text_hash)?;
+            item.set_item("context_truncated", row.context_truncated)?;
+            Ok(item.into())
+        })
+        .collect()
+}
+
 /// Python 模块入口 — `import context_engine_core`
 ///
 /// 暴露的核心类：
@@ -112,6 +141,7 @@ fn context_engine_core(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<source_tracker::SourceTracker>()?;
     m.add_class::<association_feedback::AssociationFeedback>()?;
     m.add_function(wrap_pyfunction!(weighted_rrf_fuse_py, m)?)?;
+    m.add_function(wrap_pyfunction!(structure_chunk_projection_py, m)?)?;
 
     Ok(())
 }

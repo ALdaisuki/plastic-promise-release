@@ -9,6 +9,7 @@
 import contextlib
 import copy
 import datetime
+import functools
 import json
 import logging
 import math
@@ -40,6 +41,8 @@ from plastic_promise.core.paths import get_db_path
 from plastic_promise.core.retrieval_planner import RetrievalPlan, plan_retrieval
 
 logger = logging.getLogger(__name__)
+
+_RUNTIME_GATE_INIT_LOCK = threading.Lock()
 
 
 class OrdinaryMemoryConflict(RuntimeError):
@@ -475,6 +478,34 @@ class _RustFusionFallback(RuntimeError):
     """Signal that the requested fusion policy requires Python."""
 
 
+def _runtime_operation(method):
+    """Guard a retrieval operation from a concurrent runtime refresh."""
+
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        self._enter_runtime_operation()
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._exit_runtime_operation()
+
+    return wrapped
+
+
+def _runtime_refresh(method):
+    """Quiesce retrieval operations while mode-coupled resources are replaced."""
+
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        self._begin_runtime_refresh()
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._end_runtime_refresh()
+
+    return wrapped
+
+
 class ContextEngine:
     """上下文供应引擎 (Python 回退版)
 
@@ -510,6 +541,9 @@ class ContextEngine:
         self._code_index_root: str = ""
         # Canonical snapshots and ordinary writes share one replacement lock.
         self._write_lock = threading.RLock()
+        self._runtime_gate = threading.Condition(threading.RLock())
+        self._runtime_refreshing = False
+        self._active_runtime_operations = 0
         self._manual_batch_state: dict[str, Any] | None = None
         self._loaded_memory_version: int | None = None
         self.canonical_sync_ok: bool = True
@@ -527,13 +561,60 @@ class ContextEngine:
 
         # Heavy init deferred to first supply() call
         self._heavy_init_done = False
-        self._heavy_init_lock = threading.Lock()
+        # Runtime mode changes and lazy heavy initialization share one guard.
+        # This prevents a hot mode switch from clearing the embedder/index while
+        # another request is still constructing the replacement dependencies.
+        self._heavy_init_lock = threading.RLock()
+        self._runtime_refresh_lock = threading.RLock()
         # Rust engine integration — stateless accelerator for supply()
         self._rust_healthy: bool | None = None  # None = unchecked, True = healthy, None on failure
         self._rust_health_checked_at: float = 0.0  # epoch timestamp of last health check
         self._rust_health_ttl: float = 300.0  # cache TTL in seconds (5 minutes)
         self._rust_engine_instance = None  # cached Rust engine instance (reused)
         self._rust_lock = threading.Lock()  # protects all _rust_* fields from concurrent access
+
+    def _ensure_runtime_gate(self):
+        gate = getattr(self, "_runtime_gate", None)
+        if gate is not None:
+            return gate
+        with _RUNTIME_GATE_INIT_LOCK:
+            gate = getattr(self, "_runtime_gate", None)
+            if gate is None:
+                gate = threading.Condition(threading.RLock())
+                self._runtime_gate = gate
+                self._runtime_refreshing = False
+                self._active_runtime_operations = 0
+        return gate
+
+    def _enter_runtime_operation(self) -> None:
+        gate = self._ensure_runtime_gate()
+        with gate:
+            while getattr(self, "_runtime_refreshing", False):
+                gate.wait()
+            self._active_runtime_operations = getattr(self, "_active_runtime_operations", 0) + 1
+
+    def _exit_runtime_operation(self) -> None:
+        gate = self._ensure_runtime_gate()
+        with gate:
+            self._active_runtime_operations = max(
+                getattr(self, "_active_runtime_operations", 1) - 1,
+                0,
+            )
+            if self._active_runtime_operations == 0:
+                gate.notify_all()
+
+    def _begin_runtime_refresh(self) -> None:
+        gate = self._ensure_runtime_gate()
+        with gate:
+            self._runtime_refreshing = True
+            while getattr(self, "_active_runtime_operations", 0):
+                gate.wait()
+
+    def _end_runtime_refresh(self) -> None:
+        gate = self._ensure_runtime_gate()
+        with gate:
+            self._runtime_refreshing = False
+            gate.notify_all()
 
     def _rebuild_graph_from_memories(self):
         """Rebuild graph edges from persisted memories on init.
@@ -612,7 +693,22 @@ class ContextEngine:
                 len(self._memories),
             )
 
+    def _runtime_mode_lock(self):
+        """Return the process-local lock that serializes runtime transitions."""
+        lock = getattr(self, "_runtime_refresh_lock", None)
+        if lock is None:
+            # A few focused tests construct the engine with ``__new__``.  Keep
+            # that supported while preserving the production synchronization.
+            lock = threading.RLock()
+            self._runtime_refresh_lock = lock
+        return lock
+
     def _ensure_heavy_init(self):
+        """Serialize lazy initialization with runtime mode transitions."""
+        with self._runtime_mode_lock():
+            return self._ensure_heavy_init_locked()
+
+    def _ensure_heavy_init_locked(self):
         """Lazy-initialize heavy components: DomainManager, LanceDB, embedder, principle anchors.
 
         Called once on first supply() call. Avoids expensive embedding/DB init at ContextEngine
@@ -730,7 +826,28 @@ class ContextEngine:
                                 sqlite_count,
                                 ldb_count - sqlite_count,
                             )
-                    logging.info("ContextEngine: LanceDBStore ready")
+                    validate_index = getattr(self._ldb, "validate_with_engine", None)
+                    if callable(validate_index) and not getattr(
+                        self, "_runtime_sync_requested", False
+                    ):
+                        validation = validate_index(self)
+                        previous_sync = getattr(self, "_lancedb_sync_status", {})
+                        if not isinstance(previous_sync, dict):
+                            previous_sync = {}
+                        self._lancedb_sync_status = {
+                            **previous_sync,
+                            "success": bool(validation.get("ready")),
+                            "validation": validation,
+                        }
+                        if not validation.get("ready"):
+                            logging.warning(
+                                "ContextEngine: LanceDB identity is not ready; "
+                                "vector search disabled until full synchronization: %s",
+                                validation.get("status", "maintenance_required"),
+                            )
+                            self._ldb = None
+                    if self._ldb is not None:
+                        logging.info("ContextEngine: LanceDBStore ready")
                 except Exception as e:
                     logging.warning(
                         "ContextEngine: LanceDBStore init failed — vector search disabled: %s", e
@@ -2751,6 +2868,7 @@ class ContextEngine:
             pass
         return [0.0] * 1024  # fallback: zero vector
 
+    @_runtime_operation
     def supply(
         self,
         task_description: str,
@@ -4075,13 +4193,25 @@ class ContextEngine:
         Returns:
             ContextPack: 三层上下文包 (core / related / divergent)
         """
+        stage_timings: dict[str, float] = {}
+        supply_started = time.perf_counter() if debug else None
+
+        def record_stage_timing(name: str, started_at: float | None) -> None:
+            if started_at is None:
+                return
+            duration_ms = (time.perf_counter() - started_at) * 1000.0
+            if math.isfinite(duration_ms) and duration_ms > 0:
+                stage_timings[name] = round(duration_ms, 6)
+
         # Lazy-heavy-init: first supply() call triggers DomainManager, LanceDB, embedder, anchors
         self._ensure_heavy_init()
 
         # Phase 0: 原则注入 + 图谱自动注入
+        principle_started = time.perf_counter() if debug else None
         activated = self._activate_principles(task_type, task_description)
         if self.enable_principles:
             self._inject_activated_to_graph(activated, task_type)
+        record_stage_timing("principle_injection", principle_started)
 
         # Trust-aware retrieval: higher trust → broader context
         try:
@@ -4109,6 +4239,7 @@ class ContextEngine:
 
         # Phase 1: 三路分层检索 — 细→类→粗
         # 细 (graph): 原则关联图谱 — 最精确的信号
+        candidate_retrieval_started = time.perf_counter() if debug else None
         graph_results = self._graph_traversal(task_type)[:candidate_limit]
 
         # 类 (tier): 文本匹配 + L1 工作记忆优先级提升
@@ -4259,8 +4390,10 @@ class ContextEngine:
         all_results, synthesis_degradations = self._filter_synthesis_result_tuples(
             all_results[:candidate_limit]
         )
+        record_stage_timing("candidate_retrieval", candidate_retrieval_started)
 
         # P2: Evolve edge weights based on feedback patterns
+        filter_and_layer_started = time.perf_counter() if debug else None
         self._apply_edge_feedback()
 
         # Phase 3-5 fused: symbol rules + feedback + ContextItem building (was 3 passes, now 1)
@@ -4621,13 +4754,18 @@ class ContextEngine:
         except Exception:
             pass  # gap detection failure must not block context_supply
 
-        return self._finalize_supply_pack(
+        finalized_pack = self._finalize_supply_pack(
             pack,
             retrieval_plan,
             task_type=task_type,
             project_id=project_id,
             project_policy=project_policy,
         )
+        if debug:
+            record_stage_timing("filter_and_layer", filter_and_layer_started)
+            record_stage_timing("total", supply_started)
+            finalized_pack.pipeline_stats["stage_timing_ms"] = dict(stage_timings)
+        return finalized_pack
 
     # ========== 实体注册 ==========
 
@@ -4842,20 +4980,172 @@ class ContextEngine:
         """Return the active derived vector store, if initialized."""
         return self._ldb
 
-    def refresh_runtime_mode(self, initialize_heavy: bool = False):
-        """Refresh cached runtime state after launcher/MCP mode changes."""
+    def ensure_runtime_embedder(self):
+        """Return the current embedder, recreating it after a runtime refresh if needed."""
+        with self._runtime_mode_lock(), self._heavy_init_lock:
+            if self._embedder is None:
+                from plastic_promise.core.embedder import get_embedder
+
+                self._embedder = get_embedder(fallback_on_error=True)
+            return self._embedder
+
+    @_runtime_refresh
+    def refresh_runtime_mode(
+        self,
+        initialize_heavy: bool = False,
+        *,
+        synchronize_index: bool = False,
+    ) -> dict[str, Any]:
+        """Refresh mode-coupled dependencies under the runtime transition lock."""
+        with self._runtime_mode_lock():
+            return self._refresh_runtime_mode_locked(
+                initialize_heavy=initialize_heavy,
+                synchronize_index=synchronize_index,
+            )
+
+    def _refresh_runtime_mode_locked(
+        self,
+        initialize_heavy: bool = False,
+        *,
+        synchronize_index: bool = False,
+    ) -> dict[str, Any]:
+        """Refresh mode-coupled dependencies and optionally synchronize the derived index."""
         self.reset_rust_health()
-        if not initialize_heavy:
-            with self._heavy_init_lock:
-                if os.environ.get("LDB_INIT_ON_HEAVY_INIT") != "1":
-                    self._ldb = None
-            return
+        from plastic_promise.core.embedder import reset_embedder
 
         with self._heavy_init_lock:
+            self._embedder = None
+            self._ldb = None
+            self._principle_anchors = {}
             self._heavy_init_done = False
-            if os.environ.get("LDB_INIT_ON_HEAVY_INIT") == "1":
-                self._ldb = None
-        self._ensure_heavy_init()
+
+        # Do not close the previous embedder synchronously here.  In-flight
+        # retrieval calls may still hold a reference to it while the new mode
+        # is being prepared.  The singleton reset is enough for subsequent
+        # requests; resource cleanup is left to normal object lifetime.
+        reset_embedder()
+
+        refresh: dict[str, Any] = {
+            "embedder_reset": True,
+            "lancedb_reinitialized": False,
+            "index_sync": {
+                "requested": bool(synchronize_index),
+                "ready": not synchronize_index,
+                "status": "not_requested",
+            },
+        }
+        if not initialize_heavy:
+            self._runtime_refresh_status = refresh
+            return refresh
+
+        self._runtime_sync_requested = bool(synchronize_index)
+        try:
+            self._ensure_heavy_init()
+        finally:
+            self._runtime_sync_requested = False
+        refresh["lancedb_reinitialized"] = self._ldb is not None
+        refresh["embedding_model"] = str(
+            getattr(self._embedder, "index_model_name", None)
+            or getattr(self._embedder, "model_name", "unavailable")
+        )
+        if synchronize_index:
+            if self._ldb is None:
+                refresh["index_sync"] = {
+                    "requested": True,
+                    "ready": False,
+                    "status": "lancedb_unavailable",
+                }
+            else:
+                try:
+                    sync_result = self._ldb.sync_with_engine(self)
+                    if not isinstance(sync_result, dict):
+                        raise TypeError("runtime_index_sync_result_invalid")
+                    stale_ids = sync_result.get("stale_ids") or []
+                    orphan_ids = sync_result.get("orphan_ids") or []
+                    diagnostics = sync_result.get("diagnostics") or []
+                    invalid_ids = sync_result.get("invalid_material_ids") or []
+                    ready = not any(
+                        (
+                            sync_result.get("canonical_unavailable"),
+                            int(sync_result.get("missing_skipped", 0)) > 0,
+                            int(sync_result.get("stale_reindexed", 0)) < len(stale_ids),
+                            int(sync_result.get("orphan_deleted", 0)) < len(orphan_ids),
+                            bool(diagnostics),
+                            bool(invalid_ids),
+                        )
+                    )
+                    refresh["index_sync"] = {
+                        "requested": True,
+                        "ready": ready,
+                        "status": "ready" if ready else "maintenance_required",
+                        "orphan_deleted": int(sync_result.get("orphan_deleted", 0)),
+                        "missing_backfilled": int(sync_result.get("missing_backfilled", 0)),
+                        "missing_skipped": int(sync_result.get("missing_skipped", 0)),
+                        "stale_detected": len(stale_ids),
+                        "stale_reindexed": int(sync_result.get("stale_reindexed", 0)),
+                        "invalid_material_count": len(invalid_ids),
+                        "diagnostic_count": len(diagnostics),
+                    }
+                    if ready:
+                        validate_index = getattr(self._ldb, "validate_with_engine", None)
+                        if callable(validate_index):
+                            validation = validate_index(self)
+                            ready = bool(validation.get("ready"))
+                            refresh["index_sync"]["ready"] = ready
+                            if not ready:
+                                refresh["index_sync"]["status"] = "maintenance_required"
+                            refresh["index_sync"]["validation"] = validation
+                except Exception as exc:
+                    ready = False
+                    refresh["index_sync"] = {
+                        "requested": True,
+                        "ready": False,
+                        "status": "sync_failed",
+                        "error_class": exc.__class__.__name__,
+                    }
+                if not ready:
+                    # Do not serve vectors whose canonical identity could not be
+                    # synchronized to the newly selected runtime mode.
+                    with self._heavy_init_lock:
+                        self._ldb = None
+                    refresh["lancedb_reinitialized"] = False
+        elif self._ldb is not None:
+            validate_index = getattr(self._ldb, "validate_with_engine", None)
+            if callable(validate_index):
+                try:
+                    validation = validate_index(self)
+                    ready = bool(validation.get("ready"))
+                    refresh["index_sync"] = {
+                        "requested": False,
+                        "ready": ready,
+                        "status": "validated" if ready else "maintenance_required",
+                        "missing_count": len(validation.get("missing_ids") or []),
+                        "orphan_count": len(validation.get("orphan_ids") or []),
+                        "stale_count": len(validation.get("stale_ids") or []),
+                        "invalid_material_count": len(
+                            validation.get("invalid_material_ids") or []
+                        ),
+                        "text_mismatch_count": len(
+                            validation.get("text_mismatch_ids") or []
+                        ),
+                    }
+                    if not ready:
+                        with self._heavy_init_lock:
+                            self._ldb = None
+                        refresh["lancedb_reinitialized"] = False
+                except Exception as exc:
+                    refresh["index_sync"] = {
+                        "requested": False,
+                        "ready": False,
+                        "status": "validation_failed",
+                        "error_class": exc.__class__.__name__,
+                    }
+                    with self._heavy_init_lock:
+                        self._ldb = None
+                    refresh["lancedb_reinitialized"] = False
+
+        self._runtime_refresh_status = refresh
+        return refresh
 
     def activate_principles(self, task_type: str, task_description: str) -> list[str]:
         """Public wrapper for _activate_principles."""

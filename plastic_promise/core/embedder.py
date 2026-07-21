@@ -41,6 +41,8 @@ from abc import ABC, abstractmethod
 import requests
 
 from plastic_promise.core.chunking import (
+    STRUCTURE_CHUNK_PARITY_PROBE,
+    ChunkMaterial,
     has_uncovered_content,
     legacy_character_chunks,
     limit_chunk_materials,
@@ -156,14 +158,21 @@ class CachedEmbedder(Embedder):
                 type(self._delegate).__name__,
             )
             try:
-                ollama_vec = OllamaEmbedder().embed(text)
+                replacement: Embedder = OllamaEmbedder()
+                if isinstance(self._delegate, StructureAwareEmbedder):
+                    replacement = StructureAwareEmbedder(replacement)
+                ollama_vec = replacement.embed(text)
                 if ollama_vec and any(v != 0.0 for v in ollama_vec):
                     _log.info(
                         "CachedEmbedder: Ollama runtime fallback succeeded, "
                         "switching delegate permanently"
                     )
-                    self._delegate = OllamaEmbedder()
+                    previous = self._delegate
+                    self._delegate = replacement
+                    previous.close()
                     vec = ollama_vec
+                else:
+                    replacement.close()
             except Exception as e:
                 _log.warning("CachedEmbedder: Ollama runtime fallback also failed: %s", e)
 
@@ -304,8 +313,8 @@ class OllamaEmbedder(Embedder):
             self._chunking_mode = "off"
         self._structure_hard_chars = _int_env(
             "EMBEDDER_STRUCTURE_HARD_CHARS",
-            max(self._chunk_chars * 2, self._chunk_chars),
-            minimum=1,
+            self._chunk_chars,
+            minimum=self._chunk_chars,
         )
         self._structure_max_chunks = _int_env("EMBEDDER_STRUCTURE_MAX_CHUNKS", 64, minimum=1)
         self._structure_max_source_chars = _int_env(
@@ -506,6 +515,354 @@ def _mean_pool_vectors(vectors: list[list[float]]) -> list[float]:
     return [value / norm for value in pooled]
 
 
+def _structure_chunking_settings() -> dict[str, int | str]:
+    target = _int_env("EMBEDDER_CHUNK_CHARS", 512, minimum=1)
+    return {
+        "mode": os.environ.get("PP_MEMORY_CHUNKING", "off").strip().casefold(),
+        "engine": os.environ.get("PP_MEMORY_CHUNK_ENGINE", "python").strip().casefold(),
+        "target_chars": target,
+        "hard_chars": _int_env(
+            "EMBEDDER_STRUCTURE_HARD_CHARS",
+            target,
+            minimum=target,
+        ),
+        "max_chunks": _int_env("EMBEDDER_STRUCTURE_MAX_CHUNKS", 64, minimum=1),
+        "max_source_chars": _int_env(
+            "EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS", 2_000_000, minimum=1
+        ),
+    }
+
+
+_RUST_CHUNK_PARITY_GATE_LOCK = threading.Lock()
+_RUST_CHUNK_PARITY_GATES: dict[
+    tuple[object, ...],
+    tuple[str, str],
+] = {}
+
+
+def _reset_rust_chunk_parity_gate() -> None:
+    """Clear process-local Rust parity decisions (primarily for isolated tests)."""
+
+    with _RUST_CHUNK_PARITY_GATE_LOCK:
+        _RUST_CHUNK_PARITY_GATES.clear()
+
+
+def _rust_chunk_extension_identity() -> tuple[object, ...]:
+    """Identify the loaded projection without making the binary path the sole key."""
+
+    from plastic_promise.core.rust_extension import load_context_engine_core
+
+    try:
+        rust_core = load_context_engine_core()
+    except Exception as exc:
+        # A stable unavailable identity avoids repeating either parser while the
+        # same loader failure persists. If the extension later loads, its module
+        # identity produces a new gate key and parity is checked again.
+        return (
+            "unavailable",
+            id(load_context_engine_core),
+            type(exc).__module__,
+            type(exc).__qualname__,
+            str(exc),
+        )
+
+    spec = getattr(rust_core, "__spec__", None)
+    origin = getattr(rust_core, "__file__", None) or getattr(spec, "origin", None) or ""
+    projection = getattr(rust_core, "structure_chunk_projection", None)
+    return (
+        "loaded",
+        str(getattr(rust_core, "__name__", type(rust_core).__qualname__)),
+        str(origin),
+        str(getattr(rust_core, "__version__", "")),
+        id(rust_core),
+        id(projection),
+    )
+
+
+def _rust_chunk_parity_gate_key(
+    *,
+    target_chars: int,
+    hard_chars: int,
+    max_chunks: int,
+) -> tuple[object, ...]:
+    return (
+        _rust_chunk_extension_identity(),
+        target_chars,
+        hard_chars,
+        max_chunks,
+        id(structure_aware_chunks),
+        id(limit_chunk_materials),
+        id(_rust_chunk_materials),
+    )
+
+
+def _python_structure_materials(
+    text: str,
+    *,
+    target_chars: int,
+    hard_chars: int,
+    max_chunks: int,
+) -> list[ChunkMaterial]:
+    return limit_chunk_materials(
+        structure_aware_chunks(text, target_chars=target_chars, hard_chars=hard_chars),
+        max_chunks,
+    )
+
+
+def _rust_chunk_materials(
+    text: str,
+    *,
+    target_chars: int,
+    hard_chars: int,
+    max_chunks: int,
+) -> list[ChunkMaterial]:
+    """Load Rust's canonical projection and validate its public shape."""
+
+    from plastic_promise.core.rust_extension import load_context_engine_core
+
+    projection = getattr(load_context_engine_core(), "structure_chunk_projection", None)
+    if not callable(projection):
+        raise RuntimeError("rust_chunking_api_unavailable")
+    rows = projection(text, target_chars, hard_chars, max_chunks)
+    if not isinstance(rows, (list, tuple)):
+        raise RuntimeError("rust_chunking_result_invalid")
+    materials: list[ChunkMaterial] = []
+    for row in rows:
+        try:
+            item = dict(row)
+            heading_path = tuple(str(value) for value in item.get("heading_path", []))
+            material = ChunkMaterial(
+                text=str(item["text"]),
+                kind=str(item["kind"]),
+                heading_path=heading_path,
+                source_start=int(item["source_start"]),
+                source_end=int(item["source_end"]),
+                context_truncated=bool(item.get("context_truncated", False)),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("rust_chunking_result_invalid") from exc
+        if material.source_start < 0 or material.source_end < material.source_start:
+            raise RuntimeError("rust_chunking_span_invalid")
+        materials.append(material)
+    return materials or [ChunkMaterial("", "empty", (), 0, 0)]
+
+
+def _effective_structure_materials(
+    text: str,
+    settings: dict[str, int | str],
+) -> tuple[list[ChunkMaterial], str, str]:
+    """Return chunks, effective engine, and a stable fallback reason."""
+
+    target = int(settings["target_chars"])
+    hard = int(settings["hard_chars"])
+    max_chunks = int(settings["max_chunks"])
+    requested = str(settings["engine"])
+    if requested != "rust":
+        return (
+            _python_structure_materials(
+                text,
+                target_chars=target,
+                hard_chars=hard,
+                max_chunks=max_chunks,
+            ),
+            "python",
+            "",
+        )
+
+    gate_key = _rust_chunk_parity_gate_key(
+        target_chars=target,
+        hard_chars=hard,
+        max_chunks=max_chunks,
+    )
+    with _RUST_CHUNK_PARITY_GATE_LOCK:
+        gate = _RUST_CHUNK_PARITY_GATES.get(gate_key)
+        if gate is None:
+            python_materials = _python_structure_materials(
+                STRUCTURE_CHUNK_PARITY_PROBE,
+                target_chars=target,
+                hard_chars=hard,
+                max_chunks=max_chunks,
+            )
+            try:
+                rust_materials = _rust_chunk_materials(
+                    STRUCTURE_CHUNK_PARITY_PROBE,
+                    target_chars=target,
+                    hard_chars=hard,
+                    max_chunks=max_chunks,
+                )
+                if rust_materials != python_materials:
+                    raise RuntimeError("rust_python_chunking_mismatch")
+            except Exception as exc:
+                fallback_reason = str(exc) or "rust_chunking_failed"
+                _RUST_CHUNK_PARITY_GATES[gate_key] = ("fallback", fallback_reason)
+                gate = ("fallback", fallback_reason)
+            else:
+                _RUST_CHUNK_PARITY_GATES[gate_key] = ("matched", "")
+                gate = ("matched", "")
+
+    gate_status, fallback_reason = gate
+    if gate_status == "fallback":
+        return (
+            _python_structure_materials(
+                text,
+                target_chars=target,
+                hard_chars=hard,
+                max_chunks=max_chunks,
+            ),
+            "python",
+            fallback_reason,
+        )
+
+    try:
+        rust_materials = _rust_chunk_materials(
+            text,
+            target_chars=target,
+            hard_chars=hard,
+            max_chunks=max_chunks,
+        )
+    except Exception as exc:
+        fallback_reason = str(exc) or "rust_chunking_failed"
+        with _RUST_CHUNK_PARITY_GATE_LOCK:
+            current_gate = _RUST_CHUNK_PARITY_GATES.get(gate_key)
+            if current_gate is None or current_gate[0] == "matched":
+                _RUST_CHUNK_PARITY_GATES[gate_key] = ("fallback", fallback_reason)
+            else:
+                fallback_reason = current_gate[1]
+        return (
+            _python_structure_materials(
+                text,
+                target_chars=target,
+                hard_chars=hard,
+                max_chunks=max_chunks,
+            ),
+            "python",
+            fallback_reason,
+        )
+
+    # Another request can discover a Rust runtime failure while this call is
+    # executing. Honor that process-level fallback before returning its result.
+    with _RUST_CHUNK_PARITY_GATE_LOCK:
+        current_gate = _RUST_CHUNK_PARITY_GATES.get(gate_key)
+    if current_gate is not None and current_gate[0] == "fallback":
+        return (
+            _python_structure_materials(
+                text,
+                target_chars=target,
+                hard_chars=hard,
+                max_chunks=max_chunks,
+            ),
+            "python",
+            current_gate[1],
+        )
+    return rust_materials, "rust", ""
+
+
+class StructureAwareEmbedder(Embedder):
+    """Provider-neutral structured chunking wrapper.
+
+    Ollama historically owned the chunking implementation itself.  Keeping the
+    wrapper at the provider boundary makes ``full`` mode behave the same for
+    Ollama, OpenAI, local sentence-transformers, and the zero-vector fallback.
+    """
+
+    def __init__(self, delegate: Embedder) -> None:
+        self._delegate = delegate
+        self._settings = _structure_chunking_settings()
+        self._last_chunking_diagnostics: dict[str, object] = {}
+
+    def embed(self, text: str) -> list[float]:
+        # Semantic enrichment plans are already provider-specific embedding
+        # material; do not parse them as Markdown a second time.
+        if is_embedding_plan(text):
+            result = self._delegate.embed(text)
+            self._last_chunking_diagnostics = dict(
+                getattr(self._delegate, "last_chunking_diagnostics", {}) or {}
+            )
+            return result
+        if len(text or "") > int(self._settings["max_source_chars"]):
+            self._last_chunking_diagnostics = {
+                "mode": "structure-v1",
+                "source_chars": len(text or ""),
+                "resource_limited": True,
+                "error": "structure_chunking_source_too_large",
+            }
+            raise ValueError("structure_chunking_source_too_large")
+
+        materials, effective_engine, fallback_reason = _effective_structure_materials(
+            text or "", self._settings
+        )
+        source = text or ""
+        last_source_end = max((material.source_end for material in materials), default=0)
+        coverage_gap = has_uncovered_content(source, materials)
+        self._last_chunking_diagnostics = {
+            "mode": "structure-v1",
+            "requested_engine": str(self._settings["engine"]),
+            "effective_engine": effective_engine,
+            "engine_fallback_reason": fallback_reason,
+            "source_chars": len(source),
+            "chunk_count": len(materials),
+            "covered_source_chars": sum(
+                max(material.source_end - material.source_start, 0) for material in materials
+            ),
+            "last_source_end": last_source_end,
+            "budget_unit": "characters-fallback",
+            "truncated": last_source_end < len(source.rstrip())
+            or coverage_gap
+            or any(material.context_truncated for material in materials),
+            "max_chunks": int(self._settings["max_chunks"]),
+            "resource_limited": coverage_gap,
+            "context_truncated": any(material.context_truncated for material in materials),
+        }
+
+        # Ollama exposes a low-level request method; using it avoids re-entering
+        # its legacy chunking branch. Other providers use their normal embed().
+        low_level = getattr(self._delegate, "_embed_chunk", None)
+        embed_one = low_level if callable(low_level) else self._delegate.embed
+        vectors = [embed_one(material.text) for material in materials]
+        return vectors[0] if len(vectors) == 1 else _mean_pool_vectors(vectors)
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed(text) for text in texts]
+
+    def prepare_index_text(self, text: str) -> str:
+        prepare = getattr(self._delegate, "prepare_index_text", None)
+        return prepare(text) if callable(prepare) else text
+
+    @property
+    def dim(self) -> int:
+        return self._delegate.dim
+
+    @property
+    def model_name(self) -> str:
+        return self._delegate.model_name
+
+    @property
+    def index_model_name(self) -> str:
+        base = str(self._delegate.index_model_name)
+        if "|chunking=structure-v1" in base:
+            return base
+        return (
+            f"{base}|chunking=structure-v1"
+            f"|target_chars={self._settings['target_chars']}"
+            f"|hard_chars={self._settings['hard_chars']}"
+            f"|max_chunks={self._settings['max_chunks']}"
+            f"|max_source_chars={self._settings['max_source_chars']}"
+            "|budget=characters-fallback"
+        )
+
+    @property
+    def last_chunking_diagnostics(self) -> dict[str, object]:
+        return dict(self._last_chunking_diagnostics)
+
+    @property
+    def last_index_preparation_diagnostics(self) -> dict[str, object]:
+        diagnostics = getattr(self._delegate, "last_index_preparation_diagnostics", {})
+        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+
+    def close(self) -> None:
+        self._delegate.close()
+
+
 class OpenAIEmbedder(Embedder):
     """OpenAI embedding fallback.
 
@@ -624,7 +981,7 @@ _embedder_singleton: Embedder | None = None
 _embedder_lock = threading.Lock()
 
 
-def reset_embedder():
+def reset_embedder() -> Embedder | None:
     """Clear the embedder singleton so the next call to get_embedder() re-probes.
 
     Use when: Ollama becomes available after a FallbackEmbedder lock-in,
@@ -639,6 +996,7 @@ def reset_embedder():
     logging.getLogger("plastic-promise.embedder").info(
         "Embedder singleton reset — will re-probe on next get_embedder()"
     )
+    return previous
 
 
 def get_embedder(fallback_on_error: bool = True) -> Embedder:
@@ -698,7 +1056,10 @@ def get_embedder(fallback_on_error: bool = True) -> Embedder:
 
         if delegate is None:
             _embedder_singleton = FallbackEmbedder(dim=1024)
-            return _embedder_singleton
+            delegate = _embedder_singleton
+
+        if os.environ.get("PP_MEMORY_CHUNKING", "off").strip().casefold() == "structure-v1":
+            delegate = StructureAwareEmbedder(delegate)
 
         # Wrap in cache unless explicitly disabled
         cache_size = int(os.environ.get("EMBEDDER_CACHE_SIZE", "256"))

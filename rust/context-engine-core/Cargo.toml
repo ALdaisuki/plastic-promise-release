@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 pyo3 = { version = "0.20", features = ["extension-module", "abi3-py310"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 # uuid removed — using timestamp-based IDs to avoid getrandom→dlltool dependency

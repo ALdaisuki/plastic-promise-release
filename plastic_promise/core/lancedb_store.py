@@ -4,10 +4,11 @@ Table: memory_vectors (memory_id, vector, text, tier, category, scope)
 Vector dim: 1024 (mxbai-embed-large), configurable via PP_EMBEDDING_DIM.
 """
 
+import json
 import logging
 import math
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 import lancedb
 import pyarrow as pa
@@ -15,6 +16,7 @@ from lancedb.index import FTS
 
 from plastic_promise.core.embedder import Embedder
 from plastic_promise.core.memory_index import (
+    INDEX_HASH_SCHEMA,
     IndexMaterial,
     IndexMaterialError,
     effective_embedding_model_name,
@@ -24,13 +26,44 @@ from plastic_promise.core.memory_index import (
     read_persisted_index_material,
     resolve_index_material,
 )
-from plastic_promise.core.synthesis_retrieval import synthesis_index_eligible
+from plastic_promise.core.synthesis_retrieval import (
+    available_ordinary_memory_sql_predicate,
+    synthesis_index_eligible,
+)
 
 logger = logging.getLogger("plastic-promise.lancedb")
 
 EMB_DIM = int(os.environ.get("PP_EMBEDDING_DIM", "1024"))
 TABLE_NAME = "memory_vectors"
 _BULK_VECTOR_CHUNK_SIZE = 256
+_DEFAULT_UNINDEXED_VECTOR_SCAN_FRAGMENT_LIMIT = 256
+_DEFAULT_AUTO_COMPACT_FRAGMENT_THRESHOLD = 128
+_DEFAULT_AUTO_COMPACT_MAX_FRAGMENTS = 256
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        return max(int(os.environ.get(name, str(default))), 1)
+    except (TypeError, ValueError):
+        return max(default, 1)
+
+
+def _has_invalid_v2_index_material(memory: Mapping[str, object]) -> bool:
+    """Identify durable v2 contracts that cannot safely own a derived row."""
+
+    metadata = memory.get("metadata_json")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(metadata, Mapping):
+        return False
+    index = metadata.get("memory_index")
+    if not isinstance(index, Mapping) or index.get("hash_schema") != INDEX_HASH_SCHEMA:
+        return False
+    return read_persisted_index_material(memory) is None
+
 
 _MEMORY_VECTORS_SCHEMA = pa.schema(
     [
@@ -134,6 +167,8 @@ class LanceDBStore:
         if self._vectors_disabled:
             return []
         if self._table is None:
+            return []
+        if not self._vector_scan_allowed():
             return []
         try:
             q = self._table.search(vector).metric("cosine").limit(k)
@@ -266,6 +301,8 @@ class LanceDBStore:
         """
         if self._table is None:
             return []
+        if not self._vector_scan_allowed():
+            return []
         try:
             raw = self._table.search(vector).metric("cosine").limit(k).to_list()
             results = []
@@ -357,6 +394,142 @@ class LanceDBStore:
             return results[0][0]
         return None
 
+    def fragmentation_status(self) -> dict[str, object]:
+        """Describe whether an unindexed native vector scan is bounded."""
+
+        if self._table is None:
+            return {
+                "row_count": 0,
+                "fragment_count": 0,
+                "vector_indexed": False,
+                "inspection_error": "lancedb_table_unavailable",
+            }
+        inspection_error = ""
+        try:
+            fragment_count = len(self._table.to_lance().get_fragments())
+        except Exception as exc:
+            fragment_count = -1
+            inspection_error = exc.__class__.__name__
+        try:
+            row_count = int(self._table.count_rows())
+        except Exception as exc:
+            row_count = -1
+            inspection_error = inspection_error or exc.__class__.__name__
+        status: dict[str, object] = {
+            "row_count": row_count,
+            "fragment_count": fragment_count,
+            "vector_indexed": self._has_vector_index(),
+        }
+        if inspection_error:
+            status["inspection_error"] = inspection_error
+        return status
+
+    def optimize_if_fragmented(
+        self,
+        *,
+        threshold: int | None = None,
+        max_fragments: int | None = None,
+    ) -> dict[str, object]:
+        """Compact a small fragment backlog without risking a large hot-path rewrite."""
+
+        threshold = threshold or _positive_int_env(
+            "LDB_AUTO_COMPACT_FRAGMENT_THRESHOLD",
+            _DEFAULT_AUTO_COMPACT_FRAGMENT_THRESHOLD,
+        )
+        max_fragments = max_fragments or _positive_int_env(
+            "LDB_AUTO_COMPACT_MAX_FRAGMENTS",
+            _DEFAULT_AUTO_COMPACT_MAX_FRAGMENTS,
+        )
+        status = self.fragmentation_status()
+        fragment_count = int(status.get("fragment_count", -1))
+        result = {
+            **status,
+            "threshold": threshold,
+            "max_fragments": max_fragments,
+            "optimized": False,
+        }
+        if fragment_count < 0:
+            result["reason"] = "fragmentation_inspection_failed"
+            return result
+        if fragment_count <= threshold:
+            result["reason"] = "fragmentation_below_threshold"
+            return result
+        if fragment_count > max_fragments:
+            result["reason"] = "manual_compaction_required"
+            logger.warning(
+                "LanceDB auto-compaction skipped: %d fragments exceeds bounded limit %d",
+                fragment_count,
+                max_fragments,
+            )
+            return result
+        try:
+            self._table.optimize()
+        except Exception as exc:
+            result.update(
+                {
+                    "reason": "lancedb_compaction_failed",
+                    "error_class": exc.__class__.__name__,
+                }
+            )
+            logger.warning("LanceDB auto-compaction failed: %s", exc)
+            return result
+        refreshed = self.fragmentation_status()
+        result.update(
+            {
+                "optimized": True,
+                "reason": "lancedb_fragments_compacted",
+                "fragment_count_after": refreshed.get("fragment_count", -1),
+            }
+        )
+        logger.info(
+            "LanceDB compacted fragments: %d -> %s",
+            fragment_count,
+            result["fragment_count_after"],
+        )
+        return result
+
+    def _vector_scan_allowed(self) -> bool:
+        status = self.fragmentation_status()
+        if status.get("vector_indexed") is True:
+            return True
+        fragment_count = int(status.get("fragment_count", -1))
+        limit = _positive_int_env(
+            "LDB_MAX_UNINDEXED_VECTOR_SCAN_FRAGMENTS",
+            _DEFAULT_UNINDEXED_VECTOR_SCAN_FRAGMENT_LIMIT,
+        )
+        if 0 <= fragment_count <= limit:
+            return True
+        diagnostic = {
+            "channel": "vector",
+            "reason": "lancedb_unindexed_fragment_scan_blocked",
+            "fragment_count": str(fragment_count),
+            "limit": str(limit),
+        }
+        self._last_search_diagnostics = [diagnostic]
+        if not getattr(self, "_unsafe_vector_scan_warning_emitted", False):
+            logger.warning(
+                "LanceDB native vector scan blocked: no vector index, fragments=%d, limit=%d",
+                fragment_count,
+                limit,
+            )
+            self._unsafe_vector_scan_warning_emitted = True
+        return False
+
+    def _has_vector_index(self) -> bool:
+        if self._table is None:
+            return False
+        try:
+            indices = self._table.list_indices()
+        except Exception:
+            return False
+        for index in indices:
+            columns = getattr(index, "columns", ())
+            if isinstance(columns, str):
+                columns = (columns,)
+            if "vector" in {str(column) for column in columns or ()}:
+                return True
+        return False
+
     def insert(
         self,
         memory_id: str,
@@ -383,6 +556,8 @@ class LanceDBStore:
         tier: str = "L1",
         category: str = "other",
         scope: str = "global",
+        *,
+        compact: bool = True,
     ) -> None:
         """Insert a vector row and propagate backend failures to repair workers."""
         if self._vectors_disabled:
@@ -410,6 +585,8 @@ class LanceDBStore:
                 }
             ]
         )
+        if compact:
+            self.optimize_if_fragmented()
 
     def replace_checked(
         self,
@@ -419,6 +596,8 @@ class LanceDBStore:
         tier: str = "L1",
         category: str = "other",
         scope: str = "global",
+        *,
+        compact: bool = True,
     ) -> None:
         """Replace one vector row and propagate failures to repair workers."""
         if self._vectors_disabled:
@@ -445,6 +624,8 @@ class LanceDBStore:
         if existing:
             self.delete_checked(memory_id)
         self._table.add([desired])
+        if compact:
+            self.optimize_if_fragmented()
 
     @staticmethod
     def _checked_row_matches(existing: dict, desired: dict) -> bool:
@@ -529,6 +710,12 @@ class LanceDBStore:
         eligible_memories = self._eligible_engine_memories(engine, memories)
         sqlite_ids = set(eligible_memories)
         ldb_ids = self.list_memory_ids()
+        invalid_material_ids = sorted(
+            mid
+            for mid, memory in eligible_memories.items()
+            if str(memory.get("memory_type") or "").strip().casefold() != "synthesis"
+            and _has_invalid_v2_index_material(memory)
+        )
 
         orphan_ids = sorted(ldb_ids - sqlite_ids)
         missing_ids = [mid for mid in eligible_memories if mid not in ldb_ids]
@@ -551,35 +738,83 @@ class LanceDBStore:
             if self._delete_repair_row(mid):
                 orphan_deleted += 1
 
+        invalid_material_removed = 0
+        invalid_material_removed_ids: set[str] = set()
+        for mid in invalid_material_ids:
+            if mid not in ldb_ids:
+                continue
+            if self._delete_repair_row(mid):
+                invalid_material_removed += 1
+                invalid_material_removed_ids.add(mid)
+                self._record_index_diagnostic(
+                    mid,
+                    "index_material_invalid_removed",
+                    failed=True,
+                )
+
         missing_backfilled = 0
         missing_skipped = 0
         for mid in missing_ids:
-            if self._insert_engine_memory(engine, mid, eligible_memories.get(mid, {})):
+            if self._insert_engine_memory(
+                engine, mid, eligible_memories.get(mid, {}), compact=False
+            ):
                 missing_backfilled += 1
             else:
                 missing_skipped += 1
 
         stale_reindexed = 0
-        for mid in stale_ids:
+        for position, mid in enumerate(stale_ids, 1):
             if self._insert_engine_memory(
                 engine,
                 mid,
                 eligible_memories.get(mid, {}),
                 replace_existing=True,
+                compact=False,
             ):
                 stale_reindexed += 1
+            if position % 25 == 0 or position == len(stale_ids):
+                logger.info(
+                    "LanceDB model/chunk migration: %d/%d checked, %d re-indexed",
+                    position,
+                    len(stale_ids),
+                    stale_reindexed,
+                )
 
         # Legacy materialization can change a source embedding hash. Recheck
         # after repair so a synthesis that became stale during this pass cannot
         # remain in the derived index.
-        final_eligible_ids = set(self._eligible_engine_memories(engine, memories))
+        final_eligible_memories = self._eligible_engine_memories(engine, memories)
+        final_invalid_material_ids = {
+            mid
+            for mid, memory in final_eligible_memories.items()
+            if str(memory.get("memory_type") or "").strip().casefold() != "synthesis"
+            and _has_invalid_v2_index_material(memory)
+        }
+        final_eligible_ids = set(final_eligible_memories) - final_invalid_material_ids
         late_orphan_ids = sorted(self.list_memory_ids() - final_eligible_ids)
         for mid in late_orphan_ids:
             if mid in orphan_ids:
                 continue
+            if mid in final_invalid_material_ids:
+                if mid in invalid_material_removed_ids:
+                    continue
+                if self._delete_repair_row(mid):
+                    invalid_material_removed += 1
+                    invalid_material_removed_ids.add(mid)
+                    self._record_index_diagnostic(
+                        mid,
+                        "index_material_invalid_removed",
+                        failed=True,
+                    )
+                continue
             if self._delete_repair_row(mid):
                 orphan_deleted += 1
-        orphan_ids = sorted(set(orphan_ids) | set(late_orphan_ids))
+        # A synchronization pass can touch hundreds of rows.  Compact once at
+        # the end instead of inspecting/optimizing the table after every add.
+        self.optimize_if_fragmented()
+        orphan_ids = sorted(
+            set(orphan_ids) | (set(late_orphan_ids) - final_invalid_material_ids)
+        )
 
         result = {
             "orphan_deleted": orphan_deleted,
@@ -590,6 +825,11 @@ class LanceDBStore:
         }
         if self._index_failures:
             result["diagnostics"] = list(self._index_failures)
+        if invalid_material_ids or final_invalid_material_ids:
+            result["invalid_material_removed"] = invalid_material_removed
+            result["invalid_material_ids"] = sorted(
+                set(invalid_material_ids) | final_invalid_material_ids
+            )
         if stale_ids:
             result["stale_reindexed"] = stale_reindexed
             result["stale_ids"] = stale_ids
@@ -684,13 +924,14 @@ class LanceDBStore:
                 break
 
             try:
-                if not self._insert_engine_memory(engine, mid, mem_data):
+                if not self._insert_engine_memory(engine, mid, mem_data, compact=False):
                     continue
                 rebuilt += 1
             except Exception as e:
                 logger.error("LanceDB rebuild: insert failed for %s: %s", mid, e)
 
         logger.info("LanceDB rebuild: complete — %d memories re-indexed", rebuilt)
+        self.optimize_if_fragmented()
         return rebuilt
 
     def _insert_engine_memory(
@@ -700,6 +941,7 @@ class LanceDBStore:
         mem_data: dict,
         *,
         replace_existing: bool = False,
+        compact: bool = True,
     ) -> bool:
         if not self._memory_is_index_eligible(engine, mid, mem_data):
             return False
@@ -805,6 +1047,7 @@ class LanceDBStore:
                     tier=canonical.get("tier", "L1"),
                     category=canonical.get("category", "other"),
                     scope=canonical.get("scope", "global"),
+                    compact=compact,
                 )
             except Exception as exc:
                 self._record_index_diagnostic(mid, "lancedb_insert_failed", failed=True)
@@ -995,21 +1238,100 @@ class LanceDBStore:
         if conn is None:
             return True
         try:
-            has_control = (
+            return (
                 conn.execute(
-                    "SELECT 1 FROM synthesis_artifacts WHERE memory_id = ?",
+                    "SELECT 1 FROM memories WHERE id = ? AND "
+                    + available_ordinary_memory_sql_predicate("memories"),
                     (memory_id,),
                 ).fetchone()
                 is not None
             )
         except Exception:
             return False
-        if has_control:
-            return synthesis_index_eligible(conn, memory_id)
-        return True
 
     def _embedding_model_name(self) -> str:
         return effective_embedding_model_name(self._embedder)
+
+    def validate_with_engine(self, engine: object) -> dict[str, object]:
+        """Check derived-index identity without mutating LanceDB.
+
+        Runtime modes that do not own a rebuild (``normal`` and
+        ``rust-normal``) may still open LanceDB for reads.  They must first
+        prove that every visible row belongs to the current embedding/model
+        contract; otherwise an old structure-v1 index could be queried with
+        an ``off`` chunking embedder.
+        """
+        memories = self._canonical_engine_memories(engine)
+        if memories is None:
+            return {
+                "ready": False,
+                "status": "canonical_unavailable",
+                "missing_ids": [],
+                "orphan_ids": [],
+                "stale_ids": [],
+                "invalid_material_ids": [],
+                "text_mismatch_ids": [],
+            }
+
+        eligible_memories = self._eligible_engine_memories(engine, memories)
+        eligible_ids = set(eligible_memories)
+        indexed_ids = self.list_memory_ids()
+        missing_ids = sorted(eligible_ids - indexed_ids)
+        orphan_ids = sorted(indexed_ids - eligible_ids)
+        model_name = self._embedding_model_name()
+        invalid_material_ids: list[str] = []
+        stale_ids: list[str] = []
+        expected_text: dict[str, str] = {}
+
+        for memory_id, memory in eligible_memories.items():
+            if _has_invalid_v2_index_material(memory):
+                invalid_material_ids.append(memory_id)
+                continue
+            material = read_persisted_index_material(memory, model_name=model_name)
+            if material is None:
+                if memory_id in indexed_ids:
+                    stale_ids.append(memory_id)
+                continue
+            expected_text[memory_id] = material.vector_text
+
+        text_mismatch_ids: list[str] = []
+        if self._table is not None and expected_text:
+            try:
+                table = self._table.to_arrow()
+                columns = set(table.column_names)
+                if {"memory_id", "text"}.issubset(columns):
+                    row_ids = table.column("memory_id").to_pylist()
+                    row_texts = table.column("text").to_pylist()
+                    for memory_id, text in zip(row_ids, row_texts, strict=True):
+                        key = str(memory_id or "")
+                        if key in expected_text and str(text or "") != expected_text[key]:
+                            text_mismatch_ids.append(key)
+            except Exception:
+                # A validation failure is fail-closed; do not claim a ready
+                # vector channel when the backend cannot expose row identity.
+                text_mismatch_ids.append("__table__")
+
+        invalid_material_ids.sort()
+        stale_ids.sort()
+        text_mismatch_ids = sorted(set(text_mismatch_ids))
+        ready = not any(
+            (
+                missing_ids,
+                orphan_ids,
+                stale_ids,
+                invalid_material_ids,
+                text_mismatch_ids,
+            )
+        )
+        return {
+            "ready": ready,
+            "status": "ready" if ready else "maintenance_required",
+            "missing_ids": missing_ids,
+            "orphan_ids": orphan_ids,
+            "stale_ids": stale_ids,
+            "invalid_material_ids": invalid_material_ids,
+            "text_mismatch_ids": text_mismatch_ids,
+        }
 
     @staticmethod
     def _persist_index_material(
@@ -1158,12 +1480,13 @@ class LanceDBStore:
                 )
                 break
             try:
-                if not self._insert_engine_memory(engine, mid, memories[mid]):
+                if not self._insert_engine_memory(engine, mid, memories[mid], compact=False):
                     continue
                 backfilled += 1
                 if backfilled % 10 == 0:
                     logger.info("LanceDB backfill: %d/%d done", backfilled, len(memories))
             except Exception as e:
                 logger.warning("LanceDB backfill: embed failed for %s — %s (skipping)", mid, e)
+        self.optimize_if_fragmented()
         logger.info("LanceDB backfill: %d memories indexed (remaining deferred)", backfilled)
         return backfilled

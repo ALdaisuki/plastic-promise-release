@@ -7,7 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Released version: `0.1.18`.
+Released version: `0.1.19`.
+
+## [0.1.19] - 2026-07-21
+
+### Added
+
+- Added the loopback-only Dashboard V2 at `/dashboard`, with a Chinese operator
+  interface for overview, memories, requests, governed synthesis, detailed
+  lineage, retrieval explanation, operations, trust issues, and runtime
+  configuration.
+- Added deterministic `structure-v1` chunk manifests in both Python and Rust.
+  Memory details expose bounded chunk evidence with heading paths, block kinds,
+  source spans, hashes, parent memory IDs, and explicit truncation state.
+- Added detailed lineage projections with typed nodes, directed relations,
+  source and target chunk anchors, source call evidence, anchor counts, and
+  manifest-integrity status.
+- Added opt-in `retrieval_explain_v1` snapshots with lexical, vector, and graph
+  scores; ranking and filter decisions; structured chunk evidence; and measured
+  request and pipeline-stage durations.
+- Added a read-only system IssueManager projection so locally created governance
+  issues appear beside trust state without duplicating issue authority in
+  SQLite.
+
+### Changed
+
+- Full runtime modes activate `structure-v1`; `rust-full` uses the Rust chunker
+  only after deterministic Python/Rust parity succeeds and reports the effective
+  engine and loaded artifact in configuration diagnostics.
+- Dashboard read models are loopback-only, project-scoped, bounded, and
+  read-only. Stored explain snapshots are reprojected before display, and absent
+  timing evidence is rendered as unavailable instead of a fabricated `0 ms`.
+- Rust-backed debug recall keeps the Rust snapshot hot path when healthy while
+  returning the same manifest identity and explainable stage metrics as the
+  canonical Python boundary.
+- Verified synthesis artifacts participate in derived-index validation and
+  repair only while their fail-closed retrieval evidence remains valid; draft,
+  stale, and contested artifacts remain excluded.
+
+### Fixed
+
+- Completed the canonical-to-LanceDB repair pass so every admitted ordinary or
+  verified synthesis memory is present before vector retrieval is marked ready.
+- Exposed measured non-zero request durations and typed lineage evidence in the
+  Dashboard instead of treating missing telemetry as zero.
+- Projected process-global governance issues through Dashboard V2 with an
+  explicit `system_global` read-only authority scope.
+
+### Upgrade and rollback
+
+- The Dashboard and retrieval explanation remain opt-in through
+  `PP_DASHBOARD_V2=1` and `PP_RETRIEVAL_EXPLAIN=1`. Governed synthesis creation
+  and retrieval remain separately gated and fail closed.
+- SQLite remains canonical. Rollback disables the new serving gates, restores
+  `PP_MEMORY_CHUNKING=off`, rebuilds LanceDB, and preserves synthesis controls,
+  source evidence, lineage, proposals, outbox jobs, and audit records.
+
+### Verification
+
+- Focused Python coverage passes with `242 passed, 18 skipped`; the final
+  whole-repository run, with the current release PyO3 artifact importable, passes
+  with `2177 passed, 22 skipped`. Rust release suites pass `36 + 7 + 22`.
+- Scoped Ruff, `compileall`, Dashboard JavaScript syntax, `git diff --check`,
+  wheel/sdist build, and package-content checks pass. The automated audit score
+  is `0.6752`, above the `0.60` release gate.
+- The high-risk ten-item review passes with zero blocking or major findings.
+- Candidate live HTTP smoke on an isolated `rust-full` process passes health,
+  runtime identity, store, Rust snapshot recall, and context supply without
+  degradation.
+- Release status for `0.1.19` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
 
 ## [0.1.18] - 2026-07-19
 
@@ -38,7 +106,10 @@ Released version: `0.1.18`.
   with `2024 passed, 22 skipped`; the only warning is the pre-existing
   `test_recall_quality` return-value warning. The formal system audit score is
   `0.6752`, and the high-risk ten-item code checklist has no blocking finding.
-- Release status for `0.1.18` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+- Release status for `0.1.18` is **audited and approved**. Final
+  whole-repository verification and mandatory high-risk review completed before
+  release synchronization. Release-specific benchmark and runtime evidence are
+  recorded in the release notes.
 
 ## [0.1.17] - 2026-07-18
 
@@ -426,6 +497,7 @@ Released version: `0.1.18`.
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.19]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.15...v0.1.16

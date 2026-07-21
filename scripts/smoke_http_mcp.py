@@ -147,77 +147,97 @@ def validate_runtime(runtime: dict[str, Any], expected_mode: str | None = None) 
 def validate_store(store: dict[str, Any]) -> dict[str, Any]:
     if store.get("stored") is not True:
         raise SmokeFailure(f"memory_store did not report stored=true: {store!r}")
-    memory_id = store.get("memory_id")
-    if not memory_id:
+    canonical_memory_id = str(store.get("memory_id") or "")
+    submitted_memory_id = str(store.get("submitted_memory_id") or "")
+    if not canonical_memory_id:
         raise SmokeFailure("memory_store did not return memory_id")
-    migrated = pipeline_count(store.get("pipeline", {}), "embedded", "migrated")
-    if migrated <= 0:
+    if not submitted_memory_id:
+        raise SmokeFailure("memory_store identity is missing submitted_memory_id")
+
+    deduplicated = store.get("deduplicated")
+    created = store.get("created")
+    if not isinstance(deduplicated, bool) or not isinstance(created, bool):
+        raise SmokeFailure("memory_store flags must be explicit booleans")
+    if deduplicated == created:
+        raise SmokeFailure(
+            "memory_store flags are incoherent: exactly one of deduplicated/created must be true"
+        )
+    if created and canonical_memory_id != submitted_memory_id:
+        raise SmokeFailure(
+            "memory_store identity is incoherent: a created submission must be canonical"
+        )
+    if deduplicated and canonical_memory_id == submitted_memory_id:
+        raise SmokeFailure(
+            "memory_store identity is incoherent: a deduplicated submission must map to an "
+            "existing canonical memory"
+        )
+
+    pipeline = store.get("pipeline", {})
+    if not isinstance(pipeline, dict):
+        raise SmokeFailure("memory_store pipeline is not an object")
+    migrated = pipeline_count(pipeline, "embedded", "migrated")
+    if migrated < 0:
+        raise SmokeFailure(f"memory_store embedded->migrated count is {migrated}")
+    if created and migrated <= 0:
         raise SmokeFailure(f"memory_store embedded->migrated count is {migrated}")
     return {
-        "memory_id": memory_id,
+        "memory_id": canonical_memory_id,
+        "canonical_memory_id": canonical_memory_id,
+        "submitted_memory_id": submitted_memory_id,
         "project_id": store.get("project_id"),
-        "pipeline": store.get("pipeline", {}),
+        "pipeline": pipeline,
         "migrated": migrated,
+        "deduplicated": deduplicated,
+        "created": created,
     }
 
 
 def _validate_retrieval_evidence(
     payload: dict[str, Any],
-    expected_memory_id: str,
-    marker: str,
-    *,
-    audit_key: str,
+    expected_memory_ids: list[str],
 ) -> dict[str, Any]:
     surfaces: list[tuple[str, Any]] = [
         ("core", payload.get("core")),
         ("related", payload.get("related")),
         ("divergent", payload.get("divergent")),
-        ("raw_evidence", payload.get("raw_evidence")),
     ]
-    audit = payload.get(audit_key)
-    if isinstance(audit, dict):
-        surfaces.append((f"{audit_key}.raw_evidence", audit.get("raw_evidence")))
+    expected = list(dict.fromkeys(str(memory_id) for memory_id in expected_memory_ids if memory_id))
+    if not expected:
+        raise SmokeFailure("retrieval validation requires at least one stored memory id")
 
-    id_locations: list[str] = []
-    marker_locations: list[str] = []
+    evidence_locations: dict[str, list[str]] = {memory_id: [] for memory_id in expected}
     for location, rows in surfaces:
         if not isinstance(rows, list):
             continue
         for row in rows:
-            if not isinstance(row, dict) or str(row.get("id") or "") != expected_memory_id:
+            if not isinstance(row, dict):
                 continue
-            if location not in id_locations:
-                id_locations.append(location)
-            if marker in str(row.get("content") or "") and location not in marker_locations:
-                marker_locations.append(location)
+            memory_id = str(row.get("id") or "")
+            if memory_id not in evidence_locations or not str(row.get("content") or "").strip():
+                continue
+            if location not in evidence_locations[memory_id]:
+                evidence_locations[memory_id].append(location)
 
-    if not id_locations:
-        raise SmokeFailure(
-            f"retrieval did not expose stored memory {expected_memory_id} as evidence"
-        )
-    if not marker_locations:
-        raise SmokeFailure(
-            f"retrieval evidence for {expected_memory_id} did not contain marker {marker}"
-        )
+    for memory_id, locations in evidence_locations.items():
+        if not locations:
+            raise SmokeFailure(
+                f"retrieval did not expose stored memory {memory_id} as context evidence"
+            )
     return {
-        "observed_memory_id": expected_memory_id,
-        "observed_marker": marker,
-        "evidence_locations": marker_locations,
+        "observed_memory_ids": expected,
+        "evidence_locations": evidence_locations,
     }
 
 
-def validate_recall(recall: dict[str, Any], expected_memory_id: str, marker: str) -> dict[str, Any]:
+def validate_recall(
+    recall: dict[str, Any], expected_memory_ids: list[str]
+) -> dict[str, Any]:
     if recall.get("success") is False:
         raise SmokeFailure("memory_recall reported success=false")
     if recall.get("degraded") is True:
         raise SmokeFailure(f"memory_recall degraded: {recall.get('warnings')}")
     audit = recall.get("audit") or {}
-    evidence = _validate_retrieval_evidence(
-        recall,
-        expected_memory_id,
-        marker,
-        audit_key="audit",
-    )
+    evidence = _validate_retrieval_evidence(recall, expected_memory_ids)
     return {
         "success": recall.get("success", True),
         "degraded": recall.get("degraded", False),
@@ -229,7 +249,7 @@ def validate_recall(recall: dict[str, Any], expected_memory_id: str, marker: str
 
 
 def validate_context(
-    context: dict[str, Any], expected_memory_id: str, marker: str
+    context: dict[str, Any], expected_memory_ids: list[str]
 ) -> dict[str, Any]:
     project_context = context.get("project_context") or {}
     if context.get("degraded") is True:
@@ -237,12 +257,7 @@ def validate_context(
     if project_context.get("degraded") is True:
         raise SmokeFailure(f"context project degraded: {project_context.get('warnings')}")
     audit = context.get("audit_metadata") or {}
-    evidence = _validate_retrieval_evidence(
-        context,
-        expected_memory_id,
-        marker,
-        audit_key="audit_metadata",
-    )
+    evidence = _validate_retrieval_evidence(context, expected_memory_ids)
     return {
         "degraded": context.get("degraded", False),
         "project_degraded": project_context.get("degraded", False),
@@ -275,39 +290,112 @@ def resolve_lancedb_path(path: str | Path) -> Path:
     return candidate
 
 
-def fetch_sqlite_smoke_rows(db_path: str | Path, canary: str) -> list[dict[str, Any]]:
+def fetch_sqlite_smoke_rows(
+    db_path: str | Path,
+    marker: str,
+    canonical_memory_id: str,
+    submitted_memory_id: str,
+) -> list[dict[str, Any]]:
     path = resolve_existing_path(db_path)
     if not path.exists():
         raise SmokeFailure(f"SQLite database not found: {path}")
-    conn = sqlite3.connect(path)
+    sqlite_uri = f"{path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(sqlite_uri, uri=True)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA query_only = ON")
         rows = conn.execute(
-            "SELECT id, content, raw_content, embedding_text "
-            "FROM memories WHERE raw_content LIKE ? OR metadata_json LIKE ? "
-            "ORDER BY created_at DESC LIMIT 20",
-            (f"%{canary}%", f"%{canary}%"),
+            "SELECT id, content, raw_content, embedding_text, search_text, origin_ref "
+            "FROM memories WHERE origin_ref = ? OR id IN (?, ?) "
+            "ORDER BY created_at ASC, id ASC",
+            (marker, canonical_memory_id, submitted_memory_id),
         ).fetchall()
     finally:
         conn.close()
     return [dict(row) for row in rows]
 
 
-def validate_sqlite_summary_rows(rows: list[dict[str, Any]], canary: str) -> dict[str, Any]:
-    if not rows:
-        raise SmokeFailure("SQLite summary-index check found no smoke rows")
-    bad_embedding = [
-        row.get("id", "") for row in rows if canary in str(row.get("embedding_text") or "")
+def validate_sqlite_summary_rows(
+    rows: list[dict[str, Any]],
+    marker: str,
+    canary: str,
+    store: dict[str, Any],
+) -> dict[str, Any]:
+    canonical_memory_id = str(store.get("canonical_memory_id") or "")
+    submitted_memory_id = str(store.get("submitted_memory_id") or "")
+    deduplicated = store.get("deduplicated")
+    created = store.get("created")
+    if not canonical_memory_id or not submitted_memory_id:
+        raise SmokeFailure("SQLite summary-index check received incomplete store identity")
+    if not isinstance(deduplicated, bool) or not isinstance(created, bool) or deduplicated == created:
+        raise SmokeFailure("SQLite summary-index check received incoherent store flags")
+
+    rows_by_id = {str(row.get("id") or ""): row for row in rows if row.get("id")}
+    canonical_row = rows_by_id.get(canonical_memory_id)
+    if canonical_row is None:
+        raise SmokeFailure(f"SQLite missing canonical memory {canonical_memory_id}")
+
+    marker_rows = [row for row in rows if str(row.get("origin_ref") or "") == marker]
+    marker_memory_ids = [str(row.get("id") or "") for row in marker_rows]
+    if created:
+        if canonical_memory_id != submitted_memory_id:
+            raise SmokeFailure("SQLite store identity is incoherent for a created submission")
+        if canonical_memory_id not in marker_memory_ids:
+            raise SmokeFailure("SQLite created canonical memory is not mapped to the smoke marker")
+    else:
+        if canonical_memory_id == submitted_memory_id:
+            raise SmokeFailure("SQLite deduplicated identity did not map to an older canonical")
+        if submitted_memory_id in rows_by_id:
+            raise SmokeFailure(
+                f"SQLite retained discarded submitted memory {submitted_memory_id}"
+            )
+        if canonical_memory_id in marker_memory_ids:
+            raise SmokeFailure("SQLite deduplication overwrote canonical provenance")
+
+    migrated = int(store.get("migrated", 0) or 0)
+    if len(marker_rows) > migrated:
+        raise SmokeFailure(
+            "SQLite persisted more marker rows than memory_store reported as migrated"
+        )
+
+    bad_compact = []
+    for row in rows:
+        compact_text = "\n".join(
+            (str(row.get("embedding_text") or ""), str(row.get("search_text") or ""))
+        )
+        if marker in compact_text or canary in compact_text:
+            bad_compact.append(str(row.get("id") or ""))
+    if bad_compact:
+        raise SmokeFailure(
+            f"SQLite compact index text contains raw identity for {bad_compact}"
+        )
+
+    raw_hits = []
+    for row in marker_rows:
+        raw_content = str(row.get("raw_content") or "")
+        if marker not in raw_content or canary not in raw_content:
+            raise SmokeFailure(
+                f"SQLite raw_content did not retain raw identity for {row.get('id', '')}"
+            )
+        raw_hits.append(str(row.get("id") or ""))
+
+    split_memory_ids = [
+        memory_id for memory_id in marker_memory_ids if memory_id != canonical_memory_id
     ]
-    if bad_embedding:
-        raise SmokeFailure(f"SQLite embedding_text contains raw canary for {bad_embedding}")
-    raw_hits = [row.get("id", "") for row in rows if canary in str(row.get("raw_content") or "")]
-    if not raw_hits:
-        raise SmokeFailure("SQLite raw_content did not retain raw canary")
+    retrieval_memory_ids = list(
+        dict.fromkeys([canonical_memory_id, *marker_memory_ids])
+    )
     return {
         "sqlite_row_count": len(rows),
-        "sqlite_memory_ids": [row.get("id") for row in rows],
+        "sqlite_memory_ids": [str(row.get("id") or "") for row in rows],
+        "sqlite_marker_memory_ids": marker_memory_ids,
         "sqlite_raw_canary_rows": raw_hits,
+        "canonical_memory_id": canonical_memory_id,
+        "submitted_memory_id": submitted_memory_id,
+        "canonical_reused": deduplicated,
+        "split_memory_ids": split_memory_ids,
+        "retrieval_memory_ids": retrieval_memory_ids,
+        "lancedb_memory_ids": retrieval_memory_ids,
     }
 
 
@@ -338,7 +426,7 @@ def fetch_lancedb_smoke_rows(
 
 
 def validate_lancedb_summary_rows(
-    rows: list[dict[str, Any]], memory_ids: list[str], canary: str
+    rows: list[dict[str, Any]], memory_ids: list[str], marker: str, canary: str
 ) -> dict[str, Any]:
     found = {row.get("memory_id") for row in rows}
     missing = sorted(set(memory_ids) - found)
@@ -347,15 +435,21 @@ def validate_lancedb_summary_rows(
     bad_rows = [row.get("memory_id", "") for row in rows if canary in str(row.get("text") or "")]
     if bad_rows:
         raise SmokeFailure(f"LanceDB text contains raw canary for {bad_rows}")
+    marker_rows = [
+        row.get("memory_id", "") for row in rows if marker in str(row.get("text") or "")
+    ]
+    if marker_rows:
+        raise SmokeFailure(f"LanceDB compact text contains raw identity for {marker_rows}")
     return {
         "lancedb_row_count": len(rows),
-        "lancedb_memory_ids": [row.get("memory_id") for row in rows],
+        "lancedb_memory_ids": [memory_id for memory_id in memory_ids if memory_id in found],
     }
 
 
 async def wait_for_lancedb_summary_rows(
     lancedb_path: str | Path,
     memory_ids: list[str],
+    marker: str,
     canary: str,
     timeout_s: float,
     interval_s: float,
@@ -370,7 +464,7 @@ async def wait_for_lancedb_summary_rows(
         attempts += 1
         rows = fetch_lancedb_smoke_rows(lancedb_path, memory_ids)
         try:
-            result = validate_lancedb_summary_rows(rows, memory_ids, canary)
+            result = validate_lancedb_summary_rows(rows, memory_ids, marker, canary)
         except SmokeFailure as exc:
             if "LanceDB missing smoke rows" not in str(exc):
                 raise
@@ -386,12 +480,22 @@ async def wait_for_lancedb_summary_rows(
 
 def build_smoke_content(marker: str, canary: str) -> str:
     return (
-        f"HTTP MCP release smoke {marker} for summary-only vector index. "
-        f"L0 topic: HTTP MCP release smoke summary index {marker}. "
-        f"L1 summary: compact HTTP searchable marker {marker}. "
-        f"Full SQL-only detail contains canary {canary} and should remain in "
-        "SQLite raw provenance rather than LanceDB compact search text."
+        "HTTP MCP release smoke verifies canonical storage and compact summary retrieval; "
+        "L0 topic: HTTP MCP release smoke canonical storage; "
+        "L1 summary: canonical storage stays searchable through the compact memory index; "
+        f"raw provenance identity {marker} carries SQL-only canary {canary}"
     )
+
+
+def build_retrieval_query() -> str:
+    return "HTTP MCP release smoke canonical storage compact summary retrieval"
+
+
+def _leaf_error(exc: BaseException) -> BaseException:
+    nested = getattr(exc, "exceptions", None)
+    if isinstance(nested, tuple) and nested:
+        return _leaf_error(nested[0])
+    return exc
 
 
 async def call_tool_json(session: Any, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -459,13 +563,30 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 store_check = validate_store(store)
                 report["checks"]["memory_store"] = store_check
 
+                sqlite_check: dict[str, Any] | None = None
+                retrieval_memory_ids = [store_check["canonical_memory_id"]]
+                if args.check_summary_index:
+                    sqlite_rows = fetch_sqlite_smoke_rows(
+                        args.db_path,
+                        marker,
+                        store_check["canonical_memory_id"],
+                        store_check["submitted_memory_id"],
+                    )
+                    sqlite_check = validate_sqlite_summary_rows(
+                        sqlite_rows,
+                        marker,
+                        canary,
+                        store_check,
+                    )
+                    retrieval_memory_ids = sqlite_check["retrieval_memory_ids"]
+
                 recall = await call_tool_json(
                     session,
                     "memory_recall",
                     {
-                        "query": f"HTTP MCP release smoke compact searchable marker {marker}",
+                        "query": build_retrieval_query(),
                         "task_type": "code_review",
-                        "max_results": 5,
+                        "max_results": 20,
                         "debug": True,
                         "project_id": args.project_id,
                         "project_policy": args.project_policy,
@@ -475,15 +596,14 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 report["checks"]["memory_recall"] = validate_recall(
                     recall,
-                    store_check["memory_id"],
-                    marker,
+                    retrieval_memory_ids,
                 )
 
                 context = await call_tool_json(
                     session,
                     "context_supply",
                     {
-                        "task_description": (f"HTTP MCP release smoke context check for {marker}."),
+                        "task_description": build_retrieval_query(),
                         "task_type": "code_review",
                         "debug": True,
                         "project_id": args.project_id,
@@ -494,17 +614,17 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 report["checks"]["context_supply"] = validate_context(
                     context,
-                    store_check["memory_id"],
-                    marker,
+                    retrieval_memory_ids,
                 )
 
     if args.check_summary_index:
-        sqlite_rows = fetch_sqlite_smoke_rows(args.db_path, canary)
-        sqlite_check = validate_sqlite_summary_rows(sqlite_rows, canary)
-        memory_ids = [str(mid) for mid in sqlite_check["sqlite_memory_ids"] if mid]
+        if sqlite_check is None:
+            raise SmokeFailure("summary-index SQLite validation did not run")
+        memory_ids = list(sqlite_check["lancedb_memory_ids"])
         lancedb_check = await wait_for_lancedb_summary_rows(
             args.lancedb_path,
             memory_ids,
+            marker,
             canary,
             args.summary_index_timeout,
             args.summary_index_interval,
@@ -534,10 +654,11 @@ async def async_main(argv: list[str] | None = None) -> int:
             print_human(report)
         return 0
     except Exception as exc:
+        cause = _leaf_error(exc)
         report = {
             "ok": False,
-            "error_class": exc.__class__.__name__,
-            "error": str(exc),
+            "error_class": cause.__class__.__name__,
+            "error": str(cause),
             "url": getattr(args, "url", DEFAULT_URL),
             "health_url": getattr(args, "health_url", DEFAULT_HEALTH_URL),
         }
@@ -545,7 +666,7 @@ async def async_main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
         else:
             print_human(report)
-            print(f"  error: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+            print(f"  error: {cause.__class__.__name__}: {cause}", file=sys.stderr)
         return 1
 
 

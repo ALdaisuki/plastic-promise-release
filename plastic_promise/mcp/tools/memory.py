@@ -26,6 +26,12 @@ from plastic_promise.core.memory_proposals import (
     trusted_memory_origin,
 )
 from plastic_promise.core.project_context import infer_project_context
+from plastic_promise.core.retrieval_explain import (
+    METADATA_KEY as RETRIEVAL_EXPLAIN_METADATA_KEY,
+)
+from plastic_promise.core.retrieval_explain import (
+    build_retrieval_explain_snapshot,
+)
 from plastic_promise.core.synthesis import synthesis_content_hash
 from plastic_promise.core.synthesis_retrieval import (
     engine_memory_is_governed_synthesis,
@@ -36,6 +42,7 @@ from plastic_promise.core.traceability import (
     record_outbox_event,
     safe_record_call_span,
     safe_record_degradation_event,
+    utc_now,
 )
 
 _trusted_memory_origin = trusted_memory_origin
@@ -241,6 +248,28 @@ def _revalidate_cached_recall(
     pack.per_item_stats = list(stats) if isinstance(stats, list) else []
     pipeline_stats = payload.get("pipeline_stats")
     pack.pipeline_stats = dict(pipeline_stats) if isinstance(pipeline_stats, dict) else {}
+    channel_rankings = payload.get("channel_rankings")
+    if isinstance(channel_rankings, dict):
+        pack.channel_rankings = {
+            str(channel): [
+                {
+                    "memory_id": str(row.get("memory_id") or row.get("id") or ""),
+                    "score": row.get("score"),
+                    "rank": row.get("rank"),
+                }
+                for row in rows
+                if isinstance(row, dict) and (row.get("memory_id") or row.get("id"))
+            ]
+            for channel, rows in channel_rankings.items()
+            if isinstance(rows, list)
+        }
+    channel_states = payload.get("channel_states")
+    if isinstance(channel_states, dict):
+        pack.channel_states = {
+            str(channel): dict(state)
+            for channel, state in channel_states.items()
+            if isinstance(state, dict)
+        }
     if "gap_signal" in payload:
         pack.gap_signal = payload.get("gap_signal")
 
@@ -274,6 +303,12 @@ def _revalidate_cached_recall(
         payload["per_item_stats"] = pack.per_item_stats
     if "pipeline_stats" in payload:
         payload["pipeline_stats"] = pack.pipeline_stats
+    if "channel_rankings" in payload or "channel_states" in payload:
+        sanitized_rankings, sanitized_states = _serialize_channel_evidence(pack)
+        if "channel_rankings" in payload:
+            payload["channel_rankings"] = sanitized_rankings
+        if "channel_states" in payload:
+            payload["channel_states"] = sanitized_states
     if "gap_signal" in payload:
         payload["gap_signal"] = pack.gap_signal
     payload["total_items"] = pack.total_items
@@ -294,6 +329,10 @@ def _revalidate_cached_recall(
             nested["per_item_stats"] = pack.per_item_stats
         if "pipeline_stats" in nested:
             nested["pipeline_stats"] = pack.pipeline_stats
+        if "channel_rankings" in nested:
+            nested["channel_rankings"] = payload.get("channel_rankings", {})
+        if "channel_states" in nested:
+            nested["channel_states"] = payload.get("channel_states", {})
         if "gap_signal" in nested:
             nested["gap_signal"] = pack.gap_signal
 
@@ -505,6 +544,20 @@ def _sanitize_pack_for_project(pack, project_ctx, engine=None, *, task_type: str
         blocked_ids,
         blocked_content,
     )
+    sanitized_rankings: dict[str, list[Any]] = {}
+    for channel, rows in dict(getattr(pack, "channel_rankings", {}) or {}).items():
+        admitted_rows = []
+        for row in list(rows or []):
+            candidate = asdict(row) if is_dataclass(row) else row
+            if not _project_value_mentions(candidate, blocked_ids, blocked_content):
+                admitted_rows.append(row)
+        sanitized_rankings[str(channel)] = admitted_rows
+    pack.channel_rankings = sanitized_rankings
+    pack.channel_states = _sanitize_project_value(
+        dict(getattr(pack, "channel_states", {}) or {}),
+        blocked_ids,
+        blocked_content,
+    )
     if getattr(pack, "gap_signal", None) is not None:
         gap_signal = pack.gap_signal
         if is_dataclass(gap_signal):
@@ -575,6 +628,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
     to avoid redundant embedding + retrieval for repeated queries.
     """
     try:
+        trace_started_at = utc_now()
         from plastic_promise.adaptive_retrieval import should_retrieve
         from plastic_promise.mcp.tools.request_scope import build_request_scope
 
@@ -637,10 +691,23 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                 cached = None
         if cached is not None:
             degraded = False
+            cached_payload: dict[str, Any] = {}
             try:
-                degraded = bool(json.loads(cached).get("degraded", False))
+                parsed_cached = json.loads(cached)
+                if isinstance(parsed_cached, dict):
+                    cached_payload = parsed_cached
+                    degraded = bool(cached_payload.get("degraded", False))
             except Exception:
                 degraded = False
+            span_metadata = {
+                "cache_hit": True,
+                "task_type": task_type,
+                "scope": scope,
+                "project_policy": project_ctx.project_policy,
+            }
+            retrieval_explain = build_retrieval_explain_snapshot(cached_payload)
+            if retrieval_explain is not None:
+                span_metadata[RETRIEVAL_EXPLAIN_METADATA_KEY] = retrieval_explain
             safe_record_call_span(
                 engine,
                 call_id=call_id,
@@ -652,12 +719,8 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                 tool_name="memory_recall",
                 status="success",
                 degraded=degraded,
-                metadata={
-                    "cache_hit": True,
-                    "task_type": task_type,
-                    "scope": scope,
-                    "project_policy": project_ctx.project_policy,
-                },
+                metadata=span_metadata,
+                started_at=trace_started_at,
             )
             return [TextContent(type="text", text=cached)]
 
@@ -694,6 +757,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             engine,
             task_type=task_type,
         )
+        retrieval_explain = build_retrieval_explain_snapshot(pack)
         audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
         audit_metadata["request_scope"] = request_scope
         trace = {
@@ -775,6 +839,20 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             indent=2,
         )
 
+        span_metadata = {
+            "cache_hit": False,
+            "task_type": task_type,
+            "scope": scope,
+            "strict": bool(strict),
+            "debug": bool(debug),
+            "max_results": max_results,
+            "project_policy": project_ctx.project_policy,
+            "retrieval_mode": retrieval_mode,
+            "fusion_policy": fusion_policy,
+            "warnings": project_warnings,
+        }
+        if retrieval_explain is not None:
+            span_metadata[RETRIEVAL_EXPLAIN_METADATA_KEY] = retrieval_explain
         safe_record_call_span(
             engine,
             call_id=call_id,
@@ -786,18 +864,8 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             tool_name="memory_recall",
             status="success",
             degraded=bool(response_payload.get("degraded", False)),
-            metadata={
-                "cache_hit": False,
-                "task_type": task_type,
-                "scope": scope,
-                "strict": bool(strict),
-                "debug": bool(debug),
-                "max_results": max_results,
-                "project_policy": project_ctx.project_policy,
-                "retrieval_mode": retrieval_mode,
-                "fusion_policy": fusion_policy,
-                "warnings": project_warnings,
-            },
+            metadata=span_metadata,
+            started_at=trace_started_at,
         )
         if project_warnings:
             safe_record_degradation_event(
@@ -2494,33 +2562,78 @@ def _extract_entity_ids(content: str, engine: Any) -> list[str]:
 # Module-level caches for engine fuzzy buffers (avoids private-attr violations)
 _fuzzy_buffers: dict[int, Any] = {}
 _rec_mem_cache: dict[int, Any] = {}
+_fuzzy_cache_lock = threading.RLock()
+
+
+def refresh_memory_pipeline_cache(engine: Any) -> dict[str, Any]:
+    """Rebind cached pipelines after a runtime-mode dependency refresh.
+
+    Pipelines process synchronously but can retain deferred records after an
+    embedding outage. Rebinding preserves those records while ensuring the next
+    attempt cannot reuse the closed embedder or the previous LanceDB handle.
+    """
+
+    eid = id(engine)
+    with _fuzzy_cache_lock:
+        pipelines: list[Any] = []
+        cached = _fuzzy_buffers.get(eid)
+        if cached is not None:
+            pipelines.append(cached)
+        get_attached = getattr(engine, "get_fuzzy_buffer", None)
+        attached = get_attached() if callable(get_attached) else None
+        if attached is not None and all(attached is not item for item in pipelines):
+            pipelines.append(attached)
+        if not pipelines:
+            return {"cached": False, "rebound": 0, "buffered": 0}
+
+        embedder = getattr(engine, "_embedder", None)
+        if embedder is None:
+            ensure_embedder = getattr(engine, "ensure_runtime_embedder", None)
+            if callable(ensure_embedder):
+                embedder = ensure_embedder()
+            else:
+                from plastic_promise.core.embedder import get_embedder
+
+                embedder = get_embedder(fallback_on_error=True)
+        lancedb = getattr(engine, "_ldb", None)
+        domain_manager = getattr(engine, "_dm", None)
+        buffered = 0
+        for pipeline in pipelines:
+            pipeline.embedder = embedder
+            pipeline._lancedb = lancedb
+            pipeline._dm = domain_manager
+            pending = getattr(pipeline, "_buffer", None)
+            if isinstance(pending, dict):
+                buffered += len(pending)
+        return {"cached": True, "rebound": len(pipelines), "buffered": buffered}
 
 
 def _get_fuzzy_buffer(engine: Any):
     """Get or create a FuzzyBuffer attached to the engine."""
     eid = id(engine)
-    if eid not in _fuzzy_buffers:
-        from plastic_promise.core.embedder import get_embedder
-        from plastic_promise.memory.pipeline import MemoryPipeline
-        from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
+    with _fuzzy_cache_lock:
+        if eid not in _fuzzy_buffers:
+            from plastic_promise.core.embedder import get_embedder
+            from plastic_promise.memory.pipeline import MemoryPipeline
+            from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
 
-        rec_mem = _rec_mem_cache.get(eid, RecMem(engine))
-        try:
-            embedder = get_embedder()
-        except Exception:
-            from plastic_promise.core.embedder import FallbackEmbedder
+            rec_mem = _rec_mem_cache.get(eid, RecMem(engine))
+            try:
+                embedder = get_embedder()
+            except Exception:
+                from plastic_promise.core.embedder import FallbackEmbedder
 
-            embedder = FallbackEmbedder()
-        tier_mgr = MemoryTierManager(rec_mem)
-        _fuzzy_buffers[eid] = MemoryPipeline(
-            rec_mem=rec_mem,
-            embedder=embedder,
-            tier_manager=tier_mgr,
-            domain_manager=getattr(engine, "_dm", None),
-            lancedb=getattr(engine, "_ldb", None),
-        )
-        _rec_mem_cache[eid] = rec_mem
-    return _fuzzy_buffers[eid]
+                embedder = FallbackEmbedder()
+            tier_mgr = MemoryTierManager(rec_mem)
+            _fuzzy_buffers[eid] = MemoryPipeline(
+                rec_mem=rec_mem,
+                embedder=embedder,
+                tier_manager=tier_mgr,
+                domain_manager=getattr(engine, "_dm", None),
+                lancedb=getattr(engine, "_ldb", None),
+            )
+            _rec_mem_cache[eid] = rec_mem
+        return _fuzzy_buffers[eid]
 
 
 # ---- fuzzy_status (internal — not exposed as MCP tool) ----

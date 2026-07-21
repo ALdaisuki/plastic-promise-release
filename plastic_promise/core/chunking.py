@@ -7,11 +7,33 @@ variants later.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 
+CHUNK_SCHEMA_VERSION = "structure-v1"
+STRUCTURE_CHUNK_PARITY_PROBE = (
+    "# 结构化记忆检索\n\n"
+    "Unicode 证据：请求 req-17，偏好中文，字符甲𠮷乙。\n\n"
+    "- 列表项一：保留标题上下文\n"
+    "- 列表项二：保留尾部证据\n\n"
+    "*\t星号列表：兼容制表符\n"
+    "1.\t数字列表：兼容制表符\n\n"
+    "| 字段 | 值 |\n"
+    "| --- | --- |\n"
+    "| 模式 | rust-full |\n\n"
+    "```python\n"
+    'payload = {"主题": "记忆", "编号": 17}\n'
+    "```\n\n"
+    "## 尾部证据\n\n"
+    "最终段落必须保留。\n"
+)
+
 _FENCE_RE = re.compile(r"^\s*(```+|~~~+)")
-_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$")
+# Keep the parser aligned with the Rust implementation and CommonMark's
+# indentation rule: at most three ASCII spaces may precede a heading marker.
+_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.+?)\s*$")
 _LIST_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)")
 
 
@@ -36,6 +58,123 @@ class ChunkMaterial:
     source_start: int
     source_end: int
     context_truncated: bool = False
+
+
+def build_chunk_manifest(
+    text: str,
+    *,
+    target_chars: int,
+    hard_chars: int | None = None,
+    max_chunks: int | None = None,
+) -> dict[str, object]:
+    """Build the persisted, parent-neutral projection of structure-aware chunks."""
+
+    source = text or ""
+    target = max(int(target_chars), 1)
+    hard = max(int(hard_chars or target), target)
+    all_materials = structure_aware_chunks(
+        source,
+        target_chars=target,
+        hard_chars=hard,
+    )
+    materials = limit_chunk_materials(all_materials, max_chunks)
+    source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    chunks: list[dict[str, object]] = []
+    for ordinal, material in enumerate(materials):
+        text_hash = hashlib.sha256(material.text.encode("utf-8")).hexdigest()
+        chunk_id = _chunk_id(
+            source_hash=source_hash,
+            ordinal=ordinal,
+            kind=material.kind,
+            source_start=material.source_start,
+            source_end=material.source_end,
+            text_hash=text_hash,
+        )
+        chunks.append(
+            {
+                "chunk_id": chunk_id,
+                "ordinal": ordinal,
+                "kind": material.kind,
+                "header_path": list(material.heading_path),
+                "source_start": material.source_start,
+                "source_end": material.source_end,
+                "source_hash": source_hash,
+                "text_hash": text_hash,
+                "text": material.text,
+                "context_truncated": material.context_truncated,
+            }
+        )
+
+    resource_limited = len(materials) < len(all_materials)
+    context_truncated = any(material.context_truncated for material in materials)
+    coverage_gap = has_uncovered_content(source, materials)
+    meaningful_source_end = len(source.rstrip())
+    last_source_end = max((material.source_end for material in materials), default=0)
+    manifest: dict[str, object] = {
+        "schema_version": CHUNK_SCHEMA_VERSION,
+        "algorithm": CHUNK_SCHEMA_VERSION,
+        "chunking_identity": (
+            f"{CHUNK_SCHEMA_VERSION}|target_chars={target}|hard_chars={hard}"
+            f"|max_chunks={max_chunks if max_chunks is not None else 'unbounded'}"
+            "|offsets=unicode-codepoints"
+        ),
+        "source_hash": source_hash,
+        "source_chars": len(source),
+        "target_chars": target,
+        "hard_chars": hard,
+        "max_chunks": max_chunks,
+        "chunk_count": len(chunks),
+        "covered_source_chars": sum(
+            max(material.source_end - material.source_start, 0) for material in materials
+        ),
+        "last_source_end": last_source_end,
+        "truncated": (
+            resource_limited
+            or context_truncated
+            or coverage_gap
+            or last_source_end < meaningful_source_end
+        ),
+        "context_truncated": context_truncated,
+        "resource_limited": resource_limited,
+        "chunks": chunks,
+    }
+    return manifest
+
+
+def chunk_manifest_hash(manifest: dict[str, object]) -> str:
+    """Bind a manifest to persisted index metadata with canonical JSON."""
+
+    payload = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _chunk_id(
+    *,
+    source_hash: str,
+    ordinal: int,
+    kind: str,
+    source_start: int,
+    source_end: int,
+    text_hash: str,
+) -> str:
+    payload = "\0".join(
+        (
+            CHUNK_SCHEMA_VERSION,
+            source_hash,
+            str(ordinal),
+            kind,
+            str(source_start),
+            str(source_end),
+            text_hash,
+        )
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"chunk_{digest[:20]}"
 
 
 def legacy_character_chunks(text: str, chunk_chars: int, max_chunks: int) -> list[str]:
@@ -200,15 +339,15 @@ def has_uncovered_content(source: str, materials: list[ChunkMaterial]) -> bool:
     cursor = 0
     for material in sorted(materials, key=lambda item: (item.source_start, item.source_end)):
         gap = source[cursor : material.source_start]
-        if any(line.strip() and not _HEADING_RE.match(line) for line in gap.splitlines()):
+        if any(line.strip() and not _HEADING_RE.match(line) for line in _split_lines(gap)):
             return True
         cursor = max(cursor, material.source_end)
     tail = source[cursor:]
-    return any(line.strip() and not _HEADING_RE.match(line) for line in tail.splitlines())
+    return any(line.strip() and not _HEADING_RE.match(line) for line in _split_lines(tail))
 
 
 def _parse_structural_blocks(text: str) -> list[StructuralBlock]:
-    lines = text.splitlines(keepends=True)
+    lines = _split_lines_keep_ends(text)
     blocks: list[StructuralBlock] = []
     heading_stack: list[str] = []
     pending: list[tuple[int, str]] = []
@@ -323,7 +462,7 @@ def _starts_new_atomic_block(pending: list[tuple[int, str]], raw: str) -> bool:
 
 
 def _classify_block(text: str) -> str:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [line.strip() for line in _split_lines(text) if line.strip()]
     if not lines:
         return "empty"
     if any(_FENCE_RE.match(line) for line in lines[:1]):
@@ -333,6 +472,22 @@ def _classify_block(text: str) -> str:
     if _LIST_RE.match(lines[0]):
         return "list"
     return "paragraph"
+
+
+def _split_lines_keep_ends(text: str) -> list[str]:
+    """Split only on LF, preserving CRLF exactly like Rust's ``split_inclusive``."""
+
+    if not text:
+        return []
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def _split_lines(text: str) -> list[str]:
+    return [line.rstrip("\r\n") for line in _split_lines_keep_ends(text)]
 
 
 def _pack_blocks(

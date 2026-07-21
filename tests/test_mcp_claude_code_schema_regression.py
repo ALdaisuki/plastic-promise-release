@@ -496,6 +496,46 @@ def test_streamable_http_app_constructs_with_installed_starlette(monkeypatch):
     assert "/mcp" in route_paths
 
 
+def test_streamable_http_registers_dashboard_v2_only_with_exact_gate(monkeypatch):
+    route_paths = []
+
+    async def fake_serve(self):
+        route_paths.extend(route.path for route in self.config.app.routes)
+        return None
+
+    import uvicorn
+
+    monkeypatch.setenv("PP_DASHBOARD_V2", "1")
+    monkeypatch.setenv("PP_RETRIEVAL_EXPLAIN", "1")
+    monkeypatch.setenv("PP_DASHBOARD_AUTH", "local")
+    monkeypatch.setenv("PP_DASHBOARD_PROJECT_ID", "project:test")
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+
+    asyncio.run(mcp_server.run_streamable_http(0))
+
+    assert route_paths.count("/dashboard") == 1
+    assert "/api/dashboard/v2/overview" in route_paths
+    assert "/api/dashboard/v2/retrieval-explain" in route_paths
+    assert "/dashboard/assets/v2/{asset_name}" in route_paths
+
+
+def test_dashboard_identity_does_not_initialize_retrieval(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "get_engine",
+        lambda: (_ for _ in ()).throw(AssertionError("retrieval must stay lazy")),
+    )
+    monkeypatch.setattr(mcp_server, "_engine", None)
+
+    identity = mcp_server._dashboard_process_identity(
+        {"PLASTIC_RUNTIME_MODE": "normal", "PLASTIC_MCP_TRANSPORT": "streamable_http"}
+    )
+
+    assert identity["status"] == "ok"
+    assert identity["runtime"]["mode"] == "normal"
+    assert identity["retrieval_initialized"] is False
+
+
 def test_legacy_run_sse_alias_constructs_same_app(monkeypatch):
     route_paths = []
 

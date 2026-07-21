@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from contextvars import ContextVar, Token
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 
 MEMORY_INDEX_JOB_SCHEMA = "memory-index/v3"
@@ -18,6 +20,25 @@ _MAINTENANCE_CYCLE_STAGES = (
     "memory_index_replay",
     "synthesis_index_replay",
     "audit",
+)
+
+# The MCP dispatcher binds one wall-clock and one monotonic start for the
+# complete tool call. The wall-clock value is persisted for trace readability;
+# the monotonic value is only used when wall-clock precision or clock skew would
+# otherwise produce an equal/backwards end timestamp.
+class _CallSpanStart(str):
+    """String-compatible wall-clock start carrying an in-process monotonic origin."""
+
+    monotonic_started_at: float
+
+    def __new__(cls, started_at: str, monotonic_started_at: float) -> _CallSpanStart:
+        value = super().__new__(cls, started_at)
+        value.monotonic_started_at = monotonic_started_at
+        return value
+
+
+_CALL_SPAN_STARTED_AT: ContextVar[str | None] = ContextVar(
+    "plastic_promise_call_span_started_at", default=None
 )
 
 
@@ -107,6 +128,53 @@ class TraceabilityStore:
 def utc_now() -> str:
     """Return the current UTC time as an ISO-8601 string ending in Z."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def bind_call_span_start(started_at: str | None = None) -> Token:
+    """Bind a dispatcher start time for spans emitted during this tool call."""
+    return _CALL_SPAN_STARTED_AT.set(
+        _CallSpanStart(started_at or utc_now(), perf_counter())
+    )
+
+
+def reset_call_span_start(token: Token) -> None:
+    """Restore the previous dispatcher span context."""
+    _CALL_SPAN_STARTED_AT.reset(token)
+
+
+def current_call_span_start() -> str | None:
+    """Return the active dispatcher start time, if one is bound."""
+    started_at = _CALL_SPAN_STARTED_AT.get()
+    return str(started_at) if started_at is not None else None
+
+
+def _monotonic_ended_at(
+    *,
+    started_at: str,
+    wall_clock_ended_at: str,
+    monotonic_started_at: float | None,
+) -> str:
+    """Repair an equal/backwards wall-clock end using elapsed monotonic time.
+
+    Direct callers that do not bind a dispatcher clock retain the historical
+    timestamp behavior. New MCP calls always have the monotonic context.
+    """
+
+    if monotonic_started_at is None:
+        return wall_clock_ended_at
+    try:
+        start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        wall_end = datetime.fromisoformat(wall_clock_ended_at.replace("Z", "+00:00"))
+        if wall_end > start:
+            return wall_clock_ended_at
+    except (TypeError, ValueError):
+        return wall_clock_ended_at
+
+    # Datetime persists microseconds; guarantee a strictly positive measured
+    # interval even for sub-microsecond calls or a mocked monotonic clock.
+    elapsed_seconds = max(perf_counter() - monotonic_started_at, 0.000001)
+    repaired = start + timedelta(seconds=elapsed_seconds)
+    return repaired.isoformat().replace("+00:00", "Z")
 
 
 def new_call_id() -> str:
@@ -600,8 +668,18 @@ def record_call_span(
     input_hash: str = "",
     output_hash: str = "",
     metadata: dict[str, Any] | None = None,
+    started_at: str | None = None,
+    ended_at: str | None = None,
 ) -> None:
-    now = utc_now()
+    wall_clock_ended_at = ended_at or utc_now()
+    bound_started_at = _CALL_SPAN_STARTED_AT.get()
+    span_started_at = started_at or bound_started_at
+    span_started_at = span_started_at or wall_clock_ended_at
+    now = _monotonic_ended_at(
+        started_at=span_started_at,
+        wall_clock_ended_at=wall_clock_ended_at,
+        monotonic_started_at=getattr(bound_started_at, "monotonic_started_at", None),
+    )
     columns = [
         "call_id",
         "parent_call_id",
@@ -635,7 +713,7 @@ def record_call_span(
         input_hash,
         output_hash,
         _metadata_json(metadata),
-        now,
+        span_started_at,
         now,
     ]
     call_span_columns = _table_columns(conn, "call_spans")

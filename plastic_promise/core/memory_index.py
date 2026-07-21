@@ -34,18 +34,22 @@ def effective_embedding_model_name(embedder: object | None = None) -> str:
             or getattr(embedder, "model", None)
         )
         if value:
-            return _model_name(value)
+            return _model_name_with_chunking(value)
     legacy = os.environ.get("EMBED_MODEL")
     if legacy:
-        return _model_name(legacy)
+        return _model_name_with_chunking(legacy)
     provider = os.environ.get("EMBEDDER_PROVIDER", "ollama").strip().casefold()
     if provider == "local":
-        return _model_name(os.environ.get("EMBEDDER_LOCAL_MODEL", "BAAI/bge-large-zh-v1.5"))
+        return _model_name_with_chunking(
+            os.environ.get("EMBEDDER_LOCAL_MODEL", "BAAI/bge-large-zh-v1.5")
+        )
     if provider == "openai":
-        return _model_name(os.environ.get("EMBEDDER_MODEL", "text-embedding-3-small"))
+        return _model_name_with_chunking(
+            os.environ.get("EMBEDDER_MODEL", "text-embedding-3-small")
+        )
     if provider == "fallback":
-        return "fallback-zero"
-    return _model_name(os.environ.get("EMBEDDER_MODEL", "mxbai-embed-large"))
+        return _model_name_with_chunking("fallback-zero")
+    return _model_name_with_chunking(os.environ.get("EMBEDDER_MODEL", "mxbai-embed-large"))
 
 
 def embedding_model_family(model_name: object) -> str:
@@ -62,6 +66,7 @@ class IndexMaterial:
     embedding_hash: str
     model_name: str = "unknown"
     hash_schema: str = INDEX_HASH_SCHEMA
+    chunk_manifest: dict[str, Any] | None = None
 
 
 def initial_index_policy(*, summary_index_enabled: bool) -> str:
@@ -107,6 +112,7 @@ def build_index_material(
         policy=policy,
         embedding_hash=_embedding_hash(policy, effective_model, vector_text),
         model_name=effective_model,
+        chunk_manifest=_build_chunk_manifest_from_env(vector_text),
     )
 
 
@@ -135,6 +141,10 @@ def prepare_index_material(
         policy=material.policy,
         embedding_hash=_embedding_hash(material.policy, material.model_name, prepared_text),
         model_name=material.model_name,
+        # Semantic enrichment changes only the derived embedding input.  Keep
+        # the deterministic manifest bound to the pre-enrichment source text
+        # so spans and dashboard lineage never point into plan JSON.
+        chunk_manifest=material.chunk_manifest,
     )
 
 
@@ -218,12 +228,16 @@ def _require_persisted_index_material(
         raise IndexMaterialError("index_material_hash_mismatch")
     if index.get("search_text_hash") != _search_text_hash(search_text):
         raise IndexMaterialError("index_material_search_text_mismatch")
+    chunk_manifest = _validated_chunk_manifest(index, vector_text=vector_text)
+    if "|chunking=structure-v1" in persisted_model and chunk_manifest is None:
+        raise IndexMaterialError("index_chunk_manifest_required")
     return IndexMaterial(
         vector_text,
         search_text,
         policy,
         embedding_hash,
         model_name=persisted_model,
+        chunk_manifest=chunk_manifest,
     )
 
 
@@ -240,6 +254,11 @@ def index_metadata(material: IndexMaterial) -> dict[str, Any]:
     plan = embedding_plan_metadata(material.vector_text)
     if plan is not None:
         metadata["embedding_plan"] = plan
+    if material.chunk_manifest is not None:
+        from plastic_promise.core.chunking import chunk_manifest_hash
+
+        metadata["chunk_manifest"] = material.chunk_manifest
+        metadata["chunk_manifest_hash"] = chunk_manifest_hash(material.chunk_manifest)
     return metadata
 
 
@@ -413,6 +432,117 @@ def _normalize_inline(value: object) -> str:
 
 def _model_name(value: object) -> str:
     return str(value or "").strip() or "unknown"
+
+
+def _model_name_with_chunking(value: object) -> str:
+    model_name = _model_name(value)
+    if (
+        os.environ.get("PP_MEMORY_CHUNKING", "off").strip().casefold() != "structure-v1"
+        or "|chunking=" in model_name
+    ):
+        return model_name
+    target = _int_env("EMBEDDER_CHUNK_CHARS", 512, minimum=1)
+    hard = _int_env("EMBEDDER_STRUCTURE_HARD_CHARS", target, minimum=target)
+    max_chunks = _int_env("EMBEDDER_STRUCTURE_MAX_CHUNKS", 64, minimum=1)
+    max_source_chars = _int_env("EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS", 2_000_000, minimum=1)
+    return (
+        f"{model_name}|chunking=structure-v1"
+        f"|target_chars={target}|hard_chars={hard}"
+        f"|max_chunks={max_chunks}|max_source_chars={max_source_chars}"
+        "|budget=characters-fallback"
+    )
+
+
+def _build_chunk_manifest_from_env(vector_text: str) -> dict[str, Any] | None:
+    if os.environ.get("PP_MEMORY_CHUNKING", "off").strip().casefold() != "structure-v1":
+        return None
+    max_source_chars = _int_env("EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS", 2_000_000, minimum=1)
+    if len(vector_text) > max_source_chars:
+        raise IndexMaterialError("structure_chunking_source_too_large")
+    from plastic_promise.core.chunking import build_chunk_manifest
+
+    target = _int_env("EMBEDDER_CHUNK_CHARS", 512, minimum=1)
+    hard = _int_env("EMBEDDER_STRUCTURE_HARD_CHARS", target, minimum=target)
+    max_chunks = _int_env("EMBEDDER_STRUCTURE_MAX_CHUNKS", 64, minimum=1)
+    return build_chunk_manifest(
+        vector_text,
+        target_chars=target,
+        hard_chars=hard,
+        max_chunks=max_chunks,
+    )
+
+
+def _validated_chunk_manifest(
+    index: Mapping[str, Any],
+    *,
+    vector_text: str,
+) -> dict[str, Any] | None:
+    raw = index.get("chunk_manifest")
+    stored_hash = index.get("chunk_manifest_hash")
+    if raw is None:
+        if stored_hash not in {None, ""}:
+            raise IndexMaterialError("index_chunk_manifest_incomplete")
+        return None
+    if not isinstance(raw, Mapping) or not isinstance(stored_hash, str) or not stored_hash:
+        raise IndexMaterialError("index_chunk_manifest_incomplete")
+    manifest = dict(raw)
+    chunks = manifest.get("chunks")
+    if (
+        manifest.get("schema_version") != "structure-v1"
+        or not isinstance(chunks, list)
+        or manifest.get("chunk_count") != len(chunks)
+    ):
+        raise IndexMaterialError("index_chunk_manifest_invalid")
+    from plastic_promise.core.chunking import chunk_manifest_hash
+
+    if chunk_manifest_hash(manifest) != stored_hash:
+        raise IndexMaterialError("index_chunk_manifest_hash_mismatch")
+    expected_source_hash = _chunk_manifest_source_hash(vector_text)
+    if manifest.get("source_hash") != expected_source_hash:
+        raise IndexMaterialError("index_chunk_manifest_source_mismatch")
+    return manifest
+
+
+def chunk_manifest_source_hash(vector_text: object) -> str | None:
+    """Return the source hash a persisted manifest must be bound to.
+
+    Active semantic enrichment stores an embedding plan instead of the raw
+    vector text.  The plan carries the hash of the original deterministic
+    chunking source; exposing this helper keeps read-only projections aligned
+    with the persistence validator without exposing plan internals.
+    """
+
+    try:
+        return _chunk_manifest_source_hash(vector_text)
+    except IndexMaterialError:
+        return None
+
+
+def _chunk_manifest_source_hash(vector_text: object) -> str:
+    if not isinstance(vector_text, str):
+        raise IndexMaterialError("index_chunk_manifest_source_missing")
+    from plastic_promise.core.semantic_chunk_enrichment import (
+        decode_embedding_plan,
+        is_embedding_plan,
+    )
+
+    if is_embedding_plan(vector_text):
+        try:
+            payload = decode_embedding_plan(vector_text)
+        except ValueError as exc:
+            raise IndexMaterialError("index_embedding_plan_invalid") from exc
+        source_hash = payload.get("source_text_hash")
+        if not isinstance(source_hash, str) or not source_hash:
+            raise IndexMaterialError("index_embedding_plan_source_missing")
+        return source_hash
+    return hashlib.sha256(vector_text.encode("utf-8")).hexdigest()
+
+
+def _int_env(name: str, default: int, *, minimum: int) -> int:
+    try:
+        return max(int(os.environ.get(name, str(default))), minimum)
+    except (TypeError, ValueError):
+        return max(default, minimum)
 
 
 def _summary_index_enabled_from_env() -> bool:

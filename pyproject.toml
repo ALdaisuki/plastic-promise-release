@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plastic-promise"
-version = "0.1.18"
+version = "0.1.19"
 description = "AI 行为治理系统 — 以约定工程替代约束工程"
 readme = "README.md"
 license = { text = "MIT" }
@@ -83,6 +83,9 @@ exclude = [
     "tests*",
     "var*",
 ]
+
+[tool.setuptools.package-data]
+"plastic_promise.mcp.dashboard_v2" = ["static/*.html", "static/*.css", "static/*.js"]
 
 # ============================================================
 # Ruff — 代码规范 & 格式化

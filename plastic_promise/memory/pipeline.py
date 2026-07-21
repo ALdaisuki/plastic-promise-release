@@ -205,7 +205,7 @@ class MemoryPipeline:
                     "importance": em.importance,
                 }
 
-            index_fields = self._build_memory_index_fields(
+            index_fields, index_material = self._build_memory_index_fields(
                 raw_content=content,
                 extracted=record.get("extracted", {}),
                 embedder=self.embedder,
@@ -227,15 +227,7 @@ class MemoryPipeline:
                 }
             )
             metadata["extracted"] = metadata_extracted
-            metadata["memory_index"] = index_metadata(
-                IndexMaterial(
-                    vector_text=record["embedding_text"],
-                    search_text=record["search_text"],
-                    policy=index_policy,
-                    embedding_hash=record["embedding_hash"],
-                    model_name=self._embedding_model_name(self.embedder),
-                )
-            )
+            metadata["memory_index"] = index_metadata(index_material)
             record["metadata_json"] = metadata
 
             self._buffer[mid] = record
@@ -306,20 +298,13 @@ class MemoryPipeline:
         tier = "L1"
 
         index_policy = initial_index_policy(summary_index_enabled=self._summary_index_enabled())
-        index_fields = self._build_memory_index_fields(
+        index_fields, material = self._build_memory_index_fields(
             raw_content=normalized_content,
             extracted=extracted,
             embedder=self.embedder,
             policy=index_policy,
             domain=domain,
             category=normalized_category,
-        )
-        material = IndexMaterial(
-            vector_text=index_fields["embedding_text"],
-            search_text=index_fields["search_text"],
-            policy=index_policy,
-            embedding_hash=index_fields["embedding_hash"],
-            model_name=self._embedding_model_name(self.embedder),
         )
         vector = tuple(float(value) for value in self.embedder.embed(material.vector_text))
         if not self._has_nonzero_vector(vector):
@@ -616,7 +601,7 @@ class MemoryPipeline:
         policy: str | None = None,
         domain: str = "uncategorized",
         category: str = "other",
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], IndexMaterial]:
         extracted = extracted if isinstance(extracted, dict) else {}
         l2_content = str(extracted.get("l2_content") or raw_content or "")
         l0_abstract = cls._safe_summary_text(extracted.get("l0_abstract") or l2_content)
@@ -658,7 +643,7 @@ class MemoryPipeline:
             }
         )
         fields.pop("content")
-        return fields
+        return fields, material
 
     # ================================================================
     # Internal: Tag Extraction

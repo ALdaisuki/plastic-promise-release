@@ -16,6 +16,13 @@ from typing import Any
 
 from mcp.types import TextContent
 
+from plastic_promise.core.retrieval_explain import (
+    METADATA_KEY as RETRIEVAL_EXPLAIN_METADATA_KEY,
+)
+from plastic_promise.core.retrieval_explain import (
+    build_retrieval_explain_snapshot,
+)
+
 logger = logging.getLogger(__name__)
 
 _CONTEXT_SUPPLY_EXECUTOR = ThreadPoolExecutor(
@@ -138,9 +145,11 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             new_call_id,
             safe_record_call_span,
             safe_record_degradation_event,
+            utc_now,
         )
         from plastic_promise.mcp.tools.request_scope import build_request_scope
 
+        trace_started_at = utc_now()
         task_description = args["task_description"]
         task_type = args.get("task_type", "general")
         scope = args.get("scope", "global")
@@ -213,6 +222,26 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                     "fusion_policy": fusion_policy,
                 },
             )
+            safe_record_call_span(
+                engine,
+                call_id=call_id,
+                parent_call_id=str(args.get("parent_call_id") or args.get("parent_call") or ""),
+                request_scope_id=request_scope["request_scope_id"],
+                stage_session_id=request_scope["stage_session_id"],
+                flow_line_id=request_scope["flow_line_id"],
+                project_id=project_ctx.project_id,
+                tool_name="context_supply",
+                status="degraded",
+                degraded=True,
+                metadata={
+                    "task_type": task_type,
+                    "scope": scope,
+                    "retrieval_mode": retrieval_mode,
+                    "fusion_policy": fusion_policy,
+                    "reason": "engine_supply_timeout",
+                },
+                started_at=trace_started_at,
+            )
             return _degraded_context_response(
                 reason=reason,
                 task_description=task_description,
@@ -234,6 +263,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             engine,
             task_type=task_type,
         )
+        retrieval_explain = build_retrieval_explain_snapshot(pack)
         pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
         pack.audit_metadata["request_scope"] = request_scope
         pack.audit_metadata["project_context"] = project_ctx.to_dict()
@@ -246,6 +276,17 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         if project_warnings:
             pack.audit_metadata["warnings"] = project_warnings
             pack.audit_metadata["minimum_result"] = "project_restricted_context"
+        span_metadata = {
+            "task_type": task_type,
+            "scope": scope,
+            "project_policy": project_ctx.project_policy,
+            "retrieval_mode": retrieval_mode,
+            "fusion_policy": fusion_policy,
+            "debug": debug,
+            "warnings": project_warnings,
+        }
+        if retrieval_explain is not None:
+            span_metadata[RETRIEVAL_EXPLAIN_METADATA_KEY] = retrieval_explain
         safe_record_call_span(
             engine,
             call_id=call_id,
@@ -257,15 +298,8 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             tool_name="context_supply",
             status="success",
             degraded=bool(project_warnings),
-            metadata={
-                "task_type": task_type,
-                "scope": scope,
-                "project_policy": project_ctx.project_policy,
-                "retrieval_mode": retrieval_mode,
-                "fusion_policy": fusion_policy,
-                "debug": debug,
-                "warnings": project_warnings,
-            },
+            metadata=span_metadata,
+            started_at=trace_started_at,
         )
         if project_warnings:
             safe_record_degradation_event(

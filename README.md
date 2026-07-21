@@ -273,6 +273,22 @@ Hunter Guild lifecycle:
 task_enqueue -> task_claim -> task_heartbeat -> task_complete -> task_verify
 ```
 
+### Local operator dashboard
+
+With `PP_DASHBOARD_V2=1`, open the Chinese operator console after starting the
+Streamable HTTP server:
+
+```text
+http://127.0.0.1:9020/dashboard
+```
+
+The dashboard is a loopback-only, project-scoped, read-only surface. It covers
+runtime health and mode, memories and structured chunk evidence, request traces,
+governed synthesis, detailed memory lineage, retrieval explanations, operations,
+trust issues, and configuration. Set `PP_RETRIEVAL_EXPLAIN=1` to expose the
+bounded retrieval explanation route. Missing duration evidence is shown as
+unavailable; the UI never substitutes a synthetic `0 ms`.
+
 ---
 
 ## Core Modules
@@ -281,7 +297,7 @@ This module map follows a capability-first layout so readers can understand the 
 
 | Module group | Source area | Responsibility |
 |---|---|---|
-| MCP server | `plastic_promise/mcp/` | Declares tool schemas, stdio/Streamable HTTP entrypoints, legacy SSE compatibility, health endpoints, dashboard, prompts, and resources. |
+| MCP server | `plastic_promise/mcp/` | Declares tool schemas, stdio/Streamable HTTP entrypoints, legacy SSE compatibility, health endpoints, the loopback-only Dashboard V2, prompts, and resources. |
 | Context engine | `plastic_promise/core/context_engine.py` | Supplies layered context by combining retrieval, graph, principle, ranking, and degraded-mode signals. |
 | Memory pipeline | `plastic_promise/memory/`, `plastic_promise/memory/pipeline.py` | Extracts, classifies, deduplicates, quality-scores, embeds, stores, reinforces, merges, and decays memories. |
 | Storage layer | `plastic_promise/core/lancedb_store.py`, SQLite paths | Stores structured state in SQLite and vector/search state in LanceDB. |
@@ -537,7 +553,7 @@ Also unset `PP_RETRIEVAL_RRF_K`, `PP_RETRIEVAL_RRF_WEIGHTS_JSON`, and
 restart both processes, run one-shot maintenance to replay the default checked
 index policy, then run the HTTP and restart-recovery smokes.
 
-For an upgrade to `0.1.18`, leave these gates at their defaults until the live
+For an upgrade to `0.1.19`, leave these gates at their defaults until the live
 deployment passes its project-isolated smoke checks. Restart the MCP server and
 Maintenance Daemon together so every writer uses the same canonical mutation
 contract. No public MCP tool or parameter was removed; existing SQLite memory
@@ -586,6 +602,8 @@ python scripts/rebuild_lancedb.py
 | Maintenance daemon | `daemons/maintenance_daemon.py` |
 | Default local embedding path | Ollama `mxbai-embed-large`, with chunked long-text pooling and fallback embedder when configured |
 | Optional chunk enrichment | Off by default; local Ollama `qwen3:8b`, strict grounded schema, SQLite cache; `on` is activated with an offline rebuild and stays enabled for matching writes/repairs |
+| Dashboard V2 | `PP_DASHBOARD_V2=1`; Chinese, loopback-only, project-scoped, bounded, and read-only at `/dashboard` |
+| Retrieval explanation | `PP_RETRIEVAL_EXPLAIN=1`; stored bounded snapshots with measured request/stage durations and no synthetic zero timing |
 | Structured database | `data/db/plastic_memory.db` unless `PLASTIC_DB_PATH` overrides it |
 | Vector database | `data/lancedb` unless `PLASTIC_LANCEDB_PATH` overrides it |
 | Codex repo skills | `.agents/skills/*/SKILL.md` |
@@ -638,10 +656,10 @@ python scripts/init_and_start.py --check-only
 python scripts/init_and_start.py --skip-ollama-check --check-only
 
 # Verify the live Streamable HTTP MCP process after startup or release restart.
-python scripts/smoke_http_mcp.py --expected-version 0.1.18 --expected-mode rust-full
+python scripts/smoke_http_mcp.py --expected-version 0.1.19 --expected-mode rust-full
 
 # Run only after explicitly enabling PP_MEMORY_SUMMARY_INDEX=1 and compact-v2.
-python scripts/smoke_http_mcp.py --expected-version 0.1.18 --expected-mode rust-full --check-summary-index
+python scripts/smoke_http_mcp.py --expected-version 0.1.19 --expected-mode rust-full --check-summary-index
 ```
 
 Live release sync has a fail-closed preflight: the release repository must be
@@ -657,7 +675,7 @@ Do not replace the attested push with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.18 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.19 --release-repo F:/Agent/plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \
@@ -680,13 +698,14 @@ Conventions:
 | Area | Status | Notes |
 |---|---|---|
 | MCP server | Active | stdio and Streamable HTTP modes are implemented; legacy SSE endpoints remain available. |
-| Memory pipeline | Active | Extraction, quality gate, field-scoped canonical mutations, project isolation, checked LanceDB repair jobs, feature-gated summary index writes, and decay are implemented. |
-| Context supply | Active | Python remains the canonical write-side authority; governed synthesis admission is opt-in and fail-closed, while Rust snapshot recall is optional, request-scoped, and guarded at snapshot ingestion plus native-result conversion. |
+| Memory pipeline | Active | Extraction, quality gate, field-scoped canonical mutations, project isolation, checked LanceDB repair jobs, deterministic Python/Rust `structure-v1` manifests, feature-gated summary index writes, and decay are implemented. |
+| Context supply | Active | Python remains the canonical write-side authority; governed synthesis admission is opt-in and fail-closed, while Rust snapshot recall is optional, request-scoped, guarded, and explainable with real stage timing. |
+| Operator dashboard | Active | Chinese Dashboard V2 exposes bounded read-only views for memories, structured chunks, lineage, request traces, retrieval explanation, trust, operations, and runtime configuration. |
 | Hunter Guild | Experimental | Task lifecycle is wired; policy and scanner quality are still evolving. |
 | Skills and governed workflow | Active | `session-init`, `smart-remember`, `step-closure`, and a compact 16-stage `sp-stage` governance contract are exposed; detailed skill instructions are not. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |
 | Release pipeline | Active | PyPI and GitHub Actions release sync are configured. |
-| Documentation | In progress | This release pass reconciles public docs with current source truth. |
+| Documentation | Active | English and Chinese quickstarts, runtime operations, Dashboard V2, structured chunking, lineage, retrieval explanation, and release procedures are aligned with source truth. |
 
 ---
 

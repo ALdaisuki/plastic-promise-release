@@ -36,12 +36,12 @@ class RecordingVectorEmbedder(VectorTestEmbedder):
 class StructuredVectorEmbedder(RecordingVectorEmbedder):
     index_model_name = (
         "mxbai-embed-large|chunking=structure-v1|target_chars=512|"
-        "hard_chars=1024|max_chunks=64|max_source_chars=2000000|budget=characters-fallback"
+        "hard_chars=512|max_chunks=64|max_source_chars=2000000|budget=characters-fallback"
     )
 
 
 class PreparingVectorEmbedder(RecordingVectorEmbedder):
-    index_model_name = "vector-test|chunking=structure-v1|enrichment=semantic-v1"
+    index_model_name = "vector-test"
 
     def __init__(self):
         super().__init__()
@@ -506,9 +506,12 @@ class TestLanceDBStore:
         }
         assert store.list_memory_ids() == {"mem_keep", "mem_missing"}
 
-    def test_sync_reindexes_existing_rows_when_chunking_model_changes(self, tmp_path):
+    def test_sync_reindexes_existing_rows_when_chunking_model_changes(
+        self, tmp_path, monkeypatch
+    ):
         from plastic_promise.core.memory_index import build_index_material, index_metadata
 
+        monkeypatch.setenv("PP_MEMORY_CHUNKING", "structure-v1")
         embedder = StructuredVectorEmbedder()
         old_material = build_index_material(
             {"content": "long memory body"},
@@ -538,6 +541,45 @@ class TestLanceDBStore:
         assert engine._memories[memory["id"]]["metadata_json"]["memory_index"]["model_name"] == (
             embedder.index_model_name
         )
+
+    def test_sync_removes_existing_row_with_invalid_v2_chunk_manifest(
+        self, tmp_path, monkeypatch
+    ):
+        from plastic_promise.core.memory_index import build_index_material, index_metadata
+
+        monkeypatch.setenv("PP_MEMORY_CHUNKING", "structure-v1")
+        embedder = StructuredVectorEmbedder()
+        material = build_index_material(
+            {"content": "canonical memory with required chunk evidence"},
+            model_name=embedder.index_model_name,
+        )
+        metadata = {"memory_index": index_metadata(material)}
+        metadata["memory_index"].pop("chunk_manifest")
+        metadata["memory_index"].pop("chunk_manifest_hash")
+        memory = {
+            "id": "invalid-structured-memory",
+            "content": "canonical memory with required chunk evidence",
+            "embedding_text": material.vector_text,
+            "search_text": material.search_text,
+            "embedding_hash": material.embedding_hash,
+            "metadata_json": metadata,
+            "memory_type": "experience",
+            "tier": "L1",
+            "category": "other",
+            "scope": "global",
+        }
+        engine = RepairEngine({memory["id"]: memory})
+        store = LanceDBStore(str(tmp_path / "invalid-v2.lancedb"), embedder)
+        store.insert_checked(memory["id"], [0.1] * EMB_DIM, material.search_text)
+
+        result = store.sync_with_engine(engine)
+
+        assert result["invalid_material_removed"] == 1
+        assert result["invalid_material_ids"] == [memory["id"]]
+        assert result["diagnostics"] == [
+            {"memory_id": memory["id"], "reason": "index_material_invalid_removed"}
+        ]
+        assert store.list_memory_ids() == set()
 
     def test_synthesis_chunking_model_migration_is_deferred_without_lancedb_churn(
         self, tmp_path, monkeypatch
@@ -765,7 +807,10 @@ class TestLanceDBStore:
         row = store._table.search().where("memory_id = 'legacy-memory'").limit(1).to_list()[0]
         assert row["text"] == "legacy full content"
 
-    def test_pre_v2_repair_prepares_exact_document_material_before_persisting(self, tmp_path):
+    def test_pre_v2_repair_prepares_exact_document_material_before_persisting(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("PP_MEMORY_CHUNKING", "off")
         embedder = PreparingVectorEmbedder()
         memory = {
             "id": "pre-v2-memory",
@@ -1042,6 +1087,72 @@ class TestLanceDBStore:
         assert "controlled-type-drift" not in store.list_memory_ids()
         assert embedder.texts == []
 
+    @pytest.mark.parametrize("repair", ["sync_with_engine", "rebuild_all", "backfill"])
+    @pytest.mark.parametrize(
+        "state",
+        ["forgotten", "wrong", "deprecated", "replaced", "conflict"],
+    )
+    def test_repair_never_reindexes_unavailable_ordinary_memory(
+        self,
+        tmp_path,
+        repair,
+        state,
+    ):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+
+        memory_id = f"ordinary-{state}"
+        sqlite_store = _SQLiteMemoryStore(str(tmp_path / f"{repair}-{state}.db"))
+        sqlite_store.upsert(
+            memory_id,
+            {
+                "id": memory_id,
+                "content": "Unavailable ordinary memory must stay out of the derived index.",
+                "memory_type": "experience",
+                "tags": [f"status:{state}"],
+                "metadata_json": {
+                    "lifecycle_status": state,
+                    "quality": {"status": state},
+                },
+                "decay_multiplier": 0.0,
+            },
+        )
+        memory = sqlite_store.get(memory_id)
+        engine = RepairEngine({memory_id: memory}, sqlite_store)
+        embedder = RecordingVectorEmbedder()
+        store = LanceDBStore(str(tmp_path / f"{repair}-{state}.lancedb"), embedder)
+        if repair != "backfill":
+            store.insert(memory_id, [0.1] * EMB_DIM, "stale unavailable vector")
+
+        getattr(store, repair)(engine)
+
+        assert memory_id not in store.list_memory_ids()
+        assert embedder.texts == []
+
+    def test_sync_keeps_canonically_available_ordinary_status_index_eligible(self, tmp_path):
+        from plastic_promise.core.context_engine import _SQLiteMemoryStore
+
+        sqlite_store = _SQLiteMemoryStore(str(tmp_path / "available-status.db"))
+        sqlite_store.upsert(
+            "reviewed-task",
+            {
+                "id": "reviewed-task",
+                "content": "Reviewed is an explicitly available ordinary-memory state.",
+                "memory_type": "task",
+                "tags": ["status:reviewed"],
+                "metadata_json": {"quality": {"status": "reviewed"}},
+            },
+        )
+        memory = sqlite_store.get("reviewed-task")
+        engine = RepairEngine({"reviewed-task": memory}, sqlite_store)
+        embedder = RecordingVectorEmbedder()
+        store = LanceDBStore(str(tmp_path / "available-status.lancedb"), embedder)
+
+        result = store.sync_with_engine(engine)
+
+        assert result["missing_backfilled"] == 1
+        assert store.list_memory_ids() == {"reviewed-task"}
+        assert embedder.texts == ["Reviewed is an explicitly available ordinary-memory state."]
+
     def test_control_lookup_error_fails_index_eligibility_closed(self, tmp_path):
         class BrokenConnection:
             def execute(self, *_args, **_kwargs):
@@ -1199,3 +1310,141 @@ class TestLanceDBStore:
         # May match "self_test" — pipeline handles self-exclusion
         # This test just verifies the method doesn't crash
         assert result is not None
+
+    def test_check_duplicate_blocks_unsafe_unindexed_fragment_scan(self, monkeypatch):
+        class FragmentedDataset:
+            def get_fragments(self):
+                return [object(), object(), object()]
+
+        class FragmentedTable:
+            def __init__(self):
+                self.search_calls = 0
+
+            def count_rows(self):
+                return 3
+
+            def list_indices(self):
+                return []
+
+            def to_lance(self):
+                return FragmentedDataset()
+
+            def search(self, *_args, **_kwargs):
+                self.search_calls += 1
+                return self
+
+        monkeypatch.setenv("LDB_MAX_UNINDEXED_VECTOR_SCAN_FRAGMENTS", "2")
+        table = FragmentedTable()
+        store = object.__new__(LanceDBStore)
+        store._vectors_disabled = False
+        store._table = table
+        store._last_search_diagnostics = []
+
+        assert store.check_duplicate([0.1] * EMB_DIM) is None
+        assert table.search_calls == 0
+        assert store.consume_search_diagnostics() == [
+            {
+                "channel": "vector",
+                "reason": "lancedb_unindexed_fragment_scan_blocked",
+                "fragment_count": "3",
+                "limit": "2",
+            }
+        ]
+
+    def test_vector_index_allows_fragmented_duplicate_scan(self, monkeypatch):
+        class FragmentedDataset:
+            def get_fragments(self):
+                return [object(), object(), object()]
+
+        class VectorIndex:
+            columns = ["vector"]
+            index_type = "IVF_FLAT"
+
+        class IndexedTable:
+            def __init__(self):
+                self.search_calls = 0
+
+            def count_rows(self):
+                return 3
+
+            def list_indices(self):
+                return [VectorIndex()]
+
+            def to_lance(self):
+                return FragmentedDataset()
+
+            def search(self, *_args, **_kwargs):
+                self.search_calls += 1
+                return self
+
+            def metric(self, _metric):
+                return self
+
+            def limit(self, _limit):
+                return self
+
+            def to_list(self):
+                return [{"memory_id": "indexed-target", "_distance": 0.0}]
+
+        monkeypatch.setenv("LDB_MAX_UNINDEXED_VECTOR_SCAN_FRAGMENTS", "2")
+        table = IndexedTable()
+        store = object.__new__(LanceDBStore)
+        store._vectors_disabled = False
+        store._table = table
+        store._last_search_diagnostics = []
+
+        assert store.check_duplicate([0.1] * EMB_DIM) == "indexed-target"
+        assert table.search_calls == 1
+
+    def test_insert_checked_auto_compacts_small_fragment_backlog(self, monkeypatch):
+        class MutableDataset:
+            def __init__(self, table):
+                self.table = table
+
+            def get_fragments(self):
+                return [object()] * self.table.fragment_count
+
+        class MutableTable:
+            def __init__(self):
+                self.fragment_count = 1
+                self.optimize_calls = 0
+
+            def count_rows(self):
+                return self.fragment_count
+
+            def list_indices(self):
+                return []
+
+            def to_lance(self):
+                return MutableDataset(self)
+
+            def search(self, *_args, **_kwargs):
+                return self
+
+            def where(self, *_args, **_kwargs):
+                return self
+
+            def limit(self, _limit):
+                return self
+
+            def to_list(self):
+                return []
+
+            def add(self, _rows):
+                self.fragment_count += 1
+
+            def optimize(self):
+                self.optimize_calls += 1
+                self.fragment_count = 1
+
+        monkeypatch.setenv("LDB_AUTO_COMPACT_FRAGMENT_THRESHOLD", "1")
+        monkeypatch.setenv("LDB_AUTO_COMPACT_MAX_FRAGMENTS", "8")
+        table = MutableTable()
+        store = object.__new__(LanceDBStore)
+        store._vectors_disabled = False
+        store._table = table
+
+        store.insert_checked("compact-me", [0.1] * EMB_DIM, "compact text")
+
+        assert table.optimize_calls == 1
+        assert table.fragment_count == 1

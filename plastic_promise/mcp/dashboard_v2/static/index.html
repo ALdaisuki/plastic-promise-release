@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Plastic Promise 本地治理控制台">
+  <title>Plastic Promise 管理控制台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23171717'/%3E%3Cpath d='M9 8h7.5c4.7 0 7.5 2.4 7.5 6.5S21.2 21 16.5 21H14v4H9V8Zm5 4v5h2.2c1.8 0 2.8-.8 2.8-2.5S18 12 16.2 12H14Z' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/dashboard/assets/v2/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#view-root">跳到控制台内容</a>
+
+  <!-- Icon paths are from Lucide (ISC License): https://lucide.dev -->
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="icon-activity" viewBox="0 0 24 24">
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+    </symbol>
+    <symbol id="icon-alert-triangle" viewBox="0 0 24 24">
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+      <path d="M12 9v4"/><path d="M12 17h.01"/>
+    </symbol>
+    <symbol id="icon-braces" viewBox="0 0 24 24">
+      <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/>
+      <path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>
+    </symbol>
+    <symbol id="icon-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="icon-circle-help" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 1 1 5.83 1c0 2-3 2-3 4"/><path d="M12 18h.01"/>
+    </symbol>
+    <symbol id="icon-database" viewBox="0 0 24 24">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/>
+    </symbol>
+    <symbol id="icon-file-search" viewBox="0 0 24 24">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h7"/><path d="M14 2v6h6"/><path d="m21 21-3.5-3.5"/><circle cx="15" cy="15" r="3"/>
+    </symbol>
+    <symbol id="icon-gauge" viewBox="0 0 24 24">
+      <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>
+    </symbol>
+    <symbol id="icon-git-branch" viewBox="0 0 24 24">
+      <line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+    </symbol>
+    <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+    <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 12h16"/><path d="M4 6h16"/><path d="M4 18h16"/></symbol>
+    <symbol id="icon-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24">
+      <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/>
+    </symbol>
+    <symbol id="icon-scroll-text" viewBox="0 0 24 24"><path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v3h4"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M10 7h6"/><path d="M10 11h6"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/>
+    </symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="icon-sparkles" viewBox="0 0 24 24"><path d="m12 3-1.9 5.1L5 10l5.1 1.9L12 17l1.9-5.1L19 10l-5.1-1.9Z"/><path d="M5 3v4"/><path d="M3 5h4"/><path d="M19 17v4"/><path d="M17 19h4"/></symbol>
+    <symbol id="icon-workflow" viewBox="0 0 24 24"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></symbol>
+    <symbol id="icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  </svg>
+
+  <div class="app-shell" id="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="控制台导航">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">PP</div>
+        <div class="brand-copy">
+          <strong>Plastic Promise</strong>
+          <span>治理控制台</span>
+        </div>
+      </div>
+
+      <nav class="main-nav" id="main-nav">
+        <div class="nav-group">
+          <div class="nav-label">系统</div>
+          <a class="nav-item" href="#/overview" data-view="overview">
+            <svg class="icon"><use href="#icon-gauge"/></svg><span>概览</span>
+          </a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">活动</div>
+          <a class="nav-item" href="#/requests" data-view="requests">
+            <svg class="icon"><use href="#icon-activity"/></svg><span>请求</span>
+          </a>
+          <a class="nav-item" href="#/memories" data-view="memories">
+            <svg class="icon"><use href="#icon-database"/></svg><span>记忆</span>
+          </a>
+          <a class="nav-item" href="#/explain" data-view="explain" data-feature="retrieval-explain">
+            <svg class="icon"><use href="#icon-file-search"/></svg><span>检索解释</span>
+          </a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">知识</div>
+          <a class="nav-item" href="#/lineage" data-view="lineage">
+            <svg class="icon"><use href="#icon-git-branch"/></svg><span>记忆谱系</span>
+          </a>
+          <a class="nav-item" href="#/synthesis" data-view="synthesis">
+            <svg class="icon"><use href="#icon-sparkles"/></svg><span>综合记忆</span>
+          </a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">运维</div>
+          <a class="nav-item" href="#/operations" data-view="operations">
+            <svg class="icon"><use href="#icon-workflow"/></svg><span>运行运维</span>
+          </a>
+          <a class="nav-item" href="#/trust-issues" data-view="trust-issues">
+            <svg class="icon"><use href="#icon-shield"/></svg><span>信任与问题</span>
+          </a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">配置</div>
+          <a class="nav-item" href="#/configuration" data-view="configuration">
+            <svg class="icon"><use href="#icon-settings"/></svg><span>有效配置</span>
+          </a>
+        </div>
+      </nav>
+
+      <div class="sidebar-foot">
+        <span class="connection-dot" id="connection-dot" aria-hidden="true"></span>
+        <span class="sidebar-foot-copy" id="connection-label">正在连接</span>
+      </div>
+    </aside>
+
+    <button class="mobile-backdrop" id="mobile-backdrop" type="button" aria-label="关闭导航"></button>
+
+    <header class="topbar">
+      <div class="topbar-leading">
+        <button class="icon-button desktop-toggle" id="sidebar-toggle" type="button" title="收起侧栏" aria-label="收起侧栏">
+          <svg class="icon"><use href="#icon-panel-left"/></svg>
+        </button>
+        <button class="icon-button mobile-toggle" id="mobile-toggle" type="button" title="打开导航" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">
+          <svg class="icon"><use href="#icon-menu"/></svg>
+        </button>
+        <div class="page-identity">
+          <span class="eyebrow">管理控制台</span>
+          <span class="topbar-title" id="topbar-title">概览</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="scope-chip" id="scope-chip" title="当前生效的项目范围">本地范围</span>
+        <span class="status-badge status-neutral" id="readiness-badge">正在连接</span>
+        <button class="icon-button" id="refresh-button" type="button" title="刷新当前视图" aria-label="刷新当前视图">
+          <svg class="icon"><use href="#icon-refresh"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="main-panel" id="main-panel">
+      <div class="notice-stack" id="notice-stack" aria-live="polite"></div>
+      <section class="view-root" id="view-root" tabindex="-1" aria-live="polite" aria-busy="true"></section>
+      <footer class="dashboard-footer">
+        <span>只读运行投影</span>
+        <span id="last-updated">尚未更新</span>
+      </footer>
+    </main>
+  </div>
+
+  <dialog class="detail-dialog" id="detail-dialog" aria-labelledby="detail-title">
+    <div class="detail-header">
+      <div>
+        <span class="eyebrow" id="detail-eyebrow">详情</span>
+        <h2 id="detail-title">记录详情</h2>
+      </div>
+      <button class="icon-button" id="detail-close" type="button" title="关闭详情" aria-label="关闭详情">
+        <svg class="icon"><use href="#icon-x"/></svg>
+      </button>
+    </div>
+    <div class="detail-body" id="detail-body"></div>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <noscript>此控制台需要启用 JavaScript 才能加载只读 API 投影。</noscript>
+  <script src="/dashboard/assets/v2/app.js" defer></script>
+</body>
+</html>

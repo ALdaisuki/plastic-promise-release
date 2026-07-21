@@ -2,7 +2,7 @@
 
 > Release-facing overview. This document describes the system shape and operating principles without exposing private planning artifacts.
 >
-> 版本: 0.1.18 | 日期: 2026-07-19
+> 版本: 0.1.19 | 日期: 2026-07-21
 
 ## 1. What this system is
 
@@ -35,6 +35,7 @@ Every serious task should pass through this loop:
 | Subsystem | Role |
 |---|---|
 | MCP Server | Exposes the runtime to Claude Code and other MCP clients over stdio or SSE. |
+| Dashboard V2 | Provides a Chinese, loopback-only, project-scoped and read-only operator surface at `/dashboard`. |
 | Launcher runtime modes | Select startup depth and Rust acceleration before services start, with MCP hot updates through `runtime_mode`. |
 | Service bootstrap | Launcher child processes inherit runtime-mode env and receive project root on `PYTHONPATH`; MCP health binds PID/source root/revision before startup or reuse is accepted. |
 | Memory | Stores reusable experience, decisions, preferences, task knowledge, and derived signals. |
@@ -84,6 +85,19 @@ expired proposals never enter ordinary recall or LanceDB. The default gates
 preserve legacy behavior, and rollback disables the gates without deleting
 canonical control or audit records.
 
+Structured indexing uses deterministic `structure-v1` manifests implemented in
+both Python and Rust. SQLite retains canonical memory text and exact manifest
+material; LanceDB remains a rebuildable projection. Each bounded chunk carries a
+stable parent memory ID, heading path, block kind, source span, content hash, and
+truncation state. Dashboard memory and lineage views validate the manifest hash
+and source identity before exposing chunk anchors.
+
+Retrieval explanation is a persisted, bounded projection rather than a replay of
+the retrieval engine. It records channel scores, ranking/filter decisions,
+pipeline counts, chunk evidence, and measured request/stage durations. Missing
+timing evidence remains absent, so operators can distinguish unavailable data
+from a genuine sub-millisecond measurement.
+
 ## 5. Skill and agent orchestration
 
 Skills define reusable operating rituals. Agent dispatch extends those rituals across multiple workers.
@@ -131,7 +145,7 @@ replace this attested path with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.18 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.19 --release-repo F:/Agent/plastic-promise-release \
   --expected-source-branch main --validation-profile full --dry-run
 # Repeat with the same bound origin arguments and --push only after all gates pass.
 ```
@@ -199,6 +213,12 @@ include filter-stage counts, stage timing, fallback reason, and per-item
 keep/drop reasons so operators can explain why a memory entered or missed the
 result set. The `rust_snapshot_supply` benchmark tracks the full Python-to-Rust
 snapshot boundary and should be used for p50/p95 regression gates.
+
+The local Dashboard V2 reads these persisted projections without invoking the
+retrieval engine again. Its overview, memory, request, synthesis, lineage,
+retrieval-explain, operations, trust, and configuration routes share the same
+loopback and server-owned project boundary. Enable it with `PP_DASHBOARD_V2=1`;
+enable its bounded explain route separately with `PP_RETRIEVAL_EXPLAIN=1`.
 
 ## 10. Degraded-mode boundary
 

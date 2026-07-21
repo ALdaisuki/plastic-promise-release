@@ -262,5 +262,14 @@ step-closure(
 - `PP_MEMORY_CHUNK_ENRICHMENT=shadow` performs bounded background analysis without changing vectors or index identity. `on` is activated by an offline rebuild and remains enabled for matching writes and repairs.
 - Active plans bind the Ollama model digest, prompt hash, schema hash, exact embedding inputs, and fallback state. Query embeddings never call the enrichment model.
 - Default behavior remains `off`; rollback disables enrichment and rebuilds the derived LanceDB index while preserving canonical SQLite content and audit material.
-- Whole-repository regression passes on LanceDB `0.34.0` with `2024 passed, 22 skipped`; the formal system audit score is `0.6752`, and the high-risk ten-item code checklist has no blocking finding.
-- Release verification for `0.1.18` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+
+## 2026-07-21 Dashboard and Structured Memory Release Note
+
+- Release version `0.1.19` follows the immutable public `v0.1.18` release and adds the operator-facing Dashboard V2 plus explainable structured-memory projections.
+- Dashboard V2 provides a Chinese, loopback-only, project-scoped and read-only operator surface for overview, memories, request traces, synthesis, detailed lineage, retrieval explanation, operations, trust issues, and runtime configuration.
+- Deterministic `structure-v1` manifests now have Python and Rust implementations. Memory and lineage projections retain bounded chunk anchors, heading paths, source spans, hashes, parent identity, and explicit truncation/integrity state.
+- Retrieval explanation preserves lexical/vector/graph scores, ranking and filter reasons, chunk evidence, and measured request/stage durations. Missing evidence stays unavailable instead of becoming a fabricated `0 ms`.
+- Focused Python coverage passes with `242 passed, 18 skipped`; the final whole-repository run passes with `2177 passed, 22 skipped` while the current release PyO3 artifact is importable. Rust release suites pass `36 + 7 + 22`; scoped static checks and wheel/sdist construction also pass.
+- The automated audit score is `0.6752`, above the `0.60` gate, and the high-risk checklist passes with zero blocking or major findings. An isolated candidate `rust-full` process passes health, runtime identity, store, Rust snapshot recall, and context supply without degradation.
+- Release verification for `0.1.19` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+- Release synchronization remains fail-closed and may publish only the reviewed merged range after every gate passes.

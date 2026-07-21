@@ -158,6 +158,25 @@ class TestPipelineQuality:
             ],
         }
 
+    def test_store_urgent_persists_structure_chunk_manifest(self, monkeypatch):
+        monkeypatch.setenv("PP_MEMORY_CHUNKING", "structure-v1")
+        monkeypatch.setenv("EMBEDDER_CHUNK_CHARS", "32")
+        monkeypatch.setenv("EMBEDDER_STRUCTURE_HARD_CHARS", "72")
+        monkeypatch.setenv("EMBEDDER_STRUCTURE_MAX_CHUNKS", "16")
+        content = "# 检索\n\n结构化切片需要保留标题路径。\n\n## 证据\n\n来源跨度必须可验证。"
+
+        with patch("plastic_promise.smart_extractor.extract_memories", return_value=[]):
+            mid = self.pipeline.store_urgent(content)
+
+        record = self.pipeline._buffer[mid]
+        memory_index = record["metadata_json"]["memory_index"]
+        manifest = memory_index["chunk_manifest"]
+        assert manifest["schema_version"] == "structure-v1"
+        assert manifest["source_hash"]
+        assert manifest["chunk_count"] == len(manifest["chunks"])
+        assert len(memory_index["chunk_manifest_hash"]) == 64
+        assert "|chunking=structure-v1" in memory_index["model_name"]
+
     @pytest.mark.parametrize(
         ("explicit", "summary_enabled", "expected"),
         [
