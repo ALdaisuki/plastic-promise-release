@@ -38,6 +38,12 @@ jobs:
       - name: Install dev dependencies
         run: pip install -e "dev-repo/[dev]"
 
+      - name: Validate distribution variant
+        run: |
+          python scripts/validate_release_variant.py \
+            release/variants/standard.json \
+            --repo-root .
+
       - name: Run release sync
         run: |
           python dev-repo/scripts/release-sync.py \

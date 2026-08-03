@@ -1,0 +1,141 @@
+{
+  "schema_version": "plastic-promise-release-variant/v1",
+  "variant": {
+    "id": "standard",
+    "kind": "distribution",
+    "status": "active"
+  },
+  "distribution": {
+    "package_name": "plastic-promise",
+    "source_repository": "https://github.com/ALdaisuki/plastic-promise",
+    "release_repository": "https://github.com/ALdaisuki/plastic-promise-release",
+    "visibility": "public",
+    "license": "MIT"
+  },
+  "capabilities": [
+    "shared-memory",
+    "context-supply",
+    "audit-defense",
+    "trust-governance",
+    "skill-orchestration",
+    "task-dispatch",
+    "operator-dashboard"
+  ],
+  "runtime": {
+    "python_requires": ">=3.10",
+    "platforms": [
+      "linux-x86_64",
+      "macos-arm64",
+      "macos-x86_64",
+      "windows-x86_64"
+    ],
+    "modes": [
+      "light",
+      "normal",
+      "rust-normal",
+      "full",
+      "rust-full"
+    ],
+    "local_model_runtime": "optional",
+    "hosted_provider_support": "optional"
+  },
+  "storage": {
+    "canonical": "sqlite",
+    "derived": [
+      "lancedb"
+    ],
+    "bundled_runtime_state": false
+  },
+  "deployment": {
+    "default_profile": "split-async",
+    "profiles": {
+      "local-all-in-one": {
+        "topology": "single-host",
+        "frontend_location": "local",
+        "runtime_location": "local",
+        "canonical_state_location": "local-runtime",
+        "derived_index_location": "local-runtime",
+        "client_cache": "optional-bounded",
+        "transport": "loopback-http",
+        "async_worker_location": "local-runtime"
+      },
+      "split-async": {
+        "topology": "client-server",
+        "frontend_location": "client",
+        "runtime_location": "server",
+        "canonical_state_location": "server-only",
+        "derived_index_location": "server",
+        "client_cache": "optional-bounded-no-canonical-db",
+        "transport": "secure-tunnel-loopback-http",
+        "async_worker_location": "server"
+      }
+    },
+    "async_pipeline": {
+      "admission": "canonical-enqueue-before-ack",
+      "queue": "durable-outbox",
+      "batching": "bounded",
+      "retry_state": "persistent",
+      "reconcile": "required",
+      "project_isolation": "required",
+      "client_delivery": "status-or-events"
+    }
+  },
+  "configuration": {
+    "secret_values": "forbidden",
+    "secret_transport": "environment-file-or-process-environment",
+    "environment_variables": [
+      "PLASTIC_DB_PATH",
+      "PLASTIC_LANCEDB_PATH",
+      "PLASTIC_PROJECT_ID",
+      "PP_RUST_ENGINE",
+      "PP_MEMORY_CHUNKING",
+      "PP_MEMORY_CHUNK_ENRICHMENT",
+      "PP_RERANK_PROVIDERS",
+      "PP_DASHBOARD_V2",
+      "PP_RETRIEVAL_EXPLAIN",
+      "OPENAI_API_KEY",
+      "JINA_API_KEY",
+      "SILICONFLOW_API_KEY"
+    ]
+  },
+  "content_policy": {
+    "include": [
+      "python-package",
+      "optional-rust-source",
+      "public-documentation",
+      "public-tests",
+      "release-tooling"
+    ],
+    "exclude": [
+      "secret-values",
+      "private-keys",
+      "runtime-databases",
+      "derived-indexes",
+      "logs-and-audit-output",
+      "backups",
+      "deployment-environment-files"
+    ]
+  },
+  "release": {
+    "artifacts": [
+      "wheel",
+      "sdist",
+      "annotated-source-tag"
+    ],
+    "provenance": [
+      "source-head-bound",
+      "release-tree-attested",
+      "commit-tree-attested",
+      "annotated-tag-attested",
+      "atomic-push"
+    ],
+    "required_gates": [
+      "variant-contract",
+      "compileall",
+      "pytest",
+      "release-tree-audit",
+      "commit-attestation",
+      "tag-attestation"
+    ]
+  }
+}

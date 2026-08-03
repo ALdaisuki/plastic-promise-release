@@ -42,6 +42,7 @@ INCLUDE: list[str] = [
     "tests/",
     "plugins/",
     "skills/",
+    "release/variants/",
     ".github/",
     "docs/BUILD_PLAN.md",
     "docs/GOAL.md",
@@ -819,6 +820,24 @@ def validate_release(
     targeted_tests: list[str] | None = None,
 ) -> bool:
     """Run compileall and pytest in the release repo. Return True if both pass."""
+    print("  Validating standard release variant...")
+    variant_validation = subprocess.run(
+        [
+            sys.executable,
+            str(release_repo / "scripts" / "validate_release_variant.py"),
+            str(release_repo / "release" / "variants" / "standard.json"),
+            "--repo-root",
+            str(release_repo),
+        ],
+        cwd=release_repo,
+        capture_output=True,
+        text=True,
+    )
+    if variant_validation.returncode != 0:
+        print(f"  FAIL: release variant\n{variant_validation.stderr}")
+        return False
+    print("  release variant: OK")
+
     if profile == "none":
         print("  validation: SKIP (--validation-profile none)")
         return True

@@ -291,12 +291,78 @@ python scripts/rebuild_lancedb.py
 
 上方矢量图把运行时分成五层：参与者、MCP 入口、治理核心、自动化闭环、本地持久化与加速。README 中保留的是一眼可读的总览；更细的 C4、时序和组件图仍放在架构目录中。
 
+### C4 部署视图
+
+标准发行版共用一套模块，只改变客户端与 Runtime 的部署位置。
+`local-all-in-one` 中上下两个框位于同一台本机；默认 `split-async` 中，
+上框位于客户端，下框位于通过安全本地隧道访问的服务器。
+
+```text
++-------------------------- 客户端主机 --------------------------+
+| Codex / MCP Client | 仪表盘 | 可选有界本地缓存               |
++------------------------------+---------------------------------+
+                               | loopback HTTP 或 SSH LocalForward
+                               v
++-------------------------- Runtime 主机 ------------------------+
+| MCP Gateway | 治理核心 | 异步控制面                           |
+| Context Engine | Memory Pipeline | Maintenance Daemon          |
++----------------------+--------------------+---------------------+
+                       |                    |
+                       v                    v
+             +----------------+    +----------------+
+             | SQLite WAL     |    | LanceDB        |
+             | canonical 真相 |    | 派生索引       |
+             +----------------+    +----------------+
+```
+
+<p align="center">
+  <img src="architecture/distribution-profiles.zh-CN.svg" alt="Plastic Promise 全本地与前后端分离异步发行部署 profile" width="960">
+</p>
+
+<details>
+<summary>查看信息图生成说明</summary>
+
+```text
+画布：1280 x 760，深色高对比架构信息图。
+目标：对比同一发行契约下的两种部署 profile。
+
+分区：
+1. 标题：Plastic Promise 发行部署 Profile。
+2. 全本地：客户端、仪表盘、MCP Worker、SQLite 真相源、LanceDB 索引。
+3. 前后端分离：有界客户端缓存、安全隧道、服务器 Runtime 与状态。
+4. 异步链：canonical enqueue => durable outbox ~> bounded batch => retry/reconcile。
+
+约束：SQLite 是 canonical；LanceDB 是派生索引；客户端缓存不是可写真相源；
+部署只改变模块位置，不改变模块所有权。
+```
+
+</details>
+
+### 持久异步时序
+
+```text
+客户端/Hook => MCP Gateway       : 提交捕获或派生工作请求
+MCP Gateway => SQLite transaction: 持久化 canonical intent + outbox
+SQLite      => MCP Gateway       : commit + request_id
+MCP Gateway => 客户端/Hook       : 持久准入后返回 accepted
+Maintenance ~> SQLite            : 认领有界、按项目隔离的批次
+Maintenance => Provider Adapter  : embedding / 富化 / rerank
+Provider    => Maintenance       : 返回结果或显式失败
+Maintenance => SQLite + LanceDB  : 提交任务状态并更新派生索引
+Reconcile   ~> SQLite            : 重试未完成工作，不混合不同项目
+```
+
+客户端缓存永远不能成为第二个可写真相源。SQLite 保存 canonical 记忆与治理状态，
+LanceDB 始终是可重建派生索引。
+
 更多架构文档：
 
 - [SYSTEM_FULL_CHAIN.md](SYSTEM_FULL_CHAIN.md)
 - [architecture/architecture.md](architecture/architecture.md)
 - [architecture/plastic-promise-flow.svg](architecture/plastic-promise-flow.svg)
 - [architecture/plastic-promise-flow.zh-CN.svg](architecture/plastic-promise-flow.zh-CN.svg)
+- [architecture/distribution-profiles.svg](architecture/distribution-profiles.svg)
+- [architecture/distribution-profiles.zh-CN.svg](architecture/distribution-profiles.zh-CN.svg)
 - [architecture/diagrams/c4-level1-context.txt](architecture/diagrams/c4-level1-context.txt)
 - [architecture/diagrams/c4-level2-container.txt](architecture/diagrams/c4-level2-container.txt)
 - [architecture/diagrams/c4-level3-component.txt](architecture/diagrams/c4-level3-component.txt)
@@ -356,6 +422,34 @@ Hunter Guild 把任务发布、认领、心跳、完成、验收变成可追踪�
 | 公开文档 | 让 README、架构图、快速开始和路线图与源码真相保持一致；后续发布文档需要英文和中文同步维护。 |
 
 ## 开发与贡献
+
+### 标准发行版变体
+
+`release/variants/standard.json` 是 Plastic Promise 标准发行版的版本化契约，
+描述公开能力、支持平台与运行模式、SQLite/LanceDB 的真相源与派生索引角色、
+配置名称、禁止进入发行版的运行状态、构建制品和发布证明门禁。它是发行版变体，
+不是独立的知识库版本。
+
+同一份标准发行契约支持两种部署 profile：
+
+- `local-all-in-one`：前端、MCP Runtime、SQLite、LanceDB 和异步 worker 全部
+  运行在一台本地机器上，只通过 loopback HTTP 连接。
+- `split-async`（默认）：客户端承载 Codex/仪表盘访问和可选有界缓存，服务器独占
+  可写 SQLite、LanceDB 与异步 worker，客户端通过安全隧道访问。
+
+两种 profile 共用同一异步准入契约：canonical enqueue 成功后才确认请求，后台使用
+durable outbox、有限批处理、持久重试状态和 reconcile，并强制项目隔离。分离模式的
+客户端缓存不得包含可写 canonical database。
+
+该配置只记录环境变量名称，不记录秘密值。密码、Token、私钥、数据库、派生索引、
+日志、备份和生产 EnvironmentFile 均禁止进入发行仓库。可在本地执行：
+
+```bash
+python scripts/validate_release_variant.py release/variants/standard.json --repo-root .
+```
+
+`release-sync.py` 会在编译和测试前执行同一套 fail-closed 校验，且
+`release/variants/` 已纳入公开同步白名单。
 
 ```bash
 pip install -e ".[dev]"

@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Plastic Promise 发行部署 profile</title>
+  <desc id="desc">同一发行契约支持全本地和前后端分离异步两种拓扑，服务器在分离模式下拥有唯一可写真相库。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .title{font:700 34px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#f8fafc}
+      .subtitle{font:400 16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#cbd5e1}
+      .section{font:700 14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#67e8f9;letter-spacing:.08em}
+      .label{font:700 18px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#f8fafc}
+      .body{font:400 14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#dbeafe}
+      .small{font:400 12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#94a3b8}
+      .local{fill:#052e2b;stroke:#2dd4bf;stroke-width:1.6}
+      .split{fill:#172554;stroke:#60a5fa;stroke-width:1.6}
+      .async{fill:#2e1065;stroke:#c084fc;stroke-width:1.6}
+      .store{fill:#052e16;stroke:#4ade80;stroke-width:1.4}
+      .client{fill:#1e293b;stroke:#38bdf8;stroke-width:1.4}
+      .server{fill:#111827;stroke:#818cf8;stroke-width:1.4}
+      .arrow{stroke:#94a3b8;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .dashed{stroke:#64748b;stroke-width:1.6;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1280" height="760" rx="28" fill="#0b1220"/>
+  <text x="56" y="58" class="title">Plastic Promise 发行部署 Profile</text>
+  <text x="56" y="86" class="subtitle">一份发行契约，两种部署拓扑，一条异步准入路径</text>
+
+  <text x="56" y="132" class="section">支持的部署 PROFILE</text>
+  <rect x="56" y="150" width="552" height="344" rx="20" class="local"/>
+  <text x="84" y="190" class="label">local-all-in-one</text>
+  <text x="84" y="216" class="body">所有模块运行在一台本地机器上。</text>
+  <rect x="84" y="244" width="226" height="78" rx="12" class="client"/>
+  <text x="106" y="276" class="label">客户端 + 仪表盘</text>
+  <text x="106" y="299" class="small">Codex、浏览器、loopback</text>
+  <rect x="354" y="244" width="226" height="78" rx="12" class="server"/>
+  <text x="376" y="276" class="label">MCP + Worker</text>
+  <text x="376" y="299" class="small">Runtime、维护、Hooks</text>
+  <path class="arrow" d="M310 283 H354"/>
+  <rect x="84" y="358" width="226" height="82" rx="12" class="store"/>
+  <text x="106" y="391" class="label">SQLite</text>
+  <text x="106" y="414" class="small">本地可写真相源</text>
+  <rect x="354" y="358" width="226" height="82" rx="12" class="store"/>
+  <text x="376" y="391" class="label">LanceDB</text>
+  <text x="376" y="414" class="small">可重建派生索引</text>
+  <path class="dashed" d="M467 322 V358"/>
+  <path class="dashed" d="M197 322 V358"/>
+
+  <rect x="672" y="150" width="552" height="344" rx="20" class="split"/>
+  <text x="700" y="190" class="label">split-async（默认）</text>
+  <text x="700" y="216" class="body">客户端访问与服务器真相分离。</text>
+  <rect x="700" y="244" width="226" height="78" rx="12" class="client"/>
+  <text x="722" y="276" class="label">客户端</text>
+  <text x="722" y="299" class="small">Codex、仪表盘、有界缓存</text>
+  <rect x="970" y="244" width="226" height="78" rx="12" class="server"/>
+  <text x="992" y="276" class="label">服务器 Runtime</text>
+  <text x="992" y="299" class="small">MCP、Worker、异步写入</text>
+  <path class="arrow" d="M926 283 H970"/>
+  <text x="928" y="266" class="small">安全隧道</text>
+  <rect x="700" y="358" width="226" height="82" rx="12" class="store"/>
+  <text x="722" y="391" class="label">SQLite</text>
+  <text x="722" y="414" class="small">服务器唯一可写真相源</text>
+  <rect x="970" y="358" width="226" height="82" rx="12" class="store"/>
+  <text x="992" y="391" class="label">LanceDB</text>
+  <text x="992" y="414" class="small">服务器派生索引</text>
+  <path class="dashed" d="M1083 322 V358"/>
+  <path class="dashed" d="M813 322 V358"/>
+
+  <text x="56" y="540" class="section">共享异步契约</text>
+  <rect x="56" y="558" width="1168" height="128" rx="20" class="async"/>
+  <text x="86" y="596" class="label">canonical enqueue</text>
+  <text x="86" y="621" class="small">持久准入后才确认</text>
+  <path class="arrow" d="M252 616 H330"/>
+  <text x="350" y="596" class="label">durable outbox</text>
+  <text x="350" y="621" class="small">SQLite 持久工作意图</text>
+  <path class="arrow" d="M520 616 H598"/>
+  <text x="618" y="596" class="label">bounded batch</text>
+  <text x="618" y="621" class="small">异步 embedding / 富化</text>
+  <path class="arrow" d="M764 616 H842"/>
+  <text x="862" y="596" class="label">retry + reconcile</text>
+  <text x="862" y="621" class="small">持久状态、项目隔离</text>
+  <text x="86" y="662" class="small">客户端缓存永远不是第二个可写 canonical database。</text>
+</svg>

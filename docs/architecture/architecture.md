@@ -1,7 +1,7 @@
 # Plastic Promise — Architecture Reference
 
 > Release-facing architecture reference.
-> Last updated: 2026-07-08.
+> Last updated: 2026-08-03.
 
 ## 1. System Overview
 
@@ -21,6 +21,8 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 - [diagrams/architecture.mermaid](diagrams/architecture.mermaid) — Full container diagram.
 - [diagrams/sequence.mermaid](diagrams/sequence.mermaid) — Multi-agent sequence.
 - [diagrams/components.mermaid](diagrams/components.mermaid) — Component breakdown.
+- [distribution-profiles.svg](distribution-profiles.svg) — Standard distribution deployment profiles.
+- [distribution-profiles.zh-CN.svg](distribution-profiles.zh-CN.svg) — Chinese distribution profile overview.
 
 ## 3. Runtime Containers
 

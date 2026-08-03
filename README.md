@@ -39,6 +39,8 @@ languages: Python, Rust
 ![LanceDB](https://img.shields.io/badge/vector_store-LanceDB-3B82F6?style=flat-square)
 ![Ollama](https://img.shields.io/badge/default_embedding-Ollama_mxbai--embed--large-111827?style=flat-square)
 ![Local First](https://img.shields.io/badge/data-local_first_by_default-16A34A?style=flat-square)
+![Deployment](https://img.shields.io/badge/deployment-local--all--in--one_%7C_split--async-0F766E?style=flat-square)
+![Async](https://img.shields.io/badge/async-durable_outbox-7C3AED?style=flat-square)
 
 [Quick Start](#quick-start) · [Architecture](#architecture) · [Core Modules](#core-modules) · [Documentation](#documentation) · [Roadmap](docs/TODO%20List/README.md)
 
@@ -90,10 +92,77 @@ It is intentionally biased toward operational traceability:
 
 The README-level vector diagram shows the runtime in five layers: actors, MCP entrypoints, governance core, automation loop, and local persistence/acceleration. It is intentionally higher level than the C4 files so the first architecture view stays readable on GitHub.
 
+### C4 deployment view
+
+The standard distribution keeps one module architecture and changes only where
+the client and runtime are placed. In `local-all-in-one`, both boxes below are
+the same host. In the default `split-async` profile, the upper box is the client
+machine and the lower box is the server reached through a secure local tunnel.
+
+```text
++------------------------- Client Host --------------------------+
+| Codex / MCP client | Dashboard | optional bounded local cache |
++------------------------------+---------------------------------+
+                               | loopback HTTP or SSH LocalForward
+                               v
++------------------------- Runtime Host -------------------------+
+| MCP Gateway | Governance Core | Async Control Plane           |
+| Context Engine | Memory Pipeline | Maintenance Daemon          |
++----------------------+--------------------+---------------------+
+                       |                    |
+                       v                    v
+             +----------------+    +----------------+
+             | SQLite WAL     |    | LanceDB        |
+             | canonical      |    | derived index  |
+             +----------------+    +----------------+
+```
+
+<p align="center">
+  <img src="docs/architecture/distribution-profiles.svg" alt="Plastic Promise local and split-async distribution profiles" width="960">
+</p>
+
+<details>
+<summary>View infographic generation brief</summary>
+
+```text
+Canvas: 1280 x 760, dark high-contrast architecture infographic.
+Purpose: compare one release contract across two deployment profiles.
+
+Sections:
+1. HEADER: Plastic Promise Distribution Profiles.
+2. LOCAL: client, dashboard, MCP workers, SQLite truth, LanceDB index.
+3. SPLIT: bounded client cache, secure tunnel, server runtime and state.
+4. ASYNC: canonical enqueue => durable outbox ~> bounded batch => retry/reconcile.
+
+Rules: SQLite is canonical; LanceDB is derived; client cache is never a writable
+truth source; deployment changes placement, not ownership.
+```
+
+</details>
+
+### Durable async sequence
+
+```text
+Client/Hook => MCP Gateway       : submit capture or derived-work request
+MCP Gateway => SQLite transaction: persist canonical intent + outbox row
+SQLite      => MCP Gateway       : commit + request_id
+MCP Gateway => Client/Hook       : accepted after durable admission
+Maintenance ~> SQLite            : claim a bounded project-scoped batch
+Maintenance => Provider adapter  : embed / enrich / rerank
+Provider    => Maintenance       : result or explicit failure
+Maintenance => SQLite + LanceDB  : commit job state; update derived index
+Reconcile   ~> SQLite            : retry unfinished work without cross-project mix
+```
+
+The client cache never becomes a second writable truth source. SQLite owns
+canonical memory and governance state; LanceDB remains rebuildable.
+
 Full architecture diagrams:
 
 - [Vector overview - English](docs/architecture/plastic-promise-flow.svg)
 - [Vector overview - Chinese](docs/architecture/plastic-promise-flow.zh-CN.svg)
+- [Distribution profiles - English](docs/architecture/distribution-profiles.svg)
+- [Distribution profiles - Chinese](docs/architecture/distribution-profiles.zh-CN.svg)
 - [C4 Level 1 — Context](docs/architecture/diagrams/c4-level1-context.txt)
 - [C4 Level 2 — Container](docs/architecture/diagrams/c4-level2-container.txt)
 - [C4 Level 3 — Component](docs/architecture/diagrams/c4-level3-component.txt)
@@ -291,23 +360,23 @@ unavailable; the UI never substitutes a synthetic `0 ms`.
 
 ---
 
-## Core Modules
+## Architecture Modules
 
-This module map follows a capability-first layout so readers can understand the system before reading source folders.
+This map names the deep modules, the interface at each seam, and the implementation
+that owns the behavior. Deployment profiles move modules between hosts; they do
+not duplicate the modules or create a second write authority.
 
-| Module group | Source area | Responsibility |
-|---|---|---|
-| MCP server | `plastic_promise/mcp/` | Declares tool schemas, stdio/Streamable HTTP entrypoints, legacy SSE compatibility, health endpoints, the loopback-only Dashboard V2, prompts, and resources. |
-| Context engine | `plastic_promise/core/context_engine.py` | Supplies layered context by combining retrieval, graph, principle, ranking, and degraded-mode signals. |
-| Memory pipeline | `plastic_promise/memory/`, `plastic_promise/memory/pipeline.py` | Extracts, classifies, deduplicates, quality-scores, embeds, stores, reinforces, merges, and decays memories. |
-| Storage layer | `plastic_promise/core/lancedb_store.py`, SQLite paths | Stores structured state in SQLite and vector/search state in LanceDB. |
-| Principles and graph | `plastic_promise/core/principles.py`, `plastic_promise/principles/` | Activates, evaluates, and links operating principles to memory and context. |
-| Audit, defense, trust | `plastic_promise/defense/`, `plastic_promise/core/step_auditor.py`, `plastic_promise/core/tool_manifest.py` | Enforces hard boundaries, trust tiers, tool semantic decisions, audit reports, and pre-action checks. |
-| Skills and workflow | `plastic_promise/skills/`, `plastic_promise/loop/` | Implements session lifecycle, smart remembering, step closure, and SuperPowers stage integration. |
-| Hunter Guild dispatch | `plastic_promise/mcp/tools/task_queue.py`, `plastic_promise/core/task_*` | Manages task posting, claiming, heartbeat, completion, verification, and failure penalties. |
-| Daemons and launcher | `scripts/init_and_start.py`, `daemons/maintenance_daemon.py`, `plastic_promise/launcher/` | Starts services, watches health, runs scans, and recovers routine lifecycle issues. |
-| Extensions and market | `plastic_promise/extensions/`, `plugins/` | Loads optional packs through validated metadata without importing untrusted code during validation. |
-| Rust context core | `rust/context-engine-core/` | Optional PyO3 acceleration path. Rust snapshot ingestion filters audit telemetry before indexing, and Python keeps a final native-result guard while parity evolves. |
+| Module | Interface at the seam | Implementation | Owns |
+|---|---|---|---|
+| MCP Gateway | MCP tools, `/mcp`, health, dashboard routes | `plastic_promise/mcp/` | Transport, schemas, runtime identity, routing, prompts, resources, and bounded operator views. |
+| Governance Core | `session-init`, `defense`, principles, audit, workflow stages | `plastic_promise/defense/`, `plastic_promise/skills/`, `plastic_promise/loop/`, selected `core/` modules | Trust, action policy, principle activation, workflow evidence, and runtime events. |
+| Memory and Context | `memory_*`, `context_supply`, `context_graph` | `plastic_promise/memory/`, `plastic_promise/core/context_engine.py` | Extraction, classification, chunking, recall, rank fusion, graph traversal, quality, worth, and decay. |
+| Async Control Plane | durable outbox, task lifecycle, maintenance registry | `plastic_promise/core/task_*`, `plastic_promise/mcp/tools/task_queue.py`, `daemons/maintenance_daemon.py` | Durable admission, bounded background work, retries, reconcile, heartbeat, and verification. |
+| Storage Adapters | canonical SQLite transactions and derived search operations | `_SQLiteStorage`, `plastic_promise/core/lancedb_store.py` | SQLite truth, lineage, audit state, outbox state, and rebuildable LanceDB projections. |
+| Runtime Operations | launcher CLI, runtime modes, watchdog, dashboard | `scripts/init_and_start.py`, `plastic_promise/launcher/`, `plastic_promise/mcp/dashboard_v2/` | Startup ownership, process identity, health, recovery, and local operation. |
+| Extension Adapters | provider and market contracts | `plastic_promise/extensions/`, `plugins/` | Optional embedding, rerank, knowledge, workflow, capability, and adapter packs. |
+| Distribution | variant contract and fail-closed release validation | `release/variants/standard.json`, `scripts/validate_release_variant.py`, `scripts/release-sync.py` | Supported deployment profiles, public content policy, provenance gates, and attested publication. |
+| Rust Context Core | PyO3 context-supply adapter | `rust/context-engine-core/` | Optional snapshot retrieval acceleration while Python retains write-side authority and fallback. |
 
 ---
 
@@ -633,6 +702,39 @@ Known status is summarized below; unfinished detail remains in the roadmap docum
 ---
 
 ## Development
+
+### Standard distribution variant
+
+`release/variants/standard.json` is the versioned contract for the standard
+Plastic Promise distribution. It describes the public capability set, supported
+platforms and runtime modes, canonical and derived storage roles, configuration
+names, excluded runtime state, build artifacts, and release provenance gates.
+It is a distribution variant, not a separate knowledge-base edition.
+
+The standard distribution supports two deployment profiles from the same code
+and release contract:
+
+- `local-all-in-one`: frontend, MCP runtime, SQLite, LanceDB, and asynchronous
+  workers run on one local host over loopback HTTP.
+- `split-async` (default): the client runs Codex/dashboard access and an optional
+  bounded cache, while the server exclusively owns writable SQLite, LanceDB,
+  and asynchronous workers behind a secure tunnel.
+
+Both profiles use the same asynchronous admission contract: acknowledge only
+after canonical enqueue, process through a durable outbox with bounded batching,
+persist retry state, reconcile unfinished work, and preserve project isolation.
+The split profile never places a writable canonical database in the client cache.
+
+The contract contains environment variable names only. Secret values, private
+keys, databases, derived indexes, logs, backups, and deployment EnvironmentFiles
+are forbidden. Validate it locally with:
+
+```bash
+python scripts/validate_release_variant.py release/variants/standard.json --repo-root .
+```
+
+`release-sync.py` runs the same fail-closed validation before compile or test
+validation, and `release/variants/` is part of the synchronized public tree.
 
 ```bash
 pip install -e ".[dev]"

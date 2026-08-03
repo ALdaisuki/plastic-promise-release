@@ -93,6 +93,18 @@ def test_release_sync_includes_project_codex_config():
     assert release_sync.is_included(".codex/config.toml")
 
 
+def test_release_sync_includes_distribution_variant_contract():
+    release_sync = _load_release_sync()
+
+    assert release_sync.is_included("release/variants/standard.json")
+
+
+def test_release_validation_checks_variant_before_optional_profile_skip():
+    release_sync = _load_release_sync()
+
+    assert release_sync.validate_release(Path.cwd(), profile="none") is True
+
+
 def test_release_push_is_explicit_opt_in_and_dry_run_default_is_unchanged():
     release_sync = _load_release_sync()
 
