@@ -15,6 +15,8 @@ from plastic_promise.core.context_engine import ContextEngine, ContextItem, Cont
 from plastic_promise.core.fusion_policy import (
     FusionConfig,
     FusionConfigurationError,
+    FusionDecision,
+    weighted_max_v1,
     weighted_rrf,
 )
 from plastic_promise.core.project_context import ProjectContext
@@ -96,7 +98,9 @@ def _ensure_rust_extension_importable() -> None:
                 temp_pyd = temp_dir / "context_engine_core.pyd"
                 temp_pyd.write_bytes(dll_bytes)
                 sys.path.insert(0, str(temp_dir))
-    sys.modules.pop("context_engine_core", None)
+    for module_name in tuple(sys.modules):
+        if module_name == "context_engine_core" or module_name.startswith("context_engine_core."):
+            sys.modules.pop(module_name, None)
 
 
 def _memory(
@@ -445,6 +449,23 @@ def test_python_and_rust_wrrf_have_exact_order_and_score_parity(rust_core, case)
     )
 
 
+@pytest.mark.parametrize("has_vector", [True, False])
+def test_python_and_rust_max_v1_have_exact_order_and_score_parity(rust_core, has_vector):
+    rankings = {
+        "vector": [("vector", 1.0), ("shared", 0.8), ("tie-a", 0.4)],
+        "bm25": [("exact", 0.95), ("strong", 0.8), ("shared", 0.9)],
+        "fts": [("fts", 0.86), ("tie-b", 0.4)],
+    }
+
+    python_result = weighted_max_v1(rankings, vector_weight=0.5, has_vector=has_vector)
+    rust_result = rust_core.weighted_max_v1_fuse(rankings, 0.5, has_vector)
+
+    assert [row[0] for row in rust_result] == [row[0] for row in python_result]
+    assert [row[1] for row in rust_result] == pytest.approx(
+        [row[1] for row in python_result], abs=1e-12, rel=0.0
+    )
+
+
 @pytest.mark.parametrize(
     "case",
     WRRF_GOLDEN["invalid_cases"],
@@ -493,6 +514,34 @@ def test_rust_snapshot_supply_accepts_two_channel_wrrf_config(rust_core):
     assert pack.channel_states["bm25"]["participating"] == "true"
 
 
+def test_rust_snapshot_supply_accepts_max_v1_config(rust_core):
+    if not hasattr(rust_core.ContextEngine, "new_with_backends"):
+        pytest.skip("context_engine_core lacks snapshot constructor")
+    engine = rust_core.ContextEngine.new_with_backends(":memory:", ":memory:")
+
+    pack = engine.supply_with_project_context(
+        "english bm25 scanner reviews lexical parity fixture",
+        FIXED_VECTORS["bm25_en"],
+        "general",
+        "global",
+        _snapshot("bm25_english"),
+        PROJECT_ID,
+        "balanced",
+        False,
+        json.dumps(
+            {"policy": "max-v1", "vector_weight": 0.5},
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    )
+
+    audit = json.loads(pack.audit_metadata["retrieval_fusion_json"])
+    assert audit["algorithm"] == "weighted-max-v1"
+    assert audit["effective_runtime"] == "rust"
+    assert audit["vector_weight"] == 0.5
+    assert set(pack.channel_rankings) == {"vector", "bm25", "fts"}
+
+
 def _snapshot(*memory_ids: str) -> list[dict[str, Any]]:
     return [deepcopy(FIXED_MEMORY_SNAPSHOT[memory_id]) for memory_id in memory_ids]
 
@@ -505,6 +554,7 @@ def _python_pack(
     project_id: str = PROJECT_ID,
     project_policy: str = "balanced",
     project_degraded: bool = False,
+    fusion_policy: str = "legacy-auto",
 ):
     engine = ContextEngine(use_sqlite=False)
     engine._memories = {memory["id"]: deepcopy(memory) for memory in memories}
@@ -520,6 +570,17 @@ def _python_pack(
     engine._calc_decay_status = lambda memory_id, memory: "healthy"
     engine._compute_divergent_quality = lambda items, all_items: items
 
+    fusion_decision = None
+    if fusion_policy != "legacy-auto":
+        fusion_decision = FusionDecision(
+            requested_policy=fusion_policy,
+            effective_policy=fusion_policy,
+            requested_runtime="python",
+            effective_runtime="python",
+            candidate_id=fusion_policy,
+            capability_reason="test_fixture",
+        )
+
     pack = engine._supply_python(
         query,
         task_vector,
@@ -529,6 +590,7 @@ def _python_pack(
         project_id=project_id,
         project_policy=project_policy,
         project_degraded=project_degraded,
+        fusion_decision=fusion_decision,
     )
     return _filter_python_pack_by_project(
         pack, engine, project_id, project_policy, project_degraded
@@ -566,6 +628,7 @@ def _rust_pack(
     project_id: str = PROJECT_ID,
     project_policy: str = "balanced",
     project_degraded: bool = False,
+    fusion_policy: str = "legacy-auto",
 ):
     if not hasattr(rust_module.ContextEngine, "new_with_backends"):
         pytest.skip("context_engine_core lacks new_with_backends snapshot constructor")
@@ -574,7 +637,7 @@ def _rust_pack(
         engine.set_current_time("2026-07-09T00:00:00")
     if not hasattr(engine, "supply_with_project_context"):
         pytest.skip("context_engine_core lacks project-aware snapshot supply")
-    return engine.supply_with_project_context(
+    args = (
         query,
         [float(value) for value in task_vector],
         "general",
@@ -583,6 +646,16 @@ def _rust_pack(
         project_id,
         project_policy,
         project_degraded,
+    )
+    if fusion_policy == "legacy-auto":
+        return engine.supply_with_project_context(*args)
+    return engine.supply_with_project_context(
+        *args,
+        json.dumps(
+            {"policy": fusion_policy, "vector_weight": 0.5},
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
     )
 
 
@@ -613,6 +686,50 @@ def _item_score(pack, memory_id: str) -> float:
         if _id == memory_id:
             return score
     raise AssertionError(f"{memory_id} not present in normalized pack")
+
+
+def _debug_scores(pack, key: str) -> dict[str, float]:
+    return {
+        str(row["id"]): float(row[key])
+        for row in pack.per_item_stats
+        if row.get("id") and row.get(key) is not None
+    }
+
+
+def test_max_v1_snapshot_supply_has_f32_fusion_score_and_order_parity(rust_core):
+    memories = _snapshot("bm25_english", "source_user")
+    task_vector = [0.0] * VECTOR_DIM
+    task_vector[1] = 0.8
+    task_vector[3] = 0.6
+    query = "qzxv blorf nymphae"
+
+    python_pack = _python_pack(
+        memories,
+        query,
+        task_vector,
+        fusion_policy="max-v1",
+    )
+    rust_pack = _rust_pack(
+        rust_core,
+        memories,
+        query,
+        task_vector,
+        fusion_policy="max-v1",
+    )
+
+    assert _item_ids(rust_pack) == _item_ids(python_pack)
+    assert _item_ids(rust_pack) == ["bm25_english", "source_user"]
+    python_fused = _debug_scores(python_pack, "fused_score")
+    rust_fused = _debug_scores(rust_pack, "fused_score")
+    assert rust_fused.keys() == python_fused.keys()
+    for memory_id, score in python_fused.items():
+        assert rust_fused[memory_id] == pytest.approx(score, abs=1e-8, rel=0.0)
+
+    python_audit = python_pack.audit_metadata["retrieval_fusion"]
+    rust_audit = json.loads(rust_pack.audit_metadata["retrieval_fusion_json"])
+    assert python_audit["algorithm"] == rust_audit["algorithm"] == "weighted-max-v1"
+    assert python_audit["effective_runtime"] == "python"
+    assert rust_audit["effective_runtime"] == "rust"
 
 
 def test_synthesis_public_gate_is_identical_for_python_and_rust_shaped_packs(monkeypatch):

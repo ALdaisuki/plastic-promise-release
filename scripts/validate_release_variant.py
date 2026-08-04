@@ -44,7 +44,7 @@ _SECTION_FIELDS = {
     "storage": {"canonical", "derived", "bundled_runtime_state"},
     "deployment": {"default_profile", "profiles", "async_pipeline"},
     "configuration": {"secret_values", "secret_transport", "environment_variables"},
-    "content_policy": {"include", "exclude"},
+    "content_policy": {"include", "exclude", "engineering_pattern_allowlist"},
     "release": {"artifacts", "provenance", "required_gates"},
 }
 _DEPLOYMENT_PROFILE_FIELDS = {
@@ -88,9 +88,15 @@ _REQUIRED_GATES = {
     "variant-contract",
     "compileall",
     "pytest",
+    "rust-release-import",
     "release-tree-audit",
     "commit-attestation",
     "tag-attestation",
+    "artifact-build",
+    "artifact-metadata",
+    "twine-check",
+    "external-release-evidence",
+    "atomic-push",
 }
 _REQUIRED_PROVENANCE = {
     "source-head-bound",
@@ -139,14 +145,10 @@ def _require_string_list(value: Any, field: str) -> list[str]:
 def _reject_unknown_fields(payload: dict[str, Any], allowed: set[str], field: str) -> None:
     unknown = sorted(set(payload) - allowed)
     if unknown:
-        raise ReleaseVariantError(
-            f"release_variant_unknown_field:{field}:{','.join(unknown)}"
-        )
+        raise ReleaseVariantError(f"release_variant_unknown_field:{field}:{','.join(unknown)}")
     missing = sorted(allowed - set(payload))
     if missing:
-        raise ReleaseVariantError(
-            f"release_variant_missing_field:{field}:{','.join(missing)}"
-        )
+        raise ReleaseVariantError(f"release_variant_missing_field:{field}:{','.join(missing)}")
 
 
 def _walk_strings(value: Any):
@@ -293,9 +295,7 @@ def validate_release_variant(path: Path, *, repo_root: Path) -> dict[str, Any]:
     if split_profile != expected_split:
         raise ReleaseVariantError("release_variant_split_profile_invalid")
 
-    async_pipeline = _require_mapping(
-        deployment["async_pipeline"], "deployment.async_pipeline"
-    )
+    async_pipeline = _require_mapping(deployment["async_pipeline"], "deployment.async_pipeline")
     _reject_unknown_fields(
         async_pipeline,
         _ASYNC_PIPELINE_FIELDS,
@@ -330,14 +330,26 @@ def validate_release_variant(path: Path, *, repo_root: Path) -> dict[str, Any]:
 
     content_policy = sections["content_policy"]
     _require_string_list(content_policy["include"], "content_policy.include")
-    exclusions = set(
-        _require_string_list(content_policy["exclude"], "content_policy.exclude")
-    )
+    exclusions = set(_require_string_list(content_policy["exclude"], "content_policy.exclude"))
     missing_exclusions = sorted(_REQUIRED_EXCLUSIONS - exclusions)
     if missing_exclusions:
         raise ReleaseVariantError(
             "release_variant_exclusion_missing:" + ",".join(missing_exclusions)
         )
+    engineering_patterns = _require_string_list(
+        content_policy["engineering_pattern_allowlist"],
+        "content_policy.engineering_pattern_allowlist",
+    )
+    if engineering_patterns != sorted(engineering_patterns):
+        raise ReleaseVariantError("release_variant_engineering_pattern_allowlist_unsorted")
+    for item in engineering_patterns:
+        if (
+            not item.startswith("docs/engineering-patterns/")
+            or not item.endswith(".md")
+            or ".." in Path(item).parts
+            or not (root / item).is_file()
+        ):
+            raise ReleaseVariantError("release_variant_engineering_pattern_path_invalid")
 
     release = sections["release"]
     artifacts = set(_require_string_list(release["artifacts"], "release.artifacts"))

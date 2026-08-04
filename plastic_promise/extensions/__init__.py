@@ -17,7 +17,7 @@ from typing import Any, Protocol
 
 
 class HookProvider(Protocol):
-    """Workflow hooks — execute at named slots in the SuperPowers pipeline."""
+    """Workflow hooks execute at named slots in the official workflow."""
 
     slots: list[str]
 

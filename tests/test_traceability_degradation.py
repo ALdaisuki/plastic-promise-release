@@ -1,12 +1,20 @@
 import asyncio
 import json
+import os
 import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from plastic_promise.core import traceability
 from plastic_promise.core.traceability import (
     bind_call_span_start,
     build_envelope,
     current_call_span_start,
+    defer_record_call_span,
+    drain_deferred_trace_writes,
     ensure_traceability_schema,
     new_call_id,
     record_call_span,
@@ -17,6 +25,85 @@ from plastic_promise.core.traceability import (
 
 def test_new_call_id_has_call_prefix():
     assert new_call_id().startswith("call_")
+
+
+def test_invalid_trace_queue_environment_does_not_break_import():
+    environment = dict(os.environ)
+    environment["PP_TRACE_WRITE_QUEUE_SIZE"] = "not-an-integer"
+    result = subprocess.run(
+        [sys.executable, "-c", "import plastic_promise.core.traceability"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_deferred_trace_queue_full_returns_without_sync_fallback(tmp_path, monkeypatch):
+    class FullSemaphore:
+        def acquire(self, *, blocking):
+            assert blocking is False
+            return False
+
+    engine = SimpleNamespace(
+        _sqlite=SimpleNamespace(_db_path=str(tmp_path / "trace.db"), _conn=None)
+    )
+    monkeypatch.setattr(traceability, "_TRACE_WRITE_SLOTS", FullSemaphore())
+    monkeypatch.setattr(
+        traceability,
+        "safe_record_call_span",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("sync fallback")),
+    )
+
+    assert defer_record_call_span(engine, call_id="call_full", tool_name="context_supply") is False
+
+
+def test_deferred_trace_rejects_mock_database_path_without_creating_files(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    engine = MagicMock()
+    engine._sqlite._conn = None
+
+    assert (
+        defer_record_call_span(
+            engine,
+            call_id="call_mock_path",
+            tool_name="context_supply",
+        )
+        is False
+    )
+    assert drain_deferred_trace_writes(timeout=1.0)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_deferred_call_span_freezes_end_time_before_queueing(tmp_path, monkeypatch):
+    database = tmp_path / "trace.db"
+    connection = sqlite3.connect(database)
+    ensure_traceability_schema(connection)
+    connection.close()
+    engine = SimpleNamespace(_sqlite=SimpleNamespace(_db_path=str(database), _conn=None))
+    timestamps = iter(["2026-01-01T00:00:01Z", "2026-01-01T00:00:59Z"])
+    monkeypatch.setattr(traceability, "utc_now", lambda: next(timestamps))
+
+    assert defer_record_call_span(
+        engine,
+        call_id="call_frozen",
+        tool_name="context_supply",
+        started_at="2026-01-01T00:00:00Z",
+    )
+    assert drain_deferred_trace_writes(timeout=1.0)
+
+    connection = sqlite3.connect(database)
+    ended_at = connection.execute(
+        "SELECT ended_at FROM call_spans WHERE call_id = 'call_frozen'"
+    ).fetchone()[0]
+    connection.close()
+    assert ended_at == "2026-01-01T00:00:01Z"
 
 
 def test_envelope_marks_degraded_from_warnings():
@@ -153,9 +240,7 @@ def test_record_call_span_uses_dispatcher_start_and_final_write_time(tmp_path, m
     conn.close()
 
 
-def test_record_call_span_repairs_equal_wall_clock_with_monotonic_elapsed(
-    tmp_path, monkeypatch
-):
+def test_record_call_span_repairs_equal_wall_clock_with_monotonic_elapsed(tmp_path, monkeypatch):
     from plastic_promise.mcp.dashboard_v2.repository import _span_duration
 
     conn = sqlite3.connect(tmp_path / "trace.db")
@@ -262,10 +347,7 @@ def test_schema_migrates_legacy_call_span_timestamps(tmp_path):
         status="success",
     )
 
-    columns = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(call_spans)").fetchall()
-    }
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(call_spans)").fetchall()}
     row_count = conn.execute(
         "SELECT COUNT(*) FROM call_spans WHERE call_id = ?",
         ("call_legacy",),
@@ -374,6 +456,7 @@ def test_context_supply_unknown_project_records_degradation_event(tmp_path, monk
             },
         )
     )
+    assert drain_deferred_trace_writes(timeout=1.0)
 
     span = engine._sqlite._conn.execute(
         "SELECT project_id, tool_name, status, degraded FROM call_spans WHERE call_id = ?",

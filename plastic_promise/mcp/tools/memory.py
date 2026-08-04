@@ -6,17 +6,20 @@
 - memory_sync_files, memory_reclassify
 """
 
+import asyncio
 import hashlib
 import json
 import math
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from mcp.types import TextContent
 
+from plastic_promise.core.event_protocol import safe_record_runtime_event
 from plastic_promise.core.memory_proposals import (
     MemoryProposalStore,
     ProposalPolicyError,
@@ -26,6 +29,10 @@ from plastic_promise.core.memory_proposals import (
     trusted_memory_origin,
 )
 from plastic_promise.core.project_context import infer_project_context
+from plastic_promise.core.recall_quality import (
+    LIVE_TRACE_METADATA_KEY,
+    evaluate_live_retrieval_quality,
+)
 from plastic_promise.core.retrieval_explain import (
     METADATA_KEY as RETRIEVAL_EXPLAIN_METADATA_KEY,
 )
@@ -44,6 +51,16 @@ from plastic_promise.core.traceability import (
     safe_record_degradation_event,
     utc_now,
 )
+from plastic_promise.launcher.runtime_mode import runtime_mode_status
+from plastic_promise.mcp.response_projection import (
+    build_diagnostics,
+    compact_context_item,
+    resolve_response_mode,
+)
+from plastic_promise.mcp.tools.supply_runner import (
+    float_env,
+    run_bounded_engine_supply,
+)
 
 _trusted_memory_origin = trusted_memory_origin
 
@@ -52,6 +69,10 @@ _query_cache: dict[str, tuple[str, float]] = {}  # hash -> (json_result, timesta
 _query_cache_lock = threading.Lock()
 _QUERY_CACHE_SIZE = int(os.environ.get("PP_QUERY_CACHE_SIZE", "32"))
 _QUERY_CACHE_TTL = float(os.environ.get("PP_QUERY_CACHE_TTL", "30"))  # seconds
+_MEMORY_RECALL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.environ.get("PP_MEMORY_RECALL_MAX_WORKERS", "2"))),
+    thread_name_prefix="memory-recall",
+)
 
 
 def _cache_key(
@@ -617,6 +638,166 @@ def _parent_call_id(args: dict) -> str:
     return str(args.get("parent_call_id") or args.get("parent_call") or "")
 
 
+def _compact_principles(principles: Any) -> list[Any]:
+    if not isinstance(principles, list):
+        return []
+    compact: list[Any] = []
+    for principle in principles[:8]:
+        if not isinstance(principle, dict):
+            compact.append(principle)
+            continue
+        compact.append(
+            {
+                key: principle.get(key)
+                for key in ("id", "name", "domain")
+                if principle.get(key) not in (None, "")
+            }
+        )
+    return compact
+
+
+def _ranked_recall_items(payload: dict[str, Any]) -> list[Any]:
+    return [
+        item
+        for layer in ("core", "related", "divergent")
+        for item in list(payload.get(layer) or [])
+    ]
+
+
+def _project_memory_recall_payload(
+    payload: dict[str, Any],
+    *,
+    response_mode: str,
+    diagnostics_level: str,
+    call_id: str,
+    project_warnings: list[str],
+    project_degraded: bool,
+) -> dict[str, Any]:
+    cached_audit = payload.get("audit")
+    audit = dict(cached_audit) if isinstance(cached_audit, dict) else {}
+    audit_trace = audit.get("trace")
+    audit_trace = dict(audit_trace) if isinstance(audit_trace, dict) else {}
+    audit_trace["call_id"] = str(call_id)
+    audit["trace"] = audit_trace
+    cached_trace = payload.get("trace")
+    trace = dict(cached_trace) if isinstance(cached_trace, dict) else {}
+    trace["call_id"] = str(call_id)
+    diagnostics = build_diagnostics(
+        call_id=call_id,
+        audit=audit,
+        pipeline_stats=payload.get("pipeline_stats"),
+        per_item_stats=payload.get("per_item_stats"),
+        channel_rankings=payload.get("channel_rankings"),
+        channel_states=payload.get("channel_states"),
+        level=diagnostics_level if response_mode == "debug" else "summary",
+    )
+    envelope = build_envelope(
+        data=None,
+        trace=trace,
+        warnings=project_warnings,
+        minimum_result="project_restricted_context" if project_degraded else "",
+    )
+    envelope.pop("data", None)
+    compact = response_mode == "compact"
+    item_limit = 240 if compact else 1200
+    projected: dict[str, Any] = {
+        "schema_version": "memory-recall-response-v1",
+        "response_mode": response_mode,
+        "core": [
+            compact_context_item(item, content_chars=item_limit)
+            for item in list(payload.get("core") or [])
+            if isinstance(item, dict)
+        ],
+        "related": [
+            compact_context_item(item, content_chars=item_limit)
+            for item in list(payload.get("related") or [])
+            if isinstance(item, dict)
+        ],
+        "divergent": [
+            compact_context_item(item, content_chars=item_limit)
+            for item in list(payload.get("divergent") or [])
+            if isinstance(item, dict)
+        ],
+        "activated_principles": (
+            _compact_principles(payload.get("activated_principles"))
+            if compact
+            else payload.get("activated_principles", [])
+        ),
+        "project_id": payload.get("project_id", ""),
+        "project_policy": payload.get("project_policy", ""),
+        "request_scope_id": payload.get("request_scope_id", ""),
+        "trace": trace,
+        "mode": payload.get("mode"),
+        "budget": payload.get("budget") or {},
+        "total_items": payload.get("total_items", 0),
+        "diagnostics": diagnostics,
+        **envelope,
+    }
+    if compact:
+        projected["context_recommendations"] = list(payload.get("context_recommendations") or [])[
+            :3
+        ]
+        projected["federation_signals"] = list(payload.get("federation_signals") or [])[:3]
+    else:
+        projected.update(
+            {
+                "domain_hint": payload.get("domain_hint"),
+                "project_context": payload.get("project_context", {}),
+                "request_scope": payload.get("request_scope", {}),
+                "context_recommendations": payload.get("context_recommendations", []),
+                "federation_signals": payload.get("federation_signals", []),
+            }
+        )
+    return projected
+
+
+def _degraded_memory_recall_response(
+    *,
+    reason: str,
+    request_scope: dict[str, Any],
+    project_ctx: Any,
+    call_id: str,
+    response_mode: str,
+    diagnostics_level: str,
+) -> list[TextContent]:
+    trace = {
+        "call_id": call_id,
+        "request_scope_id": request_scope["request_scope_id"],
+        "project_id": project_ctx.project_id,
+    }
+    audit = {
+        "engine_version": "memory_recall-degraded",
+        "degraded": True,
+        "reason": reason,
+        "trace": trace,
+    }
+    payload = {
+        "schema_version": "memory-recall-response-v1",
+        "response_mode": response_mode,
+        "core": [],
+        "related": [],
+        "divergent": [],
+        "activated_principles": [],
+        "project_id": project_ctx.project_id,
+        "project_policy": project_ctx.project_policy,
+        "request_scope_id": request_scope["request_scope_id"],
+        "trace": trace,
+        "mode": None,
+        "budget": {},
+        "total_items": 0,
+        "degraded": True,
+        "minimum_result": "degraded_recall",
+        "error": reason,
+        "warnings": project_ctx.warning_list(),
+        "diagnostics": build_diagnostics(
+            call_id=call_id,
+            audit=audit,
+            level=diagnostics_level if response_mode == "debug" else "summary",
+        ),
+    }
+    return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+
+
 # ---- memory_recall ----
 async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
     """Hybrid memory retrieval: embed query -> ContextEngine.supply() -> ContextPack JSON.
@@ -655,13 +836,18 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         max_results = args.get("max_results", 20)
         scope = args.get("scope", "global")
         strict = args.get("strict", False)
-        debug = bool(args.get("debug", False))
+        response_mode, diagnostics_level = resolve_response_mode(args, default="standard")
+        debug = response_mode == "debug"
         retrieval_mode = str(args.get("retrieval_mode") or "")
         fusion_policy = str(args.get("fusion_policy") or "").strip()
         project_ctx = infer_project_context(args)
         memory_version = _current_memory_version(engine)
         call_id = args.get("call_id") or new_call_id()
         pack = args.get("pack")
+        supply_timeout = float_env(
+            "PP_MEMORY_RECALL_SUPPLY_TIMEOUT_SEC",
+            float_env("PP_CONTEXT_SUPPLY_TIMEOUT_SEC", 12.0),
+        )
 
         # Check query cache
         cached = _cache_get(
@@ -690,24 +876,52 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             except Exception:
                 cached = None
         if cached is not None:
-            degraded = False
             cached_payload: dict[str, Any] = {}
             try:
                 parsed_cached = json.loads(cached)
                 if isinstance(parsed_cached, dict):
                     cached_payload = parsed_cached
-                    degraded = bool(cached_payload.get("degraded", False))
             except Exception:
-                degraded = False
+                cached_payload = {}
+            project_warnings = project_ctx.warning_list()
+            projected_cached = _project_memory_recall_payload(
+                cached_payload,
+                response_mode=response_mode,
+                diagnostics_level=diagnostics_level,
+                call_id=call_id,
+                project_warnings=project_warnings,
+                project_degraded=project_ctx.degraded,
+            )
             span_metadata = {
                 "cache_hit": True,
                 "task_type": task_type,
                 "scope": scope,
                 "project_policy": project_ctx.project_policy,
+                "response_mode": response_mode,
+                "response_bytes": len(
+                    json.dumps(projected_cached, ensure_ascii=False).encode("utf-8")
+                ),
             }
             retrieval_explain = build_retrieval_explain_snapshot(cached_payload)
             if retrieval_explain is not None:
                 span_metadata[RETRIEVAL_EXPLAIN_METADATA_KEY] = retrieval_explain
+            retrieval_quality = evaluate_live_retrieval_quality(
+                _ranked_recall_items(cached_payload),
+                args.get("ground_truth"),
+                request_scope_id=request_scope_id,
+                runtime_mode=str(runtime_mode_status().get("mode") or "unknown"),
+                tool_name="memory_recall",
+                task_type=task_type,
+                scope=scope,
+                project_id=project_ctx.project_id,
+                project_policy=project_ctx.project_policy,
+                retrieval_mode=retrieval_mode,
+                fusion_policy=fusion_policy,
+                max_results=max_results,
+                strict=bool(strict),
+            )
+            if retrieval_quality is not None:
+                span_metadata[LIVE_TRACE_METADATA_KEY] = retrieval_quality
             safe_record_call_span(
                 engine,
                 call_id=call_id,
@@ -718,11 +932,16 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                 project_id=project_ctx.project_id,
                 tool_name="memory_recall",
                 status="success",
-                degraded=degraded,
+                degraded=bool(project_warnings),
                 metadata=span_metadata,
                 started_at=trace_started_at,
             )
-            return [TextContent(type="text", text=cached)]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(projected_cached, ensure_ascii=False),
+                )
+            ]
 
         from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
 
@@ -735,21 +954,72 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         except Exception:
             embedder = FallbackEmbedder()
             vec = await embedder.aembed(query)
+        supply_args = {
+            "task_description": query,
+            "task_vector": vec,
+            "task_type": task_type,
+            "scope": scope,
+            "debug": debug,
+            "project_id": project_ctx.project_id,
+            "project_policy": project_ctx.project_policy,
+            "project_degraded": project_ctx.degraded,
+            "retrieval_mode": retrieval_mode or None,
+            "fusion_policy": fusion_policy or None,
+        }
         try:
-            pack = engine.supply(
-                query,
-                vec,
-                task_type,
-                scope,
-                debug=debug,
-                project_id=project_ctx.project_id,
-                project_policy=project_ctx.project_policy,
-                project_degraded=project_ctx.degraded,
-                retrieval_mode=retrieval_mode or None,
-                fusion_policy=fusion_policy or None,
+            pack = await run_bounded_engine_supply(
+                engine,
+                supply_args,
+                executor=_MEMORY_RECALL_EXECUTOR,
+                timeout=supply_timeout,
             )
-        except TypeError:
-            pack = engine.supply(query, vec, task_type, scope, debug=debug)
+        except (TimeoutError, asyncio.TimeoutError):
+            reason = f"engine.supply timed out after {supply_timeout:.2f}s"
+            safe_record_degradation_event(
+                engine,
+                call_id=call_id,
+                request_scope_id=request_scope_id,
+                project_id=project_ctx.project_id,
+                tool_name="memory_recall",
+                link_name="engine.supply",
+                policy="timeout",
+                level="error",
+                fallback_used="degraded_recall",
+                minimum_result="degraded_recall",
+                metadata={
+                    "timeout_sec": supply_timeout,
+                    "task_type": task_type,
+                    "scope": scope,
+                    "retrieval_mode": retrieval_mode,
+                    "fusion_policy": fusion_policy,
+                },
+            )
+            safe_record_call_span(
+                engine,
+                call_id=call_id,
+                parent_call_id=_parent_call_id(args),
+                request_scope_id=request_scope_id,
+                stage_session_id=request_scope["stage_session_id"],
+                flow_line_id=request_scope["flow_line_id"],
+                project_id=project_ctx.project_id,
+                tool_name="memory_recall",
+                status="degraded",
+                degraded=True,
+                metadata={
+                    "task_type": task_type,
+                    "scope": scope,
+                    "reason": "engine_supply_timeout",
+                },
+                started_at=trace_started_at,
+            )
+            return _degraded_memory_recall_response(
+                reason=reason,
+                request_scope=request_scope,
+                project_ctx=project_ctx,
+                call_id=call_id,
+                response_mode=response_mode,
+                diagnostics_level=diagnostics_level,
+            )
 
         pack = _sanitize_pack_for_project(
             pack,
@@ -813,31 +1083,25 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             response_payload["channel_states"] = channel_states
 
         project_warnings = project_ctx.warning_list()
-        envelope = build_envelope(
-            data=dict(response_payload),
-            trace=trace,
-            warnings=project_warnings,
-            minimum_result="project_restricted_context" if project_ctx.degraded else "",
-        )
-        response_payload.update(envelope)
         if strict and not core_items:
             response_payload.update(
                 {
                     "strict": True,
                     "core": [],
-                    "data": {
-                        **response_payload["data"],
-                        "core": [],
-                    },
                     "message": "no matches in strict mode",
                 }
             )
 
-        result_json = json.dumps(
+        canonical_json = json.dumps(response_payload, ensure_ascii=False)
+        projected_payload = _project_memory_recall_payload(
             response_payload,
-            ensure_ascii=False,
-            indent=2,
+            response_mode=response_mode,
+            diagnostics_level=diagnostics_level,
+            call_id=call_id,
+            project_warnings=project_warnings,
+            project_degraded=project_ctx.degraded,
         )
+        result_json = json.dumps(projected_payload, ensure_ascii=False)
 
         span_metadata = {
             "cache_hit": False,
@@ -845,6 +1109,10 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             "scope": scope,
             "strict": bool(strict),
             "debug": bool(debug),
+            "response_mode": response_mode,
+            "diagnostics_level": diagnostics_level,
+            "response_bytes": len(result_json.encode("utf-8")),
+            "canonical_bytes": len(canonical_json.encode("utf-8")),
             "max_results": max_results,
             "project_policy": project_ctx.project_policy,
             "retrieval_mode": retrieval_mode,
@@ -853,6 +1121,23 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
         }
         if retrieval_explain is not None:
             span_metadata[RETRIEVAL_EXPLAIN_METADATA_KEY] = retrieval_explain
+        retrieval_quality = evaluate_live_retrieval_quality(
+            _ranked_recall_items(response_payload),
+            args.get("ground_truth"),
+            request_scope_id=request_scope_id,
+            runtime_mode=str(runtime_mode_status().get("mode") or "unknown"),
+            tool_name="memory_recall",
+            task_type=task_type,
+            scope=scope,
+            project_id=project_ctx.project_id,
+            project_policy=project_ctx.project_policy,
+            retrieval_mode=retrieval_mode,
+            fusion_policy=fusion_policy,
+            max_results=max_results,
+            strict=bool(strict),
+        )
+        if retrieval_quality is not None:
+            span_metadata[LIVE_TRACE_METADATA_KEY] = retrieval_quality
         safe_record_call_span(
             engine,
             call_id=call_id,
@@ -888,7 +1173,7 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             task_type,
             max_results,
             scope,
-            result_json,
+            canonical_json,
             debug,
             strict,
             request_scope_id,
@@ -1302,6 +1587,17 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
             parent_memory_ids=args.get("parent_memory_ids", []),
             metadata_json=args.get("metadata_json", {}),
         )
+        submitted_buffer_ids = [str(fuzzy_id)] if fuzzy_id else []
+        buffer_records = getattr(fb, "_buffer", None)
+        if isinstance(buffer_records, dict):
+            scoped_ids = [
+                str(memory_id)
+                for memory_id, record in buffer_records.items()
+                if isinstance(record, dict)
+                and str(record.get("created_by_call_id") or "") == str(call_id)
+            ]
+            if scoped_ids:
+                submitted_buffer_ids = scoped_ids
 
         # Process through pipeline immediately (同步处理——大类分完就入池)
         result = fb.process_pipeline()
@@ -1311,13 +1607,9 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
         )
         outcomes_reported = isinstance(result, dict) and "migration_outcomes" in result
         submitted_outcome = (
-            migration_outcomes.get(fuzzy_id, {})
-            if isinstance(migration_outcomes, dict)
-            else {}
+            migration_outcomes.get(fuzzy_id, {}) if isinstance(migration_outcomes, dict) else {}
         )
-        canonical_memory_id = str(
-            submitted_outcome.get("canonical_memory_id") or fuzzy_id or ""
-        )
+        canonical_memory_id = str(submitted_outcome.get("canonical_memory_id") or fuzzy_id or "")
         deduplicated = submitted_outcome.get("status") == "deduplicated"
         migrated_count = int(pipeline_counts.get("embedded→migrated", 0) or 0)
         stored_in_engine = bool(
@@ -1343,9 +1635,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
                 raise RuntimeError("canonical_memory_snapshot_missing")
 
         canonical_content = str((canonical_record or {}).get("content") or content)
-        canonical_memory_type = str(
-            (canonical_record or {}).get("memory_type") or memory_type
-        )
+        canonical_memory_type = str((canonical_record or {}).get("memory_type") or memory_type)
         canonical_scope = str((canonical_record or {}).get("scope") or scope)
         canonical_project_id = str(
             (canonical_record or {}).get("project_id") or project_ctx.project_id
@@ -1486,6 +1776,91 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
             },
         )
 
+        relation_organization = {"status": "skipped", "reason": "deduplicated", "relations": []}
+        organization_memory_ids: list[str] = []
+        if not deduplicated:
+            for submitted_id in submitted_buffer_ids:
+                outcome = migration_outcomes.get(submitted_id, {})
+                if outcome.get("status") != "stored":
+                    continue
+                stored_memory_id = str(outcome.get("canonical_memory_id") or "")
+                if stored_memory_id and stored_memory_id not in organization_memory_ids:
+                    organization_memory_ids.append(stored_memory_id)
+            if not organization_memory_ids and canonical_memory_id:
+                organization_memory_ids.append(canonical_memory_id)
+
+            organization_results: list[tuple[str, dict[str, Any]]] = []
+            try:
+                from plastic_promise.core.memory_relations import organize_memory_relations
+
+                for memory_id in organization_memory_ids:
+                    organization_results.append(
+                        (
+                            memory_id,
+                            organize_memory_relations(engine, memory_id, call_id=call_id),
+                        )
+                    )
+            except Exception as exc:
+                relation_organization = {
+                    "status": "degraded",
+                    "reason": exc.__class__.__name__,
+                    "relations": [],
+                }
+            else:
+                combined_relations = [
+                    {"source_memory_id": memory_id, **relation}
+                    for memory_id, result_item in organization_results
+                    for relation in result_item.get("relations", [])
+                ]
+                topic_tags = sorted(
+                    {
+                        str(tag)
+                        for _, result_item in organization_results
+                        for tag in result_item.get("topic_tags", [])
+                    }
+                )
+                degraded_results = [
+                    result_item
+                    for _, result_item in organization_results
+                    if result_item.get("status") == "degraded"
+                ]
+                relation_organization = {
+                    "status": "degraded" if degraded_results else "completed",
+                    "memory_count": len(organization_memory_ids),
+                    "memory_ids": organization_memory_ids[:16],
+                    "memory_ids_truncated": len(organization_memory_ids) > 16,
+                    "relation_count": len(combined_relations),
+                    "conflict_count": sum(
+                        relation.get("relation") == "contradicts" for relation in combined_relations
+                    ),
+                    "relations": combined_relations[:20],
+                    "relations_truncated": len(combined_relations) > 20,
+                    "topic_tags": topic_tags[:20],
+                    "topic_tags_truncated": len(topic_tags) > 20,
+                }
+                if degraded_results:
+                    relation_organization["reason"] = str(
+                        degraded_results[0].get("reason") or "organization_degraded"
+                    )
+        safe_record_runtime_event(
+            engine,
+            event_kind="memory",
+            event_name="memory_relation_organization",
+            status="completed" if relation_organization.get("status") != "degraded" else "error",
+            request_scope_id=request_scope["request_scope_id"],
+            stage_session_id=request_scope["stage_session_id"],
+            flow_line_id=request_scope["flow_line_id"],
+            project_id=canonical_project_id,
+            actor=str(source),
+            metadata={
+                "memory_id": canonical_memory_id,
+                "memory_count": relation_organization.get("memory_count", 0),
+                "relation_count": relation_organization.get("relation_count", 0),
+                "conflict_count": relation_organization.get("conflict_count", 0),
+                "status": relation_organization.get("status"),
+            },
+        )
+
         response_payload = {
             "stored": True,
             "memory_id": canonical_memory_id,
@@ -1502,6 +1877,7 @@ async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
             "warnings": project_ctx.warning_list(),
             "entity_ids": canonical_entity_ids,
             "pipeline": pipeline_counts,
+            "knowledge_organization": relation_organization,
             "note": "必经流水线: raw→tagged→classified(大类)→embedded(细分)→主池",
             "server_ok": server_ok,
         }
@@ -2972,7 +3348,11 @@ async def handle_memory_reclassify(
 
             if dm is not None and (new_domain == "uncategorized" or new_domain is None):
                 try:
-                    assigned = dm.assign(new_tags, agent_id="system")
+                    assigned = dm.assign(
+                        new_tags,
+                        agent_id="system",
+                        project_id=authority_project_id,
+                    )
                     if assigned and assigned != "uncategorized":
                         new_domain = assigned
                 except Exception:

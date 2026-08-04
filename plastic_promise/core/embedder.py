@@ -1,17 +1,25 @@
 """Plastic Promise Embedder — text-to-vector with provider abstraction.
 
-Default: local sentence-transformers (BAAI/bge-large-zh-v1.5, 1024 dim).
-Falls back to Ollama if local model unavailable.
-Set EMBEDDER_PROVIDER=openai to use OpenAI text-embedding-3-small (1536 dim).
+Default: Ollama (mxbai-embed-large, 1024 dim) over loopback HTTP.
+Select the in-process local model explicitly with EMBEDDER_PROVIDER=local;
+select a cloud endpoint with EMBEDDER_PROVIDER=openai-compatible.
 
-Provider chain (auto-detected):
-  1. local   — sentence-transformers, in-process, zero HTTP (default)
-  2. ollama  — local HTTP server, mxbai-embed-large (fallback)
-  3. openai  — cloud API, text-embedding-3-small
-  4. fallback — zero vectors, text-only retrieval (last resort)
+Provider selection is explicit:
+  1. ollama  — local HTTP server, mxbai-embed-large (default)
+  2. local   — sentence-transformers, in-process, zero HTTP
+  3. openai-compatible — cloud API, text-embedding-v4 (1024 dim)
+  4. fallback — zero vectors, text-only retrieval
 
 Environment variables:
-  EMBEDDER_PROVIDER=local|ollama|openai  (default: local)
+  EMBEDDER_PROVIDER=ollama|local|openai|openai-compatible|cloud|fallback
+                                              (default: ollama)
+  EMBEDDER_BASE_URL=https://.../v1
+  EMBEDDER_API_KEY=<EnvironmentFile only>
+  EMBEDDER_MODEL=text-embedding-v4
+  EMBEDDER_MODEL_REVISION=<provider model revision>
+  EMBEDDER_DIMENSION=1024
+  EMBEDDER_SEND_DIMENSIONS=1      (set 0 for fixed/native-dimension APIs)
+  EMBEDDER_BATCH_SIZE=32
   EMBEDDER_MODEL=mxbai-embed-large  (ollama model name)
   EMBEDDER_LOCAL_MODEL=BAAI/bge-large-zh-v1.5  (sentence-transformers model)
   OLLAMA_HOST=http://localhost:11434
@@ -37,6 +45,8 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
+from urllib.parse import urlsplit
 
 import requests
 
@@ -49,11 +59,23 @@ from plastic_promise.core.chunking import (
     shadow_chunking_diagnostics,
     structure_aware_chunks,
 )
+from plastic_promise.core.cost_telemetry import TokenCostPolicy
 from plastic_promise.core.semantic_chunk_enrichment import (
     SemanticChunkEnricher,
     decode_embedding_plan,
     is_embedding_plan,
 )
+
+_DEFAULT_EMBEDDING_BATCH_SIZE = 32
+_HARD_MAX_EMBEDDING_BATCH_SIZE = 256
+_DEFAULT_EMBEDDING_INPUT_BYTES = 64 * 1024
+_HARD_MAX_EMBEDDING_INPUT_BYTES = 1024 * 1024
+_DEFAULT_EMBEDDING_TOTAL_INPUT_BYTES = 1024 * 1024
+_HARD_MAX_EMBEDDING_TOTAL_INPUT_BYTES = 8 * 1024 * 1024
+_DEFAULT_EMBEDDING_REQUEST_BYTES = 2 * 1024 * 1024
+_HARD_MAX_EMBEDDING_REQUEST_BYTES = 16 * 1024 * 1024
+_DEFAULT_EMBEDDING_TOTAL_TIMEOUT_SECONDS = 60.0
+_HARD_MAX_EMBEDDING_TOTAL_TIMEOUT_SECONDS = 600.0
 
 
 class Embedder(ABC):
@@ -90,6 +112,11 @@ class Embedder(ABC):
         """Prepare exact persisted document material; queries should call embed directly."""
         return text
 
+    @property
+    def supports_native_batch(self) -> bool:
+        """Whether ``embed_batch`` avoids per-text provider calls."""
+        return False
+
     def close(self) -> None:
         """Release optional provider resources."""
         return None
@@ -123,7 +150,8 @@ class CachedEmbedder(Embedder):
         self._misses = 0
 
     def _key(self, text: str) -> str:
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+        namespace = f"{self.index_model_name}\0dim={self.dim}\0"
+        return hashlib.sha256((namespace + text).encode("utf-8")).hexdigest()
 
     def embed(self, text: str) -> list[float]:
         if self._max_size <= 0:
@@ -144,10 +172,12 @@ class CachedEmbedder(Embedder):
         # already FallbackEmbedder, try Ollama as live recovery path.
         # This detects lazy-init failures (e.g., LocalSentenceEmbedder
         # constructor succeeded but _lazy_load() failed at embed time).
+        runtime_delegate = getattr(self._delegate, "_delegate", self._delegate)
         if (
             vec
             and not any(v != 0.0 for v in vec)
-            and not isinstance(self._delegate, FallbackEmbedder)
+            and isinstance(runtime_delegate, LocalSentenceEmbedder)
+            and getattr(runtime_delegate, "_allow_ollama_recovery", True)
         ):
             import logging
 
@@ -158,7 +188,8 @@ class CachedEmbedder(Embedder):
                 type(self._delegate).__name__,
             )
             try:
-                replacement: Embedder = OllamaEmbedder()
+                recovery_dim = getattr(runtime_delegate, "dim", None)
+                replacement: Embedder = OllamaEmbedder(expected_dim=recovery_dim)
                 if isinstance(self._delegate, StructureAwareEmbedder):
                     replacement = StructureAwareEmbedder(replacement)
                 ollama_vec = replacement.embed(text)
@@ -180,7 +211,8 @@ class CachedEmbedder(Embedder):
             if len(self._cache) >= self._max_size:
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
                 del self._cache[oldest_key]
-            self._cache[key] = (vec, now)
+            if vec and any(value != 0.0 for value in vec):
+                self._cache[key] = (vec, now)
         return vec
 
     async def embed_async(self, text: str) -> list[float]:
@@ -210,8 +242,7 @@ class CachedEmbedder(Embedder):
         if self._max_size <= 0:
             return self._delegate.embed_batch(texts)
         results = []
-        uncached_texts = []
-        uncached_indices = []
+        uncached: dict[str, dict[str, object]] = {}
         now = time.time()
         for i, text in enumerate(texts):
             key = self._key(text)
@@ -223,23 +254,33 @@ class CachedEmbedder(Embedder):
                         results.append((i, vec))
                         continue
                     del self._cache[key]
-            uncached_texts.append(text)
-            uncached_indices.append(i)
+            pending = uncached.setdefault(key, {"text": text, "indices": []})
+            pending["indices"].append(i)
             self._misses += 1
 
-        if uncached_texts:
-            new_vecs = self._delegate.embed_batch(uncached_texts)
+        if uncached:
+            pending_items = list(uncached.items())
+            new_vecs = self._delegate.embed_batch(
+                [str(pending["text"]) for _, pending in pending_items]
+            )
+            if len(new_vecs) != len(pending_items):
+                raise RuntimeError("embedding_response_count_mismatch")
             with self._lock:
-                for j, vec in zip(uncached_indices, new_vecs, strict=True):
-                    key = self._key(texts[j])
-                    if len(self._cache) >= self._max_size:
-                        oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
-                        del self._cache[oldest_key]
-                    self._cache[key] = (vec, now)
-                    results.append((j, vec))
+                for (key, pending), vec in zip(pending_items, new_vecs, strict=True):
+                    if vec and any(value != 0.0 for value in vec):
+                        if len(self._cache) >= self._max_size:
+                            oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
+                            del self._cache[oldest_key]
+                        self._cache[key] = (vec, now)
+                    for index in pending["indices"]:
+                        results.append((index, vec))
 
         results.sort(key=lambda x: x[0])
         return [v for _, v in results]
+
+    @property
+    def supports_native_batch(self) -> bool:
+        return bool(getattr(self._delegate, "supports_native_batch", False))
 
     @property
     def dim(self) -> int:
@@ -273,9 +314,12 @@ class CachedEmbedder(Embedder):
 
     @property
     def stats(self) -> dict:
+        delegate_stats = getattr(self._delegate, "stats", {})
+        provider_stats = dict(delegate_stats) if isinstance(delegate_stats, Mapping) else {}
         with self._lock:
             total = self._hits + self._misses
             return {
+                **provider_stats,
                 "hits": self._hits,
                 "misses": self._misses,
                 "hit_rate": round(self._hits / max(total, 1), 3),
@@ -292,7 +336,18 @@ class OllamaEmbedder(Embedder):
     Requires Ollama running at OLLAMA_HOST.
     """
 
-    def __init__(self, host: str | None = None, model: str | None = None) -> None:
+    def __init__(
+        self,
+        host: str | None = None,
+        model: str | None = None,
+        *,
+        expected_dim: int | None = None,
+    ) -> None:
+        if expected_dim is None and (
+            "PP_EMBEDDING_DIM" in os.environ or "EMBEDDER_DIMENSION" in os.environ
+        ):
+            expected_dim = _embedding_schema_dimension()
+        self._expected_dim = _optional_expected_dimension(expected_dim)
         raw = host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
         # 0.0.0.0 is a server bind address — client must connect to localhost
         raw = raw.replace("0.0.0.0", "127.0.0.1")
@@ -449,14 +504,20 @@ class OllamaEmbedder(Embedder):
             timeout=float(os.getenv("EMBEDDER_TIMEOUT", "5")),
         )
         resp.raise_for_status()
-        return resp.json()["embedding"]
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("embedding_response_schema_invalid")
+        vector = payload.get("embedding")
+        if not isinstance(vector, list):
+            raise RuntimeError("embedding_response_schema_invalid")
+        return _validate_embedding_vector(vector, self._expected_dim)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return [self.embed(t) for t in texts]
 
     @property
     def dim(self) -> int:
-        return 1024
+        return self._expected_dim or 1024
 
     @property
     def model_name(self) -> str:
@@ -484,6 +545,110 @@ def _int_env(name: str, default: int, minimum: int = 0) -> int:
         return max(int(os.environ.get(name, str(default))), minimum)
     except (TypeError, ValueError):
         return max(default, minimum)
+
+
+def _embedding_schema_dimension(default: int = 1024) -> int:
+    """Resolve the fixed LanceDB vector dimension from the process contract."""
+
+    # PP_EMBEDDING_DIM is the canonical project-wide override.  Keep the
+    # provider-specific EMBEDDER_DIMENSION as a compatible fallback when the
+    # canonical variable is absent, so a cloud-only environment cannot report
+    # one dimension while constructing an incompatible schema.
+    raw = os.environ.get(
+        "PP_EMBEDDING_DIM",
+        os.environ.get("EMBEDDER_DIMENSION", str(default)),
+    )
+    try:
+        dimension = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("embedding_dimension_invalid") from None
+    if dimension <= 0:
+        raise ValueError("embedding_dimension_invalid")
+    return dimension
+
+
+def _embedding_send_dimensions(explicit: bool | None = None) -> bool:
+    """Resolve whether cloud requests include the optional dimensions field."""
+
+    if explicit is not None:
+        if not isinstance(explicit, bool):
+            raise ValueError("embedding_send_dimensions_invalid")
+        return explicit
+    raw = os.environ.get("EMBEDDER_SEND_DIMENSIONS", "1").strip().casefold()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("embedding_send_dimensions_invalid")
+
+
+def _optional_expected_dimension(value: int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("embedding_dimension_invalid")
+    return value
+
+
+def _validate_embedding_vector(vector: object, expected_dim: int | None) -> list[float]:
+    if not isinstance(vector, list):
+        raise RuntimeError("embedding_response_schema_invalid")
+    if expected_dim is not None and len(vector) != expected_dim:
+        raise RuntimeError("embedding_response_dimension_mismatch")
+    validated: list[float] = []
+    for value in vector:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError("embedding_response_value_invalid")
+        try:
+            converted = float(value)
+        except (OverflowError, ValueError):
+            raise RuntimeError("embedding_response_value_invalid") from None
+        if not math.isfinite(converted):
+            raise RuntimeError("embedding_response_value_invalid")
+        validated.append(converted)
+    if expected_dim is not None and not any(value != 0.0 for value in validated):
+        raise RuntimeError("embedding_response_zero_vector")
+    return validated
+
+
+def _bounded_positive_int_setting(
+    explicit: int | None,
+    *,
+    env_name: str,
+    default: int,
+    maximum: int,
+    reason: str,
+) -> int:
+    raw: object = explicit if explicit is not None else os.environ.get(env_name, str(default))
+    if isinstance(raw, bool):
+        raise ValueError(reason)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(reason) from None
+    if value <= 0:
+        raise ValueError(reason)
+    return min(value, maximum)
+
+
+def _bounded_positive_float_setting(
+    explicit: float | None,
+    *,
+    env_name: str,
+    default: float,
+    maximum: float,
+    reason: str,
+) -> float:
+    raw: object = explicit if explicit is not None else os.environ.get(env_name, str(default))
+    if isinstance(raw, bool):
+        raise ValueError(reason)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(reason) from None
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(reason)
+    return min(value, maximum)
 
 
 def _embedding_chunks(text: str, chunk_chars: int, max_chunks: int) -> list[str]:
@@ -527,9 +692,7 @@ def _structure_chunking_settings() -> dict[str, int | str]:
             minimum=target,
         ),
         "max_chunks": _int_env("EMBEDDER_STRUCTURE_MAX_CHUNKS", 64, minimum=1),
-        "max_source_chars": _int_env(
-            "EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS", 2_000_000, minimum=1
-        ),
+        "max_source_chars": _int_env("EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS", 2_000_000, minimum=1),
     }
 
 
@@ -769,16 +932,42 @@ class StructureAwareEmbedder(Embedder):
         self._delegate = delegate
         self._settings = _structure_chunking_settings()
         self._last_chunking_diagnostics: dict[str, object] = {}
+        self._last_index_preparation_diagnostics: dict[str, object] = {}
+        inherited_enricher = getattr(delegate, "_chunk_enricher", None)
+        self._owns_chunk_enricher = inherited_enricher is None
+        self._chunk_enricher = inherited_enricher or SemanticChunkEnricher(
+            host=getattr(delegate, "_host", None)
+        )
 
     def embed(self, text: str) -> list[float]:
-        # Semantic enrichment plans are already provider-specific embedding
-        # material; do not parse them as Markdown a second time.
+        chunks, diagnostics = self._embedding_chunks(text)
+        self._last_chunking_diagnostics = diagnostics
+        return self._embed_chunks(chunks)
+
+    def _embedding_chunks(self, text: str) -> tuple[list[str], dict[str, object]]:
         if is_embedding_plan(text):
-            result = self._delegate.embed(text)
-            self._last_chunking_diagnostics = dict(
-                getattr(self._delegate, "last_chunking_diagnostics", {}) or {}
-            )
-            return result
+            plan = decode_embedding_plan(text)
+            if self._chunk_enricher.mode != "on":
+                raise ValueError("embedding_plan_mode_mismatch")
+            if plan.get("model_identity") != self._chunk_enricher.model_identity:
+                raise ValueError("embedding_plan_model_mismatch")
+            if (
+                plan.get("prompt_hash") != self._chunk_enricher.prompt_hash
+                or plan.get("schema_hash") != self._chunk_enricher.schema_hash
+            ):
+                raise ValueError("embedding_plan_contract_mismatch")
+            plan_chunks = plan["chunks"]
+            assert isinstance(plan_chunks, list)
+            chunks = [str(chunk["embedding_text"]) for chunk in plan_chunks]
+            diagnostics = {
+                "mode": "embedding-plan-v1",
+                "chunk_count": len(chunks),
+                "source_text_hash": plan.get("source_text_hash", ""),
+                "model_identity": plan.get("model_identity", ""),
+                "enriched": sum(1 for chunk in plan_chunks if chunk.get("status") == "enriched"),
+                "fallbacks": sum(1 for chunk in plan_chunks if chunk.get("status") == "fallback"),
+            }
+            return chunks, diagnostics
         if len(text or "") > int(self._settings["max_source_chars"]):
             self._last_chunking_diagnostics = {
                 "mode": "structure-v1",
@@ -794,7 +983,7 @@ class StructureAwareEmbedder(Embedder):
         source = text or ""
         last_source_end = max((material.source_end for material in materials), default=0)
         coverage_gap = has_uncovered_content(source, materials)
-        self._last_chunking_diagnostics = {
+        diagnostics = {
             "mode": "structure-v1",
             "requested_engine": str(self._settings["engine"]),
             "effective_engine": effective_engine,
@@ -813,20 +1002,76 @@ class StructureAwareEmbedder(Embedder):
             "resource_limited": coverage_gap,
             "context_truncated": any(material.context_truncated for material in materials),
         }
-
-        # Ollama exposes a low-level request method; using it avoids re-entering
-        # its legacy chunking branch. Other providers use their normal embed().
-        low_level = getattr(self._delegate, "_embed_chunk", None)
-        embed_one = low_level if callable(low_level) else self._delegate.embed
-        vectors = [embed_one(material.text) for material in materials]
-        return vectors[0] if len(vectors) == 1 else _mean_pool_vectors(vectors)
+        return [material.text for material in materials], diagnostics
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        return [self.embed(text) for text in texts]
+        if not texts:
+            return []
+        if not all(isinstance(text, str) for text in texts):
+            raise TypeError("embedding_input_must_be_text")
+
+        flat_chunks: list[str] = []
+        spans: list[tuple[int, int]] = []
+        last_diagnostics: dict[str, object] = {}
+        for text in texts:
+            chunks, diagnostics = self._embedding_chunks(text)
+            if not chunks:
+                raise RuntimeError("embedding_chunks_empty")
+            start = len(flat_chunks)
+            flat_chunks.extend(chunks)
+            spans.append((start, len(flat_chunks)))
+            last_diagnostics = diagnostics
+
+        vectors = self._embed_chunk_vectors(flat_chunks)
+        if len(vectors) != len(flat_chunks):
+            raise RuntimeError("embedding_response_count_mismatch")
+        self._last_chunking_diagnostics = {
+            **last_diagnostics,
+            "batched": True,
+            "batch_input_count": len(texts),
+            "batch_chunk_count": len(flat_chunks),
+        }
+        return [
+            vectors[start] if end - start == 1 else _mean_pool_vectors(vectors[start:end])
+            for start, end in spans
+        ]
 
     def prepare_index_text(self, text: str) -> str:
-        prepare = getattr(self._delegate, "prepare_index_text", None)
-        return prepare(text) if callable(prepare) else text
+        if self._chunk_enricher.mode == "off":
+            prepare = getattr(self._delegate, "prepare_index_text", None)
+            return prepare(text) if callable(prepare) else text
+        if len(text or "") > int(self._settings["max_source_chars"]):
+            raise ValueError("structure_chunking_source_too_large")
+        materials, effective_engine, fallback_reason = _effective_structure_materials(
+            text or "", self._settings
+        )
+        batch = self._chunk_enricher.prepare_chunks(materials, source_text=text or "")
+        self._last_index_preparation_diagnostics = {
+            **batch.diagnostics,
+            "requested_engine": str(self._settings["engine"]),
+            "effective_engine": effective_engine,
+            "engine_fallback_reason": fallback_reason,
+        }
+        if self._chunk_enricher.mode == "shadow":
+            return text
+        return self._chunk_enricher.build_embedding_plan(text or "", materials, batch)
+
+    def _embed_chunks(self, chunks: list[str]) -> list[float]:
+        vectors = self._embed_chunk_vectors(chunks)
+        return vectors[0] if len(vectors) == 1 else _mean_pool_vectors(vectors)
+
+    def _embed_chunk_vectors(self, chunks: list[str]) -> list[list[float]]:
+        # Ollama exposes a low-level request method; using it avoids re-entering
+        # its legacy chunking branch. Other providers retain one shared batch
+        # deadline while still producing one vector per canonical chunk.
+        low_level = getattr(self._delegate, "_embed_chunk", None)
+        if callable(low_level):
+            return [low_level(chunk) for chunk in chunks]
+        return self._delegate.embed_batch(chunks)
+
+    @property
+    def supports_native_batch(self) -> bool:
+        return bool(getattr(self._delegate, "supports_native_batch", False))
 
     @property
     def dim(self) -> int:
@@ -840,15 +1085,19 @@ class StructureAwareEmbedder(Embedder):
     def index_model_name(self) -> str:
         base = str(self._delegate.index_model_name)
         if "|chunking=structure-v1" in base:
-            return base
-        return (
-            f"{base}|chunking=structure-v1"
-            f"|target_chars={self._settings['target_chars']}"
-            f"|hard_chars={self._settings['hard_chars']}"
-            f"|max_chunks={self._settings['max_chunks']}"
-            f"|max_source_chars={self._settings['max_source_chars']}"
-            "|budget=characters-fallback"
-        )
+            identity = base
+        else:
+            identity = (
+                f"{base}|chunking=structure-v1"
+                f"|target_chars={self._settings['target_chars']}"
+                f"|hard_chars={self._settings['hard_chars']}"
+                f"|max_chunks={self._settings['max_chunks']}"
+                f"|max_source_chars={self._settings['max_source_chars']}"
+                "|budget=characters-fallback"
+            )
+        if self._chunk_enricher.mode == "on" and "|enrichment=" not in identity:
+            identity = f"{identity}|{self._chunk_enricher.index_identity}"
+        return identity
 
     @property
     def last_chunking_diagnostics(self) -> dict[str, object]:
@@ -856,45 +1105,399 @@ class StructureAwareEmbedder(Embedder):
 
     @property
     def last_index_preparation_diagnostics(self) -> dict[str, object]:
+        if self._last_index_preparation_diagnostics:
+            return dict(self._last_index_preparation_diagnostics)
         diagnostics = getattr(self._delegate, "last_index_preparation_diagnostics", {})
         return dict(diagnostics) if isinstance(diagnostics, dict) else {}
 
+    @property
+    def stats(self) -> dict[str, object]:
+        stats = getattr(self._delegate, "stats", {})
+        return dict(stats) if isinstance(stats, Mapping) else {}
+
     def close(self) -> None:
+        if self._owns_chunk_enricher:
+            self._chunk_enricher.close()
         self._delegate.close()
 
 
-class OpenAIEmbedder(Embedder):
-    """OpenAI embedding fallback.
+class OpenAICompatibleEmbedder(Embedder):
+    """Strict OpenAI-compatible cloud embedding provider.
 
-    Default model: text-embedding-3-small (1536 dim).
-    Requires: pip install openai and OPENAI_API_KEY set.
+    The provider owns one reusable HTTP client and validates every response
+    before a vector can enter derived state. Raw input and response bodies are
+    intentionally absent from diagnostics.
     """
 
-    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
-        self._key = api_key or os.getenv("OPENAI_API_KEY", "")
-        self._model = model or os.getenv("EMBEDDER_MODEL", "text-embedding-3-small")
+    _DEFAULT_BASE_URL = ""
+    _DEFAULT_MODEL = "text-embedding-v4"
+    _DEFAULT_DIM = 1024
+    _PROVIDER_IDENTITY = "openai-compatible"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        model_revision: str | None = None,
+        dim: int | None = None,
+        send_dimensions: bool | None = None,
+        batch_size: int | None = None,
+        max_input_bytes: int | None = None,
+        max_total_input_bytes: int | None = None,
+        max_request_bytes: int | None = None,
+        total_timeout_seconds: float | None = None,
+        client: object | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._key = (api_key if api_key is not None else os.getenv("EMBEDDER_API_KEY", "")).strip()
+        if not self._key and client is None:
+            raise ValueError("embedding_api_key_missing")
+
+        self._base_url = (
+            base_url or os.getenv("EMBEDDER_BASE_URL", self._DEFAULT_BASE_URL)
+        ).strip()
+        if not self._base_url:
+            raise ValueError("embedding_base_url_missing")
+        self._path = os.getenv("EMBEDDER_PATH", "/embeddings").strip() or "/embeddings"
+        self._model = (model or os.getenv("EMBEDDER_MODEL", self._DEFAULT_MODEL)).strip()
+        self._model_revision = (
+            model_revision or os.getenv("EMBEDDER_MODEL_REVISION", self._model)
+        ).strip()
+        self._dim = int(
+            dim if dim is not None else _embedding_schema_dimension(default=self._DEFAULT_DIM)
+        )
+        schema_dim = _embedding_schema_dimension(default=self._DEFAULT_DIM)
+        if self._dim <= 0:
+            raise ValueError("embedding_dimension_invalid")
+        if self._dim != schema_dim:
+            raise ValueError("embedding_dimension_schema_mismatch")
+        self._send_dimensions = _embedding_send_dimensions(send_dimensions)
+        self._batch_size = _bounded_positive_int_setting(
+            batch_size,
+            env_name="EMBEDDER_BATCH_SIZE",
+            default=_DEFAULT_EMBEDDING_BATCH_SIZE,
+            maximum=_HARD_MAX_EMBEDDING_BATCH_SIZE,
+            reason="embedding_batch_size_invalid",
+        )
+        self._max_input_bytes = _bounded_positive_int_setting(
+            max_input_bytes,
+            env_name="EMBEDDER_MAX_INPUT_BYTES",
+            default=_DEFAULT_EMBEDDING_INPUT_BYTES,
+            maximum=_HARD_MAX_EMBEDDING_INPUT_BYTES,
+            reason="embedding_max_input_bytes_invalid",
+        )
+        self._max_total_input_bytes = _bounded_positive_int_setting(
+            max_total_input_bytes,
+            env_name="EMBEDDER_MAX_TOTAL_INPUT_BYTES",
+            default=_DEFAULT_EMBEDDING_TOTAL_INPUT_BYTES,
+            maximum=_HARD_MAX_EMBEDDING_TOTAL_INPUT_BYTES,
+            reason="embedding_max_total_input_bytes_invalid",
+        )
+        self._max_request_bytes = _bounded_positive_int_setting(
+            max_request_bytes,
+            env_name="EMBEDDER_MAX_REQUEST_BYTES",
+            default=_DEFAULT_EMBEDDING_REQUEST_BYTES,
+            maximum=_HARD_MAX_EMBEDDING_REQUEST_BYTES,
+            reason="embedding_max_request_bytes_invalid",
+        )
+        self._total_timeout_seconds = _bounded_positive_float_setting(
+            total_timeout_seconds,
+            env_name="EMBEDDER_TOTAL_TIMEOUT",
+            default=_DEFAULT_EMBEDDING_TOTAL_TIMEOUT_SECONDS,
+            maximum=_HARD_MAX_EMBEDDING_TOTAL_TIMEOUT_SECONDS,
+            reason="embedding_total_timeout_invalid",
+        )
+        self._clock = clock
+        if not self._model or not self._model_revision:
+            raise ValueError("embedding_model_identity_missing")
+        self._cost_policy = TokenCostPolicy.from_environment(
+            "EMBEDDER",
+            reason_prefix="embedding",
+        )
+
+        self._client = client or self._build_http_client()
+        self._stats_lock = threading.Lock()
+        self._requests = 0
+        self._input_count = 0
+        self._input_tokens = 0
+        self._total_tokens = 0
+        self._token_usage_complete = True
+        self._latency_ms = 0.0
+
+    def _build_http_client(self):
+        from plastic_promise.core.provider_http import ProviderHTTPClient, ProviderHTTPPolicy
+
+        policy = ProviderHTTPPolicy(
+            timeout_seconds=float(os.getenv("EMBEDDER_TIMEOUT", "15")),
+            total_timeout_seconds=self._total_timeout_seconds,
+            max_retries=_int_env("EMBEDDER_MAX_RETRIES", 3, minimum=0),
+            backoff_base_seconds=float(os.getenv("EMBEDDER_RETRY_BACKOFF", "0.25")),
+            backoff_max_seconds=float(os.getenv("EMBEDDER_RETRY_BACKOFF_MAX", "4")),
+            circuit_failure_threshold=_int_env("EMBEDDER_CIRCUIT_FAILURE_THRESHOLD", 5, minimum=1),
+            circuit_recovery_seconds=float(os.getenv("EMBEDDER_CIRCUIT_RECOVERY_SECONDS", "30")),
+            max_request_bytes=self._max_request_bytes,
+            max_response_bytes=_int_env(
+                "EMBEDDER_MAX_RESPONSE_BYTES", 16 * 1024 * 1024, minimum=1024
+            ),
+        )
+        return ProviderHTTPClient(
+            provider="embedding",
+            base_url=self._base_url,
+            api_key=self._key,
+            policy=policy,
+        )
 
     def embed(self, text: str) -> list[float]:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=self._key)
-        resp = client.embeddings.create(model=self._model, input=text)
-        return resp.data[0].embedding
+        return self.embed_batch([text])[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        from openai import OpenAI
+        if not texts:
+            return []
+        if not all(isinstance(text, str) for text in texts):
+            raise TypeError("embedding_input_must_be_text")
+        total_input_bytes = 0
+        for text in texts:
+            try:
+                input_bytes = len(text.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise ValueError("embedding_input_utf8_invalid") from None
+            if input_bytes > self._max_input_bytes:
+                raise ValueError("embedding_input_too_large")
+            total_input_bytes += input_bytes
+            if total_input_bytes > self._max_total_input_bytes:
+                raise ValueError("embedding_total_input_too_large")
 
-        client = OpenAI(api_key=self._key)
-        resp = client.embeddings.create(model=self._model, input=texts)
-        return [d.embedding for d in resp.data]
+        deadline = self._clock() + self._total_timeout_seconds
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self._batch_size):
+            if self._clock() >= deadline:
+                from plastic_promise.core.provider_http import ProviderHTTPError
+
+                raise ProviderHTTPError("provider_http_deadline_exceeded")
+            batch = texts[start : start + self._batch_size]
+            request_payload: dict[str, object] = {
+                "model": self._model,
+                "input": batch,
+            }
+            if self._send_dimensions:
+                request_payload["dimensions"] = self._dim
+            result = self._client.post_json(
+                self._path,
+                request_payload,
+                deadline=deadline,
+            )
+            if self._clock() >= deadline:
+                from plastic_promise.core.provider_http import ProviderHTTPError
+
+                raise ProviderHTTPError("provider_http_deadline_exceeded")
+            payload = getattr(result, "payload", result)
+            vectors.extend(self._validated_vectors(payload, len(batch)))
+            self._record_usage(result, payload, len(batch))
+        return vectors
+
+    @property
+    def supports_native_batch(self) -> bool:
+        return True
+
+    def _validated_vectors(self, payload: object, expected_count: int) -> list[list[float]]:
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("embedding_response_schema_invalid")
+        # Providers commonly echo the effective model.  If they do, bind that
+        # response identity to the configured model; accepting a different
+        # model would make the persisted index identity untrustworthy.  Some
+        # compatible endpoints omit the field, so omission remains supported.
+        response_model = payload.get("model")
+        if response_model is not None:
+            if not isinstance(response_model, str) or not response_model.strip():
+                raise RuntimeError("embedding_response_model_invalid")
+            if response_model.strip() != self._model:
+                raise RuntimeError("embedding_response_model_mismatch")
+        rows = payload.get("data")
+        if not isinstance(rows, list) or len(rows) != expected_count:
+            raise RuntimeError("embedding_response_count_mismatch")
+
+        ordered: list[list[float] | None] = [None] * expected_count
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise RuntimeError("embedding_response_schema_invalid")
+            index = row.get("index")
+            if (
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < expected_count
+                or ordered[index] is not None
+            ):
+                raise RuntimeError("embedding_response_index_invalid")
+            raw_vector = row.get("embedding")
+            if not isinstance(raw_vector, list) or len(raw_vector) != self._dim:
+                raise RuntimeError("embedding_response_dimension_mismatch")
+            vector: list[float] = []
+            for value in raw_vector:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise RuntimeError("embedding_response_value_invalid")
+                try:
+                    converted = float(value)
+                except (OverflowError, ValueError):
+                    raise RuntimeError("embedding_response_value_invalid") from None
+                if not math.isfinite(converted):
+                    raise RuntimeError("embedding_response_value_invalid")
+                vector.append(converted)
+            if not any(value != 0.0 for value in vector):
+                raise RuntimeError("embedding_response_zero_vector")
+            ordered[index] = vector
+        if any(vector is None for vector in ordered):
+            raise RuntimeError("embedding_response_index_invalid")
+        return [vector for vector in ordered if vector is not None]
+
+    def _record_usage(self, result: object, payload: object, input_count: int) -> None:
+        usage = payload.get("usage", {}) if isinstance(payload, Mapping) else {}
+        usage = usage if isinstance(usage, Mapping) else {}
+
+        def nonnegative_int(name: str) -> tuple[int, bool]:
+            value = usage.get(name)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return int(value), True
+            return 0, False
+
+        prompt_tokens, has_prompt_tokens = nonnegative_int("prompt_tokens")
+        supplied_input_tokens, has_input_tokens = nonnegative_int("input_tokens")
+        supplied_total_tokens, has_total_tokens = nonnegative_int("total_tokens")
+        if has_prompt_tokens:
+            input_tokens = prompt_tokens
+        elif has_input_tokens:
+            input_tokens = supplied_input_tokens
+        elif has_total_tokens:
+            # Embedding responses have no completion side, so total tokens are
+            # valid input-cost evidence when the provider omits an input alias.
+            input_tokens = supplied_total_tokens
+        else:
+            input_tokens = 0
+        total_tokens = supplied_total_tokens if has_total_tokens else input_tokens
+        usage_complete = has_prompt_tokens or has_input_tokens or has_total_tokens
+        latency = getattr(result, "latency_ms", 0.0)
+        latency_ms = float(latency) if isinstance(latency, (int, float)) else 0.0
+        with self._stats_lock:
+            self._requests += 1
+            self._input_count += input_count
+            self._input_tokens += input_tokens
+            self._total_tokens += total_tokens
+            self._token_usage_complete = self._token_usage_complete and usage_complete
+            self._latency_ms += max(latency_ms, 0.0)
 
     @property
     def dim(self) -> int:
-        return 1536
+        return self._dim
 
     @property
     def model_name(self) -> str:
         return self._model
+
+    @property
+    def index_model_name(self) -> str:
+        endpoint = hashlib.sha256(f"{self._base_url}\0{self._path}".encode()).hexdigest()
+        dimensions_mode = "" if self._send_dimensions else "|dimensions=native"
+        return (
+            f"{self._model}|provider={self._PROVIDER_IDENTITY}"
+            f"|revision={self._model_revision}|dim={self._dim}|endpoint_sha256={endpoint}"
+            f"{dimensions_mode}"
+        )
+
+    @property
+    def stats(self) -> dict[str, object]:
+        with self._stats_lock:
+            return {
+                "provider": self._PROVIDER_IDENTITY,
+                "model": self._model,
+                "revision": self._model_revision,
+                "dimension": self._dim,
+                "dimensions_parameter": "explicit" if self._send_dimensions else "native",
+                "requests": self._requests,
+                "inputs": self._input_count,
+                "input_tokens": self._input_tokens,
+                "total_tokens": self._total_tokens,
+                "latency_ms": round(self._latency_ms, 3),
+                **self._cost_policy.telemetry(
+                    self._input_tokens if self._token_usage_complete else None,
+                    cost_basis="input_tokens",
+                ),
+            }
+
+    def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
+
+
+class OpenAIEmbedder(OpenAICompatibleEmbedder):
+    """Legacy OpenAI provider pinned to the official API endpoint."""
+
+    _DEFAULT_BASE_URL = "https://api.openai.com/v1"
+    _DEFAULT_MODEL = "text-embedding-3-small"
+    _DEFAULT_DIM = 1536
+    _PROVIDER_IDENTITY = "openai"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        model_revision: str | None = None,
+        dim: int | None = None,
+        send_dimensions: bool | None = None,
+        batch_size: int | None = None,
+        max_input_bytes: int | None = None,
+        max_total_input_bytes: int | None = None,
+        max_request_bytes: int | None = None,
+        total_timeout_seconds: float | None = None,
+        client: object | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        # This class owns the official OpenAI credential.  Do not allow the
+        # generic provider's endpoint override to redirect that credential to a
+        # different host; callers needing another compatible service must use
+        # OpenAICompatibleEmbedder explicitly.
+        if base_url is not None and not _is_official_openai_base_url(base_url):
+            raise ValueError("openai_base_url_must_be_official")
+        resolved_base_url = self._DEFAULT_BASE_URL
+        resolved_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "")
+        super().__init__(
+            api_key=resolved_key,
+            base_url=resolved_base_url,
+            model=model or os.getenv("EMBEDDER_MODEL", self._DEFAULT_MODEL),
+            model_revision=model_revision,
+            dim=dim,
+            send_dimensions=send_dimensions,
+            batch_size=batch_size,
+            max_input_bytes=max_input_bytes,
+            max_total_input_bytes=max_total_input_bytes,
+            max_request_bytes=max_request_bytes,
+            total_timeout_seconds=total_timeout_seconds,
+            client=client,
+            clock=clock,
+        )
+
+
+def _is_official_openai_base_url(value: object) -> bool:
+    """Return whether ``value`` is exactly the official OpenAI API root."""
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme.casefold() == "https"
+        and (parsed.hostname or "").rstrip(".").casefold() == "api.openai.com"
+        and port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") == "/v1"
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 class LocalSentenceEmbedder(Embedder):
@@ -914,14 +1517,31 @@ class LocalSentenceEmbedder(Embedder):
     _DEFAULT_MODEL = "BAAI/bge-large-zh-v1.5"
     _DIM = 1024
 
-    def __init__(self, model_name: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str | None = None,
+        *,
+        expected_dim: int | None = None,
+        allow_ollama_recovery: bool = True,
+    ) -> None:
         self._model_name = model_name or os.getenv("EMBEDDER_LOCAL_MODEL", self._DEFAULT_MODEL)
+        if expected_dim is None and (
+            "PP_EMBEDDING_DIM" in os.environ or "EMBEDDER_DIMENSION" in os.environ
+        ):
+            expected_dim = _embedding_schema_dimension()
+        self._expected_dim = _optional_expected_dimension(expected_dim)
+        self._allow_ollama_recovery = bool(allow_ollama_recovery)
         self._model = None  # lazy-init
 
     def _lazy_load(self):
         if self._model is not None:
             return
-        from sentence_transformers import SentenceTransformer
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ModuleNotFoundError as exc:
+            if exc.name != "sentence_transformers":
+                raise
+            raise RuntimeError("local_embedding_dependency_missing") from exc
 
         # Use HF mirror in China if set.
         self._model = SentenceTransformer(
@@ -932,16 +1552,24 @@ class LocalSentenceEmbedder(Embedder):
 
     def embed(self, text: str) -> list[float]:
         self._lazy_load()
-        return self._model.encode(text, normalize_embeddings=True).tolist()
+        vector = self._model.encode(text, normalize_embeddings=True).tolist()
+        return _validate_embedding_vector(vector, self._expected_dim)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         self._lazy_load()
         vecs = self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-        return vecs.tolist()
+        vectors = vecs.tolist()
+        if not isinstance(vectors, list):
+            raise RuntimeError("embedding_response_schema_invalid")
+        return [_validate_embedding_vector(vector, self._expected_dim) for vector in vectors]
+
+    @property
+    def supports_native_batch(self) -> bool:
+        return True
 
     @property
     def dim(self) -> int:
-        return self._DIM
+        return self._expected_dim or self._DIM
 
     @property
     def model_name(self) -> str:
@@ -957,7 +1585,11 @@ class FallbackEmbedder(Embedder):
     still works — just without semantic ranking.
     """
 
-    def __init__(self, dim: int = 1024) -> None:
+    def __init__(self, dim: int | None = None) -> None:
+        if dim is None:
+            dim = _embedding_schema_dimension()
+        if isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0:
+            raise ValueError("embedding_dimension_invalid")
         self._dim = dim
         self._model = "fallback-zero"
 
@@ -968,12 +1600,22 @@ class FallbackEmbedder(Embedder):
         return [[0.0] * self._dim for _ in texts]
 
     @property
+    def supports_native_batch(self) -> bool:
+        return True
+
+    @property
     def dim(self) -> int:
         return self._dim
 
     @property
     def model_name(self) -> str:
         return self._model
+
+    @property
+    def index_model_name(self) -> str:
+        # Preserve the established default identity while separating custom
+        # dimensions so derived index material cannot be mixed across schemas.
+        return self._model if self._dim == 1024 else f"{self._model}|dim={self._dim}"
 
 
 # Singleton embedder instance — shared across all callers to enable cache reuse
@@ -1002,11 +1644,10 @@ def reset_embedder() -> Embedder | None:
 def get_embedder(fallback_on_error: bool = True) -> Embedder:
     """Factory: returns embedder based on EMBEDDER_PROVIDER env var.
 
-    Provider chain (auto-detected):
-      1. ollama — local HTTP server (default, lightweight, 0.7GB mxbai-embed-large)
-      2. local  — sentence-transformers, in-process (fallback if ollama fails)
-      3. openai — cloud API
-      4. fallback — zero vectors, text-only retrieval
+    Provider selection is explicit: ``ollama`` (default), ``local``, the
+    cloud aliases ``openai``, ``openai-compatible``/``cloud``, or ``fallback``.
+    A provider failure may produce a zero-vector fallback when
+    ``fallback_on_error`` is enabled; providers are never probed implicitly.
 
     When fallback_on_error=True and all providers are unreachable,
     returns a FallbackEmbedder (zero vectors) so retrieval degrades to
@@ -1024,7 +1665,26 @@ def get_embedder(fallback_on_error: bool = True) -> Embedder:
         if _embedder_singleton is not None:
             return _embedder_singleton
 
-        provider = os.getenv("EMBEDDER_PROVIDER", "ollama").lower()
+        provider = os.getenv("EMBEDDER_PROVIDER", "ollama").strip().casefold()
+        supported_providers = {
+            "ollama",
+            "local",
+            "openai",
+            "openai-compatible",
+            "cloud",
+            "fallback",
+        }
+        if provider not in supported_providers:
+            raise ValueError("embedding_provider_invalid")
+        # The legacy official OpenAI provider historically defaulted to the
+        # 1536-dimensional text-embedding-3-small contract.  Keep that
+        # fallback schema when PP_EMBEDDING_DIM is omitted, while all other
+        # providers retain the current 1024-dimensional default.  An explicit
+        # PP_EMBEDDING_DIM always wins through _embedding_schema_dimension().
+        schema_default = (
+            getattr(OpenAIEmbedder, "_DEFAULT_DIM", 1536) if provider == "openai" else 1024
+        )
+        schema_dimension = _embedding_schema_dimension(default=schema_default)
         delegate: Embedder | None = None
 
         if provider == "openai":
@@ -1033,29 +1693,37 @@ def get_embedder(fallback_on_error: bool = True) -> Embedder:
             except Exception:
                 if not fallback_on_error:
                     raise
+        elif provider in {"openai-compatible", "cloud"}:
+            try:
+                delegate = OpenAICompatibleEmbedder()
+            except Exception:
+                if not fallback_on_error:
+                    raise
         elif provider == "ollama":
             try:
-                delegate = OllamaEmbedder()
+                delegate = OllamaEmbedder(expected_dim=schema_dimension)
             except Exception:
                 if not fallback_on_error:
                     raise
         elif provider == "fallback":
-            delegate = FallbackEmbedder(dim=1024)
-        else:
-            # "local" (default): try Ollama first (lightweight, 0.7GB mxbai-embed-large),
-            # fall back to sentence-transformers BAAI/bge-large-zh-v1.5 (3.7GB) if Ollama unavailable
+            delegate = FallbackEmbedder(dim=schema_dimension)
+        elif provider == "local":
             try:
-                delegate = OllamaEmbedder()
-            except Exception as e:
-                logging.info("OllamaEmbedder unavailable (%s), trying local model...", e)
-                try:
-                    delegate = LocalSentenceEmbedder()
-                except Exception:
-                    if not fallback_on_error:
-                        raise
+                delegate = LocalSentenceEmbedder(
+                    expected_dim=schema_dimension,
+                    allow_ollama_recovery=False,
+                )
+            except Exception:
+                if not fallback_on_error:
+                    raise
+        else:
+            # The remaining values are the explicit cloud aliases handled above.
+            # Keep this branch unreachable so adding a provider requires updating
+            # the allow-list and its construction path together.
+            raise AssertionError("unsupported embedding provider")
 
         if delegate is None:
-            _embedder_singleton = FallbackEmbedder(dim=1024)
+            _embedder_singleton = FallbackEmbedder(dim=schema_dimension)
             delegate = _embedder_singleton
 
         if os.environ.get("PP_MEMORY_CHUNKING", "off").strip().casefold() == "structure-v1":

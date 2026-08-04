@@ -167,7 +167,13 @@ def _source_trust(source_class: str, source: str) -> float:
         return 0.90
     if source_key in {"experience", "user", "agent"}:
         return 0.75
-    if source_key in {"maintenance_daemon", "superpowers", "step-closure", "step_closure"}:
+    if source_key in {
+        "maintenance_daemon",
+        "superpowers",
+        "skill_session",
+        "step-closure",
+        "step_closure",
+    }:
         return 0.45
     if source_key in {"prompt", "telemetry"}:
         return 0.10

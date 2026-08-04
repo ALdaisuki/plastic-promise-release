@@ -18,6 +18,13 @@
     healthy: "健康",
     autonomous: "自主",
     accepted: "已接受",
+    adopted: "已采纳",
+    injected: "已注入",
+    shadowed: "影子记录",
+    skipped: "已跳过",
+    queued: "已入队",
+    duplicate: "已去重",
+    empty: "无可注入内容",
     error: "错误",
     failed: "失败",
     failure: "失败",
@@ -36,9 +43,14 @@
     degraded: "降级",
     pending: "待处理",
     processing: "处理中",
+    retry_wait: "等待重试",
+    leased: "执行中",
+    dead: "终止",
+    cancelled: "已取消",
     retry: "重试",
     retrying: "重试中",
     draft: "草稿",
+    staged: "已暂存",
     standard: "标准",
     medium: "中等",
     recovering: "恢复中",
@@ -245,6 +257,17 @@
       endpoint: "/memories",
       paginated: true
     },
+    "passive-memory": {
+      title: "被动记忆",
+      description: "观测推理前上下文注入、推理后候选捕获、发件箱与检索质量。",
+      endpoint: "/passive-memory"
+    },
+    "memory-proposals": {
+      title: "记忆提案",
+      description: "审阅由被动捕获产生的事实、偏好与决策候选。",
+      endpoint: "/memory-proposals",
+      paginated: true
+    },
     lineage: {
       title: "记忆谱系",
       description: "追踪单条记忆的来源、替代、纠正与综合关系。",
@@ -279,6 +302,30 @@
       title: "有效配置",
       description: "只读查看运行模式与功能开关，敏感字段会递归脱敏。",
       endpoint: "/configuration"
+    },
+    "control-status": {
+      title: "服务器状态",
+      description: "查看服务器监听、数据存储、索引与期望配置的只读状态。",
+      endpoint: "/status",
+      control: true
+    },
+    "control-config": {
+      title: "云端期望配置",
+      description: "读取安全配置，并按角色验证或暂存严格的云端配置变更。",
+      endpoint: "/config/safe",
+      control: true
+    },
+    "control-revisions": {
+      title: "配置修订",
+      description: "查看不可变配置修订，并通过确认流程选择新的期望状态。",
+      endpoint: "/config/revisions",
+      control: true
+    },
+    "control-audit": {
+      title: "控制审计",
+      description: "查看不含配置值和密钥的远程控制操作记录。",
+      endpoint: "/audit",
+      control: true
     }
   };
 
@@ -287,7 +334,9 @@
     routeParams: {},
     payloads: Object.create(null),
     pagination: Object.create(null),
-    filters: Object.create(null),
+    filters: Object.assign(Object.create(null), {
+      "memory-proposals": { status: "pending", category: "" }
+    }),
     filterTimers: Object.create(null),
     operationTab: "runtime",
     trustTab: "trust",
@@ -297,8 +346,24 @@
     explainSequence: 0,
     detailSequence: 0,
     detailFocus: null,
+    activeProjectId: "",
+    scopeOptions: [],
+    liveRefreshTimer: null,
     featureFlags: {
-      retrievalExplain: null
+      retrievalExplain: null,
+      proposalReview: false
+    },
+    control: {
+      token: "",
+      actor: "",
+      role: "",
+      etag: "",
+      activeRevisionId: "",
+      epoch: 0,
+      controllers: new Set(),
+      retryKeys: new Map(),
+      configDraft: "{}",
+      busy: false
     }
   };
 
@@ -311,12 +376,14 @@
     mainNav: document.getElementById("main-nav"),
     topbarTitle: document.getElementById("topbar-title"),
     refreshButton: document.getElementById("refresh-button"),
+    scopeSelect: document.getElementById("project-scope-select"),
     scopeChip: document.getElementById("scope-chip"),
     readinessBadge: document.getElementById("readiness-badge"),
     connectionDot: document.getElementById("connection-dot"),
     connectionLabel: document.getElementById("connection-label"),
     noticeStack: document.getElementById("notice-stack"),
     viewRoot: document.getElementById("view-root"),
+    dashboardMode: document.getElementById("dashboard-mode"),
     lastUpdated: document.getElementById("last-updated"),
     detailDialog: document.getElementById("detail-dialog"),
     detailEyebrow: document.getElementById("detail-eyebrow"),
@@ -494,6 +561,17 @@
     return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(number);
   }
 
+  function formatRatio(value) {
+    var number = Number(value);
+    if (!Number.isFinite(number)) {
+      return "--";
+    }
+    return new Intl.NumberFormat("zh-CN", {
+      style: "percent",
+      maximumFractionDigits: 1
+    }).format(number);
+  }
+
   function formatTimestamp(value) {
     if (!value) {
       return "--";
@@ -618,6 +696,7 @@
       principle_injection: "原则注入",
       snapshot_parse: "快照解析",
       candidate_retrieval: "候选检索",
+      divergent_quality: "发散质量",
       filter_and_layer: "过滤与分层",
       fallback_filter_and_layer: "回退过滤与分层",
       total: "检索总耗时",
@@ -879,8 +958,12 @@
     var project = firstValue(scope, ["project_id", "project"], "本地范围");
     var auth = firstValue(scope, ["auth_mode"], "");
     var scopeLabel = auth ? project + " / " + statusLabel(auth) : project;
+    if (project && project !== "本地范围") {
+      state.activeProjectId = String(project);
+    }
     refs.scopeChip.textContent = scopeLabel;
     refs.scopeChip.title = "当前生效范围：" + scopeLabel;
+    renderScopeSelector();
     if (payload && payload.degraded) {
       setConnection("degraded", "已降级");
       setReadiness("降级", "warning");
@@ -889,6 +972,97 @@
       setReadiness("就绪", "success");
     }
     refs.lastUpdated.textContent = "更新于 " + formatTimestamp(new Date().toISOString());
+  }
+
+  function projectScopeLabel(projectId) {
+    var value = String(projectId || "").trim();
+    return value
+      .replace(/^project:local:/, "")
+      .replace(/^project:/, "")
+      .replace(/-[0-9a-f]{12}$/i, "");
+  }
+
+  function activeProjectId() {
+    return String(state.activeProjectId || state.routeParams.project_id || "").trim();
+  }
+
+  function renderScopeSelector() {
+    if (!refs.scopeSelect) {
+      return;
+    }
+    var selected = activeProjectId();
+    var options = asArray(state.scopeOptions).filter(function (item) {
+      return isObject(item) && String(item.project_id || "").trim();
+    });
+    refs.scopeSelect.replaceChildren.apply(refs.scopeSelect, options.map(function (item) {
+      var projectId = String(item.project_id).trim();
+      return h("option", {
+        text: projectScopeLabel(projectId),
+        attrs: { value: projectId, title: projectId }
+      });
+    }));
+    var selectable = options.length > 1;
+    refs.scopeSelect.hidden = !selectable;
+    refs.scopeChip.hidden = selectable;
+    if (selected && options.some(function (item) {
+      return String(item.project_id).trim() === selected;
+    })) {
+      refs.scopeSelect.value = selected;
+    }
+  }
+
+  function loadProjectScopes() {
+    return apiRequest("/scopes", {}, null).then(function (payload) {
+      var data = envelopeObject(payload);
+      state.scopeOptions = asArray(data.scopes);
+      var requested = String(state.routeParams.project_id || state.activeProjectId || "").trim();
+      var known = state.scopeOptions.some(function (item) {
+        return isObject(item) && String(item.project_id || "").trim() === requested;
+      });
+      state.activeProjectId = known
+        ? requested
+        : String(data.default_project_id || "").trim();
+      if (state.activeProjectId && state.routeParams.project_id !== state.activeProjectId) {
+        replaceRouteParams(state.currentView, Object.assign({}, state.routeParams, {
+          project_id: state.activeProjectId
+        }));
+      }
+      renderScopeSelector();
+      return payload;
+    }).catch(function () {
+      state.scopeOptions = [];
+      renderScopeSelector();
+      return null;
+    });
+  }
+
+  function applyProjectScopeToUrl(url, path) {
+    var projectId = activeProjectId();
+    if (projectId && path !== "/scopes") {
+      url.searchParams.set("project_id", projectId);
+    }
+    return url;
+  }
+
+  function stopLiveRefresh() {
+    if (state.liveRefreshTimer !== null) {
+      window.clearTimeout(state.liveRefreshTimer);
+      state.liveRefreshTimer = null;
+    }
+  }
+
+  function scheduleLiveRefresh() {
+    stopLiveRefresh();
+    if (
+      document.hidden
+      || (state.currentView !== "passive-memory" && state.currentView !== "memory-proposals")
+    ) {
+      return;
+    }
+    state.liveRefreshTimer = window.setTimeout(function () {
+      state.liveRefreshTimer = null;
+      loadCurrentView({ background: true });
+    }, 5000);
   }
 
   function toast(message, isError) {
@@ -918,6 +1092,7 @@
         url.searchParams.set(key, String(value));
       }
     });
+    applyProjectScopeToUrl(url, path);
     return fetch(url.toString(), {
       method: "GET",
       credentials: "same-origin",
@@ -947,6 +1122,42 @@
     });
   }
 
+  function apiMutation(path, payload) {
+    var url = new URL(API_ROOT + path, window.location.origin);
+    applyProjectScopeToUrl(url, path);
+    return fetch(url.toString(), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-PP-Dashboard-Action": "proposal-review-v1"
+      },
+      body: JSON.stringify(payload || {})
+    }).then(function (response) {
+      return response.text().then(function (body) {
+        var result = {};
+        if (body) {
+          try {
+            result = JSON.parse(body);
+          } catch (error) {
+            result = { error: body.slice(0, 500) };
+          }
+        }
+        if (!response.ok) {
+          var detail = firstValue(result, [
+            "error.message", "detail.message", "message", "detail", "error.code"
+          ], response.statusText || "Request failed");
+          if (isObject(detail) || Array.isArray(detail)) {
+            detail = safeJson(detail);
+          }
+          throw new ApiError(response.status + " " + detail, response.status, result);
+        }
+        return result;
+      });
+    });
+  }
+
   function pageState(view) {
     if (!state.pagination[view]) {
       state.pagination[view] = { cursor: null, history: [] };
@@ -965,6 +1176,11 @@
     };
     if (view === "memories") {
       params.query = String(firstValue(state.filters.memories || {}, ["query"], "")).trim();
+    }
+    if (view === "memory-proposals") {
+      var proposalFilters = state.filters[view] || {};
+      params.status = String(proposalFilters.status || "");
+      params.category = String(proposalFilters.category || "");
     }
     return params;
   }
@@ -1235,6 +1451,13 @@
     var operational = [
       { label: "运行模式", value: firstValue(data, ["runtime.mode", "runtime_mode", "mode"], "--") },
       { label: "待处理发件箱", value: firstValue(data, ["outbox.pending", "operations.pending_outbox", "pending_outbox_count", "pending_outbox"], "--") },
+      { label: "派生工作积压", value: firstValue(data, ["derived_work_queue_depth"], 0) },
+      { label: "派生租约 / 重试 / 死信", value: [
+        firstValue(data, ["derived_work_leased_count"], 0),
+        firstValue(data, ["derived_work_retry_count"], 0),
+        firstValue(data, ["derived_work_dead_count"], 0)
+      ].join(" / ") },
+      { label: "最早派生积压", value: formatAgeSeconds(firstValue(data, ["derived_work_oldest_age_seconds"], null)) },
       { label: "降级事件", value: firstValue(data, ["degradations.total", "operations.degradation_count", "degradation_count"], "--") },
       { label: "运行事件", value: firstValue(data, ["runtime_event_count", "operations.runtime_event_count"], "--") }
     ];
@@ -1538,6 +1761,419 @@
     }
   }
 
+  function formatAgeSeconds(value) {
+    var seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      return "--";
+    }
+    if (seconds < 60) {
+      return formatNumber(seconds) + " 秒";
+    }
+    if (seconds < 3600) {
+      return formatNumber(seconds / 60) + " 分钟";
+    }
+    if (seconds < 86400) {
+      return formatNumber(seconds / 3600) + " 小时";
+    }
+    return formatNumber(seconds / 86400) + " 天";
+  }
+
+  function passiveEventLabel(value) {
+    var labels = {
+      passive_context_injected: "上下文已注入",
+      passive_context_shadowed: "上下文影子记录",
+      passive_context_skipped: "上下文已跳过",
+      passive_memory_after_invoke: "推理后捕获",
+      passive_memory_proposals_created: "提案已创建",
+      passive_memory_proposal_retry: "提案队列重试"
+    };
+    return labels[String(value || "")] || statusLabel(value);
+  }
+
+  function derivedJobKindLabel(value) {
+    var labels = {
+      passive_semantic: "语义识别",
+      proposal_promotion: "提案晋升"
+    };
+    return labels[String(value || "")] || statusLabel(value);
+  }
+
+  function renderPassiveMemory(payload) {
+    var data = envelopeObject(payload);
+    var summary = isObject(data.summary) ? data.summary : {};
+    var context = isObject(summary.context) ? summary.context : {};
+    var capture = isObject(summary.capture) ? summary.capture : {};
+    var proposals = isObject(summary.proposals) ? summary.proposals : {};
+    var proposalStatuses = isObject(proposals.status_counts) ? proposals.status_counts : {};
+    var outbox = isObject(summary.outbox) ? summary.outbox : {};
+    var outboxStatuses = isObject(outbox.status_counts) ? outbox.status_counts : {};
+    var quality = isObject(summary.quality) ? summary.quality : {};
+    var derivedWork = isObject(summary.derived_work) ? summary.derived_work : {};
+    var derivedKinds = isObject(derivedWork.job_kinds) ? derivedWork.job_kinds : {};
+    var semanticJobs = isObject(derivedKinds.passive_semantic)
+      ? derivedKinds.passive_semantic
+      : {};
+    var promotionJobs = isObject(derivedKinds.proposal_promotion)
+      ? derivedKinds.proposal_promotion
+      : {};
+    var activeOutbox = Number(outboxStatuses.pending || 0) + Number(outboxStatuses.processing || 0);
+    var root = h("div", {}, [
+      viewHeader(VIEWS["passive-memory"].title, VIEWS["passive-memory"].description, [
+        textButton("查看待审提案", function () {
+          navigate("memory-proposals");
+        }, { icon: "scroll-text" })
+      ]),
+      h("div", { className: "kpi-grid" }, [
+        kpiCard("被动上下文", firstValue(context, ["total"], 0),
+          formatNumber(context.injected || 0) + " 次实际注入"),
+        kpiCard("待审提案", firstValue(proposalStatuses, ["pending"], 0),
+          formatNumber(proposals.total || 0) + " 条提案记录"),
+        kpiCard("发件箱积压", activeOutbox,
+          formatNumber(outbox.total || 0) + " 条历史任务"),
+        kpiCard("检索 MRR", quality.mrr === null || quality.mrr === undefined ? "--" : formatRatio(quality.mrr),
+          formatNumber(quality.case_count || 0) + " 个完整标注样本")
+      ])
+    ]);
+
+    var hitAt = isObject(quality.hit_at) ? quality.hit_at : {};
+    var statusMetrics = [
+      { label: "平均注入字符", value: firstValue(context, ["average_injection_chars"], "--") },
+      { label: "平均命中记忆", value: firstValue(context, ["average_memory_count"], "--") },
+      { label: "推理后捕获", value: firstValue(capture, ["total"], 0) },
+      { label: "队列重试", value: firstValue(capture, ["retry_events"], 0) },
+      { label: "最早积压时长", value: formatAgeSeconds(outbox.oldest_active_age_seconds) },
+      { label: "Hit@1", value: hitAt["1"] === undefined ? "--" : formatRatio(hitAt["1"]) },
+      { label: "Hit@5", value: hitAt["5"] === undefined ? "--" : formatRatio(hitAt["5"]) },
+      { label: "禁止命中率", value: quality.forbidden_hit_rate === null || quality.forbidden_hit_rate === undefined ? "--" : formatRatio(quality.forbidden_hit_rate) }
+    ];
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("闭环健康", "项目范围内的有界投影"),
+      h("dl", { className: "metric-list" }, statusMetrics.map(function (item) {
+        return h("div", { className: "metric-row" }, [
+          h("dt", { text: item.label }),
+          h("dd", { text: formatScalar(item.value) })
+        ]);
+      }))
+    ]));
+
+    var derivedJobs = asArray(data.derived_jobs);
+    var derivedAvailable = derivedWork.available === true;
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("异步记忆管道", derivedAvailable ? "每 5 秒自动刷新" : "派生任务表不可用"),
+      derivedAvailable ? h("div", { className: "kpi-grid" }, [
+        kpiCard("语义任务积压", firstValue(semanticJobs, ["active_count"], 0),
+          formatNumber(semanticJobs.total || 0) + " 条历史任务"),
+        kpiCard("晋升任务积压", firstValue(promotionJobs, ["active_count"], 0),
+          formatNumber(promotionJobs.total || 0) + " 条历史任务"),
+        kpiCard("等待重试", firstValue(derivedWork, ["retry_count"], 0),
+          "最早积压 " + formatAgeSeconds(derivedWork.oldest_active_age_seconds)),
+        kpiCard("终止任务", firstValue(derivedWork, ["dead_count"], 0),
+          formatNumber(derivedWork.total || 0) + " 条受管任务")
+      ]) : statePanel(
+        "empty",
+        "异步任务状态不可用",
+        derivedWork.reason === "schema_unavailable"
+          ? "当前数据库尚未具备兼容的派生任务结构。"
+          : "尚未初始化被动语义或提案晋升任务表。"
+      )
+    ]));
+
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("最近异步任务", derivedJobs.length + " 条项目任务"),
+      derivedJobs.length ? tableNode([
+        { label: "更新时间", width: "16%", value: function (row) { return row.updated_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+        { label: "管道", width: "15%", value: function (row) { return row.job_kind; }, render: function (value) { return h("span", { className: "cell-wrap cell-primary", text: derivedJobKindLabel(value) }); } },
+        { label: "状态", width: "11%", value: function (row) { return row.status; }, render: function (value) { return makeBadge(value); } },
+        { label: "尝试", width: "10%", value: function (row) { return formatNumber(row.attempt_count || 0) + "/" + formatNumber(row.max_attempts || 0); }, render: function (value) { return h("span", { className: "mono", text: value }); } },
+        { label: "失败原因", width: "25%", value: function (row) { return row.failure_code || "--"; }, render: function (value) { return h("code", { className: "cell-code", text: formatScalar(value), attrs: { title: formatScalar(value) } }); } },
+        { label: "对象", width: "23%", value: function (row) { return row.subject_id; }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: formatScalar(value) } }); } }
+      ], derivedJobs, {
+        onRow: function (row, index, trigger) {
+          openRecordDetail(derivedJobKindLabel(row.job_kind) + " " + compactId(row.job_id), "异步记忆任务", row, trigger);
+        }
+      }) : statePanel(
+        "empty",
+        "暂无异步任务",
+        derivedAvailable
+          ? "当前项目还没有被动语义或提案晋升任务。"
+          : "任务结构可用后，最近状态会出现在这里。"
+      )
+    ]));
+
+    var events = asArray(data.events);
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("最近 Trace", events.length + " 条被动事件"),
+      events.length ? tableNode([
+        { label: "时间", width: "17%", value: function (row) { return row.created_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+        { label: "事件", width: "24%", value: function (row) { return row.event_name; }, render: function (value) { return h("span", { className: "cell-wrap cell-primary", text: passiveEventLabel(value) }); } },
+        { label: "状态", width: "12%", value: function (row) { return firstValue(row, ["metadata.status", "status"], "--"); }, render: function (value) { return makeBadge(value); } },
+        { label: "模式", width: "11%", value: function (row) { return firstValue(row, ["metadata.mode", "metadata.proposal_mode"], "--"); }, render: function (value) { return makeBadge(value, "brand"); } },
+        { label: "数量", width: "10%", value: function (row) { return firstValue(row, ["metadata.memory_count", "metadata.candidate_count", "metadata.proposal_count"], "--"); }, render: function (value) { return h("span", { className: "mono", text: formatScalar(value) }); } },
+        { label: "执行者", width: "12%", value: function (row) { return firstValue(row, ["actor"], "--"); }, render: function (value) { return h("span", { className: "cell-text", text: formatScalar(value) }); } },
+        { label: "Scope", width: "14%", value: function (row) { return firstValue(row, ["request_scope_id"], "--"); }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: formatScalar(value) } }); } }
+      ], events, {
+        onRow: function (row, index, trigger) {
+          openRecordDetail(passiveEventLabel(row.event_name), "Trace", row, trigger);
+        }
+      }) : statePanel("empty", "暂无被动事件", "启用被动上下文或被动记忆后，Trace 会出现在这里。")
+    ]));
+
+    var qualityCases = asArray(data.quality_cases);
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("检索质量", qualityCases.length + " 条标注调用"),
+      qualityCases.length ? tableNode([
+        { label: "时间", width: "16%", value: function (row) { return row.started_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+        { label: "工具", width: "16%", value: function (row) { return row.tool_name; }, render: function (value) { return h("code", { className: "cell-code", text: formatScalar(value) }); } },
+        { label: "样本", width: "18%", value: function (row) { return firstValue(row, ["case_id"], "--"); }, render: function (value) { return h("span", { className: "cell-text", text: formatScalar(value) }); } },
+        { label: "Hit@1", width: "10%", value: function (row) { return readPath(row, "hit_at.1"); }, render: function (value) { return makeBadge(value === true ? "命中" : "未命中", value === true ? "success" : "warning"); } },
+        { label: "Hit@5", width: "10%", value: function (row) { return readPath(row, "hit_at.5"); }, render: function (value) { return makeBadge(value === true ? "命中" : "未命中", value === true ? "success" : "warning"); } },
+        { label: "MRR", width: "9%", value: function (row) { return row.mrr; }, render: function (value) { return h("span", { className: "mono", text: value === null || value === undefined ? "--" : formatRatio(value) }); } },
+        { label: "禁止命中", width: "10%", value: function (row) { return row.forbidden_hit; }, render: function (value) { return makeBadge(value ? "是" : "否", value ? "danger" : "success"); } },
+        { label: "耗时", width: "11%", value: function (row) { return row.duration_ms; }, render: function (value) { return h("span", { className: "mono", text: value === null || value === undefined ? "--" : formatNumber(value) + " ms" }); } }
+      ], qualityCases, {
+        onRow: function (row, index, trigger) {
+          openRecordDetail("检索质量 " + compactId(row.call_id), "hit@k / MRR", row, trigger);
+        }
+      }) : statePanel("empty", "暂无可量化样本", "hit@k 和 MRR 只在调用提供版本化 ground_truth 时计算，普通用户请求不会被伪造成评测样本。")
+    ]));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function proposalCategoryLabel(value) {
+    var labels = {
+      fact: "事实",
+      preference: "偏好",
+      decision: "决策"
+    };
+    return labels[String(value || "")] || statusLabel(value);
+  }
+
+  function proposalBlockedReasonLabel(value) {
+    var labels = {
+      insufficient_user_observations: "观测不足",
+      insufficient_distinct_turns: "回合不足",
+      insufficient_distinct_sessions: "会话不足",
+      quality_below_threshold: "质量不足",
+      unresolved_conflict: "存在冲突",
+      score_below_threshold: "综合分不足",
+      proposal_not_pending: "非待审状态"
+    };
+    return labels[String(value || "")] || statusLabel(value);
+  }
+
+  function proposalEvidenceSummary(row) {
+    if (!row.score_available) {
+      return "评分不可用";
+    }
+    return [
+      "观测 " + formatNumber(row.observation_count || 0),
+      "会话 " + formatNumber(row.distinct_session_count || 0),
+      "回合 " + formatNumber(row.distinct_turn_count || 0),
+      "曝光 " + formatNumber(row.exposure_count || 0),
+      "调用 " + formatNumber(row.distinct_call_count || 0)
+    ].join(" · ");
+  }
+
+  function proposalToolbar() {
+    var filters = state.filters["memory-proposals"];
+    var statusSelect = h("select", {
+      className: "select",
+      attrs: { "aria-label": "按提案状态筛选" },
+      on: {
+        change: function () {
+          filters.status = statusSelect.value;
+          resetPage("memory-proposals");
+          loadCurrentView();
+        }
+      }
+    });
+    [
+      ["", "全部状态"],
+      ["pending", "待审核"],
+      ["adopted", "已采纳"],
+      ["rejected", "已驳回"],
+      ["expired", "已过期"]
+    ].forEach(function (option) {
+      statusSelect.appendChild(h("option", {
+        text: option[1],
+        attrs: { value: option[0], selected: option[0] === filters.status }
+      }));
+    });
+    var categorySelect = h("select", {
+      className: "select",
+      attrs: { "aria-label": "按提案类别筛选" },
+      on: {
+        change: function () {
+          filters.category = categorySelect.value;
+          resetPage("memory-proposals");
+          loadCurrentView();
+        }
+      }
+    });
+    [
+      ["", "全部类别"],
+      ["fact", "事实"],
+      ["preference", "偏好"],
+      ["decision", "决策"]
+    ].forEach(function (option) {
+      categorySelect.appendChild(h("option", {
+        text: option[1],
+        attrs: { value: option[0], selected: option[0] === filters.category }
+      }));
+    });
+    return h("div", { className: "toolbar" }, [statusSelect, categorySelect]);
+  }
+
+  function submitProposalReview(row, feedbackType, rejectionReason, controls, statusNode) {
+    controls.forEach(function (control) {
+      control.disabled = true;
+    });
+    statusNode.textContent = "正在提交受治理审核...";
+    apiMutation(
+      "/memory-proposals/" + encodeURIComponent(row.proposal_id) + "/review",
+      {
+        feedback_type: feedbackType,
+        rejection_reason: rejectionReason || "reviewer_rejected"
+      }
+    ).then(function (payload) {
+      var result = envelopeObject(payload);
+      closeDialog();
+      toast(feedbackType === "adopted"
+        ? "提案已采纳" + (result.memory_id ? "，记忆 ID: " + compactId(result.memory_id) : "")
+        : "提案已驳回", false);
+      resetPage("memory-proposals");
+      if (state.currentView === "memory-proposals") {
+        loadCurrentView();
+      }
+    }).catch(function (error) {
+      statusNode.textContent = error.message;
+      statusNode.classList.add("is-error");
+      controls.forEach(function (control) {
+        control.disabled = false;
+      });
+    });
+  }
+
+  function openProposalReview(row, trigger) {
+    if (!state.featureFlags.proposalReview) {
+      openRecordDetail("提案详情", "只读投影", row, trigger);
+      return;
+    }
+    var reasonSelect = h("select", {
+      className: "select",
+      attrs: { "aria-label": "驳回原因" }
+    });
+    [
+      ["reviewer_rejected", "审核人驳回"],
+      ["duplicate", "重复记忆"],
+      ["incorrect", "内容不正确"],
+      ["not_durable", "不具备长期性"],
+      ["not_reusable", "不具备复用价值"],
+      ["outdated", "内容已过时"],
+      ["policy_rejected", "治理策略驳回"]
+    ].forEach(function (option) {
+      reasonSelect.appendChild(h("option", { text: option[1], attrs: { value: option[0] } }));
+    });
+    var statusNode = h("p", {
+      className: "review-status",
+      text: "审核操作会重新执行信任、项目和提案状态检查。"
+    });
+    var adoptButton;
+    var rejectButton;
+    adoptButton = textButton("采纳为长期记忆", function () {
+      submitProposalReview(row, "adopted", "", [adoptButton, rejectButton], statusNode);
+    }, { primary: true, icon: "database" });
+    rejectButton = textButton("驳回提案", function () {
+      submitProposalReview(
+        row,
+        "rejected",
+        reasonSelect.value,
+        [adoptButton, rejectButton],
+        statusNode
+      );
+    }, { icon: "x" });
+    var body = h("div", { className: "proposal-review" }, [
+      makeNotice("warning", "需要明确审核", "采纳后会通过现有质量管道进入规范 SQLite 并进入索引发件箱；驳回后候选正文会脱敏清空。"),
+      h("section", { className: "detail-section" }, [
+        h("h3", { text: proposalCategoryLabel(row.category) + "候选" }),
+        h("p", { className: "proposal-content", text: firstValue(row, ["content"], "--") })
+      ]),
+      h("div", { className: "field" }, [
+        h("label", { text: "驳回原因", attrs: { for: "proposal-rejection-reason" } }),
+        reasonSelect
+      ]),
+      statusNode,
+      h("div", { className: "review-actions" }, [adoptButton, rejectButton])
+    ]);
+    reasonSelect.id = "proposal-rejection-reason";
+    openDialog("审核记忆提案", "被动记忆治理", body, trigger);
+  }
+
+  function renderMemoryProposals(payload) {
+    var rows = envelopeRows(payload, ["proposals", "items", "results"]);
+    var reviewEnabled = state.featureFlags.proposalReview === true;
+    var root = h("div", {}, [
+      viewHeader(VIEWS["memory-proposals"].title, VIEWS["memory-proposals"].description, [
+        makeBadge(reviewEnabled ? "可审核" : "只读", reviewEnabled ? "success" : "info")
+      ]),
+      reviewEnabled
+        ? makeNotice("info", "审核通道已启用", "操作仍需满足服务端信任阈值和项目权限，前端开关不会绕过治理。")
+        : makeNotice("warning", "当前为只读", "设置 PP_DASHBOARD_REVIEW_ACTIONS=1 并满足 feedback_apply 信任权限后，才会显示可执行审核。")
+    ]);
+    root.appendChild(proposalToolbar());
+    if (!rows.length) {
+      root.appendChild(paginatedEmptyState(
+        payload,
+        "memory-proposals",
+        "没有匹配的记忆提案",
+        "当前项目范围和筛选条件下没有提案记录。"
+      ));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(tableNode([
+      { label: "创建时间", width: "12%", value: function (row) { return row.created_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+      { label: "候选内容", width: "27%", value: function (row) { return firstValue(row, ["content"], row.status === "rejected" || row.status === "expired" ? "已脱敏" : "--"); }, render: function (value) { return h("span", { className: "cell-wrap cell-primary", text: formatScalar(value), attrs: { title: formatScalar(value) } }); } },
+      { label: "类别", width: "8%", value: function (row) { return row.category; }, render: function (value) { return makeBadge(proposalCategoryLabel(value), "brand"); } },
+      { label: "状态", width: "9%", value: function (row) { return row.status; }, render: function (value) { return makeBadge(value); } },
+      { label: "综合分", width: "9%", value: function (row) { return row.score_available ? row.composite_score : null; }, render: function (value) { return h("span", { className: "mono", text: value === null ? "--" : formatRatio(value) }); } },
+      { label: "证据", width: "18%", value: function (row) { return proposalEvidenceSummary(row); }, render: function (value) { return h("span", { className: "cell-wrap", text: value }); } },
+      { label: "晋升门禁", width: "10%", value: function (row) { return row; }, render: function (value) {
+        if (!value.score_available) {
+          return makeBadge("不可用", "info");
+        }
+        return value.eligible
+          ? makeBadge("可晋升", "success")
+          : makeBadge(proposalBlockedReasonLabel(value.blocked_reason), "warning");
+      } },
+      { label: "操作", width: "7%", value: function (row) { return row.status; }, render: function (value, row) {
+        if (value !== "pending") {
+          return makeBadge(value);
+        }
+        if (!reviewEnabled) {
+          return makeBadge("只读", "info");
+        }
+        return textButton("审核", function (event) {
+          openProposalReview(row, event.currentTarget);
+        }, { primary: true });
+      } }
+    ], rows, {
+      payload: payload,
+      view: "memory-proposals",
+      onRow: function (row, index, trigger) {
+        if (row.status === "pending") {
+          openProposalReview(row, trigger);
+        } else {
+          openRecordDetail("提案详情", "记忆提案", row, trigger);
+        }
+      },
+      rowLabel: function (row) {
+        return "打开提案 " + compactId(row.proposal_id);
+      }
+    }));
+    refs.viewRoot.replaceChildren(root);
+  }
+
   function detailSection(title, content) {
     return h("section", { className: "detail-section" }, [
       h("h3", { text: title }),
@@ -1698,8 +2334,13 @@
     refs.detailClose.focus();
   }
 
-  function closeDialog() {
+  function closeDialog(force) {
+    if (state.control.busy && force !== true) {
+      toast("控制操作结果确认前不能关闭此面板。", true);
+      return;
+    }
     state.detailSequence += 1;
+    clearControlSecretInputs();
     if (typeof refs.detailDialog.close === "function" && refs.detailDialog.open) {
       refs.detailDialog.close();
     } else {
@@ -3117,6 +3758,1004 @@
     });
   }
 
+  function controlApiRoot() {
+    if (window.location.protocol !== "http:" || window.location.hostname !== "127.0.0.1") {
+      return "";
+    }
+    if (window.location.port === "19020") {
+      return "http://127.0.0.1:19040/api/control/v1";
+    }
+    if (window.location.port === "9020") {
+      return "http://127.0.0.1:9040/api/control/v1";
+    }
+    return "";
+  }
+
+  function controlRoleRank(role) {
+    var rank = { viewer: 0, operator: 1, "secret-admin": 2 }[String(role || "")];
+    return rank === undefined ? -1 : rank;
+  }
+
+  function controlRoleLabel(role) {
+    return {
+      viewer: "查看者",
+      operator: "操作员",
+      "secret-admin": "密钥管理员"
+    }[String(role || "")] || formatScalar(role);
+  }
+
+  function controlErrorMessage(error) {
+    var code = String(firstValue(error && error.payload || {}, ["error.code"], ""));
+    var messages = {
+      control_authentication_required: "控制令牌无效或已失效。",
+      control_role_insufficient: "当前角色无权执行此操作。",
+      control_etag_mismatch: "配置已被其他会话更新，请刷新后重新检查变更。",
+      control_idempotency_key_conflict: "重试键已绑定到不同的请求内容。",
+      control_if_match_required: "缺少当前配置 ETag，请刷新安全配置。",
+      control_idempotency_key_required: "请求缺少有效的稳定重试键。",
+      embedding_generation_required: "此修订需要完整的嵌入索引生成证据。",
+      control_embedding_evidence_mismatch: "嵌入索引证据与此修订不匹配。",
+      control_generation_id_invalid: "generation ID 无效。",
+      control_manifest_sha256_invalid: "generation 清单 SHA-256 无效。",
+      control_generation_unavailable: "当前 verified generation 不可用。",
+      control_generation_not_current: "目标 generation 尚未成为服务器 current。",
+      control_generation_manifest_mismatch: "generation 清单摘要不匹配。",
+      control_generation_identity_mismatch: "generation embedding identity 与活动配置不匹配。",
+      control_generation_quality_mismatch: "generation 质量证据未通过。",
+      control_embedding_cost_policy_incomplete: "嵌入单价、币种和价格版本必须同时填写。",
+      control_embedding_cost_currency_invalid: "嵌入费用币种只支持 USD 或 CNY。"
+    };
+    if (messages[code]) {
+      return messages[code];
+    }
+    if (error && error.name === "TypeError") {
+      return "无法连接控制 API，请检查本地 SSH 转发和控制服务。";
+    }
+    return error && error.message ? error.message : "控制 API 请求失败。";
+  }
+
+  function ControlStaleRequest() {
+    this.name = "ControlStaleRequest";
+    this.message = "过期的控制请求已忽略";
+  }
+  ControlStaleRequest.prototype = Object.create(Error.prototype);
+
+  function abortControlRequests() {
+    state.control.controllers.forEach(function (controller) {
+      controller.abort();
+    });
+    state.control.controllers.clear();
+  }
+
+  function resetControlSecretEditors(scope) {
+    (scope || document).querySelectorAll("[data-secret-name]").forEach(function (row) {
+      var operation = row.querySelector("select");
+      var input = row.querySelector("input");
+      if (operation) {
+        operation.value = "";
+      }
+      if (input) {
+        input.value = "";
+        input.disabled = true;
+      }
+    });
+  }
+
+  function clearControlSecretInputs() {
+    document.querySelectorAll("[data-control-secret]").forEach(function (input) {
+      input.value = "";
+    });
+    resetControlSecretEditors(document);
+  }
+
+  function resetControlSession() {
+    state.control.epoch += 1;
+    abortControlRequests();
+    clearControlSecretInputs();
+    state.control.token = "";
+    state.control.actor = "";
+    state.control.role = "";
+    state.control.etag = "";
+    state.control.activeRevisionId = "";
+    state.control.configDraft = "{}";
+    state.control.busy = false;
+    state.control.retryKeys.clear();
+    refs.mainNav.removeAttribute("inert");
+    refs.refreshButton.disabled = false;
+  }
+
+  function disconnectControlSession() {
+    if (state.control.busy) {
+      toast("控制操作结果确认前不能断开会话。", true);
+      return;
+    }
+    resetControlSession();
+    toast("控制会话已从浏览器内存中清除。", false);
+    loadCurrentView();
+  }
+
+  function controlRequest(path, options) {
+    var settings = options || {};
+    var root = controlApiRoot();
+    if (!root) {
+      return Promise.reject(new ApiError(
+        "请通过 http://127.0.0.1:9020/dashboard 或 http://127.0.0.1:19020/dashboard 打开控制台。",
+        0,
+        {}
+      ));
+    }
+    if (!state.control.token) {
+      return Promise.reject(new ApiError("控制会话尚未连接。", 401, {}));
+    }
+    var epoch = state.control.epoch;
+    var token = state.control.token;
+    var controller = new AbortController();
+    state.control.controllers.add(controller);
+    var headers = {
+      Accept: "application/json",
+      Authorization: "Bearer " + token
+    };
+    if (settings.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+    }
+    if (settings.etag) {
+      headers["If-Match"] = settings.etag;
+    }
+    if (settings.idempotencyKey) {
+      headers["Idempotency-Key"] = settings.idempotencyKey;
+    }
+    return fetch(root + path, {
+      method: settings.method || "GET",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      headers: headers,
+      body: settings.body,
+      signal: controller.signal
+    }).then(function (response) {
+      return response.text().then(function (body) {
+        if (epoch !== state.control.epoch || token !== state.control.token) {
+          throw new ControlStaleRequest();
+        }
+        var payload = {};
+        if (body) {
+          try {
+            payload = JSON.parse(body);
+          } catch (error) {
+            payload = {};
+          }
+        }
+        if (!response.ok) {
+          var code = firstValue(payload, ["error.code"], "control_request_failed");
+          throw new ApiError(response.status + " " + code, response.status, payload);
+        }
+        return {
+          payload: payload,
+          etag: response.headers.get("ETag") || ""
+        };
+      });
+    }).finally(function () {
+      state.control.controllers.delete(controller);
+    });
+  }
+
+  function applyControlSafeSnapshot(result) {
+    var payload = isObject(result && result.payload) ? result.payload : {};
+    state.control.etag = String(result && result.etag || payload.etag || "");
+    state.control.activeRevisionId = String(firstValue(payload, ["active_revision_id", "revision_id"], ""));
+    return result;
+  }
+
+  function randomControlKey(prefix) {
+    var bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    var suffix = Array.from(bytes).map(function (value) {
+      return value.toString(16).padStart(2, "0");
+    }).join("");
+    return prefix + "-" + suffix;
+  }
+
+  function stableControlRetryKey(operation, etag, serializedBody) {
+    if (!window.crypto || !window.crypto.subtle || typeof TextEncoder === "undefined") {
+      return Promise.reject(new Error("当前浏览器无法安全生成稳定重试键。"));
+    }
+    var material = operation + "\n" + etag + "\n" + serializedBody;
+    return window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(material)).then(function (digest) {
+      var hash = Array.from(new Uint8Array(digest)).map(function (value) {
+        return value.toString(16).padStart(2, "0");
+      }).join("");
+      var binding = operation + ":" + hash;
+      if (!state.control.retryKeys.has(binding)) {
+        if (state.control.retryKeys.size >= 32) {
+          state.control.retryKeys.delete(state.control.retryKeys.keys().next().value);
+        }
+        state.control.retryKeys.set(binding, randomControlKey(operation));
+      }
+      return state.control.retryKeys.get(binding);
+    });
+  }
+
+  function controlSessionActions() {
+    if (!state.control.token || !state.control.role) {
+      return [];
+    }
+    return [
+      h("span", {
+        className: "control-session-label",
+        text: state.control.actor + " / " + controlRoleLabel(state.control.role)
+      }),
+      textButton("断开", disconnectControlSession, { icon: "x" })
+    ];
+  }
+
+  function controlViewHeader(view, actions) {
+    return viewHeader(
+      VIEWS[view].title,
+      VIEWS[view].description,
+      controlSessionActions().concat(actions || [])
+    );
+  }
+
+  function renderControlGate(view, errorMessage) {
+    var root = h("div", {}, controlViewHeader(view));
+    if (errorMessage) {
+      root.appendChild(makeNotice("danger", "连接失败。", errorMessage));
+    }
+    var endpoint = controlApiRoot();
+    if (!endpoint) {
+      root.appendChild(statePanel(
+        "error",
+        "控制入口不可用",
+        "请使用 127.0.0.1 的 9020 或 19020 Dashboard 地址打开此页面。"
+      ));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    var tokenInput = h("input", {
+      className: "input control-token-input",
+      attrs: {
+        type: "password",
+        autocomplete: "off",
+        autocapitalize: "none",
+        spellcheck: "false",
+        required: true,
+        minlength: "16",
+        placeholder: "控制 Bearer Token",
+        "aria-label": "控制 Bearer Token",
+        "data-control-secret": "token"
+      }
+    });
+    var submit = textButton("连接控制 API", null, { primary: true, type: "submit", icon: "key-round" });
+    var form = h("form", {
+      className: "control-login-form",
+      on: {
+        submit: function (event) {
+          event.preventDefault();
+          var token = tokenInput.value.trim();
+          tokenInput.value = "";
+          if (!token) {
+            return;
+          }
+          resetControlSession();
+          state.control.epoch += 1;
+          state.control.token = token;
+          state.control.busy = true;
+          submit.disabled = true;
+          controlRequest("/session").then(function (result) {
+            var session = result.payload;
+            if (controlRoleRank(session.role) < 0) {
+              throw new ApiError("控制 API 返回了未知角色。", 403, {});
+            }
+            state.control.actor = String(session.actor || "");
+            state.control.role = String(session.role || "");
+            state.control.busy = false;
+            loadCurrentView();
+          }).catch(function (error) {
+            if (error && (error.name === "AbortError" || error.name === "ControlStaleRequest")) {
+              return;
+            }
+            var message = controlErrorMessage(error);
+            resetControlSession();
+            renderControlGate(view, message);
+          });
+        }
+      }
+    }, [
+      h("div", { className: "field" }, [
+        h("label", { text: "控制会话令牌" }),
+        tokenInput
+      ]),
+      submit
+    ]);
+    root.appendChild(h("section", { className: "control-login" }, [
+      h("div", { className: "control-login-copy" }, [
+        h("h2", { text: "连接操作员会话" }),
+        h("p", { text: "令牌只保留在当前页面的 JavaScript 内存中；刷新、断开或关闭页面后即丢失。" }),
+        h("code", { text: endpoint })
+      ]),
+      form
+    ]));
+    refs.viewRoot.replaceChildren(root);
+    refs.viewRoot.setAttribute("aria-busy", "false");
+    window.setTimeout(function () { tokenInput.focus(); }, 0);
+  }
+
+  function updateControlChrome() {
+    var label = state.control.actor + " / " + controlRoleLabel(state.control.role);
+    refs.scopeChip.textContent = label;
+    refs.scopeChip.title = "当前内存控制会话：" + label;
+    setConnection("ready", "控制 API 已连接");
+    setReadiness(controlRoleLabel(state.control.role), "success");
+    refs.dashboardMode.textContent = "Dashboard V2 / 控制令牌仅驻留内存";
+    refs.lastUpdated.textContent = "更新于 " + formatTimestamp(new Date().toISOString());
+  }
+
+  function controlComponentRows(payload) {
+    var components = [];
+    ["sqlite", "inference_jobs", "lancedb", "maintenance"].forEach(function (name) {
+      if (isObject(payload[name])) {
+        components.push({ name: name, state: firstValue(payload[name], ["state", "status"], "unknown"), detail: firstValue(payload[name], ["reason"], "") });
+      }
+    });
+    Object.keys(isObject(payload.listeners) ? payload.listeners : {}).forEach(function (name) {
+      var listener = payload.listeners[name];
+      components.push({
+        name: "listener." + name,
+        state: firstValue(listener, ["state", "status", "reachable"], "unknown"),
+        detail: firstValue(listener, ["port"], "")
+      });
+    });
+    return components;
+  }
+
+  function renderControlStatus(payload) {
+    var control = isObject(payload.control_config) ? payload.control_config : {};
+    var lancedb = isObject(payload.lancedb) ? payload.lancedb : {};
+    var manifest = isObject(lancedb.manifest) ? lancedb.manifest : {};
+    var liveIndex = isObject(lancedb.live_index) ? lancedb.live_index : {};
+    var liveLag = isObject(liveIndex.lag) ? liveIndex.lag : {};
+    var desiredId = firstValue(control, ["desired_generation_id"], "--");
+    var currentId = firstValue(manifest, ["generation_id"], "--");
+    var desiredSha = firstValue(control, ["desired_generation_manifest_sha256"], "--");
+    var currentSha = firstValue(manifest, ["manifest_sha256"], "--");
+    var aligned = desiredId !== "--" && desiredId === currentId && desiredSha !== "--" && desiredSha === currentSha;
+    var root = h("div", {}, [
+      controlViewHeader("control-status"),
+      h("div", { className: "kpi-grid" }, [
+        kpiCard("活动修订", firstValue(control, ["active_revision_id"], "未激活"), "当前期望配置"),
+        kpiCard("配置 ETag", compactId(firstValue(control, ["etag"], "--")), "并发写入基线"),
+        kpiCard("当前索引", currentId, "LanceDB 清单"),
+        kpiCard("期望对齐", aligned ? "已对齐" : "待核对", "生成 ID 与清单摘要"),
+        kpiCard("实时索引", firstValue(liveIndex, ["state"], "未配置"),
+          "待回放 " + formatNumber(firstValue(liveLag, ["active_job_count"], 0)) + " 条")
+      ])
+    ]);
+    if (!aligned && desiredId !== "--") {
+      root.appendChild(makeNotice("warning", "期望状态尚未对齐。", "必须同时核对生成 ID 和完整清单 SHA-256；控制面不会代替主机重启或索引提升。"));
+    }
+    var rows = controlComponentRows(payload);
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("服务器组件", rows.length + " 项"),
+      rows.length ? tableNode([
+        { label: "组件", width: "38%", value: function (row) { return row.name; }, render: function (value) { return h("code", { className: "cell-code cell-primary", text: value }); } },
+        { label: "状态", width: "22%", value: function (row) { return row.state; }, render: function (value) { return makeBadge(value); } },
+        { label: "详情", width: "40%", value: function (row) { return row.detail; }, render: function (value) { return h("span", { className: "cell-wrap", text: formatScalar(value) }); } }
+      ], rows) : statePanel("empty", "暂无状态", "控制 API 没有返回组件状态。")
+    ]));
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("期望与当前索引", aligned ? "一致" : "需要核对"),
+      h("dl", { className: "key-value-grid" }, [
+        { label: "期望生成 ID", value: desiredId },
+        { label: "当前生成 ID", value: currentId },
+        { label: "期望清单 SHA-256", value: desiredSha },
+        { label: "当前清单 SHA-256", value: currentSha },
+        { label: "Live View 状态", value: firstValue(liveIndex, ["state"], "未配置") },
+        { label: "已完成增量", value: firstValue(liveLag, ["completed_job_count"], "--") },
+        { label: "阻塞增量", value: firstValue(liveLag, ["blocked_job_count"], "--") }
+      ].map(function (item) {
+        return h("div", { className: "key-value" }, [h("dt", { text: item.label }), h("dd", { text: item.value })]);
+      }))
+    ]));
+    if (controlRoleRank(state.control.role) >= 1) {
+      var generationInput = h("input", {
+        className: "input",
+        attrs: {
+          type: "text",
+          value: currentId === "--" ? "" : currentId,
+          autocomplete: "off",
+          spellcheck: "false",
+          "aria-label": "当前 generation ID"
+        }
+      });
+      var manifestInput = h("input", {
+        className: "input",
+        attrs: {
+          type: "text",
+          value: currentSha === "--" ? "" : currentSha,
+          autocomplete: "off",
+          spellcheck: "false",
+          "aria-label": "当前 generation 清单 SHA-256"
+        }
+      });
+      var retargetResult = h("div", { className: "control-action-result", attrs: { "aria-live": "polite" } });
+      var retargetButton = textButton("对齐当前 generation", function () {
+        if (state.control.busy) {
+          return;
+        }
+        var body = JSON.stringify({
+          generation_id: generationInput.value.trim(),
+          manifest_sha256: manifestInput.value.trim()
+        });
+        var etag = state.control.etag;
+        state.control.busy = true;
+        refs.refreshButton.disabled = true;
+        retargetButton.disabled = true;
+        retargetResult.replaceChildren(makeNotice("warning", "正在核对 generation。", "只更新控制面元数据 SQLite 中的 desired 指针，不修改记忆 SQLite 或索引内容。"));
+        stableControlRetryKey("generation-retarget", etag, body).then(function (key) {
+          return controlRequest("/generation/retarget-current", {
+            method: "POST",
+            body: body,
+            etag: etag,
+            idempotencyKey: key
+          });
+        }).then(function (result) {
+          state.control.etag = String(result.payload.etag || "");
+          retargetResult.replaceChildren(makeNotice("success", "generation 已对齐。", "控制面 desired generation 已更新。"));
+          loadCurrentView();
+        }).catch(function (error) {
+          if (error && (error.name === "AbortError" || error.name === "ControlStaleRequest")) {
+            return;
+          }
+          retargetResult.replaceChildren(makeNotice("danger", "generation 对齐未完成。", controlErrorMessage(error)));
+        }).finally(function () {
+          state.control.busy = false;
+          refs.refreshButton.disabled = false;
+          retargetButton.disabled = false;
+          body = "";
+        });
+      }, { primary: true, icon: "activity" });
+      root.appendChild(h("section", { className: "section-block control-editor-section" }, [
+        sectionHeader("Generation 对齐", "需已推广且已验证"),
+        makeNotice("info", "只对齐当前 generation", "用于 rerank 等不改变 embedding identity 的配置变更；控制面会校验 manifest、质量门和 embedding identity。"),
+        h("div", { className: "control-form-grid" }, [
+          h("div", { className: "field" }, [h("label", { text: "当前 generation ID" }), generationInput]),
+          h("div", { className: "field" }, [h("label", { text: "清单 SHA-256" }), manifestInput])
+        ]),
+        h("div", { className: "control-form-actions" }, [retargetButton]),
+        retargetResult
+      ]));
+    }
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function configuredSecretRows(payload) {
+    var secrets = isObject(payload.secrets) ? payload.secrets : {};
+    return ["embedding_api_key", "rerank_api_key", "chunk_inference_api_key"].map(function (name) {
+      var raw = secrets[name];
+      return {
+        name: name,
+        configured: raw === true || (isObject(raw) && raw.configured === true)
+      };
+    });
+  }
+
+  function controlSecretEditor(name) {
+    var operation = h("select", {
+      className: "select",
+      attrs: { "aria-label": name + " 操作" }
+    }, [
+      h("option", { text: "不变", attrs: { value: "" } }),
+      h("option", { text: "设置", attrs: { value: "set" } }),
+      h("option", { text: "清除", attrs: { value: "clear" } })
+    ]);
+    var value = h("input", {
+      className: "input",
+      attrs: {
+        type: "password",
+        autocomplete: "off",
+        autocapitalize: "none",
+        spellcheck: "false",
+        disabled: true,
+        placeholder: "仅写入，不回显",
+        "aria-label": name + " 新值",
+        "data-control-secret": name
+      }
+    });
+    operation.addEventListener("change", function () {
+      value.disabled = operation.value !== "set";
+      if (operation.value !== "set") {
+        value.value = "";
+      }
+    });
+    return h("div", { className: "control-secret-row", dataset: { secretName: name } }, [
+      h("code", { text: name }), operation, value
+    ]);
+  }
+
+  function readControlCandidate(form) {
+    var textarea = form.querySelector("[data-control-config-patch]");
+    var config;
+    try {
+      config = JSON.parse(textarea.value || "{}");
+    } catch (error) {
+      throw new Error("配置补丁必须是有效 JSON。 ");
+    }
+    if (!isObject(config)) {
+      throw new Error("配置补丁必须是 JSON 对象。 ");
+    }
+    var secretOps = {};
+    form.querySelectorAll("[data-secret-name]").forEach(function (row) {
+      var name = row.dataset.secretName;
+      var operation = row.querySelector("select").value;
+      var input = row.querySelector("input");
+      if (operation === "set") {
+        if (!input.value) {
+          throw new Error(name + " 选择设置时必须输入新值。");
+        }
+        secretOps[name] = { op: "set", value: input.value };
+      } else if (operation === "clear") {
+        secretOps[name] = { op: "clear" };
+      }
+    });
+    var body = { config: config, secret_ops: secretOps };
+    var serialized = JSON.stringify(body);
+    Object.keys(secretOps).forEach(function (name) {
+      if (secretOps[name].value !== undefined) {
+        secretOps[name].value = "";
+      }
+    });
+    return serialized;
+  }
+
+  function setControlEditorLocked(form, locked) {
+    form.setAttribute("aria-busy", String(locked));
+    form.querySelectorAll("textarea, select, button").forEach(function (control) {
+      control.disabled = locked;
+    });
+    form.querySelectorAll("[data-secret-name]").forEach(function (row) {
+      var operation = row.querySelector("select");
+      var input = row.querySelector("input");
+      if (input) {
+        input.disabled = locked || !operation || operation.value !== "set";
+      }
+    });
+  }
+
+  function controlEditorMatches(form, serialized) {
+    try {
+      return readControlCandidate(form) === serialized;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function runControlConfigAction(kind, form, resultHost) {
+    if (state.control.busy) {
+      return;
+    }
+    var serialized;
+    try {
+      serialized = readControlCandidate(form);
+    } catch (error) {
+      resultHost.replaceChildren(makeNotice("danger", "输入无效。", error.message));
+      return;
+    }
+    var etag = state.control.etag;
+    if (!etag) {
+      resultHost.replaceChildren(makeNotice("danger", "缺少 ETag。", "刷新安全配置后再试。"));
+      return;
+    }
+    state.control.busy = true;
+    setControlEditorLocked(form, true);
+    refs.refreshButton.disabled = true;
+    refs.mainNav.setAttribute("inert", "");
+    resultHost.replaceChildren(makeNotice("info", kind === "stage" ? "正在暂存。" : "正在验证。", "请求进行期间请勿关闭页面。"));
+    var keyPromise = kind === "stage"
+      ? stableControlRetryKey("stage", etag, serialized)
+      : Promise.resolve("");
+    keyPromise.then(function (key) {
+      return controlRequest(kind === "stage" ? "/config/stage" : "/config/validate", {
+        method: "POST",
+        body: serialized,
+        etag: etag,
+        idempotencyKey: key
+      });
+    }).then(function (result) {
+      var payload = result.payload;
+      resultHost.replaceChildren(makeNotice(
+        "info",
+        kind === "stage" ? "修订已暂存。" : "配置验证通过。",
+        kind === "stage"
+          ? "修订 " + firstValue(payload, ["revision_id"], "--") + " 已创建，尚未激活。"
+          : (payload.requires_embedding_evidence ? "此变更需要嵌入索引生成证据。" : "此变更不需要嵌入索引生成证据。")
+      ));
+      if (kind === "stage") {
+        if (controlEditorMatches(form, serialized)) {
+          resetControlSecretEditors(form);
+        }
+        toast("配置修订已暂存。", false);
+      }
+    }).catch(function (error) {
+      if (error && (error.name === "AbortError" || error.name === "ControlStaleRequest")) {
+        return;
+      }
+      resultHost.replaceChildren(makeNotice(
+        "danger",
+        "操作未完成。",
+        controlErrorMessage(error) + (kind === "stage" ? " 相同内容重试会复用同一稳定重试键。" : "")
+      ));
+    }).finally(function () {
+      state.control.busy = false;
+      setControlEditorLocked(form, false);
+      refs.refreshButton.disabled = false;
+      refs.mainNav.removeAttribute("inert");
+      serialized = "";
+    });
+  }
+
+  function recommendedCloudConfigPatch() {
+    return {
+      embedding: {
+        enabled: true,
+        base_url: "https://api.syuan.org",
+        path: "/v1/embeddings",
+        model: "Qwen3-Embedding-8B",
+        model_revision: "Qwen3-Embedding-8B",
+        dimension: 1024,
+        send_dimensions: true,
+        cost_per_million_tokens: null,
+        cost_currency: "",
+        pricing_revision: ""
+      },
+      rerank: {
+        enabled: true,
+        base_url: "https://api.syuan.org",
+        path: "/v1/rerank",
+        model: "BAAI/bge-reranker-v2-m3",
+        model_revision: "BAAI/bge-reranker-v2-m3"
+      },
+      chunk_inference: {
+        chunking_mode: "structure-v1",
+        enrichment_mode: "shadow",
+        base_url: "https://api.deepseek.com",
+        path: "/chat/completions",
+        model: "deepseek-v4-flash",
+        model_revision: "deepseek-v4-flash",
+        temperature: 0,
+        top_p: 1,
+        json_mode: true,
+        fusion_mode: "shadow",
+        fusion_batch_size: 20,
+        fusion_max_wait_seconds: 2,
+        fusion_max_queue_size: 1000,
+        fusion_workers: 2,
+        fusion_lease_seconds: 120,
+        fusion_retry_delay_seconds: 5,
+        fusion_poll_seconds: 0.25
+      },
+      gateway: { enabled: true }
+    };
+  }
+
+  function renderControlConfig(payload) {
+    var config = isObject(payload.config) ? payload.config : {};
+    var rows = [];
+    flattenConfig(config, "", rows, 0);
+    var secretRows = configuredSecretRows(payload);
+    var role = controlRoleRank(state.control.role);
+    var root = h("div", {}, controlViewHeader("control-config"));
+    root.appendChild(h("div", { className: "kpi-grid" }, [
+      kpiCard("活动修订", firstValue(payload, ["active_revision_id", "revision_id"], "基础配置"), "当前期望状态"),
+      kpiCard("配置来源", firstValue(payload, ["source"], "--"), "安全配置投影"),
+      kpiCard("ETag", compactId(state.control.etag || payload.etag), "If-Match 并发基线"),
+      kpiCard("已配置密钥", secretRows.filter(function (row) { return row.configured; }).length, "仅显示布尔状态")
+    ]));
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("当前安全配置", rows.length + " 个字段"),
+      rows.length ? tableNode([
+        { label: "配置键", width: "45%", value: function (row) { return row.key; }, render: function (value) { return h("code", { className: "cell-code cell-primary", text: value }); } },
+        { label: "有效值", width: "42%", value: function (row) { return row.value; }, render: function (value) { return h("span", { className: "cell-wrap mono", text: value }); } },
+        { label: "类型", width: "13%", value: function (row) { return row.kind; }, render: function (value) { return makeBadge(value); } }
+      ], rows) : statePanel("empty", "暂无安全配置", "控制 API 没有返回公开配置字段。")
+    ]));
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("密钥状态", "只写通道"),
+      h("div", { className: "control-secret-status" }, secretRows.map(function (row) {
+        return h("div", { className: "status-row" }, [h("code", { text: row.name }), makeBadge(row.configured ? "已配置" : "未配置", row.configured ? "success" : "neutral")]);
+      }))
+    ]));
+    if (role < 1) {
+      root.appendChild(makeNotice("info", "当前会话为只读。", "操作员可以验证和暂存公开配置；密钥管理员可以使用只写密钥通道。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    var patch = h("textarea", {
+      className: "control-textarea",
+      text: state.control.configDraft,
+      attrs: {
+        rows: "12",
+        spellcheck: "false",
+        "aria-label": "严格配置补丁 JSON",
+        "data-control-config-patch": "true"
+      },
+      on: { input: function () { state.control.configDraft = patch.value; } }
+    });
+    var formChildren = [
+      h("div", { className: "field" }, [h("label", { text: "严格配置补丁 JSON" }), patch])
+    ];
+    if (role >= 2) {
+      formChildren.push(h("fieldset", { className: "control-secret-editor" }, [
+        h("legend", { text: "密钥操作（暂存成功后清空）" }),
+        controlSecretEditor("embedding_api_key"),
+        controlSecretEditor("rerank_api_key"),
+        controlSecretEditor("chunk_inference_api_key")
+      ]));
+    }
+    var resultHost = h("div", { className: "control-action-result", attrs: { "aria-live": "polite" } });
+    var form = h("form", {
+      className: "control-config-form",
+      on: { submit: function (event) { event.preventDefault(); } }
+    }, formChildren);
+    form.appendChild(h("div", { className: "control-form-actions" }, [
+      textButton("载入推荐云配置", function () {
+        var recommended = JSON.stringify(recommendedCloudConfigPatch(), null, 2);
+        patch.value = recommended;
+        state.control.configDraft = recommended;
+      }, { icon: "cloud" }),
+      textButton("验证", function () { runControlConfigAction("validate", form, resultHost); }, { icon: "shield" }),
+      textButton("暂存修订", function () { runControlConfigAction("stage", form, resultHost); }, { primary: true, icon: "git-branch" })
+    ]));
+    root.appendChild(h("section", { className: "section-block control-editor-section" }, [
+      sectionHeader("准备配置修订", controlRoleLabel(state.control.role)),
+      makeNotice("info", "变更尚未激活。", "先验证，再暂存不可变修订；暂存不会重启服务。"),
+      form,
+      resultHost
+    ]));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function openControlActivation(revision, trigger) {
+    var needsEvidence = revision.requires_embedding_evidence === true;
+    var containsSecrets = revision.contains_secret_changes !== false;
+    if (String(revision.revision_id || "") === state.control.activeRevisionId) {
+      toast("当前活动修订不能再次激活。", true);
+      return;
+    }
+    if (!state.control.etag || String(revision.base_etag || "") !== state.control.etag) {
+      toast("此修订基于旧配置，不能激活；请从当前配置重新暂存。", true);
+      return;
+    }
+    if (containsSecrets && controlRoleRank(state.control.role) < 2) {
+      toast("只有密钥管理员可以激活包含密钥变更的修订。", true);
+      return;
+    }
+    state.detailFocus = trigger || document.activeElement;
+    refs.detailEyebrow.textContent = "远程控制";
+    refs.detailTitle.textContent = "确认激活 " + formatScalar(revision.revision_id);
+    var evidenceTemplate = needsEvidence ? JSON.stringify({
+      revision_id: revision.revision_id,
+      embedding_identity: revision.embedding_identity,
+      provider_smoke: { passed: true, evidence_id: "provider-smoke-evidence-id" },
+      shadow_generation: { passed: true, generation_id: "verified-shadow-generation-id" },
+      quality_gate: { passed: true, evidence_id: "quality-gate-evidence-id" }
+    }, null, 2) : "";
+    var evidence = h("textarea", {
+      className: "control-textarea",
+      attrs: {
+        rows: "16",
+        spellcheck: "false",
+        placeholder: evidenceTemplate,
+        "aria-label": "激活证据 JSON"
+      }
+    });
+    var confirmation = h("input", { attrs: { type: "checkbox", id: "control-activation-confirm" } });
+    var activateButton = textButton("激活期望配置", null, { primary: true, disabled: true, icon: "activity" });
+    var resultHost = h("div", { className: "control-action-result", attrs: { "aria-live": "polite" } });
+    confirmation.addEventListener("change", function () {
+      activateButton.disabled = !confirmation.checked;
+    });
+    activateButton.addEventListener("click", function () {
+      if (!confirmation.checked || state.control.busy) {
+        return;
+      }
+      var body = {};
+      if (needsEvidence) {
+        try {
+          body.evidence = JSON.parse(evidence.value || "");
+        } catch (error) {
+          resultHost.replaceChildren(makeNotice("danger", "证据无效。", "嵌入身份变更必须提供有效的 JSON 证据对象。"));
+          return;
+        }
+        if (!isObject(body.evidence)) {
+          resultHost.replaceChildren(makeNotice("danger", "证据无效。", "激活证据必须是 JSON 对象。"));
+          return;
+        }
+      }
+      var serialized = JSON.stringify(body);
+      var etag = state.control.etag;
+      state.control.busy = true;
+      refs.refreshButton.disabled = true;
+      refs.mainNav.setAttribute("inert", "");
+      activateButton.disabled = true;
+      resultHost.replaceChildren(makeNotice("warning", "正在选择期望配置。", "此操作不会重启服务。"));
+      stableControlRetryKey("activate", etag, revision.revision_id + "\n" + serialized).then(function (key) {
+        return controlRequest("/config/revisions/" + encodeURIComponent(revision.revision_id) + "/activate", {
+          method: "POST",
+          body: serialized,
+          etag: etag,
+          idempotencyKey: key
+        });
+      }).then(function (result) {
+        state.control.etag = String(result.payload.etag || "");
+        state.control.activeRevisionId = String(result.payload.revision_id || revision.revision_id || "");
+        closeDialog(true);
+        toast(result.payload.restart_required ? "期望配置已激活；需要经授权的主机重启。" : "期望配置已激活。", false);
+        loadCurrentView();
+      }).catch(function (error) {
+        if (error && (error.name === "AbortError" || error.name === "ControlStaleRequest")) {
+          return;
+        }
+        resultHost.replaceChildren(makeNotice("danger", "激活未完成。", controlErrorMessage(error) + " 相同修订和证据重试会复用同一稳定重试键。"));
+        activateButton.disabled = !confirmation.checked;
+      }).finally(function () {
+        state.control.busy = false;
+        refs.refreshButton.disabled = false;
+        refs.mainNav.removeAttribute("inert");
+        serialized = "";
+      });
+    });
+    var bodyChildren = [
+      makeNotice("warning", "这是期望状态变更。", "激活会原子选择 managed.env，但不会运行 systemctl、重启服务或宣称运行状态已应用。"),
+      keyValueGrid(revision, ["config", "secrets"])
+    ];
+    if (needsEvidence) {
+      bodyChildren.push(h("div", { className: "field control-evidence-field" }, [
+        h("label", { text: "嵌入索引生成证据 JSON" }),
+        h("p", {
+          className: "detail-section-copy",
+          text: "必须且只能包含 revision_id、embedding_identity，以及通过的 provider_smoke、shadow_generation、quality_gate 三项证据；单独提供 generation_id 不会通过校验。"
+        }),
+        evidence
+      ]));
+    }
+    bodyChildren.push(h("label", { className: "control-confirmation" }, [
+      confirmation,
+      h("span", { text: "我已核对修订、当前 ETag 与所需证据，并确认选择此期望配置。" })
+    ]));
+    bodyChildren.push(h("div", { className: "control-form-actions" }, activateButton));
+    bodyChildren.push(resultHost);
+    refs.detailBody.replaceChildren(h("div", {}, bodyChildren));
+    if (!refs.detailDialog.open) {
+      refs.detailDialog.showModal();
+    }
+  }
+
+  function renderControlRevisions(payload) {
+    var rows = asArray(payload.revisions);
+    var root = h("div", {}, controlViewHeader("control-revisions"));
+    if (!rows.length) {
+      root.appendChild(statePanel("empty", "暂无配置修订", "暂存配置后，不可变修订会显示在此处。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(tableNode([
+      { label: "创建时间", width: "16%", value: function (row) { return row.created_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+      { label: "修订", width: "20%", value: function (row) { return row.revision_id; }, render: function (value) { return h("code", { className: "cell-code cell-primary", text: compactId(value), attrs: { title: value } }); } },
+      { label: "创建者", width: "12%", value: function (row) { return row.actor; }, render: function (value) { return h("span", { className: "cell-text", text: formatScalar(value) }); } },
+      { label: "嵌入证据", width: "12%", value: function (row) { return row.requires_embedding_evidence; }, render: function (value) { return makeBadge(value ? "需要" : "不需要", value ? "warning" : "neutral"); } },
+      { label: "密钥变更", width: "12%", value: function (row) { return row.contains_secret_changes; }, render: function (value) { return makeBadge(value ? "包含" : "不包含", value ? "warning" : "neutral"); } },
+      { label: "状态", width: "12%", value: function (row) {
+        if (String(row.revision_id || "") === state.control.activeRevisionId) {
+          return "active";
+        }
+        return String(row.base_etag || "") === state.control.etag ? "staged" : "stale";
+      }, render: function (value) { return makeBadge(value); } },
+      { label: "操作", width: "16%", value: function (row) { return row.revision_id; }, render: function (_value, row) {
+        var active = String(row.revision_id || "") === state.control.activeRevisionId;
+        var stale = String(row.base_etag || "") !== state.control.etag;
+        var insufficient = controlRoleRank(state.control.role) < 1 || (row.contains_secret_changes !== false && controlRoleRank(state.control.role) < 2);
+        var disabled = active || stale || insufficient;
+        var label = active ? "已激活" : stale ? "已过期" : "激活";
+        var button = textButton(label, function (event) { openControlActivation(row, event.currentTarget); }, { primary: true, disabled: disabled, icon: "activity" });
+        button.title = active ? "当前活动修订不能再次激活" : stale ? "修订的基础 ETag 已过期" : insufficient ? "当前角色无权激活此修订" : "确认激活此修订";
+        return button;
+      } }
+    ], rows, {
+      onRow: function (row, _index, trigger) { openRecordDetail("配置修订", "不可变安全元数据", row, trigger); },
+      rowLabel: function (row) { return "打开配置修订 " + row.revision_id; }
+    }));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderControlAudit(payload) {
+    var rows = asArray(payload.audit);
+    var root = h("div", {}, controlViewHeader("control-audit"));
+    root.appendChild(makeNotice("info", "审计值已受限。", "此视图只显示操作元数据，不显示配置值、密钥或请求正文。"));
+    if (!rows.length) {
+      root.appendChild(statePanel("empty", "暂无控制审计", "执行验证以外的持久控制操作后，记录会显示在此处。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(tableNode([
+      { label: "时间", width: "19%", value: function (row) { return row.occurred_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+      { label: "操作", width: "20%", value: function (row) { return row.action; }, render: function (value) { return h("code", { className: "cell-code cell-primary", text: formatScalar(value) }); } },
+      { label: "操作者", width: "15%", value: function (row) { return row.actor; }, render: function (value) { return h("span", { className: "cell-text", text: formatScalar(value) }); } },
+      { label: "角色", width: "14%", value: function (row) { return row.role; }, render: function (value) { return makeBadge(controlRoleLabel(value), "info"); } },
+      { label: "修订", width: "24%", value: function (row) { return row.revision_id; }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: formatScalar(value) } }); } },
+      { label: "序号", width: "8%", value: function (row) { return row.sequence; } }
+    ], rows, {
+      onRow: function (row, _index, trigger) { openRecordDetail("控制审计详情", "值受限审计", row, trigger); }
+    }));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderControlPayload(view, payload) {
+    switch (view) {
+      case "control-status": renderControlStatus(payload); break;
+      case "control-config": renderControlConfig(payload); break;
+      case "control-revisions": renderControlRevisions(payload); break;
+      case "control-audit": renderControlAudit(payload); break;
+      default: renderControlStatus(payload);
+    }
+  }
+
+  function loadControlCurrentView() {
+    var view = state.currentView;
+    var definition = VIEWS[view];
+    if (!state.control.token || !state.control.role) {
+      refs.refreshButton.classList.remove("is-loading");
+      refs.refreshButton.disabled = false;
+      refs.noticeStack.replaceChildren();
+      renderControlGate(view);
+      setConnection("", "控制 API 未连接");
+      setReadiness("需要令牌", "warning");
+      return;
+    }
+    state.requestSequence += 1;
+    var sequence = state.requestSequence;
+    abortControlRequests();
+    showLoading();
+    refs.noticeStack.replaceChildren();
+    var requestCurrentView;
+    if (definition.endpoint === "/config/safe") {
+      requestCurrentView = controlRequest("/config/safe").then(applyControlSafeSnapshot);
+    } else {
+      requestCurrentView = controlRequest("/config/safe").then(applyControlSafeSnapshot).then(function () {
+        var suffix = definition.endpoint === "/config/revisions" || definition.endpoint === "/audit" ? "?limit=100" : "";
+        return controlRequest(definition.endpoint + suffix);
+      });
+    }
+    requestCurrentView.then(function (result) {
+      if (sequence !== state.requestSequence) {
+        return;
+      }
+      updateControlChrome();
+      renderControlPayload(view, result.payload);
+      refs.viewRoot.setAttribute("aria-busy", "false");
+    }).catch(function (error) {
+      if (error && (error.name === "AbortError" || error.name === "ControlStaleRequest")) {
+        return;
+      }
+      if (sequence !== state.requestSequence) {
+        return;
+      }
+      if (error.status === 401) {
+        var message = controlErrorMessage(error);
+        resetControlSession();
+        renderControlGate(view, message);
+        return;
+      }
+      showError(new Error(controlErrorMessage(error)));
+    }).finally(function () {
+      if (sequence === state.requestSequence) {
+        refs.refreshButton.classList.remove("is-loading");
+        refs.refreshButton.disabled = false;
+        refs.viewRoot.setAttribute("aria-busy", "false");
+      }
+    });
+  }
+
   function renderPayload(view, payload, params) {
     switch (view) {
       case "overview":
@@ -3127,6 +4766,12 @@
         break;
       case "memories":
         renderMemories(payload);
+        break;
+      case "passive-memory":
+        renderPassiveMemory(payload);
+        break;
+      case "memory-proposals":
+        renderMemoryProposals(payload);
         break;
       case "lineage":
         renderLineage(payload, params);
@@ -3151,21 +4796,39 @@
     }
   }
 
-  function loadCurrentView() {
+  function loadCurrentView(options) {
+    var settings = options || {};
+    var background = settings.background === true;
     var view = state.currentView;
     var definition = VIEWS[view];
     if (!definition) {
       navigate("overview");
       return;
     }
+    if (definition.control) {
+      stopLiveRefresh();
+      state.requestSequence += 1;
+      if (state.controller) {
+        state.controller.abort();
+        state.controller = null;
+      }
+      loadControlCurrentView();
+      return;
+    }
+    abortControlRequests();
+    refs.dashboardMode.textContent = state.featureFlags.proposalReview
+      ? "运行投影 + 受治理提案审核"
+      : "只读运行投影";
     state.requestSequence += 1;
     var sequence = state.requestSequence;
     if (state.controller) {
       state.controller.abort();
     }
     state.controller = new AbortController();
-    showLoading();
-    renderNotices(null);
+    if (!background) {
+      showLoading();
+      renderNotices(null);
+    }
     apiRequest(definition.endpoint, pageParams(view), state.controller.signal).then(function (payload) {
       if (sequence !== state.requestSequence) {
         return;
@@ -3182,6 +4845,11 @@
       if (sequence !== state.requestSequence) {
         return;
       }
+      if (background) {
+        setConnection("degraded", "刷新失败");
+        setReadiness("降级", "warning");
+        return;
+      }
       showError(error);
       renderNotices(error && error.payload ? error.payload : null);
     }).finally(function () {
@@ -3189,6 +4857,7 @@
         refs.refreshButton.classList.remove("is-loading");
         refs.refreshButton.disabled = false;
         refs.viewRoot.setAttribute("aria-busy", "false");
+        scheduleLiveRefresh();
       }
     });
   }
@@ -3208,8 +4877,20 @@
     return { view: view, params: params };
   }
 
-  function navigate(view, params) {
+  function canonicalRouteKey(view, params) {
     var query = new URLSearchParams(params || {});
+    query.sort();
+    var suffix = query.toString();
+    return String(view || "overview") + (suffix ? "?" + suffix : "");
+  }
+
+  function navigate(view, params) {
+    var routeParams = Object.assign({}, params || {});
+    var projectId = activeProjectId();
+    if (projectId && !routeParams.project_id) {
+      routeParams.project_id = projectId;
+    }
+    var query = new URLSearchParams(routeParams);
     var suffix = query.toString() ? "?" + query.toString() : "";
     var target = "#/" + view + suffix;
     if (window.location.hash === target) {
@@ -3220,10 +4901,15 @@
   }
 
   function replaceRouteParams(view, params) {
-    var query = new URLSearchParams(params || {});
+    var routeParams = Object.assign({}, params || {});
+    var projectId = activeProjectId();
+    if (projectId && !routeParams.project_id) {
+      routeParams.project_id = projectId;
+    }
+    var query = new URLSearchParams(routeParams);
     var suffix = query.toString() ? "?" + query.toString() : "";
     window.history.replaceState(null, "", "#/" + view + suffix);
-    state.routeParams = Object.assign({}, params);
+    state.routeParams = routeParams;
   }
 
   function applyFeatureGates() {
@@ -3246,11 +4932,21 @@
       var data = envelopeObject(payload);
       var dashboard = isObject(data.dashboard) ? data.dashboard : {};
       state.featureFlags.retrievalExplain = dashboard.retrieval_explain_enabled === true;
+      state.featureFlags.proposalReview = dashboard.proposal_review_enabled === true;
+      if (refs.dashboardMode) {
+        refs.dashboardMode.textContent = state.featureFlags.proposalReview
+          ? "运行投影 + 受治理提案审核"
+          : "只读运行投影";
+      }
       applyFeatureGates();
     }).catch(function () {
       // Keep the link visible when configuration cannot be read. The route
       // itself remains the final authority and will return a diagnosed 404.
       state.featureFlags.retrievalExplain = null;
+      state.featureFlags.proposalReview = false;
+      if (refs.dashboardMode) {
+        refs.dashboardMode.textContent = "只读运行投影";
+      }
     });
   }
 
@@ -3294,12 +4990,23 @@
   }
 
   function handleRoute() {
+    stopLiveRefresh();
     var route = parseRoute();
+    if (state.control.busy) {
+      if (canonicalRouteKey(route.view, route.params) !== canonicalRouteKey(state.currentView, state.routeParams)) {
+        replaceRouteParams(state.currentView, state.routeParams);
+        toast("控制操作进行期间不能更改当前路由。", true);
+      }
+      return;
+    }
     if (route.view === "explain" && state.featureFlags.retrievalExplain === false) {
       navigate("overview");
       return;
     }
     var changedView = route.view !== state.currentView;
+    if (route.params.project_id) {
+      state.activeProjectId = String(route.params.project_id).trim();
+    }
     state.currentView = route.view;
     state.routeParams = route.params;
     if (changedView) {
@@ -3343,7 +5050,28 @@
 
   function initialize() {
     initializeSidebar();
+    refs.scopeSelect.addEventListener("change", function () {
+      if (state.control.busy) {
+        renderScopeSelector();
+        toast("控制操作进行期间不能切换项目。", true);
+        return;
+      }
+      var selected = String(refs.scopeSelect.value || "").trim();
+      if (!selected || selected === activeProjectId()) {
+        return;
+      }
+      stopLiveRefresh();
+      state.activeProjectId = selected;
+      state.pagination = Object.create(null);
+      state.payloads = Object.create(null);
+      closeDialog();
+      navigate(state.currentView, { project_id: selected });
+    });
     refs.refreshButton.addEventListener("click", function () {
+      if (state.control.busy) {
+        toast("控制操作进行期间不能刷新。", true);
+        return;
+      }
       loadCurrentView();
     });
     refs.detailClose.addEventListener("click", closeDialog);
@@ -3352,26 +5080,79 @@
         closeDialog();
       }
     });
+    refs.detailDialog.addEventListener("cancel", function (event) {
+      event.preventDefault();
+      closeDialog();
+    });
     refs.detailDialog.addEventListener("close", function () {
       if (state.detailFocus && typeof state.detailFocus.focus === "function") {
         state.detailFocus.focus();
       }
       state.detailFocus = null;
     });
-    refs.mainNav.addEventListener("click", function () {
+    refs.mainNav.addEventListener("click", function (event) {
+      var link = event.target.closest("[data-view]");
+      if (!link) {
+        return;
+      }
+      event.preventDefault();
+      if (state.control.busy) {
+        toast("控制操作进行期间不能切换视图。", true);
+        return;
+      }
       closeMobileNavigation();
+      navigate(link.dataset.view);
     });
     window.addEventListener("hashchange", handleRoute);
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        stopLiveRefresh();
+        return;
+      }
+      if (state.currentView === "passive-memory" || state.currentView === "memory-proposals") {
+        loadCurrentView({ background: true });
+      }
+    });
+    window.addEventListener("beforeunload", function (event) {
+      if (state.control.busy) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    });
+    window.addEventListener("pagehide", function () {
+      stopLiveRefresh();
+      resetControlSession();
+    });
+    window.addEventListener("pageshow", function (event) {
+      if (!event.persisted) {
+        return;
+      }
+      resetControlSession();
+      closeDialog(true);
+      refs.detailBody.replaceChildren();
+      refs.detailEyebrow.textContent = "详情";
+      refs.detailTitle.textContent = "";
+      var route = parseRoute();
+      state.currentView = route.view;
+      state.routeParams = route.params;
+      state.activeProjectId = String(route.params.project_id || "").trim();
+      loadProjectScopes().then(loadFeatureFlags).then(function () {
+        applyFeatureGates();
+        updateNavigation();
+        loadCurrentView();
+      });
+    });
     window.addEventListener("resize", function () {
       syncMobileNavigation(refs.shell.classList.contains("is-mobile-open"));
     });
     if (!window.location.hash) {
       window.history.replaceState(null, "", "#/overview");
     }
-    loadFeatureFlags().then(function () {
-      var route = parseRoute();
-      state.currentView = route.view;
-      state.routeParams = route.params;
+    var route = parseRoute();
+    state.currentView = route.view;
+    state.routeParams = route.params;
+    state.activeProjectId = String(route.params.project_id || "").trim();
+    loadProjectScopes().then(loadFeatureFlags).then(function () {
       applyFeatureGates();
       updateNavigation();
       loadCurrentView();

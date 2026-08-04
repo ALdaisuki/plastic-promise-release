@@ -1,6 +1,17 @@
 """End-to-end recall quality verification for Phase 1."""
 
+import os
 import sys
+
+import pytest
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.environ.get("PP_RUN_RECALL_QUALITY_TEST") != "1",
+        reason="set PP_RUN_RECALL_QUALITY_TEST=1 with a populated live index",
+    ),
+]
 
 
 def test_recall_quality():

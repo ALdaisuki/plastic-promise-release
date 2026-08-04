@@ -7,13 +7,6 @@ repositories:
   community: https://github.com/plastic-promise/community-market
 
 entries:
-  - name: superpowers-core
-    version: 2.0.0
-    type: workflow
-    author: plastic-promise
-    source: https://github.com/plastic-promise/superpowers-pack
-    description: SuperPowers 12-stage orchestration flow
-
   - name: code-memory
     version: 1.0.0
     type: capability

@@ -72,6 +72,19 @@ def test_non_full_mode_preserves_explicit_shadow_chunking():
     assert env["PP_MEMORY_CHUNK_ENGINE"] == "rust"
 
 
+@pytest.mark.parametrize("mode", ["light", "normal", "rust-normal", "full", "rust-full"])
+@pytest.mark.parametrize("chunking", ["off", "shadow", "structure-v1"])
+def test_runtime_mode_preserves_immutable_generation_chunking(mode, chunking):
+    env = {
+        "PLASTIC_LANCEDB_GENERATION_ROOT": "/srv/plastic-promise/state/generations",
+        "PP_MEMORY_CHUNKING": chunking,
+    }
+
+    apply_runtime_mode(mode, env)
+
+    assert env["PP_MEMORY_CHUNKING"] == chunking
+
+
 def test_runtime_mode_accepts_chinese_aliases():
     assert get_runtime_mode("普通").key == "normal"
     assert get_runtime_mode("Rust加速版完全").key == "rust-full"
@@ -303,6 +316,70 @@ def test_refresh_runtime_mode_full_reinitializes_and_synchronizes_index(monkeypa
         "stale_reindexed": 2,
         "invalid_material_count": 0,
         "diagnostic_count": 0,
+    }
+
+
+def test_refresh_runtime_mode_live_index_defers_full_sync_to_outbox_replay(monkeypatch):
+    engine = ContextEngine.__new__(ContextEngine)
+    engine._heavy_init_lock = threading.RLock()
+    engine._heavy_init_done = True
+    old_embedder = SimpleNamespace(close=lambda: None)
+    new_embedder = SimpleNamespace(index_model_name="vector-test|chunking=structure-v1")
+    full_sync_calls = []
+
+    class LiveLanceDB:
+        read_only = False
+
+        def sync_with_engine(self, candidate):
+            full_sync_calls.append(candidate)
+            raise AssertionError("generation live index must use checked outbox replay")
+
+    live_lag = {
+        "state": "lagged",
+        "pending": 1,
+        "processing": 0,
+        "failed": 0,
+        "latest_rowid": 4876,
+        "base_watermark": 4872,
+    }
+    live_sync = {
+        "success": True,
+        "status": "generation_live_index",
+        "base_generation_id": "generation-a",
+        "lag": live_lag,
+    }
+    live_lancedb = LiveLanceDB()
+    engine._embedder = old_embedder
+    engine._ldb = object()
+    engine._principle_anchors = {}
+    engine.reset_rust_health = lambda: None
+
+    def initialize():
+        engine._embedder = new_embedder
+        engine._ldb = live_lancedb
+        engine._lancedb_sync_status = live_sync
+        engine._heavy_init_done = True
+
+    engine._ensure_heavy_init = initialize
+    monkeypatch.setattr(
+        "plastic_promise.core.embedder.reset_embedder",
+        lambda: old_embedder,
+    )
+
+    result = ContextEngine.refresh_runtime_mode(
+        engine,
+        initialize_heavy=True,
+        synchronize_index=True,
+    )
+
+    assert full_sync_calls == []
+    assert engine._ldb is live_lancedb
+    assert result["index_sync"] == {
+        "requested": True,
+        "ready": True,
+        "status": "generation_live_index_lagged",
+        "base_generation_id": "generation-a",
+        "lag": live_lag,
     }
 
 

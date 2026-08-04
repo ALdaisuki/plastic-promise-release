@@ -191,6 +191,9 @@ def test_rust_stage_timing_json_is_projected_to_canonical_timings(monkeypatch):
                     "principle_injection": "0.125",
                     "snapshot_parse": 1.25,
                     "candidate_retrieval": 4.567,
+                    "rerank": 2.5,
+                    "mmr": 0.75,
+                    "divergent_quality": 0.5,
                     "filter_and_layer": 1.234,
                     "total": "7.176",
                 }
@@ -205,6 +208,9 @@ def test_rust_stage_timing_json_is_projected_to_canonical_timings(monkeypatch):
         "principle_injection": 0.125,
         "snapshot_parse": 1.25,
         "candidate_retrieval": 4.567,
+        "rerank": 2.5,
+        "mmr": 0.75,
+        "divergent_quality": 0.5,
         "filter_and_layer": 1.234,
         "total": 7.176,
     }
@@ -248,9 +254,7 @@ def test_stored_stage_timings_are_idempotently_sanitized():
     sanitized = sanitize_retrieval_explain_snapshot(snapshot)
 
     assert sanitized is not None
-    assert sanitized["pipeline"] == {
-        "stage_timings": {"candidate_retrieval": 2.5, "total": 3.75}
-    }
+    assert sanitized["pipeline"] == {"stage_timings": {"candidate_retrieval": 2.5, "total": 3.75}}
     assert sanitize_retrieval_explain_snapshot(sanitized) == sanitized
 
 
@@ -338,9 +342,12 @@ def test_stored_explain_snapshot_rejects_unknown_schema():
 def test_schema_only_snapshot_is_not_reported_as_captured(monkeypatch):
     monkeypatch.setenv("PP_RETRIEVAL_EXPLAIN", "1")
 
-    assert sanitize_retrieval_explain_snapshot(
-        {"schema": "retrieval_explain_v1", "channels": [], "items": [], "pipeline": {}}
-    ) is None
+    assert (
+        sanitize_retrieval_explain_snapshot(
+            {"schema": "retrieval_explain_v1", "channels": [], "items": [], "pipeline": {}}
+        )
+        is None
+    )
     assert build_retrieval_explain_snapshot(ContextPack()) is None
 
 
@@ -406,9 +413,7 @@ def test_projection_is_bounded_stable_and_drops_unsafe_data(monkeypatch):
         f"m-00-{rank:02d}" for rank in range(1, 11)
     ]
     assert len(snapshot["items"]) == 20
-    assert [row["id"] for row in snapshot["items"]] == [
-        f"item-{index:02d}" for index in range(20)
-    ]
+    assert [row["id"] for row in snapshot["items"]] == [f"item-{index:02d}" for index in range(20)]
     assert snapshot["pipeline"] == {
         "vector_count": 4,
         "bm25_count": 3,
@@ -437,7 +442,7 @@ def test_projection_is_bounded_stable_and_drops_unsafe_data(monkeypatch):
         "content",
         "prompt",
         "embedding",
-        "vector\"",
+        'vector"',
         "api_key",
         "token",
         "password",
@@ -451,9 +456,7 @@ def test_projection_is_bounded_stable_and_drops_unsafe_data(monkeypatch):
 
 def test_projection_runs_after_project_sanitization(monkeypatch):
     monkeypatch.setenv("PP_RETRIEVAL_EXPLAIN", "1")
-    project_ctx = infer_project_context(
-        {"project_id": "project:alpha", "project_policy": "strict"}
-    )
+    project_ctx = infer_project_context({"project_id": "project:alpha", "project_policy": "strict"})
     pack = ContextPack(
         core=[
             ContextItem(id="allowed", content="allowed", relevance=0.9, layer="core"),
@@ -545,7 +548,9 @@ def test_memory_recall_normal_and_cache_hit_spans_capture_explain_without_reriev
         embedder_mod, "get_embedder", lambda fallback_on_error=False: _FakeEmbedder()
     )
     spans = []
-    monkeypatch.setattr(memory_tools, "safe_record_call_span", lambda _engine, **kw: spans.append(kw))
+    monkeypatch.setattr(
+        memory_tools, "safe_record_call_span", lambda _engine, **kw: spans.append(kw)
+    )
     engine = _RecallEngine()
 
     first = asyncio.run(memory_tools.handle_memory_recall(engine, _recall_args("call-first")))
@@ -569,9 +574,7 @@ def test_memory_recall_normal_and_cache_hit_spans_capture_explain_without_reriev
             }
         )
         poisoned["per_item_stats"].append({"id": "blocked", "final_score": 1.0})
-        poisoned["channel_rankings"]["vector"].append(
-            {"id": "blocked", "rank": 2, "score": 1.0}
-        )
+        poisoned["channel_rankings"]["vector"].append({"id": "blocked", "rank": 2, "score": 1.0})
         memory_tools._query_cache[cache_key] = (
             json.dumps(poisoned, ensure_ascii=False),
             cached_at,
@@ -630,7 +633,8 @@ def test_context_supply_span_captures_explain_but_public_response_does_not(
     assert spans[0]["metadata"]["retrieval_explain_v1"]["schema"] == "retrieval_explain_v1"
     payload = json.loads(result[0].text)
     assert "retrieval_explain_v1" not in payload
-    assert "retrieval_explain_v1" not in payload["audit_metadata"]
+    assert "audit_metadata" not in payload
+    assert payload["diagnostics"]["ref"]["call_id"] == "call-context"
 
 
 @pytest.mark.parametrize("handler", ["memory", "context"])

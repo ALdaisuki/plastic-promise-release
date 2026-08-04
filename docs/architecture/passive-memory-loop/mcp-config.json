@@ -1,0 +1,84 @@
+{
+  "mcpServers": {
+    "plastic-promise": {
+      "type": "http",
+      "url": "http://127.0.0.1:9020/mcp",
+      "description": "Governed memory, passive context preload, hybrid retrieval and audit"
+    }
+  },
+  "passive_memory": {
+    "schema_version": "passive-memory-event-v1",
+    "events": [
+      "before_invoke",
+      "after_invoke"
+    ],
+    "adapters": [
+      "claude_user_prompt_submit_stop",
+      "pi_pre_post_task",
+      "langgraph_before_after_nodes",
+      "mcp_auto_context_inject"
+    ],
+    "defaults": {
+      "context_mode": "off",
+      "context_response_mode": "compact",
+      "diagnostics_level": "summary",
+      "context_max_chars": 1000,
+      "after_invoke_async": true,
+      "max_queue_depth": 256,
+      "max_attempts": 5,
+      "retry_base_seconds": 2,
+      "retry_max_seconds": 300,
+      "processing_timeout_seconds": 300,
+      "store_raw_transcript": false
+    },
+    "governance": {
+      "project_isolation": true,
+      "require_request_scope": true,
+      "honor_trust_and_context_gate": true,
+      "proposals_default": "off",
+      "sqlite_is_source_of_truth": true,
+      "lancedb_is_derived_index": true
+    }
+  },
+  "tools": {
+    "context_supply": {
+      "passive": "before_invoke",
+      "response_mode": [
+        "compact",
+        "standard",
+        "debug"
+      ]
+    },
+    "smart-remember": {
+      "passive": "explicit_reviewed_promotion",
+      "source": "passive_proposal"
+    },
+    "memory_recall": {
+      "retrieval": [
+        "vector",
+        "bm25",
+        "fts",
+        "graph",
+        "rrf"
+      ],
+      "rerank": "existing_provider_chain_with_bm25_top_n_preservation"
+    }
+  },
+  "observability": {
+    "trace_tables": [
+      "call_spans",
+      "runtime_events",
+      "degradation_events",
+      "memory_lineage"
+    ],
+    "quality_metrics": [
+      "hit_at_k",
+      "mrr",
+      "preload_hit_at_k",
+      "passive_write_recall_rate",
+      "duplicate_suppression_rate",
+      "conflict_false_positive_rate",
+      "outbox_lag_ms"
+    ]
+  }
+}

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,9 +18,9 @@ class TestSkillSessionStart:
 
         engine = MagicMock()
         engine.register_entity.return_value = {
-            "node_id": "skill_session:skill:brainstorming:2026-06-30T14:23:01.123456",
+            "node_id": "skill_session:skill:grill-with-docs:2026-06-30T14:23:01.123456",
             "type": "skill_session",
-            "name": "brainstorming",
+            "name": "grill-with-docs",
             "is_new": True,
             "edges_created": 0,
         }
@@ -41,7 +42,7 @@ class TestSkillSessionStart:
                         handle_skill_session_start(
                             engine,
                             {
-                                "skill_name": "brainstorming",
+                                "skill_name": "grill-with-docs",
                                 "task_description": "Design the skill tracking module",
                                 "parent_entity_id": None,
                             },
@@ -50,11 +51,11 @@ class TestSkillSessionStart:
 
         assert len(result) == 1
         data = json.loads(result[0].text)
-        assert data["skill_name"] == "brainstorming"
+        assert data["skill_name"] == "grill-with-docs"
         assert data["status"] == "active"
         assert data["domain"] == "designing"
         assert data["chain_warning"] is None
-        assert "skill:brainstorming:" in data["entity_id"]
+        assert "skill:grill-with-docs:" in data["entity_id"]
         assert data["memory_id"] == "mem_skill_xyz"
 
     def test_start_returns_chain_warning_for_illegal_parent(self):
@@ -63,9 +64,9 @@ class TestSkillSessionStart:
 
         engine = MagicMock()
         engine.register_entity.return_value = {
-            "node_id": "skill_session:skill:writing-plans:2026-06-30T15:00:00",
+            "node_id": "skill_session:skill:to-spec:2026-06-30T15:00:00",
             "type": "skill_session",
-            "name": "writing-plans",
+            "name": "to-spec",
             "is_new": True,
             "edges_created": 1,
         }
@@ -88,21 +89,21 @@ class TestSkillSessionStart:
                 handle_skill_session_start(
                     engine,
                     {
-                        "skill_name": "writing-plans",
+                        "skill_name": "to-spec",
                         "task_description": "Plan the module",
-                        "parent_entity_id": ("skill:test-driven-development:2026-06-30T14:00:00"),
+                        "parent_entity_id": "skill:tdd:2026-06-30T14:00:00",
                     },
                 )
             )
 
         data = json.loads(result[0].text)
-        # writing-plans expects predecessor "brainstorming", not "test-driven-development"
+        # to-spec expects grill-with-docs or wayfinder, not tdd.
         assert data["chain_warning"] is not None
         assert "not a legal predecessor" in data["chain_warning"]
         # Despite warning, the session IS created
         assert data["status"] == "active"
-        assert data["skill_name"] == "writing-plans"
-        assert "skill:writing-plans:" in data["entity_id"]
+        assert data["skill_name"] == "to-spec"
+        assert "skill:to-spec:" in data["entity_id"]
 
     def test_start_without_parent_no_warning(self):
         """Null parent is always valid -- no chain_warning."""
@@ -110,9 +111,9 @@ class TestSkillSessionStart:
 
         engine = MagicMock()
         engine.register_entity.return_value = {
-            "node_id": "skill_session:skill:brainstorming:2026-06-30T14:23:01",
+            "node_id": "skill_session:skill:grill-with-docs:2026-06-30T14:23:01",
             "type": "skill_session",
-            "name": "brainstorming",
+            "name": "grill-with-docs",
             "is_new": True,
             "edges_created": 0,
         }
@@ -135,7 +136,7 @@ class TestSkillSessionStart:
                 handle_skill_session_start(
                     engine,
                     {
-                        "skill_name": "brainstorming",
+                        "skill_name": "grill-with-docs",
                         "task_description": "Design something",
                         "parent_entity_id": None,
                     },
@@ -150,6 +151,10 @@ class TestSkillSessionStart:
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
 
         engine = MagicMock()
+        engine.register_entity.return_value = {
+            "node_id": "skill_session:skill:grill-with-docs:test",
+            "type": "skill_session",
+        }
         engine.create_ordinary_if_absent.return_value = MagicMock()
 
         with pytest.raises(TypeError, match="skill_start_memory_id_invalid"):
@@ -157,7 +162,7 @@ class TestSkillSessionStart:
                 handle_skill_session_start(
                     engine,
                     {
-                        "skill_name": "brainstorming",
+                        "skill_name": "grill-with-docs",
                         "task_description": "Reject malformed creation results",
                     },
                 )
@@ -167,6 +172,10 @@ class TestSkillSessionStart:
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
 
         engine = MagicMock()
+        engine.register_entity.return_value = {
+            "node_id": "skill_session:skill:grill-with-docs:test",
+            "type": "skill_session",
+        }
         engine.create_ordinary_if_absent.side_effect = RuntimeError("injected create failure")
 
         with pytest.raises(RuntimeError, match="injected create failure"):
@@ -174,7 +183,7 @@ class TestSkillSessionStart:
                 handle_skill_session_start(
                     engine,
                     {
-                        "skill_name": "brainstorming",
+                        "skill_name": "grill-with-docs",
                         "task_description": "Surface persistence failures",
                     },
                 )
@@ -201,6 +210,71 @@ class TestSkillSessionStart:
         assert "Unknown skill_name" in data["error"]
         assert data["tool"] == "skill_session_start"
 
+    def test_start_accepts_native_session_init_as_entity_only_tracking(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
+
+        engine = MagicMock()
+        engine.register_entity.return_value = {
+            "node_id": "skill_session:skill:session-init:2026-07-29T12:00:00",
+            "type": "skill_session",
+            "name": "session-init",
+            "is_new": True,
+            "edges_created": 0,
+        }
+
+        result = asyncio.run(
+            handle_skill_session_start(
+                engine,
+                {
+                    "skill_name": "session-init",
+                    "task_description": "Initialize one governed session",
+                    "record_memory": False,
+                },
+            )
+        )
+
+        data = json.loads(result[0].text)
+        assert "error" not in data
+        assert data["skill_name"] == "session-init"
+        assert data["tracking_persistence"] == "entity_only"
+        assert data["domain"] == "governing"
+
+    def test_start_graph_write_does_not_block_event_loop(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
+
+        class BlockingEngine:
+            def register_entity(self, **_kwargs):
+                time.sleep(0.2)
+                return {
+                    "node_id": "skill_session:blocked",
+                    "type": "skill_session",
+                    "name": "grill-with-docs",
+                    "is_new": True,
+                    "edges_created": 0,
+                }
+
+        async def scenario():
+            task = asyncio.create_task(
+                handle_skill_session_start(
+                    BlockingEngine(),
+                    {
+                        "skill_name": "grill-with-docs",
+                        "task_description": "event loop responsiveness",
+                        "record_memory": False,
+                    },
+                )
+            )
+            started = time.monotonic()
+            await asyncio.sleep(0.01)
+            tick_elapsed = time.monotonic() - started
+            result = await task
+            return tick_elapsed, json.loads(result[0].text)
+
+        tick_elapsed, payload = asyncio.run(scenario())
+
+        assert tick_elapsed < 0.10
+        assert payload["tracking_persistence"] == "entity_only"
+
 
 class TestSkillSessionComplete:
     """Tests for handle_skill_session_complete."""
@@ -211,8 +285,8 @@ class TestSkillSessionComplete:
 
     @staticmethod
     def _make_engine_with_memory(
-        entity_id="skill:brainstorming:2026-06-30T14:00:00.000000",
-        content="[SKILL START] brainstorming: Design something",
+        entity_id="skill:grill-with-docs:2026-06-30T14:00:00.000000",
+        content="[SKILL START] grill-with-docs: Design something",
         tags=None,
         created_at=None,
     ):
@@ -223,14 +297,14 @@ class TestSkillSessionComplete:
 
             created_at = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(hours=1)).isoformat()
         if tags is None:
-            tags = ["task:active", "skill:brainstorming", "domain:designing"]
+            tags = ["task:active", "skill:grill-with-docs", "domain:designing"]
 
         memory_id = "mem_test_001"
         mem = {
             "id": memory_id,
             "content": content,
             "memory_type": "experience",
-            "source": "superpowers",
+            "source": "skill_session",
             "project_id": "project:test",
             "entity_ids": [entity_id],
             "tags": tags,
@@ -287,10 +361,10 @@ class TestSkillSessionComplete:
         )
 
         monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
-        entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
+        entity_id = "skill:grill-with-docs:2026-06-30T14:00:00.000000"
         engine, memory_id, _mem = self._make_engine_with_memory(
             entity_id=entity_id,
-            content="[SKILL START] brainstorming: Design something\n[SKILL COMPLETE] duration_ms=1",
+            content="[SKILL START] grill-with-docs: Design something\n[SKILL COMPLETE] duration_ms=1",
         )
         observed = []
 
@@ -352,10 +426,10 @@ class TestSkillSessionComplete:
             handle_skill_session_complete,
         )
 
-        entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
+        entity_id = "skill:grill-with-docs:2026-06-30T14:00:00.000000"
         engine, memory_id, mem = self._make_engine_with_memory(
             entity_id=entity_id,
-            content="[SKILL START] brainstorming: Design something\n[SKILL COMPLETE] duration_ms=1",
+            content="[SKILL START] grill-with-docs: Design something\n[SKILL COMPLETE] duration_ms=1",
         )
 
         with patch(
@@ -402,12 +476,12 @@ class TestSkillSessionComplete:
 
         data = json.loads(result[0].text)
         assert data["status"] == "done"
-        assert data["skill_name"] == "brainstorming"
+        assert data["skill_name"] == "grill-with-docs"
         assert data["entity_id"] == entity_id
         assert data["memory_id"] == memory_id
 
-        # next_skills from SKILL_CHAIN_MAP (brainstorming → exemplar-research)
-        assert "exemplar-research" in data["next_skills"]
+        # next_skills from SKILL_CHAIN_MAP (grill-with-docs → to-spec)
+        assert "to-spec" in data["next_skills"]
 
         # worth_update should reflect the feedback_apply delta
         assert data["worth_update"] is not None
@@ -430,10 +504,10 @@ class TestSkillSessionComplete:
     def test_complete_skips_feedback_when_metadata_patch_fails(self):
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
 
-        entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
+        entity_id = "skill:grill-with-docs:2026-06-30T14:00:00.000000"
         engine, memory_id, _mem = self._make_engine_with_memory(
             entity_id=entity_id,
-            content="[SKILL START] brainstorming: Design something\n[SKILL COMPLETE] duration_ms=1",
+            content="[SKILL START] grill-with-docs: Design something\n[SKILL COMPLETE] duration_ms=1",
         )
         engine.patch_ordinary_memory = MagicMock(return_value=False)
 
@@ -444,7 +518,7 @@ class TestSkillSessionComplete:
         assert data == {
             "updated": False,
             "entity_id": entity_id,
-            "skill_name": "brainstorming",
+            "skill_name": "grill-with-docs",
             "memory_id": memory_id,
             "reason": "ordinary_metadata_update_failed",
             "tool": "skill_session_complete",
@@ -454,7 +528,7 @@ class TestSkillSessionComplete:
     def test_complete_reports_partial_when_content_commits_before_metadata_failure(self):
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
 
-        entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
+        entity_id = "skill:grill-with-docs:2026-06-30T14:00:00.000000"
         engine, memory_id, _mem = self._make_engine_with_memory(entity_id=entity_id)
         engine.mutate_ordinary_source = MagicMock(
             return_value={
@@ -473,7 +547,7 @@ class TestSkillSessionComplete:
         assert data == {
             "updated": False,
             "entity_id": entity_id,
-            "skill_name": "brainstorming",
+            "skill_name": "grill-with-docs",
             "memory_id": memory_id,
             "reason": "ordinary_metadata_update_failed",
             "tool": "skill_session_complete",
@@ -496,11 +570,11 @@ class TestSkillSessionComplete:
             handle_skill_session_complete,
         )
 
-        entity_id = "skill:systematic-debugging:2026-06-30T15:00:00.111111"
+        entity_id = "skill:diagnosing-bugs:2026-06-30T15:00:00.111111"
         engine, memory_id, mem = self._make_engine_with_memory(
             entity_id=entity_id,
-            content="[SKILL START] systematic-debugging: Debug issue #42",
-            tags=["task:active", "skill:systematic-debugging", "domain:fixing"],
+            content="[SKILL START] diagnosing-bugs: Debug issue #42",
+            tags=["task:active", "skill:diagnosing-bugs", "domain:fixing"],
         )
         result = asyncio.run(
             handle_skill_session_complete(
@@ -539,15 +613,15 @@ class TestSkillSessionComplete:
             handle_skill_session_complete,
         )
 
-        entity_id = "skill:writing-plans:2026-06-30T12:00:00.222222"
+        entity_id = "skill:to-spec:2026-06-30T12:00:00.222222"
         # Pre-populate content with 3 [still_in_progress] markers
-        content = "[SKILL START] writing-plans: Plan the module\n" + "\n".join(
+        content = "[SKILL START] to-spec: Plan the module\n" + "\n".join(
             ["[still_in_progress]"] * MAX_STILL_IN_PROGRESS_RENEWALS
         )
         engine, memory_id, mem = self._make_engine_with_memory(
             entity_id=entity_id,
             content=content,
-            tags=["task:active", "skill:writing-plans", "domain:designing"],
+            tags=["task:active", "skill:to-spec", "domain:designing"],
         )
         result = asyncio.run(
             handle_skill_session_complete(
@@ -575,7 +649,7 @@ class TestSkillSessionComplete:
             handle_skill_session_complete,
         )
 
-        entity_id = "skill:brainstorming:2026-06-30T13:00:00.333333"
+        entity_id = "skill:grill-with-docs:2026-06-30T13:00:00.333333"
         engine, memory_id, mem = self._make_engine_with_memory(
             entity_id=entity_id,
         )
@@ -610,7 +684,7 @@ class TestSkillSessionComplete:
             handle_skill_session_complete,
         )
 
-        entity_id = "skill:brainstorming:2026-06-30T13:00:00.333333"
+        entity_id = "skill:grill-with-docs:2026-06-30T13:00:00.333333"
         engine, memory_id, _mem = self._make_engine_with_memory(entity_id=entity_id)
 
         with patch(
@@ -641,7 +715,7 @@ class TestSkillSessionComplete:
             handle_skill_session_complete,
         )
 
-        entity_id = "skill:brainstorming:2026-06-30T13:00:00.333333"
+        entity_id = "skill:grill-with-docs:2026-06-30T13:00:00.333333"
         engine, memory_id, mem = self._make_engine_with_memory(entity_id=entity_id)
         observed_content = mem["content"]
         before_tags = list(mem["tags"])
@@ -677,7 +751,7 @@ class TestSkillSessionComplete:
             handle_skill_session_complete,
         )
 
-        entity_id = "skill:brainstorming:2026-06-30T13:00:00.333333"
+        entity_id = "skill:grill-with-docs:2026-06-30T13:00:00.333333"
         engine, memory_id, mem = self._make_engine_with_memory(entity_id=entity_id)
         before_tags = list(mem["tags"])
         engine.mutate_ordinary_source = MagicMock(
@@ -703,30 +777,30 @@ class TestSkillSessionTrace:
     """Tests for handle_skill_session_trace."""
 
     def test_trace_returns_sessions_with_chain_validation(self):
-        """Mock 2 sessions (brainstorming done, finishing-a-development-branch done),
+        """Mock 2 sessions (implement done, code-review done),
         verify chain_valid=True, 2 sessions returned."""
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
 
         engine = MagicMock()
 
-        entity_b = "skill:brainstorming:2026-06-30T14:00:00.000000"
-        entity_f = "skill:finishing-a-development-branch:2026-06-30T15:00:00.111111"
+        entity_b = "skill:implement:2026-06-30T14:00:00.000000"
+        entity_f = "skill:code-review:2026-06-30T15:00:00.111111"
 
         # Graph nodes — keyed by "skill_session:" + raw entity_id
         engine._graph_nodes = {
             f"skill_session:{entity_b}": {
                 "type": "skill_session",
-                "name": "brainstorming",
-                "description": "Design the module",
+                "name": "implement",
+                "description": "Implement the module",
             },
             f"skill_session:{entity_f}": {
                 "type": "skill_session",
-                "name": "finishing-a-development-branch",
+                "name": "code-review",
                 "description": "Finish the development branch",
             },
         }
 
-        # Graph edges — brainstorming is parent_of finishing-a-development-branch
+        # Graph edges - implement may hand off directly to code-review.
         engine._graph_edges = [
             {
                 "from": f"skill_session:{entity_b}",
@@ -740,21 +814,20 @@ class TestSkillSessionTrace:
             "mem_b": {
                 "id": "mem_b",
                 "content": (
-                    "[SKILL START] brainstorming: Design the module\n"
+                    "[SKILL START] implement: Build the module\n"
                     "[SKILL COMPLETE] duration_ms=3600000"
                 ),
                 "entity_ids": [entity_b],
-                "tags": ["task:done", "skill:brainstorming", "domain:designing"],
+                "tags": ["task:done", "skill:implement", "domain:building"],
                 "created_at": "2026-06-30T14:00:00.000000",
             },
             "mem_f": {
                 "id": "mem_f",
                 "content": (
-                    "[SKILL START] finishing-a-development-branch: Finish branch\n"
-                    "[SKILL COMPLETE] duration_ms=1800000"
+                    "[SKILL START] code-review: Finish branch\n[SKILL COMPLETE] duration_ms=1800000"
                 ),
                 "entity_ids": [entity_f],
-                "tags": ["task:done", "skill:finishing-a-development-branch", "domain:governing"],
+                "tags": ["task:done", "skill:code-review", "domain:governing"],
                 "created_at": "2026-06-30T15:00:00.111111",
             },
         }
@@ -785,33 +858,90 @@ class TestSkillSessionTrace:
         # Sessions are returned
         assert len(data["sessions"]) == 2
         skills = {s["skill_name"] for s in data["sessions"]}
-        assert skills == {"brainstorming", "finishing-a-development-branch"}
+        assert skills == {"implement", "code-review"}
 
-        # Brainstorming should have a child
-        b_sess = next(s for s in data["sessions"] if s["skill_name"] == "brainstorming")
+        # Implement should have a child.
+        b_sess = next(s for s in data["sessions"] if s["skill_name"] == "implement")
         assert b_sess["status"] == "done"
         assert entity_f in b_sess["child_skills"]
         assert b_sess["parent_skill"] is None
 
-        # Finishing branch should have a parent (brainstorming), no children
-        f_sess = next(
-            s for s in data["sessions"] if s["skill_name"] == "finishing-a-development-branch"
-        )
+        # Code review should have implement as parent and no children.
+        f_sess = next(s for s in data["sessions"] if s["skill_name"] == "code-review")
         assert f_sess["status"] == "done"
         assert entity_b in f_sess["parent_skill"]
         assert f_sess["child_skills"] == []
+
+    def test_trace_indexes_public_snapshots_once(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
+
+        class CountingEdges(list):
+            def __init__(self, values):
+                super().__init__(values)
+                self.iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        first = "skill:implement:2026-08-04T10:00:00.000000"
+        second = "skill:code-review:2026-08-04T10:01:00.000000"
+        memories = [
+            {
+                "id": f"memory-{index}",
+                "content": "[SKILL COMPLETE] duration_ms=1",
+                "entity_ids": [entity_id],
+                "tags": ["task:done"],
+                "created_at": "2026-08-04T10:00:00.000000",
+            }
+            for index, entity_id in enumerate((first, second))
+        ]
+        edges = CountingEdges(
+            [
+                {
+                    "from": f"skill_session:{first}",
+                    "to": f"skill_session:{second}",
+                    "relation": "parent_of",
+                }
+            ]
+        )
+        memory_calls = 0
+
+        def iter_memories():
+            nonlocal memory_calls
+            memory_calls += 1
+            return iter(memories)
+
+        engine = MagicMock()
+        engine.list_graph_nodes.return_value = [
+            {
+                "id": f"skill_session:{entity_id}",
+                "type": "skill_session",
+                "name": skill_name,
+            }
+            for entity_id, skill_name in ((first, "implement"), (second, "code-review"))
+        ]
+        engine.list_graph_edges.return_value = edges
+        engine.iter_memories.side_effect = iter_memories
+
+        result = asyncio.run(handle_skill_session_trace(engine, {"session_scope": "all"}))
+        payload = json.loads(result[0].text)
+
+        assert payload["total_count"] == 2
+        assert memory_calls == 1
+        assert edges.iterations == 1
 
     def test_trace_never_falls_back_to_raw_memories_when_public_iterator_is_generator(self):
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
 
         engine = MagicMock()
-        entity_id = "skill:brainstorming:2026-07-10T12:00:00.000000"
+        entity_id = "skill:grill-with-docs:2026-07-10T12:00:00.000000"
         engine._memories = {
             "draft-synthesis": {
                 "id": "draft-synthesis",
                 "content": "[SKILL COMPLETE] DRAFT-SYNTHESIS-SECRET duration_ms=99",
                 "entity_ids": [entity_id],
-                "tags": ["task:done", "skill:brainstorming"],
+                "tags": ["task:done", "skill:grill-with-docs"],
                 "memory_type": "synthesis",
             }
         }
@@ -819,7 +949,7 @@ class TestSkillSessionTrace:
             {
                 "id": f"skill_session:{entity_id}",
                 "type": "skill_session",
-                "name": "brainstorming",
+                "name": "grill-with-docs",
             }
         ]
         engine.list_graph_edges = lambda: []
@@ -838,12 +968,12 @@ class TestSkillSessionTrace:
 
         engine = MagicMock()
 
-        entity_id = "skill:brainstorming:2026-06-30T14:00:00.000000"
+        entity_id = "skill:grill-with-docs:2026-06-30T14:00:00.000000"
 
         engine._graph_nodes = {
             f"skill_session:{entity_id}": {
                 "type": "skill_session",
-                "name": "brainstorming",
+                "name": "grill-with-docs",
                 "description": "Design the module",
             },
         }
@@ -857,9 +987,9 @@ class TestSkillSessionTrace:
         engine._memories = {
             "mem_orphan": {
                 "id": "mem_orphan",
-                "content": "[SKILL START] brainstorming: Design the module",
+                "content": "[SKILL START] grill-with-docs: Design the module",
                 "entity_ids": [entity_id],
-                "tags": ["task:active", "skill:brainstorming", "domain:designing"],
+                "tags": ["task:active", "skill:grill-with-docs", "domain:designing"],
                 "created_at": "2026-06-30T14:00:00.000000",
                 "last_accessed": la_ts,
             },
@@ -890,7 +1020,7 @@ class TestSkillSessionTrace:
         gap = data["gaps"][0]
         assert gap["type"] == "orphan_active"
         assert gap["entity_id"] == entity_id
-        assert gap["skill_name"] == "brainstorming"
+        assert gap["skill_name"] == "grill-with-docs"
         assert gap["idle_minutes"] >= 44  # allow small clock drift
 
         sessions = data["sessions"]
@@ -903,11 +1033,11 @@ class TestSkillSessionTrace:
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
 
         engine = MagicMock()
-        entity_id = "skill:sp-writing-plans:2026-07-03T02:07:11.763360"
+        entity_id = "skill:sp-to-spec:2026-07-03T02:07:11.763360"
         engine._graph_nodes = {
             f"skill_session:{entity_id}": {
                 "type": "skill_session",
-                "name": "sp-writing-plans",
+                "name": "sp-to-spec",
                 "description": "entity-only stage trace",
             },
         }
@@ -919,9 +1049,9 @@ class TestSkillSessionTrace:
         engine._memories = {
             "mem_entity_only": {
                 "id": "mem_entity_only",
-                "content": "legacy stage note without a skill start marker",
+                "content": "entity-only stage note without a skill start marker",
                 "entity_ids": [entity_id],
-                "tags": ["task:active", "skill:sp-writing-plans", "domain:designing"],
+                "tags": ["task:active", "skill:sp-to-spec", "domain:designing"],
                 "created_at": "2026-07-03T02:07:11.763360",
                 "last_accessed": la_ts,
             },
@@ -963,7 +1093,7 @@ class TestSkillSessionAudit:
         assert len(data["auto_fixed"]) == 0
 
     def test_audit_detects_missing_starts(self):
-        """Memory mentions 'brainstorming' but no graph node exists --
+        """Memory mentions 'grill-with-docs' but no graph node exists --
         reports a gap with type='missing_start'."""
         from plastic_promise.mcp.tools.skill_tracking import (
             handle_skill_session_audit,
@@ -974,7 +1104,7 @@ class TestSkillSessionAudit:
         engine._memories = {
             "mem_1": {
                 "id": "mem_1",
-                "content": "I used brainstorming to design the module",
+                "content": "I used grill-with-docs to design the module",
                 "entity_ids": [],
                 "tags": [],
             },
@@ -989,12 +1119,12 @@ class TestSkillSessionAudit:
         assert data["scanned_sessions"] == 0
         assert len(data["gaps_found"]) >= 1
 
-        # Find the brainstorming gap
+        # Find the grill-with-docs gap
         gap = next(
-            (g for g in data["gaps_found"] if g["skill_name"] == "brainstorming"),
+            (g for g in data["gaps_found"] if g["skill_name"] == "grill-with-docs"),
             None,
         )
-        assert gap is not None, f"Expected a gap for 'brainstorming', got: {data['gaps_found']}"
+        assert gap is not None, f"Expected a gap for 'grill-with-docs', got: {data['gaps_found']}"
         assert gap["type"] == "missing_start"
         assert gap["domain"] == "designing"
         assert len(data["auto_fixed"]) == 0

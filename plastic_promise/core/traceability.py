@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sqlite3
+import threading
+import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextvars import ContextVar, Token
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +25,7 @@ _MAINTENANCE_CYCLE_STAGES = (
     "synthesis_index_replay",
     "audit",
 )
+
 
 # The MCP dispatcher binds one wall-clock and one monotonic start for the
 # complete tool call. The wall-clock value is persisted for trace readability;
@@ -40,6 +45,26 @@ class _CallSpanStart(str):
 _CALL_SPAN_STARTED_AT: ContextVar[str | None] = ContextVar(
     "plastic_promise_call_span_started_at", default=None
 )
+
+
+def _bounded_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+_TRACE_WRITE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="trace-write",
+)
+_TRACE_WRITE_CAPACITY = _bounded_int_env(
+    "PP_TRACE_WRITE_QUEUE_SIZE", 256, minimum=1, maximum=100_000
+)
+_TRACE_WRITE_SLOTS = threading.BoundedSemaphore(_TRACE_WRITE_CAPACITY)
+_TRACE_WRITE_FUTURES: set[Future] = set()
+_TRACE_WRITE_FUTURES_LOCK = threading.Lock()
 
 
 class TraceabilityStore:
@@ -132,9 +157,7 @@ def utc_now() -> str:
 
 def bind_call_span_start(started_at: str | None = None) -> Token:
     """Bind a dispatcher start time for spans emitted during this tool call."""
-    return _CALL_SPAN_STARTED_AT.set(
-        _CallSpanStart(started_at or utc_now(), perf_counter())
-    )
+    return _CALL_SPAN_STARTED_AT.set(_CallSpanStart(started_at or utc_now(), perf_counter()))
 
 
 def reset_call_span_start(token: Token) -> None:
@@ -402,14 +425,24 @@ def record_outbox_event(
     error_message: str = "",
     metadata: dict[str, Any] | None = None,
     fallback_path: str | Path | None = None,
+    dedupe_key: str = "",
 ) -> str:
     outbox_id = f"outbox_{secrets.token_hex(8)}"
     created_at = utc_now()
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
     metadata_json = _metadata_json(metadata)
+    dedupe_key = str(dedupe_key or "").strip()
 
     try:
         ensure_traceability_schema(conn)
+        if dedupe_key:
+            existing = conn.execute(
+                "SELECT outbox_id FROM store_outbox "
+                "WHERE dedupe_key = ? AND status IN ('pending', 'processing')",
+                (dedupe_key,),
+            ).fetchone()
+            if existing:
+                return str(existing[0])
         conn.execute(
             """
             INSERT INTO store_outbox (
@@ -422,9 +455,11 @@ def record_outbox_event(
                 error_class,
                 error_message,
                 metadata_json,
-                created_at
+                created_at,
+                dedupe_key,
+                updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 outbox_id,
@@ -437,10 +472,22 @@ def record_outbox_event(
                 error_message,
                 metadata_json,
                 created_at,
+                dedupe_key,
+                created_at,
             ),
         )
         conn.commit()
         return outbox_id
+    except sqlite3.IntegrityError:
+        if dedupe_key:
+            existing = conn.execute(
+                "SELECT outbox_id FROM store_outbox "
+                "WHERE dedupe_key = ? AND status IN ('pending', 'processing')",
+                (dedupe_key,),
+            ).fetchone()
+            if existing:
+                return str(existing[0])
+        raise
     except Exception:
         path = Path(fallback_path) if fallback_path is not None else _default_outbox_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -454,6 +501,7 @@ def record_outbox_event(
             "error_class": error_class,
             "error_message": error_message,
             "metadata": metadata or {},
+            "dedupe_key": dedupe_key,
             "created_at": created_at,
         }
         with path.open("a", encoding="utf-8") as handle:
@@ -841,6 +889,99 @@ def safe_record_degradation_event(engine: Any, **kwargs: Any) -> bool:
         return True
     except Exception:
         return False
+
+
+def _trace_database_path(engine: Any) -> str:
+    sqlite = getattr(engine, "_sqlite", None)
+    raw_path = getattr(sqlite, "_db_path", "")
+    if not isinstance(raw_path, (str, Path)):
+        return ""
+    path = str(raw_path).strip()
+    if not path or path == ":memory:":
+        return ""
+    return path
+
+
+def _write_deferred_trace(database_path: str, kind: str, kwargs: dict[str, Any]) -> None:
+    timeout_ms = _bounded_int_env(
+        "PP_TRACE_WRITE_BUSY_TIMEOUT_MS", 1000, minimum=50, maximum=30_000
+    )
+    attempts = _bounded_int_env("PP_TRACE_WRITE_MAX_ATTEMPTS", 4, minimum=1, maximum=10)
+    for attempt in range(attempts):
+        try:
+            connection = sqlite3.connect(database_path, timeout=timeout_ms / 1000.0)
+            try:
+                connection.execute(f"PRAGMA busy_timeout={timeout_ms}")
+                ensure_traceability_schema(connection)
+                if kind == "call_span":
+                    record_call_span(connection, **kwargs)
+                else:
+                    record_degradation_event(connection, **kwargs)
+                return
+            finally:
+                connection.close()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).casefold() or attempt + 1 >= attempts:
+                return
+            time.sleep(min(0.05 * (2**attempt), 0.5))
+        except Exception:
+            return
+
+
+def _release_deferred_trace(future: Future) -> None:
+    with _TRACE_WRITE_FUTURES_LOCK:
+        _TRACE_WRITE_FUTURES.discard(future)
+    _TRACE_WRITE_SLOTS.release()
+
+
+def _defer_trace_write(engine: Any, kind: str, kwargs: dict[str, Any]) -> bool:
+    database_path = _trace_database_path(engine)
+    if not database_path:
+        if kind == "call_span":
+            return safe_record_call_span(engine, **kwargs)
+        return safe_record_degradation_event(engine, **kwargs)
+    if not _TRACE_WRITE_SLOTS.acquire(blocking=False):
+        return False
+    try:
+        future = _TRACE_WRITE_EXECUTOR.submit(
+            _write_deferred_trace,
+            database_path,
+            kind,
+            dict(kwargs),
+        )
+    except Exception:
+        _TRACE_WRITE_SLOTS.release()
+        return False
+    with _TRACE_WRITE_FUTURES_LOCK:
+        _TRACE_WRITE_FUTURES.add(future)
+    future.add_done_callback(_release_deferred_trace)
+    return True
+
+
+def defer_record_call_span(engine: Any, **kwargs: Any) -> bool:
+    """Queue best-effort call telemetry without extending the user response path."""
+    payload = dict(kwargs)
+    payload.setdefault("ended_at", utc_now())
+    return _defer_trace_write(engine, "call_span", payload)
+
+
+def defer_record_degradation_event(engine: Any, **kwargs: Any) -> bool:
+    """Queue best-effort degradation telemetry on the same bounded writer."""
+    return _defer_trace_write(engine, "degradation_event", dict(kwargs))
+
+
+def drain_deferred_trace_writes(timeout: float = 5.0) -> bool:
+    """Wait for queued trace writes during tests or orderly process shutdown."""
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while True:
+        with _TRACE_WRITE_FUTURES_LOCK:
+            pending = set(_TRACE_WRITE_FUTURES)
+        if not pending:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        wait(pending, timeout=remaining)
 
 
 def build_envelope(

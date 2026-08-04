@@ -15,7 +15,6 @@
 
 import os
 import sys
-import json
 
 # Ensure PYTHONPATH includes project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -269,7 +268,7 @@ class TestDomainE2E:
         import subprocess
 
         result = subprocess.run(
-            ["pytest", "tests/test_domain_manager.py", "-v", "--tb=short"],
+            [sys.executable, "-m", "pytest", "tests/test_domain_manager.py", "-v", "--tb=short"],
             capture_output=True,
             text=True,
             env={
@@ -278,7 +277,6 @@ class TestDomainE2E:
                 "PLASTIC_DB_PATH": ":memory:",
             },
         )
-        passed = "11 passed" in result.stdout or "11 passed" in result.stderr
         # 如果是 10 passed（1 个因DB隔离而跳过）也可以
         total_pass = result.stdout.count("PASSED")
         assert total_pass >= 10, f"Expected >=10 passing tests:\n{result.stdout}\n{result.stderr}"

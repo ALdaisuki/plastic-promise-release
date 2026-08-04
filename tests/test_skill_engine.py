@@ -1,8 +1,11 @@
 import asyncio
 import json
+from unittest.mock import MagicMock
 
 import pytest
-from plastic_promise.skills.engine import SkillDef, SkillResult, SkillRegistrationError
+from mcp.types import TextContent
+
+from plastic_promise.skills.engine import SkillDef, SkillRegistrationError, SkillResult
 
 
 class TestSkillDef:
@@ -131,8 +134,6 @@ class TestSkillRegistrationError:
 # ──────────────────────────────────────────────
 # AtomRegistry tests (Task 2)
 # ──────────────────────────────────────────────
-
-from unittest.mock import MagicMock
 
 
 def _make_mock_tool(name: str):
@@ -356,10 +357,10 @@ class TestSkillEngineRegister:
         se.register(sd)  # should not raise
         assert "scheduled-gc" in se._registry
 
-    def test_register_all_superpowers_stages(self, mock_engine):
-        """Every SuperPowers stage must declare only registered atoms."""
+    def test_register_all_official_workflow_stages(self, mock_engine):
+        """Every official workflow stage must declare only registered atoms."""
         from plastic_promise.skills.engine import SkillEngine
-        from plastic_promise.skills.superpowers_stages import SKILL_DEFS
+        from plastic_promise.skills.official_workflow_stages import SKILL_DEFS
 
         se = SkillEngine(mock_engine)
         for skill_def in SKILL_DEFS.values():
@@ -367,20 +368,20 @@ class TestSkillEngineRegister:
 
         assert set(se._registry) >= {skill_def.name for skill_def in SKILL_DEFS.values()}
 
-    def test_superpowers_stage_atoms_are_registered(self, mock_engine):
+    def test_official_workflow_stage_atoms_are_registered(self, mock_engine):
         """Stage atom lists must stay in sync with AtomRegistry."""
         from plastic_promise.skills.engine import AtomRegistry
-        from plastic_promise.skills.superpowers_stages import STAGE_ATOMS
+        from plastic_promise.skills.official_workflow_stages import STAGE_ATOMS
 
         registered_atoms = set(AtomRegistry.build(mock_engine))
         stage_atoms = {atom for atoms in STAGE_ATOMS.values() for atom in atoms}
 
         assert stage_atoms <= registered_atoms
 
-    def test_superpowers_meta_stages_are_registered_consistently(self, mock_engine):
-        """Meta SuperPowers skills must be first-class sp-stage entries."""
+    def test_only_official_workflow_stages_are_registered_consistently(self, mock_engine):
+        """Legacy stages stay absent while every official stage is fully registered."""
         from plastic_promise.core.constants import SKILL_CHAIN_MAP, SKILL_DOMAIN_MAP
-        from plastic_promise.skills.superpowers_stages import (
+        from plastic_promise.skills.official_workflow_stages import (
             SKILL_DEFS,
             STAGE_ATOMS,
             STAGE_DESCRIPTIONS,
@@ -388,26 +389,24 @@ class TestSkillEngineRegister:
             STAGE_TAGS_MAP,
         )
 
-        expected_meta_stages = {"using-superpowers", "writing-skills"}
+        expected_stages = set(SKILL_CHAIN_MAP)
+        legacy_stages = {"using-superpowers", "brainstorming", "writing-skills"}
 
-        assert expected_meta_stages <= set(STAGE_ATOMS)
-        assert expected_meta_stages <= set(SKILL_DEFS)
-        assert expected_meta_stages <= set(STAGE_DOMAIN_MAP)
-        assert expected_meta_stages <= set(STAGE_TAGS_MAP)
-        assert expected_meta_stages <= set(STAGE_DESCRIPTIONS)
+        assert set(STAGE_ATOMS) == expected_stages
+        assert set(SKILL_DEFS) == expected_stages
+        assert set(STAGE_DOMAIN_MAP) == expected_stages
+        assert set(STAGE_TAGS_MAP) == expected_stages
+        assert set(STAGE_DESCRIPTIONS) == expected_stages
+        assert legacy_stages.isdisjoint(expected_stages)
 
-        for stage in expected_meta_stages:
+        for stage in expected_stages:
             assert stage in SKILL_CHAIN_MAP
-            assert f"sp-{stage}" in SKILL_CHAIN_MAP
             assert stage in SKILL_DOMAIN_MAP
-            assert f"sp-{stage}" in SKILL_DOMAIN_MAP
 
 
 # ──────────────────────────────────────────────
 # SkillEngine.exec tests (Task 4)
 # ──────────────────────────────────────────────
-
-from mcp.types import TextContent
 
 
 class TestSkillEngineExec:
@@ -707,6 +706,65 @@ class TestSkillEngineExec:
         assert any("skill_session_complete" in log for log in result.degrade_log)
 
     @pytest.mark.asyncio
+    async def test_exec_cancellation_closes_started_skill_session(self, mock_engine):
+        from plastic_promise.skills.engine import SkillEngine
+
+        se = SkillEngine(mock_engine)
+        atom_started = asyncio.Event()
+        never_finish = asyncio.Event()
+        completion_outcomes = []
+
+        async def mock_session_start(engine, args):
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"entity_id": "skill:cancelled:test"}),
+                )
+            ]
+
+        async def mock_session_complete(engine, args):
+            completion_outcomes.append(args["outcome"])
+            return [TextContent(type="text", text=json.dumps({"status": "abandoned"}))]
+
+        async def blocking_atom(engine, args):
+            atom_started.set()
+            await never_finish.wait()
+
+        async def handler(ctx, params, atoms):
+            raise AssertionError("cancelled execution must not reach the handler")
+
+        se._atoms["skill_session_start"] = mock_session_start
+        se._atoms["skill_session_complete"] = mock_session_complete
+        se._atoms["blocking_atom"] = blocking_atom
+        se.register(
+            SkillDef(
+                name="cancelled-skill",
+                domain="session_lifecycle",
+                description="Cancellation cleanup regression",
+                tier="P0",
+                atoms=["blocking_atom"],
+                degrade_map={},
+                handler=handler,
+                allowed_callers=["claude"],
+            )
+        )
+
+        task = asyncio.create_task(
+            se.exec(
+                "cancelled-skill",
+                params={"stage_session_id": "stage:cancelled-skill"},
+                caller="claude",
+            )
+        )
+        await asyncio.wait_for(atom_started.wait(), timeout=1)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert completion_outcomes == ["abandoned: execution cancelled"]
+
+    @pytest.mark.asyncio
     async def test_exec_atom_degraded_abort(self, mock_engine):
         """When an atom fails with default degrade='abort', execution stops."""
         from plastic_promise.skills.engine import SkillEngine
@@ -761,3 +819,47 @@ class TestSkillEngineExec:
         assert result.success is False
         assert call_order == ["failing"]  # atom_b was never called
         assert "atom_a" in result.errors[0]
+
+    @pytest.mark.asyncio
+    async def test_exec_entity_only_tracking_closes_on_serial_abort(self, mock_engine):
+        """Entity-only lifecycle markers must not remain active after an atom abort."""
+        from plastic_promise.skills.engine import SkillEngine
+
+        se = SkillEngine(mock_engine)
+        completion_outcomes = []
+
+        async def mock_session_start(engine, args):
+            assert args["record_memory"] is False
+            return [TextContent(type="text", text=json.dumps({"entity_id": "skill:entity:test"}))]
+
+        async def mock_session_complete(engine, args):
+            completion_outcomes.append(args["outcome"])
+            return [TextContent(type="text", text=json.dumps({"status": "abandoned"}))]
+
+        async def mock_failing_atom(engine, args):
+            raise RuntimeError("entity-only failure")
+
+        async def handler(ctx, params, atoms):
+            raise AssertionError("aborted execution must not reach the handler")
+
+        se._atoms["skill_session_start"] = mock_session_start
+        se._atoms["skill_session_complete"] = mock_session_complete
+        se._atoms["atom_a"] = mock_failing_atom
+        se.register(
+            SkillDef(
+                name="entity-only-abort",
+                domain="session_lifecycle",
+                description="Entity-only abort cleanup regression",
+                tier="P0",
+                atoms=["atom_a"],
+                degrade_map={},
+                handler=handler,
+                allowed_callers=["claude"],
+                track_start_memory=False,
+            )
+        )
+
+        result = await se.exec("entity-only-abort", params={}, caller="claude")
+
+        assert result.success is False
+        assert completion_outcomes == ["abandoned: atom atom_a failed"]

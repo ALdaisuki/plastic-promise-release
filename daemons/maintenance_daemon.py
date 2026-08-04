@@ -96,6 +96,10 @@ from plastic_promise.launcher.service_manager import (
 DB_PATH = get_db_path()
 INTERVAL = int(os.environ.get("AUDIT_INTERVAL_SECONDS", "300"))
 MCP_URL = "http://127.0.0.1:9020"
+MANAGED_ENV_PATH = os.environ.get(
+    "PP_MAINTENANCE_MANAGED_ENV_PATH",
+    "/srv/plastic-promise/state/control/managed.env",
+)
 
 
 def _connect_memory_db() -> sqlite3.Connection:
@@ -1647,13 +1651,73 @@ async def scan_task_heartbeats():
 # ═══════════════════════════════════════════════════════════════
 # 主循环
 # ═══════════════════════════════════════════════════════════════
+def _bounded_maintenance_int(name, default, *, minimum, maximum):
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(maximum, max(minimum, value))
+
+
 def expire_pending_memory_proposals(engine):
-    """Run the optional Task 7 proposal expiry hook without weakening later stages."""
+    """Advance passive derived work, then expire stale pending proposals."""
+    replay_result = None
+    try:
+        from plastic_promise.passive_memory import replay_passive_memory_proposals
+
+        replay_result = replay_passive_memory_proposals(engine)
+    except (ImportError, AttributeError):
+        replay_result = {"skipped": "passive_replay_unavailable"}
+    semantic_result = None
+    try:
+        from plastic_promise.passive_memory.semantic_pipeline import (
+            process_semantic_memory_jobs,
+        )
+
+        semantic_result = process_semantic_memory_jobs(
+            engine,
+            max_batches=_bounded_maintenance_int(
+                "PP_PASSIVE_SEMANTIC_MAINTENANCE_BATCHES", 4, minimum=1, maximum=100
+            ),
+        )
+    except (ImportError, AttributeError):
+        semantic_result = {"skipped": "semantic_runtime_unavailable"}
+    promotion_reconcile = None
+    promotion_result = None
+    try:
+        from plastic_promise.core.proposal_promotion_jobs import (
+            process_proposal_promotion_jobs,
+            reconcile_proposal_promotion_jobs,
+        )
+
+        promotion_reconcile = reconcile_proposal_promotion_jobs(
+            engine,
+            limit=_bounded_maintenance_int(
+                "PP_PROPOSAL_PROMOTION_RECONCILE_LIMIT", 100, minimum=1, maximum=1000
+            ),
+        )
+        promotion_result = process_proposal_promotion_jobs(
+            engine,
+            max_batches=_bounded_maintenance_int(
+                "PP_PROPOSAL_PROMOTION_MAINTENANCE_BATCHES", 4, minimum=1, maximum=100
+            ),
+        )
+    except (ImportError, AttributeError):
+        promotion_result = {"skipped": "proposal_promotion_runtime_unavailable"}
     try:
         from plastic_promise.core.memory_proposals import expire_memory_proposals
     except (ImportError, AttributeError):
-        return {"skipped": "proposal_expiry_unavailable"}
-    return expire_memory_proposals(engine)
+        return {"skipped": "proposal_expiry_unavailable", "passive_replay": replay_result}
+    result = expire_memory_proposals(engine)
+    if replay_result and replay_result.get("skipped") != "passive_memory_disabled":
+        result["passive_replay"] = replay_result
+    if semantic_result and semantic_result.get("skipped") != "semantic_capture_disabled":
+        result["semantic_jobs"] = semantic_result
+    if promotion_reconcile and promotion_reconcile.get("reason") != "auto_promotion_disabled":
+        result["promotion_reconcile"] = promotion_reconcile
+    if promotion_result and promotion_result.get("skipped") != "auto_promotion_disabled":
+        result["promotion_jobs"] = promotion_result
+    return result
 
 
 def _engine_connection(engine):
@@ -1680,6 +1744,31 @@ def _result_counts(result):
     return {str(key): value for key, value in source.items() if type(value) in (bool, int, float)}
 
 
+def _result_failure_codes(result):
+    codes = set()
+    stack = [result]
+    visited = 0
+    while stack and len(codes) < 20 and visited < 1000:
+        current = stack.pop()
+        visited += 1
+        if isinstance(current, dict):
+            raw_code = current.get("failure_code")
+            if isinstance(raw_code, str):
+                code = "".join(
+                    character
+                    for character in raw_code.strip()
+                    if character.isalnum() or character in "._:-"
+                )[:200]
+                if code:
+                    codes.add(code)
+            stack.extend(
+                value for value in current.values() if isinstance(value, (dict, list, tuple))
+            )
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
+    return sorted(codes)
+
+
 async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=None):
     """Run and durably trace the six governed maintenance stages."""
     if engine is None:
@@ -1695,6 +1784,7 @@ async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=No
         "order": [],
         "results": {},
         "errors": {},
+        "degradations": {},
     }
     primary_conn = _engine_connection(engine)
     conn = _trace_connection(engine)
@@ -1732,6 +1822,11 @@ async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=No
                 raise RuntimeError("maintenance_stage_left_open_transaction")
             report["results"][stage] = result
             stage_metadata["counts"] = _result_counts(result)
+            failure_codes = _result_failure_codes(result)
+            if failure_codes:
+                report["degradations"][stage] = failure_codes
+                stage_status = "degraded"
+                stage_metadata["failure_codes"] = failure_codes
         except Exception as exc:
             if primary_conn is not None and primary_conn.in_transaction:
                 primary_conn.rollback()
@@ -1748,14 +1843,14 @@ async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=No
                 stage_name=stage,
                 caller="maintenance-daemon",
                 status=stage_status,
-                degraded=stage_status == "error",
+                degraded=stage_status in {"degraded", "error"},
                 metadata=stage_metadata,
             )
 
-    success_count = len(stages) - len(report["errors"])
-    if not report["errors"]:
+    completed_count = len(stages) - len(report["errors"])
+    if not report["errors"] and not report["degradations"]:
         report["status"] = "success"
-    elif success_count:
+    elif completed_count:
         report["status"] = "partial"
     else:
         report["status"] = "error"
@@ -1768,12 +1863,14 @@ async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=No
             stage_name="maintenance_cycle",
             caller="maintenance-daemon",
             status=report["status"],
-            degraded=bool(report["errors"]),
+            degraded=bool(report["errors"] or report["degradations"]),
             metadata={
                 "stage_count": len(stages),
-                "completed_count": success_count,
+                "completed_count": completed_count,
                 "error_count": len(report["errors"]),
+                "degraded_count": len(report["degradations"]),
                 "error_classes": dict(report["errors"]),
+                "degradation_codes": dict(report["degradations"]),
             },
         )
     if conn is not None and conn is not primary_conn:
@@ -1925,6 +2022,7 @@ def parse_daemon_args(argv: Sequence[str] | None = None):
         default="http://127.0.0.1:9020/mcp",
     )
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--source-root", default=_project_root)
     parser.add_argument("--source-revision", default=resolve_source_revision(_project_root))
@@ -1942,8 +2040,11 @@ def parse_daemon_args(argv: Sequence[str] | None = None):
 
 def validate_daemon_once_arguments(arguments):
     once = arguments.get("once") is True
+    preflight = arguments.get("preflight") is True
     emit_json = arguments.get("json") is True
     mcp_url = arguments.get("mcp_url")
+    if once and preflight:
+        return {"ok": False, "error": "daemon_mode_arguments_invalid"}
     if once:
         try:
             _supported_mcp_url(mcp_url)
@@ -1951,6 +2052,9 @@ def validate_daemon_once_arguments(arguments):
             return {"ok": False, "error": "daemon_once_arguments_invalid"}
         if not emit_json:
             return {"ok": False, "error": "daemon_once_arguments_invalid"}
+    elif preflight:
+        if not emit_json:
+            return {"ok": False, "error": "daemon_preflight_arguments_invalid"}
     elif emit_json:
         return {"ok": False, "error": "daemon_once_arguments_invalid"}
     return {"ok": True}
@@ -2036,6 +2140,20 @@ def _replay_failed(result, stage):
 
 async def daemon_main(argv: Sequence[str] | None = None) -> int:
     args = parse_daemon_args(argv)
+    if args.preflight:
+        from plastic_promise.core.maintenance_preflight import build_maintenance_preflight
+
+        payload = await build_maintenance_preflight(
+            db_path=DB_PATH,
+            managed_env_path=MANAGED_ENV_PATH,
+        )
+        print(json.dumps(payload, ensure_ascii=False, default=str))
+        return 0 if payload.get("ready") is True else 2
+
+    if os.environ.get("PP_MAINTENANCE_ENABLED", "0").strip() != "1":
+        print("maintenance_disabled: set PP_MAINTENANCE_ENABLED=1 explicitly", file=sys.stderr)
+        return 3
+
     os.environ.setdefault("PLASTIC_PROCESS_GENERATION", secrets.token_hex(16))
     global MCP_URL
     MCP_URL = args.mcp_url.removesuffix("/mcp")

@@ -24,17 +24,27 @@ def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
     return (median, threshold)
 
 
-async def scan_coupling(engine) -> dict:
+async def scan_coupling(
+    engine,
+    *,
+    connection: sqlite3.Connection | None = None,
+    dispatch: bool = True,
+    include_findings: bool = False,
+) -> dict:
     """Scan coupling patterns for hidden structural issues:
     1. Tag co-occurrence anomalies — unusual tag pair frequencies
     2. Bridge node growth — entities connecting many otherwise-separate clusters
     3. Implicit dependencies — domains that grow together without explicit links
     """
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    ensure_synthesis_schema(conn)
-    conn.commit()
+    owns_connection = connection is None
+    if owns_connection:
+        db_path = get_db_path()
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        ensure_synthesis_schema(conn)
+        conn.commit()
+    else:
+        conn = connection
     ordinary_guard = ordinary_memory_sql_predicate("memories")
     findings = []
 
@@ -230,27 +240,36 @@ async def scan_coupling(engine) -> dict:
                                 }
                             )
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
     # Dispatch findings
-    from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
-
     dispatched = 0
-    for f in findings:
-        try:
-            await handle_task_enqueue(
-                engine,
-                {
-                    "task_type": f["task_type_field"],
-                    "title": f["title"],
-                    "to_agent": f["to_agent"],
-                    "priority": f["priority"],
-                    "source_scan": "scan_coupling",
-                    "payload": f,
-                },
-            )
-            dispatched += 1
-        except Exception:
-            pass
+    if dispatch:
+        from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
 
-    return {"scanner": "scan_coupling", "findings": len(findings), "dispatched": dispatched}
+        for f in findings:
+            try:
+                await handle_task_enqueue(
+                    engine,
+                    {
+                        "task_type": f["task_type_field"],
+                        "title": f["title"],
+                        "to_agent": f["to_agent"],
+                        "priority": f["priority"],
+                        "source_scan": "scan_coupling",
+                        "payload": f,
+                    },
+                )
+                dispatched += 1
+            except Exception:
+                pass
+
+    result = {
+        "scanner": "scan_coupling",
+        "findings": len(findings),
+        "dispatched": dispatched,
+    }
+    if include_findings:
+        result["projected_findings"] = findings
+    return result

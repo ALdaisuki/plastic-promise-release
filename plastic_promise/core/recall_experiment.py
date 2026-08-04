@@ -24,12 +24,28 @@ from plastic_promise.core.fusion_policy import (
 if TYPE_CHECKING:
     from plastic_promise.core.recall_quality import RecallDataset
 
-EXPERIMENT_MANIFEST_SCHEMA = "recall-experiment/v1"
+EXPERIMENT_MANIFEST_SCHEMA = "recall-experiment/v2"
 CALIBRATION_GRID_SCHEMA = "wrrf-calibration-grid/v1"
 RECALL_QUALITY_REPORT_SCHEMA = "recall-quality-report/v2"
 SUPPORTED_CANDIDATE_DIMENSIONS = frozenset({"fusion_policy"})
 REQUIRED_DEPENDENCIES = frozenset({"lancedb", "pyarrow"})
 MINIMUM_DEPENDENCY_VERSIONS = {"lancedb": Version("0.34.0")}
+MAX_V1_CONTROL_POLICY = "max-v1"
+MAX_V1_CONTROL_ALGORITHM = "weighted-max-v1"
+MAX_V1_CONTROL_RUNTIME = "python"
+MAX_V1_CONTROL_RUNTIME_ROUTE = "python-http-mcp"
+MAX_V1_CONTROL_INDEX_TEXT_POLICY = "legacy"
+MAX_V1_CONTROL_EMBEDDING_DIMENSION = 1024
+MAX_V1_CONTROL_DATASET_SOURCE = "tests/fixtures/recall_quality/v2-heldout.json"
+MAX_V1_CONTROL_RETRIEVAL_CONFIGURATION: Mapping[str, str] = MappingProxyType(
+    {
+        "index_text_policy": MAX_V1_CONTROL_INDEX_TEXT_POLICY,
+        "PP_VECTOR_WEIGHT": "0.50",
+        "PP_QUERY_EXPANSION": "1",
+        "PP_FTS_DISABLED": "0",
+        "PP_FTS_FUSION": "1",
+    }
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{7,64}$")
 
@@ -109,6 +125,17 @@ def opaque_file_fingerprint(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def heldout_report_contract(fingerprint: object) -> dict[str, Any] | None:
+    """Return a detached copy of the registered held-out evidence contract."""
+
+    if not isinstance(fingerprint, str) or not _SHA256_RE.fullmatch(fingerprint):
+        return None
+    contract = _KNOWN_HELDOUT_REPORT_CONTRACTS.get(fingerprint)
+    if contract is None:
+        return None
+    return _deep_thaw(contract)
+
+
 def _deep_freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         return MappingProxyType({str(key): _deep_freeze(item) for key, item in value.items()})
@@ -176,6 +203,7 @@ class FrozenCandidateManifest:
     heldout_fingerprint: str
     source_commit: str
     dirty_fingerprint: str
+    comparison_environment_fingerprint: str
     fusion_config: FusionConfig
     retrieval_configuration: Mapping[str, Any]
     embedding_configuration: Mapping[str, Any]
@@ -209,6 +237,7 @@ class FrozenCandidateManifest:
             "heldout_fingerprint": self.heldout_fingerprint,
             "source_commit": self.source_commit,
             "dirty_fingerprint": self.dirty_fingerprint,
+            "comparison_environment_fingerprint": self.comparison_environment_fingerprint,
             "fusion_config": _config_payload(self.fusion_config),
             "retrieval_configuration": _deep_thaw(self.retrieval_configuration),
             "embedding_configuration": _deep_thaw(self.embedding_configuration),
@@ -235,6 +264,9 @@ class FrozenCandidateManifest:
             heldout_fingerprint=str(value.get("heldout_fingerprint") or ""),
             source_commit=str(value.get("source_commit") or ""),
             dirty_fingerprint=str(value.get("dirty_fingerprint") or ""),
+            comparison_environment_fingerprint=str(
+                value.get("comparison_environment_fingerprint") or ""
+            ),
             fusion_config=config,
             retrieval_configuration=_required_mapping(value, "retrieval_configuration"),
             embedding_configuration=_required_mapping(value, "embedding_configuration"),
@@ -423,6 +455,8 @@ def _validate_manifest_shape(manifest: FrozenCandidateManifest) -> None:
         raise ValueError("candidate_manifest_source_commit_invalid")
     if not _SHA256_RE.fullmatch(manifest.dirty_fingerprint):
         raise ValueError("candidate_manifest_dirty_fingerprint_invalid")
+    if not _SHA256_RE.fullmatch(manifest.comparison_environment_fingerprint):
+        raise ValueError("candidate_manifest_comparison_environment_fingerprint_invalid")
     if not manifest.runtime_route:
         raise ValueError("candidate_manifest_runtime_route_invalid")
     _validate_dependencies(manifest.dependency_versions)
@@ -446,6 +480,7 @@ def _validate_calibration_report_binding(
     calibration_fingerprint: str,
     source_commit: str,
     dirty_fingerprint: str,
+    comparison_environment_fingerprint: str,
     retrieval_configuration: Mapping[str, Any],
     embedding_configuration: Mapping[str, Any],
     dependency_versions: Mapping[str, str],
@@ -463,6 +498,7 @@ def _validate_calibration_report_binding(
         "backend.runtime_route": runtime_route,
         "environment.source_commit": source_commit,
         "environment.dirty_fingerprint": dirty_fingerprint,
+        "environment.comparison_environment_fingerprint": comparison_environment_fingerprint,
         "environment.retrieval_configuration": dict(retrieval_configuration),
         "environment.embedding_configuration": dict(embedding_configuration),
         "environment.dependencies": dict(dependency_versions),
@@ -484,6 +520,7 @@ def freeze_candidate_manifest(
     heldout_fingerprint: str,
     source_commit: str,
     dirty_fingerprint: str,
+    comparison_environment_fingerprint: str,
     retrieval_configuration: Mapping[str, Any],
     embedding_configuration: Mapping[str, Any],
     dependency_versions: Mapping[str, str],
@@ -504,6 +541,7 @@ def freeze_candidate_manifest(
         calibration_fingerprint=calibration_fingerprint,
         source_commit=str(source_commit),
         dirty_fingerprint=str(dirty_fingerprint),
+        comparison_environment_fingerprint=str(comparison_environment_fingerprint),
         retrieval_configuration=retrieval_configuration,
         embedding_configuration=embedding_configuration,
         dependency_versions=dependency_versions,
@@ -518,6 +556,7 @@ def freeze_candidate_manifest(
         heldout_fingerprint=heldout_fingerprint,
         source_commit=str(source_commit),
         dirty_fingerprint=str(dirty_fingerprint),
+        comparison_environment_fingerprint=str(comparison_environment_fingerprint),
         fusion_config=_immutable_fusion_config(selected["fusion_config"]),
         retrieval_configuration=dict(retrieval_configuration),
         embedding_configuration=dict(embedding_configuration),
@@ -564,6 +603,7 @@ def validate_manifest_runtime(
     heldout_fingerprint: str,
     source_commit: str,
     dirty_fingerprint: str,
+    comparison_environment_fingerprint: str,
     retrieval_configuration: Mapping[str, Any],
     embedding_configuration: Mapping[str, Any],
     dependency_versions: Mapping[str, str],
@@ -574,6 +614,7 @@ def validate_manifest_runtime(
         "heldout_fingerprint": str(heldout_fingerprint),
         "source_commit": source_commit,
         "dirty_fingerprint": dirty_fingerprint,
+        "comparison_environment_fingerprint": comparison_environment_fingerprint,
         "retrieval_configuration": dict(retrieval_configuration),
         "embedding_configuration": dict(embedding_configuration),
         "dependency_versions": dict(dependency_versions),
@@ -768,6 +809,9 @@ def compare_fusion_reports(
         expected_bindings = {
             "environment.source_commit": manifest.source_commit,
             "environment.dirty_fingerprint": manifest.dirty_fingerprint,
+            "environment.comparison_environment_fingerprint": (
+                manifest.comparison_environment_fingerprint
+            ),
             "environment.retrieval_configuration": dict(manifest.retrieval_configuration),
             "environment.embedding_configuration": dict(manifest.embedding_configuration),
             "environment.dependencies": dict(manifest.dependency_versions),
@@ -908,10 +952,19 @@ def compare_fusion_reports(
         )
         attestation = report.get("fusion_attestation")
         expected_observed = [expected_policy, requested_runtime, effective_runtime]
+        expected_algorithm = MAX_V1_CONTROL_ALGORITHM if label == "baseline" else "weighted-rrf-v1"
+        expected_config = None
+        if label == "candidate":
+            expected_config = {
+                **_config_payload(manifest.fusion_config),
+                "config_hash": manifest.fusion_config.config_hash,
+            }
         attestation_valid = bool(
             isinstance(attestation, Mapping)
             and attestation.get("errors") == []
             and attestation.get("observed") == expected_observed
+            and attestation.get("algorithm") == expected_algorithm
+            and attestation.get("config") == expected_config
             and isinstance(attestation.get("attested_calls"), int)
             and not isinstance(attestation.get("attested_calls"), bool)
             and isinstance(transport_counts, Mapping)
@@ -924,7 +977,12 @@ def compare_fusion_reports(
         )
         add(
             f"{label}.evidence.fusion_attestation",
-            {"errors": [], "observed": expected_observed},
+            {
+                "errors": [],
+                "observed": expected_observed,
+                "algorithm": expected_algorithm,
+                "config": expected_config,
+            },
             attestation,
             attestation_valid,
         )

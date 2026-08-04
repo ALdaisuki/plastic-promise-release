@@ -87,11 +87,29 @@ _COMMON_SECRET_PATTERNS = tuple(
         r"\bgithub_pat_[A-Za-z0-9_]{20,}\b",
         r"\bAKIA[0-9A-Z]{16}\b",
         r"\b(?:password|passwd|pwd|secret)\s*[:=]\s*[\"']?[^\s\"',;]{6,}",
+        r"\b(?:api[_ -]?key|access[_ -]?token|auth(?:orization)?[_ -]?token|"
+        r"client[_ -]?secret)\s*[:=]\s*[\"']?[^\s\"',;]{6,}",
+        r"(?:密码|口令|密钥|秘钥|访问令牌|令牌|凭证)\s*(?:是|为|[:：=])\s*"
+        r"[\"'“‘]?[^\s\"'”’、，,；;]{6,}",
         r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://"
         r"[^/\s:@]+:[^@\s/]+@",
         r"\bsk-[A-Za-z0-9_-]{20,}\b",
         r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b",
     )
+)
+_VALUE_BEFORE_SECRET_LABEL_PATTERNS = (
+    re.compile(
+        r"(?P<value>[^\s\"'“”‘’、，,；;]{6,256})\s*"
+        r"(?:这个|这是|这就是|作为|用作)?\s*"
+        r"(?:密码|口令|密钥|秘钥|访问令牌|令牌|凭证)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<value>[^\s\"',;]{6,256})\s+"
+        r"(?:(?:is|as|use|try|this|the)\s+){0,4}"
+        r"(?:password|passwd|pwd|secret|token|credential)\b",
+        re.IGNORECASE,
+    ),
 )
 _RUNTIME_MEMORY_ROUTE: ContextVar[str] = ContextVar(
     "plastic_promise_runtime_memory_route",
@@ -207,6 +225,8 @@ def contains_secret(content: object) -> bool:
     text = str(content or "")
     if any(pattern.search(text) for pattern in _COMMON_SECRET_PATTERNS):
         return True
+    if _contains_value_before_secret_label(text) or _contains_standalone_secret_token(text):
+        return True
 
     for configured in _configured_secret_patterns():
         try:
@@ -215,6 +235,53 @@ def contains_secret(content: object) -> bool:
         except re.error:
             return True
     return False
+
+
+def _contains_value_before_secret_label(text: str) -> bool:
+    for pattern in _VALUE_BEFORE_SECRET_LABEL_PATTERNS:
+        for match in pattern.finditer(text):
+            if _looks_like_secret_token(match.group("value"), require_all_classes=False):
+                return True
+    return False
+
+
+def _looks_like_standalone_secret(text: str) -> bool:
+    candidate = _strip_secret_token_boundary(text)
+    return _looks_like_secret_token(candidate, require_all_classes=True)
+
+
+def _contains_standalone_secret_token(text: str) -> bool:
+    if _looks_like_standalone_secret(text):
+        return True
+    for raw_token in text.split():
+        candidate = _strip_secret_token_boundary(raw_token)
+        if len(candidate) < 12 or "://" in candidate:
+            continue
+        if _looks_like_secret_token(candidate, require_all_classes=True):
+            return True
+    return False
+
+
+def _strip_secret_token_boundary(value: str) -> str:
+    return value.strip().strip(".。!?！？,，;；:\"'“”‘’()（）[]【】{}")
+
+
+def _looks_like_secret_token(value: str, *, require_all_classes: bool) -> bool:
+    candidate = value.strip().strip("\"'“”‘’")
+    if not 8 <= len(candidate) <= 256 or any(character.isspace() for character in candidate):
+        return False
+    classes = (
+        any(character.isascii() and character.islower() for character in candidate),
+        any(character.isascii() and character.isupper() for character in candidate),
+        any(character.isascii() and character.isdigit() for character in candidate),
+        any(not character.isalnum() for character in candidate),
+    )
+    if not require_all_classes:
+        return sum(classes) >= 3
+    unusual_symbol = any(
+        not character.isalnum() and character not in "-_.:/" for character in candidate
+    )
+    return all(classes) and unusual_symbol
 
 
 def _create_memory_proposal_table(conn: Any, table_name: str) -> None:
@@ -474,7 +541,10 @@ def classify_proposal_candidates(
             origin_turn_hash=turn_hash,
             origin_call_id=origin_call_id,
             origin_visibility=origin_visibility,
-            metadata=dict(metadata or {}),
+            metadata={
+                **dict(metadata or {}),
+                "classification_confidence": confidence,
+            },
         )
         try:
             normalized = _validate_candidate(candidate)
@@ -1262,6 +1332,23 @@ def promote_memory_proposal(
     if expired:
         raise ProposalPolicyError("proposal_expired")
     _refresh_engine_after_promotion(engine)
+    if created:
+        try:
+            from plastic_promise.core.memory_relations import organize_memory_relations
+
+            organize_memory_relations(engine, memory_id, call_id=call_value)
+        except Exception:
+            pass
+        try:
+            from plastic_promise.core.structured_memory_fusion import (
+                enqueue_canonical_memory_for_fusion,
+            )
+
+            enqueue_canonical_memory_for_fusion(engine, memory_id)
+        except Exception:
+            # Fusion is optional derived work. The promoted canonical row and
+            # its index job remain authoritative when cloud fusion is unavailable.
+            pass
     adopted = store._require(row["proposal_id"])
     return _adopted_result(
         engine,

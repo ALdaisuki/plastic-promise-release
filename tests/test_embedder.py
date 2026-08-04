@@ -67,12 +67,14 @@ class _FakeTagsResponse:
 class _RecordingProvider(Embedder):
     def __init__(self):
         self.calls = []
+        self.batch_calls = []
 
     def embed(self, text):
         self.calls.append(text)
         return [1.0, 0.0]
 
     def embed_batch(self, texts):
+        self.batch_calls.append(list(texts))
         return [self.embed(text) for text in texts]
 
     @property
@@ -154,6 +156,30 @@ def test_structure_aware_wrapper_applies_to_non_ollama_provider(monkeypatch):
     assert "尾部证据" in provider.calls[-1]
     assert embedder.last_chunking_diagnostics["effective_engine"] == "python"
     assert "|chunking=structure-v1" in embedder.index_model_name
+
+
+def test_structure_aware_batch_flattens_chunks_into_one_provider_batch(monkeypatch):
+    monkeypatch.setenv("PP_MEMORY_CHUNKING", "structure-v1")
+    monkeypatch.setenv("PP_MEMORY_CHUNK_ENGINE", "python")
+    monkeypatch.setenv("EMBEDDER_CHUNK_CHARS", "24")
+    monkeypatch.setenv("EMBEDDER_STRUCTURE_HARD_CHARS", "40")
+    monkeypatch.setenv("EMBEDDER_STRUCTURE_MAX_CHUNKS", "16")
+    provider = _RecordingProvider()
+    embedder = StructureAwareEmbedder(provider)
+
+    vectors = embedder.embed_batch(
+        [
+            "# First\n\nThe first document has enough text to create several chunks.",
+            "# Second\n\nThe second document also has enough text to create several chunks.",
+        ]
+    )
+
+    assert vectors == [[1.0, 0.0], [1.0, 0.0]]
+    assert len(provider.batch_calls) == 1
+    assert len(provider.batch_calls[0]) >= 4
+    assert embedder.last_chunking_diagnostics["batched"] is True
+    assert embedder.last_chunking_diagnostics["batch_input_count"] == 2
+    assert embedder.last_chunking_diagnostics["batch_chunk_count"] == len(provider.batch_calls[0])
 
 
 def test_rust_structure_gate_validates_once_and_rechecks_identity_or_config(
@@ -240,9 +266,7 @@ def test_rust_structure_gate_validates_once_and_rechecks_identity_or_config(
     embedder.embed("first parity sample")
     embedder.embed("second rust hot path")
 
-    assert [call[0] for call in python_calls] == [
-        embedder_module.STRUCTURE_CHUNK_PARITY_PROBE
-    ]
+    assert [call[0] for call in python_calls] == [embedder_module.STRUCTURE_CHUNK_PARITY_PROBE]
     assert [call[0] for call in rust_calls] == [
         embedder_module.STRUCTURE_CHUNK_PARITY_PROBE,
         "first parity sample",
@@ -253,16 +277,12 @@ def test_rust_structure_gate_validates_once_and_rechecks_identity_or_config(
 
     rust_core[0] = fake_rust_core("b")
     embedder.embed("new extension identity")
-    assert [call[0] for call in python_calls][-1] == (
-        embedder_module.STRUCTURE_CHUNK_PARITY_PROBE
-    )
+    assert [call[0] for call in python_calls][-1] == (embedder_module.STRUCTURE_CHUNK_PARITY_PROBE)
 
     monkeypatch.setenv("EMBEDDER_CHUNK_CHARS", "80")
     monkeypatch.setenv("EMBEDDER_STRUCTURE_HARD_CHARS", "160")
     StructureAwareEmbedder(_RecordingProvider()).embed("new chunk configuration")
-    assert [call[0] for call in python_calls][-1] == (
-        embedder_module.STRUCTURE_CHUNK_PARITY_PROBE
-    )
+    assert [call[0] for call in python_calls][-1] == (embedder_module.STRUCTURE_CHUNK_PARITY_PROBE)
     assert len(python_calls) == 3
 
 
@@ -592,9 +612,7 @@ def test_structure_v1_manifest_must_be_bound_to_persisted_vector_text(monkeypatc
     )
     metadata = metadata_with_index_material({}, material)
     metadata["memory_index"]["chunk_manifest"] = unrelated.chunk_manifest
-    metadata["memory_index"]["chunk_manifest_hash"] = chunk_manifest_hash(
-        unrelated.chunk_manifest
-    )
+    metadata["memory_index"]["chunk_manifest_hash"] = chunk_manifest_hash(unrelated.chunk_manifest)
     row = {
         "embedding_text": material.vector_text,
         "embedding_hash": material.embedding_hash,
@@ -724,7 +742,10 @@ def test_structure_enrichment_manifest_stays_bound_to_source_text(monkeypatch, t
     assert is_embedding_plan(material.vector_text)
     assert material.chunk_manifest is not None
     assert material.chunk_manifest["source_hash"] == hashlib.sha256(source.encode()).hexdigest()
-    assert material.chunk_manifest["chunks"][0]["text"] == "Retrieval\nThe API timeout is 30 seconds for request_id req-17."
+    assert (
+        material.chunk_manifest["chunks"][0]["text"]
+        == "Retrieval\nThe API timeout is 30 seconds for request_id req-17."
+    )
 
     metadata = metadata_with_index_material({}, material)
     restored = read_persisted_index_material(

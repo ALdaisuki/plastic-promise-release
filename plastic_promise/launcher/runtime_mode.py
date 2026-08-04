@@ -126,7 +126,13 @@ def apply_runtime_mode(
         _set_env(target_env, "PP_PREFER_RUST_SUPPLY", "0")
 
     configured_chunking = str(target_env.get("PP_MEMORY_CHUNKING") or "off").strip().casefold()
-    if resolved.depth == "full":
+    generation_root = str(target_env.get("PLASTIC_LANCEDB_GENERATION_ROOT") or "").strip()
+    if generation_root:
+        # An immutable generation is bound to the exact embedding/index-text
+        # identity recorded in its manifest. Runtime depth controls when that
+        # generation is opened; it must not silently rewrite the identity.
+        effective_chunking = configured_chunking
+    elif resolved.depth == "full":
         effective_chunking = "structure-v1"
     else:
         effective_chunking = "shadow" if configured_chunking == "shadow" else "off"
@@ -163,8 +169,7 @@ def infer_runtime_mode(environ: Mapping[str, str] | None = None) -> RuntimeMode:
         return _MODES_BY_KEY[configured]
 
     rust_accelerated = (
-        env.get("PP_FORCE_PYTHON_SUPPLY") != "1"
-        and env.get("PP_PREFER_RUST_SUPPLY", "1") == "1"
+        env.get("PP_FORCE_PYTHON_SUPPLY") != "1" and env.get("PP_PREFER_RUST_SUPPLY", "1") == "1"
     )
     depth = env.get("PLASTIC_RUNTIME_DEPTH")
     if depth not in {"light", "normal", "full"}:

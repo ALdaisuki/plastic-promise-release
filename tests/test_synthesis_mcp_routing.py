@@ -10,6 +10,7 @@ import pytest
 
 from plastic_promise.core.context_engine import ContextEngine, _SQLiteStorage
 from plastic_promise.core.memory_index import build_index_material, metadata_with_index_material
+from plastic_promise.core.memory_proposals import has_trusted_internal_origin
 from plastic_promise.core.synthesis import SynthesisStore
 from plastic_promise.mcp import server as mcp_server
 from plastic_promise.mcp.tools import memory as memory_tools
@@ -1094,10 +1095,12 @@ async def test_smart_remember_aliases_use_server_owned_memory_update_authority(
     )
     runtime_requests = []
     skill_calls = []
+    trusted_origins = []
 
     class CapturingSkillEngine:
         async def exec(self, skill_name, params, caller):
             skill_calls.append((skill_name, params, caller))
+            trusted_origins.append(has_trusted_internal_origin(params))
             return SimpleNamespace(
                 skill_name=skill_name,
                 success=True,
@@ -1139,6 +1142,7 @@ async def test_smart_remember_aliases_use_server_owned_memory_update_authority(
     assert skill_name == "smart-remember"
     assert params["_runtime_context"] == runtime
     assert caller == "pi"
+    assert trusted_origins == [False]
 
 
 @pytest.mark.parametrize(
@@ -1173,6 +1177,7 @@ async def test_step_closure_internal_smart_remember_uses_server_authority(
     )
     runtime_requests = []
     skill_calls = []
+    trusted_origins = []
 
     class CapturingSkillEngine:
         def __init__(self, _engine):
@@ -1183,6 +1188,7 @@ async def test_step_closure_internal_smart_remember_uses_server_authority(
 
         async def exec(self, skill_name, params, caller):
             skill_calls.append((skill_name, params, caller))
+            trusted_origins.append(has_trusted_internal_origin(params))
             return SimpleNamespace(
                 success=True,
                 data={"memory_id": "memory:closure"},
@@ -1224,6 +1230,7 @@ async def test_step_closure_internal_smart_remember_uses_server_authority(
     assert skill_name == "smart-remember"
     assert params["_runtime_context"] == runtime
     assert caller == "pi"
+    assert trusted_origins == [True]
 
 
 def test_existing_tools_expose_governed_synthesis_fields_without_new_tool() -> None:

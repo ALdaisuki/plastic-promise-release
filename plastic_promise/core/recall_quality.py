@@ -19,6 +19,8 @@ from typing import Any
 
 DATASET_SCHEMA_VERSION = "recall-quality/v1"
 REPORT_SCHEMA_VERSION = "recall-quality-report/v1"
+LIVE_TRACE_SCHEMA_VERSION = "live-recall-quality/v1"
+LIVE_TRACE_METADATA_KEY = "live_recall_quality_v1"
 ALLOWED_LANGUAGES = frozenset({"en", "zh", "cross-lingual"})
 ALLOWED_GROUPS = frozenset({"token-overlap", "partial-overlap", "zero-overlap"})
 DEFAULT_KS = (1, 3, 5, 10)
@@ -502,6 +504,165 @@ def evaluate_cases(
         channel_states=_aggregate_channel_states(results),
         case_results=tuple(results),
     )
+
+
+def evaluate_live_ground_truth(
+    ranked_items: Any,
+    ground_truth: Mapping[str, Any] | None,
+    *,
+    request_scope_id: str,
+    runtime_mode: str,
+    retrieval_config: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Calculate per-call hit@k/MRR only when versioned ground truth is supplied."""
+    if ground_truth is None:
+        return None
+    if not isinstance(ground_truth, Mapping):
+        raise ValueError("ground_truth must be an object")
+
+    allowed_keys = {
+        "case_id",
+        "dataset_revision",
+        "corpus_hash",
+        "relevant_memory_ids",
+        "forbidden_memory_ids",
+        "ks",
+    }
+    unexpected_keys = sorted(str(key) for key in ground_truth if key not in allowed_keys)
+    if unexpected_keys:
+        raise ValueError(f"ground_truth contains unsupported fields: {unexpected_keys}")
+
+    relevant_ids = _live_truth_ids(ground_truth.get("relevant_memory_ids"), required=True)
+    forbidden_ids = _live_truth_ids(ground_truth.get("forbidden_memory_ids"), required=False)
+    dataset_revision = _required_live_string(
+        ground_truth.get("dataset_revision"), "ground_truth.dataset_revision"
+    )
+    corpus_hash = _required_live_string(ground_truth.get("corpus_hash"), "ground_truth.corpus_hash")
+    case_id_value = ground_truth.get("case_id", "")
+    if type(case_id_value) is not str:
+        raise ValueError("ground_truth.case_id must be a string")
+    case_id = case_id_value.strip()
+
+    raw_ks = ground_truth.get("ks", DEFAULT_KS)
+    if not isinstance(raw_ks, Sequence) or isinstance(raw_ks, (str, bytes)):
+        raise ValueError("ground_truth.ks must be an array")
+    if any(type(value) is not int for value in raw_ks):
+        raise ValueError("ground_truth.ks must contain integers")
+    ks = tuple(sorted(set(raw_ks)))
+    if not ks or any(value < 1 or value > 100 for value in ks):
+        raise ValueError("ground_truth.ks must contain integers between 1 and 100")
+
+    ranked_ids = _ranked_ids(ranked_items)
+    relevant_rank = _first_relevant_rank(ranked_ids, relevant_ids)
+    forbidden = set(forbidden_ids)
+    normalized_config = json.dumps(
+        dict(retrieval_config),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    )
+    truth_material = json.dumps(
+        {
+            "case_id": case_id,
+            "corpus_hash": corpus_hash,
+            "dataset_revision": dataset_revision,
+            "forbidden_memory_ids": list(forbidden_ids),
+            "relevant_memory_ids": list(relevant_ids),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return {
+        "schema_version": LIVE_TRACE_SCHEMA_VERSION,
+        "case_id": case_id,
+        "dataset_revision": dataset_revision,
+        "corpus_hash": corpus_hash,
+        "ground_truth_hash": hashlib.sha256(truth_material.encode("utf-8")).hexdigest(),
+        "runtime_mode": str(runtime_mode or "unknown"),
+        "retrieval_config_hash": hashlib.sha256(normalized_config.encode("utf-8")).hexdigest(),
+        "request_scope_id": str(request_scope_id or ""),
+        "ranked_count": len(ranked_ids),
+        "ranked_ids_hash": hashlib.sha256("\x1f".join(ranked_ids).encode("utf-8")).hexdigest(),
+        "relevant_count": len(relevant_ids),
+        "forbidden_count": len(forbidden_ids),
+        "relevant_rank": relevant_rank,
+        "hit_at": {str(k): relevant_rank is not None and relevant_rank <= k for k in ks},
+        "mrr": 1.0 / relevant_rank if relevant_rank else 0.0,
+        "forbidden_hit": any(item_id in forbidden for item_id in ranked_ids[:FORBIDDEN_CUTOFF]),
+        "forbidden_cutoff": FORBIDDEN_CUTOFF,
+        "evidence_status": "ground_truth_complete",
+    }
+
+
+def evaluate_live_retrieval_quality(
+    ranked_items: Any,
+    ground_truth: Mapping[str, Any] | None,
+    *,
+    request_scope_id: str,
+    runtime_mode: str,
+    tool_name: str,
+    task_type: str,
+    scope: str,
+    project_id: str,
+    project_policy: str,
+    retrieval_mode: str = "",
+    fusion_policy: str = "",
+    max_results: int | None = None,
+    strict: bool | None = None,
+) -> dict[str, Any] | None:
+    """Build trace-only retrieval metrics from explicit versioned relevance labels."""
+    if ground_truth is None:
+        return None
+    config: dict[str, Any] = {
+        "tool_name": str(tool_name),
+        "task_type": str(task_type),
+        "scope": str(scope),
+        "project_id": str(project_id),
+        "project_policy": str(project_policy),
+        "retrieval_mode": str(retrieval_mode or "auto"),
+        "fusion_policy": str(fusion_policy or "auto"),
+    }
+    if max_results is not None:
+        if type(max_results) is not int:
+            raise ValueError("max_results must be an integer")
+        config["max_results"] = max_results
+    if strict is not None:
+        if type(strict) is not bool:
+            raise ValueError("strict must be a boolean")
+        config["strict"] = strict
+    return evaluate_live_ground_truth(
+        ranked_items,
+        ground_truth,
+        request_scope_id=request_scope_id,
+        runtime_mode=runtime_mode,
+        retrieval_config=config,
+    )
+
+
+def _required_live_string(value: Any, field_name: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    return normalized
+
+
+def _live_truth_ids(value: Any, *, required: bool) -> tuple[str, ...]:
+    if value is None and not required:
+        return ()
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError("ground-truth memory ids must be an array")
+    if any(type(item) is not str or not item.strip() for item in value):
+        raise ValueError("ground-truth memory ids must contain non-empty strings")
+    normalized = tuple(item.strip() for item in value)
+    if required and not normalized:
+        raise ValueError("ground_truth.relevant_memory_ids must not be empty")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("ground-truth memory ids must be unique")
+    return normalized
 
 
 def compare_summaries(

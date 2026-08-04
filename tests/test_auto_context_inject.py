@@ -1,502 +1,375 @@
-"""Tests for auto_context_inject MCP tool."""
+"""Tests for provider-neutral passive context injection."""
 
 import asyncio
 import json
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, ANY
 from mcp.types import TextContent
+
+_START_PATH = "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
+_COMPLETE_PATH = "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
+_STORE_PATH = "plastic_promise.mcp.tools.memory.handle_memory_store"
+_BEFORE_PATH = "plastic_promise.passive_memory.before_invoke"
+_AFTER_PATH = "plastic_promise.passive_memory.after_invoke"
+_PRINCIPLE_PATH = "plastic_promise.mcp.tools.principles.handle_principle_activate"
+
+
+def _text(payload):
+    return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+
+
+def _start_payload(*, principles=None):
+    return _text(
+        {
+            "entity_id": "skill:auto_inject:test:runtime",
+            "activated_principles": list(principles or []),
+        }
+    )
+
+
+def _before_payload(
+    *, principles=None, injection="<untrusted-memory-context>fact</untrusted-memory-context>"
+):
+    return {
+        "event": "before_invoke",
+        "status": "injected" if injection else "empty",
+        "mode": "on",
+        "ephemeral": True,
+        "injection": injection,
+        "context_pack": {
+            "core": [{"id": "mem_core", "content": "relevant fact"}],
+            "related": [],
+            "divergent": [],
+        },
+        "principles": list(principles or []),
+        "request_scope_id": "scope:test",
+        "memory_ids": ["mem_core"],
+        "inject_memory_id": None,
+        "diagnostics": {"level": "summary"},
+        "errors": None,
+        "partial": False,
+    }
 
 
 class TestAutoContextInject:
-    """Tests for handle_auto_context_inject."""
+    @pytest.fixture(autouse=True)
+    def _enable_passive_routes(self, monkeypatch):
+        monkeypatch.setenv("PP_PASSIVE_CONTEXT", "on")
+        monkeypatch.setenv("PP_PASSIVE_MEMORY", "on")
+        monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
 
-    def test_inject_marks_nested_memory_store_as_trusted(self, monkeypatch):
-        from plastic_promise.core.memory_proposals import has_trusted_internal_origin
+    @pytest.mark.parametrize("context_mode", ["off", "invalid"])
+    def test_before_invoke_disabled_short_circuits_before_tracking(self, monkeypatch, context_mode):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
-        monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
-        engine = MagicMock()
-        observed = []
-
-        async def capture_store(_engine, args):
-            trusted = has_trusted_internal_origin(args)
-            observed.append(trusted)
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "stored": trusted,
-                            "status": "canonical" if trusted else "pending",
-                            "memory_id": "mem_auto_context" if trusted else None,
-                        }
-                    ),
-                )
-            ]
-
-        with patch(
-            "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start",
-            return_value=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "entity_id": "skill:auto_inject:manual:runtime",
-                            "activated_principles": [],
-                        }
-                    ),
-                )
-            ],
+        monkeypatch.setenv("PP_PASSIVE_CONTEXT", context_mode)
+        start = AsyncMock()
+        before = AsyncMock()
+        principle_activate = AsyncMock()
+        with (
+            patch(_START_PATH, new=start),
+            patch(_BEFORE_PATH, new=before),
+            patch(_PRINCIPLE_PATH, new=principle_activate),
         ):
-            with patch("plastic_promise.loop.soul_loop.SoulLoop") as loop_class:
-                loop_class.return_value.pre_task_v2.side_effect = RuntimeError("offline")
-                with patch(
-                    "plastic_promise.mcp.tools.principles.handle_principle_activate",
-                    return_value=[TextContent(type="text", text='{"activated": []}')],
-                ):
-                    with patch(
-                        "plastic_promise.mcp.tools.memory.handle_memory_store",
-                        side_effect=capture_store,
-                    ):
-                        with patch(
-                            "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete",
-                            return_value=[TextContent(type="text", text='{"status": "done"}')],
-                        ):
-                            result = asyncio.run(
-                                handle_auto_context_inject(
-                                    engine,
-                                    {
-                                        "task_description": "Inject governed context",
-                                        "source": "manual",
-                                    },
-                                )
-                            )
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {"event": "before_invoke", "task_description": "disabled"},
+                )
+            )
 
         payload = json.loads(result[0].text)
-        assert observed == [True]
-        assert payload["inject_memory_id"] == "mem_auto_context"
-        assert has_trusted_internal_origin({}) is False
+        assert payload["status"] == "skipped"
+        assert payload["reason"] == "passive_context_disabled"
+        assert payload["injection"] == ""
+        assert payload["request_scope_id"]
+        start.assert_not_awaited()
+        before.assert_not_awaited()
+        principle_activate.assert_not_awaited()
 
-    def test_inject_creates_session_and_returns_context(self):
-        """Full inject flow: start -> supply -> store -> complete."""
+    @pytest.mark.parametrize(
+        ("memory_mode", "proposal_setting", "reason"),
+        [
+            ("off", "on", "passive_memory_disabled"),
+            ("invalid", "on", "passive_memory_disabled"),
+            ("on", "off", "proposal_gate_closed"),
+        ],
+    )
+    def test_after_invoke_disabled_short_circuits_before_tracking(
+        self,
+        monkeypatch,
+        memory_mode,
+        proposal_setting,
+        reason,
+    ):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
-        engine = MagicMock()
-        engine.register_entity.return_value = {
-            "node_id": "skill_session:skill:auto_inject:claude_code:2026-07-01T18:00:00",
-            "type": "skill_session",
-            "name": "auto_inject:claude_code",
-            "is_new": True,
-            "edges_created": 0,
-        }
-
-        with patch("plastic_promise.loop.soul_loop.SoulLoop") as mock_loop_class:
-            mock_loop = MagicMock()
-            mock_pack = MagicMock()
-            mock_pack.to_prompt.return_value = "# Context Pack"
-            mock_loop.pre_task_v2.return_value = mock_pack
-            mock_loop_class.return_value = mock_loop
-
-            with patch("plastic_promise.mcp.tools.memory.handle_memory_store") as mock_store:
-                mock_store.return_value = [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({"memory_id": "mem_inject_001", "stored": True}),
-                    )
-                ]
-
-                with patch(
-                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
-                ) as mock_start:
-                    mock_start.return_value = [
-                        TextContent(
-                            type="text",
-                            text=json.dumps(
-                                {
-                                    "entity_id": "skill:auto_inject:claude_code:2026-07-01T18:00:00",
-                                    "skill_name": "auto_inject:claude_code",
-                                    "status": "active",
-                                    "domain": "reflecting",
-                                    "activated_principles": [{"id": 2, "name": "全过程可查可透明"}],
-                                    "related_memories": [],
-                                    "tags_applied": [
-                                        "task:active",
-                                        "skill:auto_inject:claude_code",
-                                        "domain:reflecting",
-                                    ],
-                                    "chain_warning": None,
-                                }
-                            ),
-                        )
-                    ]
-
-                    with patch(
-                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
-                    ) as mock_complete:
-                        mock_complete.return_value = [
-                            TextContent(
-                                type="text",
-                                text=json.dumps(
-                                    {
-                                        "entity_id": "skill:auto_inject:claude_code:2026-07-01T18:00:00",
-                                        "status": "done",
-                                    }
-                                ),
-                            )
-                        ]
-
-                        result = asyncio.run(
-                            handle_auto_context_inject(
-                                engine,
-                                {
-                                    "task_description": "修复 JWT 认证 bug",
-                                    "task_type": "code_generation",
-                                    "source": "claude_code",
-                                },
-                            )
-                        )
-
-        assert len(result) == 1
-        data = json.loads(result[0].text)
-        assert data["skill_name"] == "auto_inject:claude_code"
-        assert "entity_id" in data
-        assert data["inject_memory_id"] == "mem_inject_001"
-        assert "principles" in data
-
-    def test_inject_graceful_degradation_when_start_fails(self):
-        """Skill session start failure does not block inject."""
-        from plastic_promise.mcp.tools.context import handle_auto_context_inject
-
-        engine = MagicMock()
-
-        with patch(
-            "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start",
-            side_effect=Exception("MCP unavailable"),
+        monkeypatch.setenv("PP_PASSIVE_MEMORY", memory_mode)
+        monkeypatch.setenv("PP_MEMORY_PROPOSALS", proposal_setting)
+        start = AsyncMock()
+        after = AsyncMock()
+        with (
+            patch(_START_PATH, new=start),
+            patch(_AFTER_PATH, new=after),
         ):
-            with patch("plastic_promise.loop.soul_loop.SoulLoop") as mock_loop_class:
-                mock_loop = MagicMock()
-                mock_pack = MagicMock()
-                mock_pack.to_prompt.return_value = "# Context Pack"
-                mock_pack.activated_principles = []
-                mock_loop.pre_task_v2.return_value = mock_pack
-                mock_loop_class.return_value = mock_loop
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {"event": "after_invoke", "task_description": "disabled"},
+                )
+            )
 
-                with patch("plastic_promise.mcp.tools.memory.handle_memory_store") as mock_store:
-                    mock_store.return_value = [
-                        TextContent(
-                            type="text",
-                            text=json.dumps({"memory_id": "mem_inject_fallback", "stored": True}),
-                        )
-                    ]
+        payload = json.loads(result[0].text)
+        assert payload["status"] == "skipped"
+        assert payload["reason"] == reason
+        assert payload["queued"] is False
+        assert payload["request_scope_id"]
+        assert payload["candidate_count"] is None
+        start.assert_not_awaited()
+        after.assert_not_awaited()
 
-                    result = asyncio.run(
-                        handle_auto_context_inject(
-                            engine,
-                            {
-                                "task_description": "修复 bug",
-                                "source": "manual",
-                            },
-                        )
-                    )
-
-        data = json.loads(result[0].text)
-        # Should still return context even though tracking failed
-        assert "context_pack" in data or "partial" in str(data)
-
-    def test_inject_stores_full_task_description_in_content(self):
-        """Content preserves full task_description for self-feedback retrieval."""
+    def test_invalid_proposal_mode_is_reported_as_configuration_error(self, monkeypatch):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
-        engine = MagicMock()
-        engine.register_entity.return_value = {
-            "node_id": "x",
-            "type": "skill_session",
-            "is_new": True,
-        }
-        task_desc = "修复 JWT 认证 bug — token 过期后 refresh 流程异常"
+        monkeypatch.setenv("PP_MEMORY_PROPOSALS", "invalid")
+        start = AsyncMock()
+        after = AsyncMock()
+        with (
+            patch(_START_PATH, new=start),
+            patch(_AFTER_PATH, new=after),
+        ):
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {"event": "after_invoke", "task_description": "invalid config"},
+                )
+            )
 
-        stored_content = []
+        payload = json.loads(result[0].text)
+        assert payload["status"] == "degraded"
+        assert payload["reason"] == "invalid_proposal_mode"
+        assert payload["proposal_mode"] == "invalid"
+        assert payload["partial"] is True
+        assert payload["errors"] == ["proposal_mode: unknown_proposal_mode"]
+        assert payload["request_scope_id"]
+        start.assert_not_awaited()
+        after.assert_not_awaited()
 
-        async def capture_store(eng, args):
-            stored_content.append(args.get("content", ""))
-            return [
-                TextContent(type="text", text=json.dumps({"memory_id": "mem_cap", "stored": True}))
-            ]
-
-        with patch("plastic_promise.loop.soul_loop.SoulLoop") as mock_loop_class:
-            mock_loop = MagicMock()
-            mock_pack = MagicMock()
-            mock_pack.core = []
-            mock_pack.related = []
-            mock_pack.divergent = []
-            mock_pack.activated_principles = []
-            mock_pack.to_prompt.return_value = "# Context Pack"
-            mock_loop.pre_task_v2.return_value = mock_pack
-            mock_loop_class.return_value = mock_loop
-
-            with patch(
-                "plastic_promise.mcp.tools.memory.handle_memory_store", side_effect=capture_store
-            ):
-                with patch(
-                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
-                ) as mock_start:
-                    mock_start.return_value = [
-                        TextContent(
-                            type="text",
-                            text=json.dumps(
-                                {
-                                    "entity_id": "skill:auto_inject:manual:2026-07-01T18:00:00",
-                                    "skill_name": "auto_inject:manual",
-                                    "status": "active",
-                                    "domain": "reflecting",
-                                    "activated_principles": [],
-                                    "related_memories": [],
-                                    "chain_warning": None,
-                                }
-                            ),
-                        )
-                    ]
-                    with patch(
-                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
-                    ) as mock_complete:
-                        mock_complete.return_value = [
-                            TextContent(type="text", text=json.dumps({"status": "done"}))
-                        ]
-
-                        asyncio.run(
-                            handle_auto_context_inject(
-                                engine,
-                                {
-                                    "task_description": task_desc,
-                                    "source": "manual",
-                                },
-                            )
-                        )
-
-        assert len(stored_content) == 1
-        assert task_desc in stored_content[0]
-        assert "[AUTO INJECT]" in stored_content[0]
-
-    def test_inject_principle_fallback_when_supply_fails(self):
-        """When pre_task_v2 fails, principle_activate is called as safety net."""
+    def test_before_invoke_is_read_only_and_ephemeral(self):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
-        engine = MagicMock()
-        engine.register_entity.return_value = {
-            "node_id": "x",
-            "type": "skill_session",
-            "is_new": True,
-        }
+        before = AsyncMock(return_value=_before_payload())
+        store = AsyncMock()
+        with (
+            patch(_START_PATH, new=AsyncMock(return_value=_start_payload())),
+            patch(_COMPLETE_PATH, new=AsyncMock(return_value=_text({"status": "done"}))),
+            patch(_BEFORE_PATH, new=before),
+            patch(_STORE_PATH, new=store),
+        ):
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {
+                        "event": "before_invoke",
+                        "task_description": "Inject governed context",
+                        "source": "manual",
+                    },
+                )
+            )
 
-        with patch("plastic_promise.loop.soul_loop.SoulLoop") as mock_loop_class:
-            mock_loop = MagicMock()
-            # Simulate pre_task_v2 failure
-            mock_loop.pre_task_v2.side_effect = Exception("Embedding service down")
-            mock_loop_class.return_value = mock_loop
+        payload = json.loads(result[0].text)
+        assert payload["ephemeral"] is True
+        assert payload["inject_memory_id"] is None
+        assert payload["memory_ids"] == ["mem_core"]
+        assert "untrusted-memory-context" in payload["injection"]
+        before.assert_awaited_once()
+        store.assert_not_awaited()
 
-            fallback_principles = [
-                {"id": 1, "name": "奥卡姆剃刀"},
-                {"id": 2, "name": "全过程可查可透明"},
-            ]
-            with patch("plastic_promise.mcp.tools.principles.handle_principle_activate") as mock_pa:
-                mock_pa.return_value = [
-                    TextContent(type="text", text=json.dumps({"activated": fallback_principles}))
-                ]
-
-                with patch("plastic_promise.mcp.tools.memory.handle_memory_store") as mock_store:
-                    mock_store.return_value = [
-                        TextContent(
-                            type="text",
-                            text=json.dumps({"memory_id": "mem_fallback", "stored": True}),
-                        )
-                    ]
-                    with patch(
-                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
-                    ) as mock_start:
-                        mock_start.return_value = [
-                            TextContent(
-                                type="text",
-                                text=json.dumps(
-                                    {
-                                        "entity_id": "skill:auto_inject:manual:2026-07-01T18:00:00",
-                                        "skill_name": "auto_inject:manual",
-                                        "status": "active",
-                                        "domain": "reflecting",
-                                        "activated_principles": [],
-                                        "chain_warning": None,
-                                    }
-                                ),
-                            )
-                        ]
-                        with patch(
-                            "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
-                        ) as mock_complete:
-                            mock_complete.return_value = [
-                                TextContent(type="text", text=json.dumps({"status": "done"}))
-                            ]
-
-                            result = asyncio.run(
-                                handle_auto_context_inject(
-                                    engine,
-                                    {
-                                        "task_description": "修复 bug",
-                                        "source": "manual",
-                                    },
-                                )
-                            )
-
-        data = json.loads(result[0].text)
-        # Should have fallback principles
-        assert "奥卡姆剃刀" in str(data["principles"])
-        assert "errors" in data or "partial" in str(data)
-
-    def test_inject_memory_store_failure_does_not_block(self):
-        """memory_store failure returns context_pack anyway."""
+    def test_before_invoke_tracks_session_and_uses_tracked_principles(self):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
-        engine = MagicMock()
-        engine.register_entity.return_value = {
-            "node_id": "x",
-            "type": "skill_session",
-            "is_new": True,
-        }
+        principles = [{"id": 2, "name": "全过程可查可透明"}]
+        start = AsyncMock(return_value=_start_payload(principles=principles))
+        complete = AsyncMock(return_value=_text({"status": "done"}))
+        with (
+            patch(_START_PATH, new=start),
+            patch(_COMPLETE_PATH, new=complete),
+            patch(_BEFORE_PATH, new=AsyncMock(return_value=_before_payload(principles=[]))),
+        ):
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {
+                        "task_description": "修复 JWT 认证 bug",
+                        "task_type": "code_generation",
+                        "source": "claude_code",
+                    },
+                )
+            )
 
-        with patch("plastic_promise.loop.soul_loop.SoulLoop") as mock_loop_class:
-            mock_loop = MagicMock()
-            mock_pack = MagicMock()
-            mock_pack.core = []
-            mock_pack.related = []
-            mock_pack.divergent = []
-            mock_pack.activated_principles = []
-            mock_pack.to_prompt.return_value = "# Context"
-            mock_loop.pre_task_v2.return_value = mock_pack
-            mock_loop_class.return_value = mock_loop
+        payload = json.loads(result[0].text)
+        assert payload["skill_name"] == "auto_inject:claude_code"
+        assert payload["entity_id"] == "skill:auto_inject:test:runtime"
+        assert payload["principles"] == principles
+        assert payload["context_pack"]["core"][0]["id"] == "mem_core"
+        assert payload["inject_memory_id"] is None
+        start.assert_awaited_once()
+        assert start.await_args.args[1]["record_memory"] is False
+        complete.assert_awaited_once()
 
-            with patch(
-                "plastic_promise.mcp.tools.memory.handle_memory_store",
-                side_effect=Exception("Memory store down"),
-            ) as mock_store:
-                with patch(
-                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
-                ) as mock_start:
-                    mock_start.return_value = [
-                        TextContent(
-                            type="text",
-                            text=json.dumps(
-                                {
-                                    "entity_id": "skill:auto_inject:manual:2026-07-01T18:00:00",
-                                    "skill_name": "auto_inject:manual",
-                                    "status": "active",
-                                    "domain": "reflecting",
-                                    "activated_principles": [],
-                                    "chain_warning": None,
-                                }
-                            ),
-                        )
-                    ]
-                    with patch(
-                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
-                    ) as mock_complete:
-                        mock_complete.return_value = [
-                            TextContent(type="text", text=json.dumps({"status": "done"}))
-                        ]
-
-                        result = asyncio.run(
-                            handle_auto_context_inject(
-                                engine,
-                                {
-                                    "task_description": "修复 bug",
-                                    "source": "manual",
-                                },
-                            )
-                        )
-
-        data = json.loads(result[0].text)
-        # Should still have context_pack even though store failed
-        assert data.get("partial") == True
-        assert data["inject_memory_id"] is None
-
-    def test_self_feedback_loop_second_inject_hits_first(self):
-        """Second inject with similar task_description retrieves first inject record."""
+    def test_tracking_failure_does_not_block_context_preload(self):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
-        engine = MagicMock()
-        engine.register_entity.return_value = {
-            "node_id": "x",
-            "type": "skill_session",
-            "is_new": True,
+        with (
+            patch(_START_PATH, new=AsyncMock(side_effect=RuntimeError("tracking offline"))),
+            patch(_BEFORE_PATH, new=AsyncMock(return_value=_before_payload())),
+            patch(
+                _PRINCIPLE_PATH,
+                new=AsyncMock(return_value=_text({"activated": []})),
+            ),
+        ):
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {"task_description": "修复 bug", "source": "manual"},
+                )
+            )
+
+        payload = json.loads(result[0].text)
+        assert payload["context_pack"]["core"]
+        assert payload["partial"] is True
+        assert any("skill_session_start" in error for error in payload["errors"])
+
+    def test_full_task_description_reaches_passive_preload_without_storage(self):
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
+        task_description = "修复 JWT 认证 bug — token 过期后 refresh 流程异常"
+        observed = []
+
+        async def capture_before(_engine, values):
+            observed.append(dict(values))
+            return _before_payload(injection="")
+
+        store = AsyncMock()
+        with (
+            patch(_START_PATH, new=AsyncMock(return_value=_start_payload())),
+            patch(_COMPLETE_PATH, new=AsyncMock(return_value=_text({"status": "done"}))),
+            patch(_BEFORE_PATH, new=capture_before),
+            patch(_STORE_PATH, new=store),
+        ):
+            asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {"task_description": task_description, "source": "manual"},
+                )
+            )
+
+        assert observed[0]["task_description"] == task_description
+        store.assert_not_awaited()
+
+    def test_principle_fallback_when_passive_preload_has_none(self):
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
+        fallback_principles = [
+            {"id": 1, "name": "奥卡姆剃刀"},
+            {"id": 2, "name": "全过程可查可透明"},
+        ]
+        principle_activate = AsyncMock(return_value=_text({"activated": fallback_principles}))
+        with (
+            patch(_START_PATH, new=AsyncMock(return_value=_start_payload())),
+            patch(_COMPLETE_PATH, new=AsyncMock(return_value=_text({"status": "done"}))),
+            patch(_BEFORE_PATH, new=AsyncMock(return_value=_before_payload(principles=[]))),
+            patch(_PRINCIPLE_PATH, new=principle_activate),
+        ):
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {
+                        "task_description": "修复 bug",
+                        "task_type": "debugging",
+                        "source": "manual",
+                    },
+                )
+            )
+
+        payload = json.loads(result[0].text)
+        assert payload["principles"] == fallback_principles
+        principle_activate.assert_awaited_once()
+
+    def test_after_invoke_routes_to_passive_proposal_audit(self):
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
+        after_payload = {
+            "event": "after_invoke",
+            "status": "queued",
+            "mode": "on",
+            "proposal_mode": "on",
+            "queued": True,
+            "worker_scheduled": True,
+            "candidate_count": 1,
+            "candidate_hashes": ["sha256:abc"],
+            "outbox_id": "outbox_1",
+            "reason": None,
+            "request_scope_id": "scope:after",
+            "inject_memory_id": None,
         }
+        after = AsyncMock(return_value=after_payload)
+        start = AsyncMock(return_value=_start_payload())
+        store = AsyncMock()
+        with (
+            patch(_START_PATH, new=start),
+            patch(_COMPLETE_PATH, new=AsyncMock(return_value=_text({"status": "done"}))),
+            patch(_AFTER_PATH, new=after),
+            patch(_STORE_PATH, new=store),
+        ):
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {
+                        "event": "after_invoke",
+                        "task_description": "记住我喜欢 TypeScript",
+                        "user_text": "记住我喜欢 TypeScript",
+                        "assistant_text": "好的",
+                        "source": "manual",
+                    },
+                )
+            )
 
-        # Simulate existing inject memory in the pool
-        first_inject_memory = {
-            "id": "mem_first",
-            "content": "[AUTO INJECT] 修复 JWT 认证 bug\ncore_items: 3\nactivated_principles: 奥卡姆剃刀, 全过程可查可透明",
-            "memory_type": "experience",
-            "tags": ["auto_inject", "source:manual", "task:done"],
-            "worth_score": 0.72,
-        }
-        engine._memories = {"mem_first": first_inject_memory}
+        payload = json.loads(result[0].text)
+        assert payload["queued"] is True
+        assert payload["outbox_id"] == "outbox_1"
+        assert payload["inject_memory_id"] is None
+        after.assert_awaited_once()
+        start.assert_awaited_once()
+        assert start.await_args.args[1]["record_memory"] is False
+        store.assert_not_awaited()
 
-        # The supply() should find the first inject record
-        pack_with_hit = MagicMock()
-        core_item = MagicMock()
-        core_item.id = "mem_first"
-        core_item.content = first_inject_memory["content"]
-        core_item.relevance = 0.85
-        pack_with_hit.core = [core_item]
-        pack_with_hit.related = []
-        pack_with_hit.divergent = []
-        pack_with_hit.activated_principles = []
-        pack_with_hit.to_prompt.return_value = "# Context with hit"
+    def test_repeated_preload_does_not_create_self_feedback_memory(self):
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
-        with patch("plastic_promise.loop.soul_loop.SoulLoop") as mock_loop_class:
-            mock_loop = MagicMock()
-            mock_loop.pre_task_v2.return_value = pack_with_hit
-            mock_loop_class.return_value = mock_loop
+        before = AsyncMock(side_effect=[_before_payload(), _before_payload()])
+        store = AsyncMock()
+        with (
+            patch(_START_PATH, new=AsyncMock(return_value=_start_payload())),
+            patch(_COMPLETE_PATH, new=AsyncMock(return_value=_text({"status": "done"}))),
+            patch(_BEFORE_PATH, new=before),
+            patch(_STORE_PATH, new=store),
+        ):
+            first = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {"task_description": "修复 JWT 认证 bug", "source": "manual"},
+                )
+            )
+            second = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {"task_description": "修复 OAuth 认证 bug", "source": "manual"},
+                )
+            )
 
-            with patch("plastic_promise.mcp.tools.memory.handle_memory_store") as mock_store:
-                mock_store.return_value = [
-                    TextContent(
-                        type="text", text=json.dumps({"memory_id": "mem_second", "stored": True})
-                    )
-                ]
-                with patch(
-                    "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
-                ) as mock_start:
-                    mock_start.return_value = [
-                        TextContent(
-                            type="text",
-                            text=json.dumps(
-                                {
-                                    "entity_id": "skill:auto_inject:manual:2026-07-01T18:02:00",
-                                    "skill_name": "auto_inject:manual",
-                                    "status": "active",
-                                    "domain": "reflecting",
-                                    "related_memories": ["mem_first"],  # Self-feedback hit!
-                                    "activated_principles": [],
-                                    "chain_warning": None,
-                                }
-                            ),
-                        )
-                    ]
-                    with patch(
-                        "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
-                    ) as mock_complete:
-                        mock_complete.return_value = [
-                            TextContent(type="text", text=json.dumps({"status": "done"}))
-                        ]
-
-                        result = asyncio.run(
-                            handle_auto_context_inject(
-                                engine,
-                                {
-                                    "task_description": "修复 OAuth 认证 bug",  # Similar task
-                                    "source": "manual",
-                                },
-                            )
-                        )
-
-        data = json.loads(result[0].text)
-        # Second inject's context_pack should have the first inject record in core
-        assert data["context_pack"]["core"][0]["id"] == "mem_first"
-        assert "JWT" in data["context_pack"]["core"][0]["content"]
+        assert json.loads(first[0].text)["inject_memory_id"] is None
+        assert json.loads(second[0].text)["inject_memory_id"] is None
+        assert before.await_count == 2
+        store.assert_not_awaited()

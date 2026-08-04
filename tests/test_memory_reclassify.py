@@ -43,6 +43,18 @@ async def _call(engine, args, runtime_context=None):
     return json.loads(r[0].text)
 
 
+class _NonzeroEmbedder:
+    dim = 1024
+    model_name = "test-nonzero"
+    index_model_name = "test-nonzero"
+
+    def embed(self, _text):
+        return [1.0] + ([0.0] * (self.dim - 1))
+
+    def embed_batch(self, texts):
+        return [self.embed(text) for text in texts]
+
+
 def _seed_indexed_ordinary(engine, memory_id="reclassify-ordinary"):
     content = "The team decided to reclassify this durable project decision."
     material = build_index_material(
@@ -216,6 +228,7 @@ class TestMemoryReclassify:
             from plastic_promise.mcp.tools.memory import _get_fuzzy_buffer
 
             fb = _get_fuzzy_buffer(engine)
+            fb.embedder = _NonzeroEmbedder()
             content = (
                 "test content for reclassify with enough reflecting audit detail "
                 "to pass the memory quality gate deterministically"

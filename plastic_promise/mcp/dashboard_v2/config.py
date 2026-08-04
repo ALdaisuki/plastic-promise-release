@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
 
 class DashboardConfigurationError(ValueError):
@@ -98,6 +98,7 @@ class DashboardScope:
 class DashboardSettings:
     enabled: bool
     explain_enabled: bool
+    review_actions_enabled: bool
     auth_mode: str
     project_id: str
     bind_host: str
@@ -112,6 +113,7 @@ class DashboardSettings:
         env = os.environ if environ is None else environ
         enabled = _exact_one(env.get("PP_DASHBOARD_V2"))
         explain_enabled = _exact_one(env.get("PP_RETRIEVAL_EXPLAIN"))
+        review_actions_enabled = _exact_one(env.get("PP_DASHBOARD_REVIEW_ACTIONS"))
         raw_auth_mode = str(env.get("PP_DASHBOARD_AUTH") or "local").strip().casefold()
         auth_mode = raw_auth_mode if raw_auth_mode in {"local", "token", "required"} else "local"
 
@@ -133,6 +135,7 @@ class DashboardSettings:
         return cls(
             enabled=enabled,
             explain_enabled=enabled and explain_enabled,
+            review_actions_enabled=enabled and review_actions_enabled,
             auth_mode=auth_mode,
             project_id=project_id,
             bind_host=str(bind_host or ""),
@@ -145,8 +148,9 @@ def resolve_local_scope(
     client_host: str,
     request_host: str | None = None,
     requested_project_id: str | None = None,
+    allowed_project_ids: Iterable[str] | None = None,
 ) -> DashboardScope:
-    """Resolve one server-owned project; request input may only confirm it."""
+    """Resolve one project from a server-owned local allowlist."""
     if not settings.enabled:
         raise DashboardAccessError(404, "dashboard_v2_disabled")
     if settings.auth_mode != "local":
@@ -156,14 +160,22 @@ def resolve_local_scope(
     if request_host is not None and not _loopback_authority(request_host):
         raise DashboardAccessError(403, "dashboard_loopback_host_required")
 
-    project_id = _normalize_project_id(settings.project_id)
-    if not project_id or project_id == "project:unknown":
+    configured_project_id = _normalize_project_id(settings.project_id)
+    if not configured_project_id or configured_project_id == "project:unknown":
         raise DashboardAccessError(503, "dashboard_project_unavailable")
 
+    project_id = configured_project_id
     if requested_project_id is not None:
         requested = _normalize_project_id(requested_project_id)
-        if not requested or requested != project_id:
+        allowed = {
+            normalized
+            for value in (allowed_project_ids or ())
+            if (normalized := _normalize_project_id(value))
+        }
+        allowed.add(configured_project_id)
+        if not requested or requested not in allowed:
             raise DashboardAccessError(403, "dashboard_scope_denied")
+        project_id = requested
 
     return DashboardScope(project_id=project_id, auth_mode="local")
 

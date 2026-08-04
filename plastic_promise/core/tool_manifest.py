@@ -137,6 +137,16 @@ CURATED_MANIFESTS: dict[str, dict[str, Any]] = {
         "trust_requirement": 0.0,
         "fallbacks": ("deny_on_error",),
     },
+    # External governed operation evaluated by defense; intentionally not an MCP tool.
+    "geo_publication_request": {
+        "domain": "publication",
+        "capabilities": ("publication.request",),
+        "risk_level": "high",
+        "side_effects": ("external_publish",),
+        "trust_requirement": 0.50,
+        "fallbacks": ("deny_on_error",),
+        "evidence_required": ("audit_artifact", "publication_grant"),
+    },
     "audit_rollover": {
         "domain": "audit",
         "capabilities": ("audit.rollover", "memory.lifecycle"),

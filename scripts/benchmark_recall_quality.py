@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gc
-import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -18,8 +18,6 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as package_version
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,11 +28,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from plastic_promise.core.cost_telemetry import SUPPORTED_COST_CURRENCIES  # noqa: E402
 from plastic_promise.core.fusion_policy import (  # noqa: E402
     FUSION_CHANNEL_ORDER,
     resolve_cli_fusion_policy,
 )
 from plastic_promise.core.recall_experiment import (  # noqa: E402
+    MAX_V1_CONTROL_ALGORITHM,
+    MAX_V1_CONTROL_RETRIEVAL_CONFIGURATION,
     RECALL_QUALITY_REPORT_SCHEMA,
     FrozenCandidateManifest,
     _config_payload,
@@ -59,6 +60,18 @@ from plastic_promise.core.recall_quality import (  # noqa: E402
     metric_summary_from_dict,
     quality_payload,
 )
+from plastic_promise.core.recall_quality_environment import (  # noqa: E402
+    RECALL_QUALITY_ENVIRONMENT_KEYS,
+    canonical_embedding_provider,
+    recall_quality_code_fingerprint,
+    recall_quality_comparison_environment_fingerprint,
+    recall_quality_environment_fingerprint,
+    recall_quality_source_commit,
+    recall_quality_source_fingerprint,
+    recall_quality_source_label,
+    recall_quality_source_paths,
+    retrieval_dependency_versions,
+)
 from scripts.http_mcp_harness import (  # noqa: E402
     ManagedProcess,
     call_tool_json,
@@ -74,14 +87,25 @@ from scripts.http_mcp_harness import (  # noqa: E402
 BENCHMARK_SOURCE_PATHS = (
     ROOT / "scripts" / "benchmark_recall_quality.py",
     ROOT / "scripts" / "http_mcp_harness.py",
+    ROOT / "scripts" / "manage_lancedb_generations.py",
+    ROOT / "scripts" / "rebuild_lancedb.py",
     ROOT / "pyproject.toml",
 )
 RETRIEVAL_DEPENDENCY_MINIMUMS = {"lancedb": Version("0.34.0")}
 LIVE_RETRIEVAL_CONFIGURATION = {
-    "PP_VECTOR_WEIGHT": "0.50",
-    "PP_QUERY_EXPANSION": "1",
-    "PP_FTS_DISABLED": "0",
-    "PP_FTS_FUSION": "1",
+    name: value
+    for name, value in MAX_V1_CONTROL_RETRIEVAL_CONFIGURATION.items()
+    if name != "index_text_policy"
+}
+RERANK_PROVIDER_CREDENTIAL_KEYS = {
+    "cloud": "PP_RERANK_API_KEY",
+    "jina": "JINA_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
+}
+EMBEDDING_PROVIDER_CREDENTIAL_KEYS = {
+    "openai": "OPENAI_API_KEY",
+    "openai-compatible": "EMBEDDER_API_KEY",
+    "cloud": "EMBEDDER_API_KEY",
 }
 KNOWN_DATASET_CONTRACTS: dict[tuple[str, str], dict[str, Any]] = {
     ("recall-quality/v1", "2026-07-10.2"): {
@@ -100,6 +124,27 @@ class LivePaths:
     root: Path
     sqlite: Path
     lancedb: Path
+
+
+def _required_rerank_credential_keys(environ: Mapping[str, str]) -> frozenset[str]:
+    if environ.get("PP_RERANK_DISABLED", "0") == "1":
+        return frozenset()
+    providers = {
+        value.strip().casefold()
+        for value in environ.get("PP_RERANK_PROVIDERS", "ollama,cosine").split(",")
+        if value.strip()
+    }
+    return frozenset(
+        credential
+        for provider, credential in RERANK_PROVIDER_CREDENTIAL_KEYS.items()
+        if provider in providers
+    )
+
+
+def _required_embedding_credential_keys(environ: Mapping[str, str]) -> frozenset[str]:
+    provider = environ.get("EMBEDDER_PROVIDER", "ollama").strip().casefold()
+    credential = EMBEDDING_PROVIDER_CREDENTIAL_KEYS.get(provider)
+    return frozenset({credential}) if credential is not None else frozenset()
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -188,16 +233,18 @@ def main(argv: list[str] | None = None) -> int:
                 repeat=args.repeat,
                 thresholds=_absolute_thresholds(args),
             )
-        if manifest is not None:
             dataset = load_dataset_bundle(args.dataset)
-            report = _bind_experiment_report(
-                report,
-                dataset=dataset,
-                dataset_path=args.dataset,
-                fusion_policy=fusion_policy,
-                manifest=manifest,
-            )
-            _validate_manifest_bound_report(report, manifest)
+            bind_fixed_control = dataset.evidence_role == "held-out" and fusion_policy == "max-v1"
+            if manifest is not None or bind_fixed_control:
+                report = _bind_experiment_report(
+                    report,
+                    dataset=dataset,
+                    dataset_path=args.dataset,
+                    fusion_policy=fusion_policy,
+                    manifest=manifest,
+                )
+            if manifest is not None:
+                _validate_manifest_bound_report(report, manifest)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"recall-quality benchmark failed: {exc}", file=sys.stderr)
         return 2
@@ -234,21 +281,22 @@ def _run_calibration_cli(
                 raise ValueError("calibration_evidence_role_required")
             heldout_fingerprint = ""
         grid = load_calibration_grid(args.fusion_grid)
-        baseline_raw = run_benchmark(
-            dataset_path=args.dataset,
-            backend=args.backend,
-            candidate=args.candidate,
-            fusion_policy="max-v1",
-            warmup=args.warmup,
-            repeat=args.repeat,
-            thresholds=_absolute_thresholds(args),
-        )
-        baseline = _bind_experiment_report(
-            baseline_raw,
-            dataset=calibration,
-            dataset_path=args.dataset,
-            fusion_policy="max-v1",
-        )
+        with _fusion_environment(None, "max-v1"):
+            baseline_raw = run_benchmark(
+                dataset_path=args.dataset,
+                backend=args.backend,
+                candidate=args.candidate,
+                fusion_policy="max-v1",
+                warmup=args.warmup,
+                repeat=args.repeat,
+                thresholds=_absolute_thresholds(args),
+            )
+            baseline = _bind_experiment_report(
+                baseline_raw,
+                dataset=calibration,
+                dataset_path=args.dataset,
+                fusion_policy="max-v1",
+            )
         calibration_publishable = False
         if args.backend == "live":
             calibration_publishable = _validate_live_calibration_evidence(baseline)
@@ -265,13 +313,13 @@ def _run_calibration_cli(
                     repeat=args.repeat,
                     thresholds=_absolute_thresholds(args),
                 )
-            report = _bind_experiment_report(
-                raw,
-                dataset=calibration,
-                dataset_path=args.dataset,
-                fusion_policy=candidate_id,
-                fusion_config=_config_payload(config),
-            )
+                report = _bind_experiment_report(
+                    raw,
+                    dataset=calibration,
+                    dataset_path=args.dataset,
+                    fusion_policy=candidate_id,
+                    fusion_config=_config_payload(config),
+                )
             report.update(_calibration_selection_payload(baseline, report, grid))
             reports.append(report)
         if not reports:
@@ -307,6 +355,9 @@ def _run_calibration_cli(
                 manifest_path=args.freeze_manifest,
                 source_commit=_nested_value(exemplar, "environment.source_commit"),
                 dirty_fingerprint=_nested_value(exemplar, "environment.dirty_fingerprint"),
+                comparison_environment_fingerprint=_nested_value(
+                    exemplar, "environment.comparison_environment_fingerprint"
+                ),
                 retrieval_configuration=_nested_value(
                     exemplar, "environment.retrieval_configuration"
                 ),
@@ -388,6 +439,8 @@ def _validate_live_calibration_evidence(report: Mapping[str, Any]) -> bool:
     if (
         attestation.get("errors") != []
         or attestation.get("observed") != observed
+        or attestation.get("algorithm") != MAX_V1_CONTROL_ALGORITHM
+        or attestation.get("config") is not None
         or not isinstance(attestation.get("attested_calls"), int)
         or isinstance(attestation.get("attested_calls"), bool)
         or attestation.get("attested_calls") != transport_total
@@ -421,7 +474,18 @@ def _calibration_selection_payload(
         hit_at = report_slice.get("hit_at") or {}
         return float(hit_at.get("5", hit_at.get(5, 0.0)))
 
-    comparable = required_names <= set(baseline_slices) & set(candidate_slices)
+    baseline_environment_fingerprint = _nested_value(
+        baseline, "environment.comparison_environment_fingerprint"
+    )
+    candidate_environment_fingerprint = _nested_value(
+        candidate, "environment.comparison_environment_fingerprint"
+    )
+    comparable = (
+        required_names <= set(baseline_slices) & set(candidate_slices)
+        and isinstance(baseline_environment_fingerprint, str)
+        and re.fullmatch(r"[0-9a-f]{64}", baseline_environment_fingerprint) is not None
+        and baseline_environment_fingerprint == candidate_environment_fingerprint
+    )
     split_pass = comparable and all(
         metric(candidate_slices[name], metric_name) + tolerance
         >= metric(baseline_slices[name], metric_name)
@@ -430,7 +494,7 @@ def _calibration_selection_payload(
     )
     overall = candidate_slices.get("overall", {})
     minimum_mrr = min(
-        (metric(candidate_slices[name], "mrr") for name in required_names),
+        (metric(candidate_slices.get(name, {}), "mrr") for name in required_names),
         default=0.0,
     )
     base_p95 = float(_nested_value(baseline, "metrics.p95_ms") or 0.0)
@@ -501,6 +565,7 @@ def run_benchmark(
     if candidate not in {"legacy", "compact-v2"}:
         raise ValueError(f"unknown candidate: {candidate}")
     fusion_policy = _normalized_fusion_policy(fusion_policy)
+    environment: dict[str, Any] | None = None
     dataset = load_dataset_bundle(dataset_path)
     cases = list(dataset.cases)
     live_evidence: dict[str, Any] = {
@@ -512,6 +577,7 @@ def run_benchmark(
         "smoke": {"store": False, "recall": False, "supply": False, "passed": False},
     }
     if backend == "deterministic":
+        environment = _environment_metadata(dataset_path)
         base_retrieve = _deterministic_retrieve
         cold_latency_ms = 0.0
         cold_fallback = False
@@ -519,9 +585,13 @@ def run_benchmark(
         backend_metadata = _deterministic_backend_metadata(candidate)
         retrieve = _repeat_retriever(base_retrieve, warmup=warmup, repeat=repeat)
         summary = evaluate_cases(cases, retrieve, ks=(1, 3, 5, 10))
-        environment = _environment_metadata(dataset_path)
     elif backend in {"live", "engine-diagnostic"}:
-        with _isolated_live_environment(candidate) as paths:
+        with _isolated_live_environment(
+            candidate,
+            fusion_policy,
+            project_id=_live_dataset_project_id(dataset),
+        ) as paths:
+            environment = _environment_metadata(dataset_path)
             if backend == "live":
                 base_retrieve, backend_metadata, live_evidence = asyncio.run(
                     _http_live_backend(
@@ -536,6 +606,7 @@ def run_benchmark(
                     dataset, candidate, paths
                 )
             cleanup = live_evidence.pop("_cleanup", None)
+            finalize = live_evidence.pop("_finalize", None)
             try:
                 if backend == "engine-diagnostic":
                     cold_started = time.perf_counter()
@@ -554,16 +625,20 @@ def run_benchmark(
                     cold_degraded = False
                 retrieve = _repeat_retriever(base_retrieve, warmup=warmup, repeat=repeat)
                 summary = evaluate_cases(cases, retrieve, ks=(1, 3, 5, 10))
-                environment = _environment_metadata(dataset_path)
+                if callable(finalize):
+                    finalize()
+                _assert_environment_metadata_current(environment, dataset_path)
             finally:
                 if callable(cleanup):
                     cleanup()
                 retrieve = None
                 base_retrieve = None
                 cleanup = None
+                finalize = None
                 gc.collect()
     else:
         raise ValueError(f"unknown backend: {backend}")
+    assert environment is not None
 
     absolute_gate = _evaluate_absolute_gate(summary, thresholds or {})
     constituent_gate = evaluate_best_constituent_gate(summary)
@@ -582,6 +657,9 @@ def run_benchmark(
             "channel_result_names": sorted(summary.channels),
         }
     )
+    backend_metadata.setdefault("rust_runtime", None)
+    backend_metadata.setdefault("provider", str(environment.get("provider") or "unknown"))
+    backend_metadata.setdefault("model_revision", str(backend_metadata.get("model") or ""))
     isolated_corpus = dict(live_evidence.get("isolated_corpus") or {})
     smoke = dict(live_evidence.get("smoke") or {})
     smoke_passed = bool(
@@ -663,6 +741,9 @@ def run_benchmark(
     else:
         publishability_reason = "isolated live backend and store-recall-supply smoke passed"
 
+    if backend == "deterministic":
+        _assert_environment_metadata_current(environment, dataset_path)
+
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "dataset_schema_version": "recall-quality/v1",
@@ -679,6 +760,7 @@ def run_benchmark(
         },
         "candidate": candidate,
         "backend": backend_metadata,
+        "usage": _benchmark_embedding_usage(backend_metadata),
         "execution": {"warmup": warmup, "repeat": repeat},
         "environment": environment,
         "isolated_corpus": isolated_corpus,
@@ -745,10 +827,180 @@ def _synthetic_channel_state() -> dict[str, Any]:
 def _deterministic_backend_metadata(candidate: str) -> dict[str, Any]:
     return {
         "model": "label-derived-deterministic-v1",
+        "model_revision": "label-derived-deterministic-v1",
         "dimension": 0,
         "index_text_policy": candidate,
         "runtime": _runtime_metadata(),
     }
+
+
+def _embedding_usage_from_stats(stats: Mapping[str, Any]) -> dict[str, Any]:
+    def nonnegative_integer(name: str) -> int:
+        value = stats.get(name, 0)
+        return value if type(value) is int and value >= 0 else 0
+
+    currency = (
+        str(stats.get("cost_currency") or os.environ.get("EMBEDDER_COST_CURRENCY", "USD"))
+        .strip()
+        .upper()
+    )
+    if currency not in SUPPORTED_COST_CURRENCIES:
+        raise RuntimeError("health_embedding_cost_currency_invalid")
+    cost = _optional_embedding_cost(stats.get("estimated_cost"))
+    legacy_cost_usd = _optional_embedding_cost(stats.get("estimated_cost_usd"))
+    if cost is None and legacy_cost_usd is not None:
+        if currency != "USD":
+            raise RuntimeError("health_embedding_cost_currency_mismatch")
+        cost = legacy_cost_usd
+    cost_usd = cost if currency == "USD" else None
+    if legacy_cost_usd is not None and legacy_cost_usd != cost_usd:
+        raise RuntimeError("health_embedding_cost_currency_mismatch")
+    return _normalized_embedding_usage(
+        {
+            "embedding_requests": nonnegative_integer("requests"),
+            "embedding_input_tokens": nonnegative_integer("input_tokens"),
+            "cost": cost,
+            "cost_currency": currency,
+            "cost_usd": cost_usd,
+            "pricing_revision": str(
+                stats.get("pricing_revision") or os.environ.get("EMBEDDER_PRICING_REVISION", "")
+            ).strip(),
+        }
+    )
+
+
+def _optional_embedding_cost(value: object) -> float | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise RuntimeError("health_embedding_cost_invalid")
+    return float(value)
+
+
+def _normalized_embedding_usage(usage: Mapping[str, Any]) -> dict[str, Any]:
+    legacy_fields = {
+        "embedding_requests",
+        "embedding_input_tokens",
+        "cost_usd",
+        "pricing_revision",
+    }
+    current_fields = legacy_fields | {"cost", "cost_currency"}
+    fields = frozenset(usage)
+    if fields not in {frozenset(legacy_fields), frozenset(current_fields)}:
+        raise RuntimeError("health_embedding_usage_invalid")
+    requests = usage.get("embedding_requests")
+    input_tokens = usage.get("embedding_input_tokens")
+    if type(requests) is not int or requests < 0:
+        raise RuntimeError("health_embedding_requests_invalid")
+    if type(input_tokens) is not int or input_tokens < 0:
+        raise RuntimeError("health_embedding_input_tokens_invalid")
+    pricing_revision = usage.get("pricing_revision")
+    if (
+        not isinstance(pricing_revision, str)
+        or len(pricing_revision) > 256
+        or any(ord(character) < 32 or ord(character) == 127 for character in pricing_revision)
+    ):
+        raise RuntimeError("health_embedding_pricing_revision_invalid")
+    legacy_cost_usd = _optional_embedding_cost(usage.get("cost_usd"))
+    if fields == frozenset(legacy_fields):
+        currency = "USD"
+        cost = legacy_cost_usd
+    else:
+        currency = usage.get("cost_currency")
+        if currency not in SUPPORTED_COST_CURRENCIES:
+            raise RuntimeError("health_embedding_cost_currency_invalid")
+        cost = _optional_embedding_cost(usage.get("cost"))
+        expected_cost_usd = cost if currency == "USD" else None
+        if legacy_cost_usd != expected_cost_usd:
+            raise RuntimeError("health_embedding_cost_currency_mismatch")
+    return {
+        "embedding_requests": requests,
+        "embedding_input_tokens": input_tokens,
+        "cost": cost,
+        "cost_currency": currency,
+        "cost_usd": legacy_cost_usd,
+        "pricing_revision": pricing_revision.strip(),
+    }
+
+
+def _validated_embedding_identity(raw: object) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise RuntimeError("health_embedding_identity_missing")
+    expected = {"provider", "model", "model_revision", "dimension", "usage"}
+    if set(raw) != expected:
+        raise RuntimeError("health_embedding_identity_invalid")
+
+    def identity(name: str) -> str:
+        value = raw.get(name)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.strip()) > 256
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise RuntimeError(f"health_{name}_invalid")
+        return value.strip()
+
+    dimension = raw.get("dimension")
+    if type(dimension) is not int or dimension <= 0:
+        raise RuntimeError("health_embedding_dimension_invalid")
+    usage = raw.get("usage")
+    if not isinstance(usage, Mapping):
+        raise RuntimeError("health_embedding_usage_invalid")
+    normalized_usage = _normalized_embedding_usage(usage)
+    return {
+        "provider": identity("provider"),
+        "model": identity("model"),
+        "model_revision": identity("model_revision"),
+        "dimension": dimension,
+        "usage": normalized_usage,
+    }
+
+
+def _validated_rust_runtime_identity(
+    raw: object, *, effective_runtime: object
+) -> dict[str, str] | None:
+    if effective_runtime != "rust":
+        if raw is not None:
+            raise RuntimeError("health_rust_runtime_unexpected")
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "module",
+        "version",
+        "binary_sha256",
+        "source_sha256",
+    }:
+        raise RuntimeError("health_rust_runtime_identity_invalid")
+    module = raw.get("module")
+    version = raw.get("version")
+    if module != "context_engine_core" or not isinstance(version, str) or not version.strip():
+        raise RuntimeError("health_rust_runtime_identity_invalid")
+    normalized = {"module": module, "version": version.strip()}
+    for name in ("binary_sha256", "source_sha256"):
+        value = raw.get(name)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise RuntimeError("health_rust_runtime_identity_invalid")
+        normalized[name] = value
+    return normalized
+
+
+def _benchmark_embedding_usage(backend: Mapping[str, Any]) -> dict[str, Any]:
+    usage = backend.get("usage")
+    if not isinstance(usage, Mapping):
+        return {
+            "embedding_requests": 0,
+            "embedding_input_tokens": 0,
+            "cost": None,
+            "cost_currency": "USD",
+            "cost_usd": None,
+            "pricing_revision": "",
+        }
+    return _normalized_embedding_usage(usage)
 
 
 def _normalized_fusion_policy(value: str) -> str:
@@ -822,32 +1074,11 @@ def _calibration_fusion_environment(config: Any) -> Iterator[None]:
 
 
 def _source_commit() -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    commit = result.stdout.strip().casefold()
-    if result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{7,64}", commit):
-        raise ValueError("source_commit_unavailable")
-    return commit
+    return recall_quality_source_commit(ROOT)
 
 
 def _code_fingerprint() -> str:
-    paths = sorted(
-        {path.resolve() for path in (ROOT / "plastic_promise").rglob("*.py") if path.is_file()}
-        | {path.resolve() for path in BENCHMARK_SOURCE_PATHS if path.is_file()},
-        key=lambda path: path.as_posix(),
-    )
-    digest = hashlib.sha256()
-    for path in paths:
-        digest.update(path.relative_to(ROOT).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return recall_quality_code_fingerprint(ROOT, benchmark_sources=BENCHMARK_SOURCE_PATHS)
 
 
 def _experiment_retrieval_configuration(index_text_policy: str) -> dict[str, Any]:
@@ -855,6 +1086,97 @@ def _experiment_retrieval_configuration(index_text_policy: str) -> dict[str, Any
         "index_text_policy": index_text_policy,
         **dict(LIVE_RETRIEVAL_CONFIGURATION),
     }
+
+
+def _live_quality_overrides(index_text_policy: str, fusion_policy: str) -> dict[str, str]:
+    return {
+        "PP_MEMORY_INDEX_TEXT_POLICY": index_text_policy,
+        "PP_RETRIEVAL_FUSION_POLICY": fusion_policy,
+        "PP_FORCE_PYTHON_SUPPLY": "1",
+        "PP_PREFER_RUST_SUPPLY": "0",
+        **LIVE_RETRIEVAL_CONFIGURATION,
+    }
+
+
+def _isolated_benchmark_overrides(
+    index_text_policy: str,
+    fusion_policy: str,
+    *,
+    project_id: str = "project:benchmark",
+) -> dict[str, str]:
+    return {
+        "EMBEDDER_CACHE_SIZE": "256",
+        "EMBEDDER_CACHE_TTL": "300",
+        "EMBEDDER_CHUNK_CHARS": "512",
+        "EMBEDDER_MAX_CHUNKS": "8",
+        "EMBEDDER_LOCAL_MODEL": "BAAI/bge-large-zh-v1.5",
+        "PP_MEMORY_SUMMARY_INDEX": "0",
+        "PP_CODE_MEMORY_ENABLED": "0",
+        "PP_MEMORY_CHUNKING": "off",
+        "PP_MEMORY_CHUNK_ENRICHMENT": "off",
+        "PP_SYNTHESIS_ARTIFACTS": "on",
+        "PP_SYNTHESIS_RETRIEVAL": "1",
+        "PP_MEMORY_PROPOSALS": "off",
+        "PP_SYNTHESIS_OVERFETCH_FACTOR": "2",
+        "PP_HARD_MIN_SCORE": "0.30",
+        "PP_MMR_VECTOR": "1",
+        "PP_DECAY_IN_RANKING": "1",
+        "PP_CONTEXT_GATE": "0",
+        "PP_CONTEXT_GATE_ENFORCE": "0",
+        "PP_CANONICAL_HOT_LOOKUP": "0",
+        "PP_CANONICAL_HOT_ENFORCE": "0",
+        "PP_CANONICAL_HOT_LIMIT": "12",
+        "PP_SOURCE_FILTER": "1",
+        "PP_SOURCE_EXCLUDE": "",
+        "PP_SOURCE_DAEMON_WEIGHT": "0.3",
+        "PP_SOURCE_SUPERPOWERS_WEIGHT": "0.3",
+        "PP_SOURCE_STEP_CLOSURE_WEIGHT": "0.3",
+        "PP_SOURCE_STEP_AUDITOR_WEIGHT": "0.3",
+        "PP_SOURCE_SKILL_SESSION_WEIGHT": "0.1",
+        "PP_SOURCE_AUTO_INJECT_WEIGHT": "0.3",
+        "PP_CORE_MIN_RELEVANCE": "0.70",
+        "PP_RELATED_MIN_RELEVANCE": "0.40",
+        "PP_DIVERGENT_MIN_RELEVANCE": "0.20",
+        "PP_QUERY_EXPANSION_MAX": "3",
+        "PP_TIER_AUTO_PROMOTE": "1",
+        "LDB_INIT_ON_HEAVY_INIT": "1",
+        "LDB_BACKFILL_ON_INIT": "0",
+        "LDB_REBUILD_ON_INIT": "0",
+        "AGENT_OWNER": "recall-quality-benchmark",
+        "PLASTIC_PROJECT_ID": project_id,
+        "PLASTIC_RUNTIME_MODE": "full",
+        "PP_MCP_RUNTIME_ACTOR": "codex",
+        **_live_quality_overrides(index_text_policy, fusion_policy),
+    }
+
+
+def _benchmark_evidence_environment(
+    index_text_policy: str,
+    fusion_policy: str,
+    environ: Mapping[str, str] | None = None,
+    *,
+    project_id: str = "project:benchmark",
+) -> dict[str, str]:
+    source = os.environ if environ is None else environ
+    effective = {str(name): str(value) for name, value in source.items()}
+    effective.update(
+        _isolated_benchmark_overrides(
+            index_text_policy,
+            fusion_policy,
+            project_id=project_id,
+        )
+    )
+    return effective
+
+
+def _live_dataset_project_id(dataset: RecallDataset) -> str:
+    projects = {
+        *(record.project_id for record in dataset.corpus),
+        *(case.project_id for case in dataset.cases),
+    }
+    if len(projects) != 1:
+        raise ValueError("live benchmark requires exactly one dataset project")
+    return next(iter(projects))
 
 
 def _runtime_route(report: Mapping[str, Any]) -> str:
@@ -872,11 +1194,26 @@ def _bind_experiment_report(
     fusion_config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     bound = json.loads(json.dumps(report))
+    backend_mode = _nested_value(bound, "backend.mode")
+    evidence_environment = (
+        _benchmark_evidence_environment(
+            str(_nested_value(bound, "backend.index_text_policy") or "legacy"),
+            fusion_policy,
+            project_id=_live_dataset_project_id(dataset),
+        )
+        if backend_mode in {"live", "engine-diagnostic"}
+        else None
+    )
+    _assert_environment_metadata_current(
+        bound.get("environment"),
+        dataset_path,
+        environ=evidence_environment,
+    )
     bound["schema_version"] = RECALL_QUALITY_REPORT_SCHEMA
     bound["dataset_role"] = dataset.evidence_role
     bound["dataset_fingerprint"] = (
         opaque_file_fingerprint(dataset_path)
-        if manifest is not None
+        if dataset.evidence_role == "held-out"
         else dataset_fingerprint(dataset)
     )
     bound["candidate_dimension"] = "fusion_policy"
@@ -899,15 +1236,20 @@ def _bind_experiment_report(
     backend["public_call_counts"] = dict(bound.get("public_call_counts") or {})
     backend["runtime_route"] = _runtime_route(bound)
     environment = bound.setdefault("environment", {})
+    provider = canonical_embedding_provider(backend.get("provider"))
+    backend["provider"] = provider
     environment.update(
         {
+            "provider": provider,
             "source_commit": _source_commit(),
             "dirty_fingerprint": _code_fingerprint(),
             "retrieval_configuration": _experiment_retrieval_configuration(
                 str(backend.get("index_text_policy") or "legacy")
             ),
             "embedding_configuration": {
+                "provider": provider,
                 "model": backend.get("model"),
+                "model_revision": backend.get("model_revision"),
                 "dimension": backend.get("dimension"),
             },
             "dependencies": dict(environment.get("dependencies") or {}),
@@ -934,6 +1276,9 @@ def _validate_manifest_bound_report(
         "candidate_dimension": manifest.candidate_dimension,
         "environment.source_commit": manifest.source_commit,
         "environment.dirty_fingerprint": manifest.dirty_fingerprint,
+        "environment.comparison_environment_fingerprint": (
+            manifest.comparison_environment_fingerprint
+        ),
         "environment.retrieval_configuration": dict(manifest.retrieval_configuration),
         "environment.embedding_configuration": dict(manifest.embedding_configuration),
         "environment.dependencies": dict(manifest.dependency_versions),
@@ -965,7 +1310,12 @@ def _compare_manifest_reports(
 
 
 @contextmanager
-def _isolated_live_environment(candidate: str) -> Iterator[LivePaths]:
+def _isolated_live_environment(
+    candidate: str,
+    fusion_policy: str,
+    *,
+    project_id: str,
+) -> Iterator[LivePaths]:
     previous: dict[str, str | None] = {}
     root = Path(tempfile.mkdtemp(prefix="plastic-recall-quality-")).resolve()
     try:
@@ -977,18 +1327,11 @@ def _isolated_live_environment(candidate: str) -> Iterator[LivePaths]:
         overrides = {
             "PLASTIC_DB_PATH": str(paths.sqlite),
             "PLASTIC_LANCEDB_PATH": str(paths.lancedb),
-            "PP_MEMORY_INDEX_TEXT_POLICY": candidate,
-            "PP_MEMORY_SUMMARY_INDEX": "0",
-            "PP_CODE_MEMORY_ENABLED": "0",
-            "PP_FORCE_PYTHON_SUPPLY": "1",
-            "PP_PREFER_RUST_SUPPLY": "0",
-            "PP_SYNTHESIS_ARTIFACTS": "on",
-            "PP_SYNTHESIS_RETRIEVAL": "1",
-            "LDB_INIT_ON_HEAVY_INIT": "1",
-            "LDB_BACKFILL_ON_INIT": "0",
-            "LDB_REBUILD_ON_INIT": "0",
-            "AGENT_OWNER": "recall-quality-benchmark",
-            **LIVE_RETRIEVAL_CONFIGURATION,
+            **_isolated_benchmark_overrides(
+                candidate,
+                fusion_policy,
+                project_id=project_id,
+            ),
         }
         for name, value in overrides.items():
             previous[name] = os.environ.get(name)
@@ -1021,13 +1364,15 @@ def _isolated_live_environment(candidate: str) -> Iterator[LivePaths]:
 
 def _public_fusion_attestation(
     payload: Mapping[str, Any],
-) -> dict[str, str]:
+) -> dict[str, Any]:
     audit = payload.get("audit_metadata")
     if not isinstance(audit, Mapping):
         audit = payload.get("audit")
-    if not isinstance(audit, Mapping):
-        raise ValueError("fusion_attestation_missing")
-    fusion = audit.get("retrieval_fusion")
+    fusion = audit.get("retrieval_fusion") if isinstance(audit, Mapping) else None
+    if not isinstance(fusion, Mapping):
+        diagnostics = payload.get("diagnostics")
+        summary = diagnostics.get("summary") if isinstance(diagnostics, Mapping) else None
+        fusion = summary.get("retrieval_fusion") if isinstance(summary, Mapping) else None
     if not isinstance(fusion, Mapping):
         raise ValueError("fusion_attestation_missing")
     fields = (
@@ -1035,10 +1380,18 @@ def _public_fusion_attestation(
         "effective_policy",
         "requested_runtime",
         "effective_runtime",
+        "algorithm",
     )
     result = {field: str(fusion.get(field) or "").strip() for field in fields}
     if any(not result[field] for field in fields):
         raise ValueError("fusion_attestation_incomplete")
+    config = None
+    if result["algorithm"] == "weighted-rrf-v1":
+        config_fields = {"k", "channels", "weights", "windows", "config_hash"}
+        if not config_fields.issubset(fusion):
+            raise ValueError("fusion_attestation_config_incomplete")
+        config = {name: fusion[name] for name in config_fields}
+    result["config"] = config
     return result
 
 
@@ -1081,23 +1434,44 @@ async def _http_live_backend(
         "PP_RETRIEVAL_RRF_WEIGHTS_JSON",
         "PP_RETRIEVAL_RRF_WINDOWS_JSON",
         *LIVE_RETRIEVAL_CONFIGURATION,
+        *RECALL_QUALITY_ENVIRONMENT_KEYS,
+        "EMBEDDER_PROVIDER",
+        "EMBEDDER_BASE_URL",
+        "EMBEDDER_PATH",
+        "EMBEDDER_MODEL",
+        "EMBEDDER_MODEL_REVISION",
+        "EMBEDDER_DIMENSION",
+        "EMBEDDER_BATCH_SIZE",
+        "EMBEDDER_MAX_INPUT_BYTES",
+        "EMBEDDER_MAX_TOTAL_INPUT_BYTES",
+        "EMBEDDER_MAX_REQUEST_BYTES",
+        "EMBEDDER_MAX_RESPONSE_BYTES",
+        "EMBEDDER_TIMEOUT",
+        "EMBEDDER_TOTAL_TIMEOUT",
+        "EMBEDDER_MAX_RETRIES",
+        "EMBEDDER_RETRY_BACKOFF",
+        "EMBEDDER_RETRY_BACKOFF_MAX",
+        "EMBEDDER_CIRCUIT_FAILURE_THRESHOLD",
+        "EMBEDDER_CIRCUIT_RECOVERY_SECONDS",
+        "EMBEDDER_COST_PER_MILLION_TOKENS",
+        "EMBEDDER_COST_CURRENCY",
+        "EMBEDDER_PRICING_REVISION",
+        "PP_EMBEDDING_DIM",
+        *_required_embedding_credential_keys(os.environ),
+        *_required_rerank_credential_keys(os.environ),
     }
     overrides = {name: os.environ[name] for name in env_keys if name in os.environ}
     overrides.update(
         {
             "PLASTIC_DB_PATH": str(paths.sqlite),
             "PLASTIC_LANCEDB_PATH": str(paths.lancedb),
-            "PP_MEMORY_INDEX_TEXT_POLICY": index_text_policy,
-            "PP_RETRIEVAL_FUSION_POLICY": fusion_policy,
-            "PP_MEMORY_PROPOSALS": "off",
-            "PLASTIC_PROJECT_ID": "project:benchmark",
-            "PLASTIC_RUNTIME_MODE": "full",
-            "PP_MCP_RUNTIME_ACTOR": "codex",
+            **_isolated_benchmark_overrides(
+                index_text_policy,
+                fusion_policy,
+                project_id=_live_dataset_project_id(dataset),
+            ),
         }
     )
-    for optional in ("EMBEDDER_MODEL", "OLLAMA_HOST", "EMBEDDER_TIMEOUT"):
-        if optional in os.environ:
-            overrides[optional] = os.environ[optional]
     managed = ManagedProcess.start(
         (runtime_python(), "-m", "plastic_promise", "--streamable-http", str(port)),
         cwd=ROOT,
@@ -1146,9 +1520,17 @@ async def _http_live_backend(
         "forbidden_hidden": True,
         "passed": False,
     }
+    embedding_identity = _validated_embedding_identity(health.get("embedding"))
+    health_fusion = health.get("fusion_attestation")
+    health_effective_runtime = (
+        health_fusion.get("effective_runtime") if isinstance(health_fusion, Mapping) else None
+    )
+    rust_runtime = _validated_rust_runtime_identity(
+        health.get("rust_runtime"),
+        effective_runtime=health_effective_runtime,
+    )
     backend_metadata: dict[str, Any] = {
-        "model": os.environ.get("EMBEDDER_MODEL", "mxbai-embed-large"),
-        "dimension": 1024,
+        **embedding_identity,
         "index_text_policy": index_text_policy,
         "runtime": _runtime_metadata(),
         "transport": "streamable-http",
@@ -1157,6 +1539,7 @@ async def _http_live_backend(
         "effective_policy": None,
         "requested_runtime": None,
         "effective_runtime": None,
+        "rust_runtime": rust_runtime,
     }
     attestation_state: dict[str, Any] = {"attested_calls": 0, "errors": []}
     server_logs: dict[str, list[str]] = {"stdout": [], "stderr": []}
@@ -1168,6 +1551,7 @@ async def _http_live_backend(
             "task_type": case.task_type,
             "scope": "global",
             "debug": True,
+            "diagnostics_level": "full",
             "project_id": case.project_id,
             "project_policy": "strict",
             "fusion_policy": fusion_policy,
@@ -1230,7 +1614,15 @@ async def _http_live_backend(
                 previous = attestation_state.get("observed")
                 if previous is not None and tuple(previous) != observed:
                     raise ValueError("cross_call_mismatch")
+                previous_algorithm = attestation_state.get("algorithm")
+                if previous_algorithm is not None and previous_algorithm != fusion["algorithm"]:
+                    raise ValueError("cross_call_algorithm_mismatch")
+                previous_config = attestation_state.get("config", fusion["config"])
+                if previous_config != fusion["config"]:
+                    raise ValueError("cross_call_config_mismatch")
                 attestation_state["observed"] = list(observed)
+                attestation_state["algorithm"] = fusion["algorithm"]
+                attestation_state["config"] = fusion["config"]
                 attestation_state["attested_calls"] += 1
                 backend_metadata.update(fusion)
             except (TypeError, ValueError) as exc:
@@ -1239,6 +1631,7 @@ async def _http_live_backend(
             context,
             actual_to_fixture,
         )
+        canonical_fused = _remap_public_fused_ranking(context, actual_to_fixture)
         recalled_ids = {
             str(row.get("id") or "")
             for layer in ("core", "related", "divergent")
@@ -1268,15 +1661,10 @@ async def _http_live_backend(
         )
         fallback_reasons = _fallback_reasons(audit)
         return {
-            "ranked_ids": [actual_to_fixture.get(item, item) for item in fused_actual],
+            "ranked_ids": canonical_fused,
             "latency_ms": latency_ms,
             "fallback_used": bool(fallback_reasons),
-            "degraded": bool(
-                context.get("degraded")
-                or recall.get("degraded")
-                or context.get("warnings")
-                or recall.get("warnings")
-            ),
+            "degraded": _public_result_is_degraded(recall, context, audit),
             "channel_rankings": channel_rankings,
             "channel_states": channel_states,
             "metadata": {
@@ -1290,6 +1678,35 @@ async def _http_live_backend(
         server_logs["stdout"][:] = sanitized_log_tail(stdout_path, private_roots=(paths.root,))
         server_logs["stderr"][:] = sanitized_log_tail(stderr_path, private_roots=(paths.root,))
 
+    def finalize() -> None:
+        final_health = asyncio.run(
+            wait_for_health(
+                health_url,
+                managed,
+                expected_source_root=ROOT,
+                expected_source_revision=_source_commit(),
+                expected_fusion_policy=fusion_policy,
+            )
+        )
+        require_owned_health(
+            final_health,
+            managed,
+            expected_source_root=ROOT,
+            expected_source_revision=_source_commit(),
+            expected_fusion_policy=fusion_policy,
+        )
+        backend_metadata.update(_validated_embedding_identity(final_health.get("embedding")))
+        final_fusion = final_health.get("fusion_attestation")
+        final_effective_runtime = (
+            final_fusion.get("effective_runtime") if isinstance(final_fusion, Mapping) else None
+        )
+        final_rust_runtime = _validated_rust_runtime_identity(
+            final_health.get("rust_runtime"),
+            effective_runtime=final_effective_runtime,
+        )
+        if final_rust_runtime != backend_metadata["rust_runtime"]:
+            raise RuntimeError("health_rust_runtime_identity_changed")
+
     return (
         retrieve,
         backend_metadata,
@@ -1300,6 +1717,7 @@ async def _http_live_backend(
             "public_transport_call_counts": transport_counts,
             "fusion_attestation": attestation_state,
             "server_logs": server_logs,
+            "_finalize": finalize,
             "_cleanup": cleanup,
         },
     )
@@ -1426,10 +1844,22 @@ def _remap_public_channel_evidence(
     payload: Mapping[str, Any],
     actual_to_fixture: Mapping[str, str],
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, Any]]]:
+    diagnostics = payload.get("diagnostics")
+    details = diagnostics.get("details") if isinstance(diagnostics, Mapping) else None
+    details = details if isinstance(details, Mapping) else {}
+    raw_rankings = payload.get("channel_rankings")
+    if not isinstance(raw_rankings, Mapping):
+        raw_rankings = details.get("channel_rankings")
+    raw_rankings = raw_rankings if isinstance(raw_rankings, Mapping) else {}
+    raw_states = payload.get("channel_states")
+    if not isinstance(raw_states, Mapping):
+        raw_states = details.get("channel_states")
+    raw_states = raw_states if isinstance(raw_states, Mapping) else {}
+
     rankings: dict[str, list[dict[str, Any]]] = {}
-    for raw_name, raw_rows in dict(payload.get("channel_rankings") or {}).items():
+    for raw_name, raw_rows in raw_rankings.items():
         channel = "bm25" if str(raw_name).casefold() == "lexical" else str(raw_name)
-        rankings[channel] = [
+        remapped = [
             {
                 "id": actual_to_fixture.get(str(row.get("id") or ""), str(row.get("id") or "")),
                 "score": row.get("score"),
@@ -1438,9 +1868,19 @@ def _remap_public_channel_evidence(
             for row in list(raw_rows or [])
             if isinstance(row, Mapping)
         ]
+        if all(
+            not isinstance(row.get("score"), bool)
+            and isinstance(row.get("score"), (int, float))
+            and math.isfinite(float(row["score"]))
+            for row in remapped
+        ):
+            remapped.sort(key=lambda row: (-float(row["score"]), str(row["id"])))
+            for rank, row in enumerate(remapped, start=1):
+                row["rank"] = rank
+        rankings[channel] = remapped
     states = {
         ("bm25" if str(name).casefold() == "lexical" else str(name)): dict(state)
-        for name, state in dict(payload.get("channel_states") or {}).items()
+        for name, state in raw_states.items()
         if isinstance(state, Mapping)
     }
     missing_state = {
@@ -1456,6 +1896,38 @@ def _remap_public_channel_evidence(
         {channel: rankings.get(channel, []) for channel in FUSION_CHANNEL_ORDER},
         {channel: states.get(channel, dict(missing_state)) for channel in FUSION_CHANNEL_ORDER},
     )
+
+
+def _remap_public_fused_ranking(
+    payload: Mapping[str, Any],
+    actual_to_fixture: Mapping[str, str],
+) -> list[str]:
+    rows = [
+        row
+        for layer in ("core", "related", "divergent")
+        for row in list(payload.get(layer) or [])
+        if isinstance(row, Mapping) and row.get("id")
+    ]
+    if all(
+        not isinstance(row.get("relevance"), bool)
+        and isinstance(row.get("relevance"), (int, float))
+        and math.isfinite(float(row["relevance"]))
+        for row in rows
+    ):
+        rows.sort(
+            key=lambda row: (
+                -float(row["relevance"]),
+                actual_to_fixture.get(str(row["id"]), str(row["id"])),
+            )
+        )
+    ranked: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        memory_id = actual_to_fixture.get(str(row["id"]), str(row["id"]))
+        if memory_id and memory_id not in seen:
+            seen.add(memory_id)
+            ranked.append(memory_id)
+    return ranked
 
 
 def _engine_diagnostic_backend(
@@ -1475,6 +1947,11 @@ def _engine_diagnostic_backend(
         engine.ensure_heavy_init()
         embedder = getattr(engine, "_embedder", None) or get_embedder(fallback_on_error=False)
         model = str(getattr(embedder, "model_name", type(embedder).__name__))
+        stats = getattr(embedder, "stats", {})
+        stats = stats if isinstance(stats, Mapping) else {}
+        model_revision = str(
+            stats.get("revision") or os.environ.get("EMBEDDER_MODEL_REVISION", model)
+        ).strip()
         dimension = int(getattr(embedder, "dim", 0) or 0)
         embedder_is_fallback = "fallback" in model.lower()
         if dimension <= 0:
@@ -1536,17 +2013,35 @@ def _engine_diagnostic_backend(
     def cleanup() -> None:
         _close_live_backend_resources(engine)
 
+    backend_metadata = {
+        "provider": str(stats.get("provider") or os.environ.get("EMBEDDER_PROVIDER", "")),
+        "model": model,
+        "model_revision": model_revision,
+        "dimension": dimension,
+        "usage": _embedding_usage_from_stats(stats),
+        "index_text_policy": candidate,
+        "runtime": _runtime_metadata(),
+        "rust_runtime": None,
+    }
+
+    def finalize() -> None:
+        current_stats = getattr(embedder, "stats", {})
+        current_stats = current_stats if isinstance(current_stats, Mapping) else {}
+        backend_metadata["usage"] = _embedding_usage_from_stats(current_stats)
+        backend_metadata["provider"] = str(
+            current_stats.get("provider") or backend_metadata["provider"]
+        )
+        backend_metadata["model_revision"] = str(
+            current_stats.get("revision") or backend_metadata["model_revision"]
+        )
+
     return (
         retrieve,
-        {
-            "model": model,
-            "dimension": dimension,
-            "index_text_policy": candidate,
-            "runtime": _runtime_metadata(),
-        },
+        backend_metadata,
         {
             "isolated_corpus": install_evidence,
             "smoke": smoke,
+            "_finalize": finalize,
             "_cleanup": cleanup,
         },
     )
@@ -1975,6 +2470,13 @@ def _pack_is_degraded(pack: Any, audit: Mapping[str, Any]) -> bool:
         else ()
     )
     retrieval_degradations = audit.get("retrieval_degradations", ())
+    rerank = audit.get("rerank")
+    rerank_degraded = (
+        _as_bool(rerank.get("degraded", False))
+        or str(rerank.get("status") or "").strip().casefold() == "degraded"
+        if isinstance(rerank, Mapping)
+        else False
+    )
     return any(
         (
             _as_bool(getattr(pack, "degraded", False)),
@@ -1982,8 +2484,29 @@ def _pack_is_degraded(pack: Any, audit: Mapping[str, Any]) -> bool:
             _as_bool(audit.get("project_degraded", False)),
             _as_bool(synthesis_degradations),
             _as_bool(retrieval_degradations),
+            rerank_degraded,
         )
     )
+
+
+def _public_result_is_degraded(
+    recall: Mapping[str, Any],
+    context: Mapping[str, Any],
+    audit: Mapping[str, Any],
+) -> bool:
+    project_context = context.get("project_context")
+    if not isinstance(project_context, Mapping):
+        project_context = recall.get("project_context")
+    pack = SimpleNamespace(
+        degraded=bool(
+            context.get("degraded")
+            or recall.get("degraded")
+            or context.get("warnings")
+            or recall.get("warnings")
+        ),
+        project_context=project_context if isinstance(project_context, Mapping) else {},
+    )
+    return _pack_is_degraded(pack, audit)
 
 
 def _fallback_reasons(audit: Mapping[str, Any]) -> list[str]:
@@ -1998,6 +2521,20 @@ def _fallback_reasons(audit: Mapping[str, Any]) -> list[str]:
         reasons.extend(str(value) for value in fallback_used if str(value).strip())
     elif fallback_used:
         reasons.append(f"fallback_used:{fallback_used}")
+    rerank = audit.get("rerank")
+    if isinstance(rerank, Mapping) and (
+        _as_bool(rerank.get("degraded", False))
+        or str(rerank.get("status") or "").strip().casefold() == "degraded"
+    ):
+        provider = str(rerank.get("provider") or "unknown").strip().casefold()
+        status = str(rerank.get("status") or "degraded").strip().casefold()
+        provider = (
+            provider
+            if provider in {"cloud", "jina", "siliconflow", "ollama", "original"}
+            else "unknown"
+        )
+        status = status if status in {"degraded", "error", "failed"} else "degraded"
+        reasons.append(f"rerank:{provider}:{status}")
     return sorted(set(reasons))
 
 
@@ -2017,7 +2554,12 @@ def _runtime_metadata() -> dict[str, str]:
     }
 
 
-def _environment_metadata(dataset_path: Path) -> dict[str, Any]:
+def _environment_metadata(
+    dataset_path: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    source = os.environ if environ is None else environ
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -2031,62 +2573,73 @@ def _environment_metadata(dataset_path: Path) -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError):
         code_revision = "unknown"
     return {
-        "provider": os.environ.get("EMBEDDER_PROVIDER", "ollama"),
-        "configured_model": os.environ.get("EMBEDDER_MODEL", "mxbai-embed-large"),
-        "supply_runtime": "python" if os.environ.get("PP_FORCE_PYTHON_SUPPLY") == "1" else "auto",
+        "provider": canonical_embedding_provider(source.get("EMBEDDER_PROVIDER", "ollama")),
+        "configured_model": source.get("EMBEDDER_MODEL", "mxbai-embed-large"),
+        "configured_model_revision": source.get(
+            "EMBEDDER_MODEL_REVISION",
+            source.get("EMBEDDER_MODEL", "mxbai-embed-large"),
+        ),
+        "supply_runtime": "python" if source.get("PP_FORCE_PYTHON_SUPPLY") == "1" else "auto",
         "code_revision": code_revision,
+        "source_commit": _source_commit(),
+        "dirty_fingerprint": _code_fingerprint(),
+        "environment_fingerprint": recall_quality_environment_fingerprint(source),
+        "comparison_environment_fingerprint": (
+            recall_quality_comparison_environment_fingerprint(source)
+        ),
         "dataset_source": _source_label(dataset_path),
         "source_fingerprint": _source_fingerprint(dataset_path),
         "source_files": [_source_label(path) for path in _source_paths(dataset_path)],
         "dependencies": _retrieval_dependency_versions(),
         "retrieval_configuration": {
-            name: os.environ.get(name, default)
+            name: source.get(name, default)
             for name, default in LIVE_RETRIEVAL_CONFIGURATION.items()
         },
     }
 
 
+def _assert_environment_metadata_current(
+    value: object,
+    dataset_path: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Reject evidence if code, dependencies, or non-secret settings drifted."""
+
+    if not isinstance(value, Mapping) or dict(value) != _environment_metadata(
+        dataset_path,
+        environ=environ,
+    ):
+        raise RuntimeError("benchmark_environment_changed_during_run")
+
+
 def _retrieval_dependency_versions() -> dict[str, str]:
-    versions: dict[str, str] = {}
-    for package in ("lancedb", "pyarrow"):
-        try:
-            versions[package] = package_version(package)
-        except PackageNotFoundError:
-            versions[package] = "unavailable"
-    return versions
+    return retrieval_dependency_versions()
 
 
 def _source_fingerprint(dataset_path: Path) -> str:
-    digest = hashlib.sha256()
-    for path in _source_paths(dataset_path):
-        try:
-            content = path.read_bytes()
-        except OSError as exc:
-            raise RuntimeError(f"benchmark source fingerprint input is unreadable: {path}") from exc
-        label = _source_label(path).encode("utf-8")
-        digest.update(len(label).to_bytes(8, "big"))
-        digest.update(label)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
+    try:
+        return recall_quality_source_fingerprint(
+            ROOT,
+            dataset_path,
+            benchmark_sources=BENCHMARK_SOURCE_PATHS,
+        )
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"benchmark source fingerprint input is unreadable: {dataset_path}"
+        ) from exc
 
 
 def _source_paths(dataset_path: Path) -> tuple[Path, ...]:
-    package_sources = tuple(
-        path for path in (ROOT / "plastic_promise").rglob("*.py") if path.is_file()
+    return recall_quality_source_paths(
+        ROOT,
+        dataset_path,
+        benchmark_sources=BENCHMARK_SOURCE_PATHS,
     )
-    unique = {
-        path.resolve() for path in (*BENCHMARK_SOURCE_PATHS, *package_sources, Path(dataset_path))
-    }
-    return tuple(sorted(unique, key=_source_label))
 
 
 def _source_label(path: Path) -> str:
-    resolved = path.resolve()
-    try:
-        return resolved.relative_to(ROOT.resolve()).as_posix()
-    except ValueError:
-        return resolved.as_posix()
+    return recall_quality_source_label(ROOT, path)
 
 
 def _current_report_source_fingerprint(report: Mapping[str, Any]) -> str | None:

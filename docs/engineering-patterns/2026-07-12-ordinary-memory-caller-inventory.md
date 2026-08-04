@@ -18,8 +18,8 @@ rg -n "\.update_memory\(|mutate_ordinary_source\(|patch_ordinary_memory\(|update
 rg -n -i "\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM|REPLACE\s+INTO)\s+memories\b" plastic_promise daemons scripts -g "*.py"
 ```
 
-The post-audit AST normalization yields 44 unique `(path, enclosing symbol, writer)` tuples
-and 48 writer occurrences. Creation-only calls are intentionally absent from the mutation
+The post-audit AST normalization yields 45 unique `(path, enclosing symbol, writer)` tuples
+and 49 writer occurrences. Creation-only calls are intentionally absent from the mutation
 writer set; tuple identity and multiplicity remain guarded without recording line numbers.
 
 Search-only, non-caller matches are classified as follows:
@@ -52,7 +52,7 @@ Search-only, non-caller matches are classified as follows:
 
 Status values are `pending`, `reviewed-safe`, and `reviewed-nonordinary`; the registry test
 rejects every unresolved `pending` row. The current registry contains 0 `pending`,
-42 `reviewed-safe`, and 2 `reviewed-nonordinary` tuples.
+43 `reviewed-safe`, and 2 `reviewed-nonordinary` tuples.
 
 ## Writer Registry
 
@@ -81,6 +81,8 @@ rejects every unresolved `pending` row. The current registry contains 0 `pending
 | `plastic_promise/core/context_engine.py` | `_SQLiteStorage.delete` | `sql:DELETE FROM` | `1` | `yes` | Retained generic private primitive has no production caller; committed ordinary availability changes use the source coordinator, manual uncommitted cancellation uses delete_ordinary, and future calls are inventory-gated. | `ContextEngine.mutate_ordinary_source` | `tests/test_ordinary_memory_callers.py::test_inventory_matches_production_writers_and_has_migration_evidence` | `Post-audit classify unreachable generic private delete` | `reviewed-safe` |
 | `plastic_promise/core/context_engine.py` | `_SQLiteStorage.delete_ordinary` | `sql:DELETE FROM` | `1` | `yes` | Private primitive is retained only to cancel an ordinary row created but not committed in the active manual batch; committed rows are tombstoned through the coordinator and ambient committed-source deletes fail closed. | `ContextEngine.mutate_ordinary_source` | `tests/test_ordinary_memory_mutation.py::test_manual_batch_rejects_hard_delete_of_committed_source` | `Task 5 remove committed-source routing to the hard-delete primitive` | `reviewed-safe` |
 | `plastic_promise/core/context_engine.py` | `_SQLiteStorage.patch_ordinary` | `sql:UPDATE` | `1` | `yes` | Applies fixed scalar, JSON, and increment allowlists with content/index CAS, SQL-side counter arithmetic, an ordinary/unreserved guard, exactly-one-row enforcement, and owned `BEGIN IMMEDIATE` or caller-savepoint transaction semantics. | `patch_ordinary_memory` | `tests/test_ordinary_memory_mutation.py::test_patch_ordinary_preserves_every_untargeted_canonical_column` | `Task 1 canonical reviewed-safe primitive; no caller migration` | `reviewed-safe` |
+| `plastic_promise/core/index_material_migration.py` | `_apply_plan` | `sql:UPDATE` | `1` | `yes` | Applies only derived embedding/search material with an expected-hash compare-and-set, verifies protected-state and canonical-source fingerprints, advances memory_version once, and enqueues checked index work in the same migration transaction. | `patch_ordinary_memory` | `tests/test_index_material_migration.py::test_apply_backs_up_and_migrates_with_durable_outbox_and_synthesis_binding` | `Register the governed derived-field migration writer` | `reviewed-safe` |
+| `plastic_promise/core/memory_relations.py` | `organize_memory_relations` | `patch_ordinary_memory` | `1` | `yes` | Adds deterministic topic tags after an ordinary store through a tags-only compare-and-set patch; project identity, availability, content, provenance, and memory version remain unchanged while relation edges are written separately. | `patch_ordinary_memory` | `tests/test_memory_relations.py::test_related_memory_is_tagged_linked_and_expanded_into_context` | `Passive-memory organizer routes post-store tag enrichment through the guarded ordinary patch` | `reviewed-safe` |
 | `plastic_promise/core/memory_proposals.py` | `_insert_prepared_memory` | `sql:INSERT INTO` | `1` | `possible` | Deterministic proposal ID is inserted only on dedup miss inside the proposal, lineage, version, and outbox transaction; conflict rolls back. | `create_ordinary_if_absent` | `tests/test_memory_proposals.py::test_proposal_promotion_insert_contract_remains_atomic` | `Task 6 retain the reviewed transaction-local insert` | `reviewed-safe` |
 | `plastic_promise/core/pack_index.py` | `pack_import_with_strategy` | `mutate_ordinary_source` | `1` | `yes` | Replace routes content through the source coordinator with canonical source CAS and pack-owned policy replacements in the invalidation transaction. | `ContextEngine.mutate_ordinary_source` | `tests/test_pack_index.py::test_pack_replace_uses_source_mutation_and_preserves_unowned_fields` | `Task 6 split create, replace, and merge ownership` | `reviewed-safe` |
 | `plastic_promise/core/pack_index.py` | `pack_import_with_strategy` | `patch_ordinary_memory` | `2` | `yes` | Same-content replace and merge patch only pack-owned tags/domain after an availability-preservation preflight; blocked lifecycle injection fails before either patch or content coordination. | `patch_ordinary_memory` | `tests/test_pack_index.py::test_pack_existing_memory_rejects_availability_changing_tags` | `Post-audit bind pack field patches and availability guard` | `reviewed-safe` |

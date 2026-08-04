@@ -1,5 +1,5 @@
 import plastic_promise.smart_extractor as smart_extractor
-from plastic_promise.core.context_engine import ContextEngine
+from plastic_promise.core.context_engine import ContextEngine, ContextItem
 from plastic_promise.core.lancedb_store import LanceDBStore
 from plastic_promise.mcp.tools import memory as memory_tools
 
@@ -31,6 +31,196 @@ def _engine_with_result(monkeypatch, result, memory=None, vector_results=None):
     if memory is not None:
         engine._memories[result[0]] = memory
     return engine
+
+
+class TestDivergentQualityLatency:
+    def test_batches_unique_missing_vectors_once(self):
+        class RecordingEmbedder:
+            def __init__(self):
+                self.batch_calls = []
+
+            supports_native_batch = True
+
+            def embed(self, _text):
+                raise AssertionError("divergent quality must not issue single-item embeds")
+
+            def embed_batch(self, texts):
+                self.batch_calls.append(list(texts))
+                return [[float(index + 1), 1.0] for index, _text in enumerate(texts)]
+
+        class EmptyVectorStore:
+            def get_vector(self, _item_id):
+                return None
+
+        engine = ContextEngine(use_sqlite=False)
+        embedder = RecordingEmbedder()
+        engine._embedder = embedder
+        engine._ldb = EmptyVectorStore()
+        all_items = [
+            ContextItem(
+                id=f"m{index}",
+                content=(
+                    "unique memory content 0" if index == 5 else f"unique memory content {index}"
+                ),
+                relevance=0.4,
+                source="text",
+                worth_score=0.8,
+            )
+            for index in range(6)
+        ]
+
+        engine._compute_divergent_quality(all_items[-2:], all_items)
+
+        assert embedder.batch_calls == [list(dict.fromkeys(item.content for item in all_items))]
+
+    def test_lancedb_unavailable_uses_lexical_fallback_without_embedding(self):
+        class ForbiddenEmbedder:
+            def __init__(self):
+                self.calls = 0
+
+            def embed(self, _text):
+                self.calls += 1
+                raise AssertionError("LanceDB degradation must not block recall on cloud embedding")
+
+            def embed_batch(self, _texts):
+                self.calls += 1
+                raise AssertionError("LanceDB degradation must not block recall on cloud embedding")
+
+        engine = ContextEngine(use_sqlite=False)
+        embedder = ForbiddenEmbedder()
+        engine._embedder = embedder
+        engine._ldb = None
+        divergent = ContextItem(
+            id="divergent",
+            content="project-scoped hook memory",
+            relevance=0.4,
+            source="text",
+            worth_score=0.8,
+        )
+        related = ContextItem(
+            id="related",
+            content="unrelated deployment details",
+            relevance=0.8,
+            source="text",
+            worth_score=0.8,
+        )
+
+        result = engine._compute_divergent_quality([divergent], [divergent, related])
+
+        assert result == [divergent]
+        assert divergent.novelty_score > 0.0
+        assert embedder.calls == 0
+
+    def test_lancedb_degraded_uses_lexical_fallback_without_embedding(self):
+        class DegradedVectorStore:
+            vector_reads_available = False
+
+            def get_vector(self, _item_id):
+                raise AssertionError("degraded LanceDB must not be read")
+
+        class ForbiddenEmbedder:
+            supports_native_batch = True
+
+            def embed_batch(self, _texts):
+                raise AssertionError("degraded LanceDB must not trigger cloud embedding")
+
+        engine = ContextEngine(use_sqlite=False)
+        engine._ldb = DegradedVectorStore()
+        engine._embedder = ForbiddenEmbedder()
+        divergent = ContextItem(
+            id="divergent",
+            content="project-scoped hook memory",
+            relevance=0.4,
+            source="text",
+            worth_score=0.8,
+        )
+        related = ContextItem(
+            id="related",
+            content="unrelated deployment details",
+            relevance=0.8,
+            source="text",
+            worth_score=0.8,
+        )
+
+        result = engine._compute_divergent_quality([divergent], [divergent, related])
+
+        assert result == [divergent]
+        assert divergent.novelty_score > 0.0
+
+    def test_lancedb_runtime_read_failure_uses_lexical_fallback_without_embedding(self):
+        class RuntimeDegradedVectorStore:
+            vector_reads_available = True
+
+            def get_vector(self, _item_id):
+                raise AssertionError("bulk production contract must be used")
+
+            def get_vectors_for_recall(self, _item_ids):
+                return {}, False
+
+        class ForbiddenEmbedder:
+            supports_native_batch = True
+
+            def embed_batch(self, _texts):
+                raise AssertionError("runtime LanceDB failure must not trigger cloud embedding")
+
+        engine = ContextEngine(use_sqlite=False)
+        engine._ldb = RuntimeDegradedVectorStore()
+        engine._embedder = ForbiddenEmbedder()
+        divergent = ContextItem(
+            id="divergent",
+            content="project-scoped hook memory",
+            relevance=0.4,
+            source="text",
+            worth_score=0.8,
+        )
+        related = ContextItem(
+            id="related",
+            content="unrelated deployment details",
+            relevance=0.8,
+            source="text",
+            worth_score=0.8,
+        )
+
+        result = engine._compute_divergent_quality([divergent], [divergent, related])
+
+        assert result == [divergent]
+        assert divergent.novelty_score > 0.0
+
+    def test_non_native_batch_embedder_uses_lexical_fallback(self):
+        class EmptyVectorStore:
+            vector_reads_available = True
+
+            def get_vector(self, _item_id):
+                return None
+
+        class FanoutEmbedder:
+            supports_native_batch = False
+
+            def embed_batch(self, _texts):
+                raise AssertionError("per-text provider fanout must not run during recall")
+
+        engine = ContextEngine(use_sqlite=False)
+        engine._ldb = EmptyVectorStore()
+        engine._embedder = FanoutEmbedder()
+        divergent = ContextItem(
+            id="divergent",
+            content="project-scoped hook memory",
+            relevance=0.4,
+            source="text",
+            worth_score=0.8,
+        )
+        related = ContextItem(
+            id="related",
+            content="unrelated deployment details",
+            relevance=0.8,
+            source="text",
+            worth_score=0.8,
+        )
+
+        result = engine._compute_divergent_quality([divergent], [divergent, related])
+
+        assert result == [divergent]
+        assert divergent.novelty_score > 0.0
 
 
 class TestFTSFusion:
@@ -433,7 +623,9 @@ class TestRequestScope:
             def supply(self, task_description, task_vector, task_type, scope):
                 return FakePack()
 
-        monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+        monkeypatch.setattr(
+            embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+        )
 
         async def run():
             result = await handle_context_supply(
@@ -508,6 +700,9 @@ class TestDebugOutput:
         assert set(pack.pipeline_stats["stage_timing_ms"]) == {
             "principle_injection",
             "candidate_retrieval",
+            "rerank",
+            "mmr",
+            "divergent_quality",
             "filter_and_layer",
             "total",
         }
@@ -525,6 +720,23 @@ class TestDebugOutput:
         pack = engine._supply_python("query", [0.0], debug=False)
 
         assert pack.pipeline_stats == {}
+        assert pack.per_item_stats == []
+
+    def test_explain_enabled_collects_timings_without_debug_payload(self, monkeypatch):
+        monkeypatch.setenv("PP_HARD_MIN_SCORE", "0")
+        monkeypatch.setenv("PP_RETRIEVAL_EXPLAIN", "1")
+        engine = _engine_with_result(
+            monkeypatch,
+            ("m1", 1.0, "useful enough content", "vector"),
+            {"source": "user", "memory_type": "experience"},
+        )
+
+        pack = engine._supply_python("query", [0.0], debug=False)
+
+        assert set(pack.pipeline_stats) == {"stage_timing_ms"}
+        assert {"rerank", "mmr", "divergent_quality"}.issubset(
+            pack.pipeline_stats["stage_timing_ms"]
+        )
         assert pack.per_item_stats == []
 
     def test_per_item_stats_have_correct_shape(self, monkeypatch):
@@ -600,7 +812,12 @@ class TestQueryExpansionIntegration:
         engine._calc_freshness = lambda item_id: "valid"
         engine._calc_decay_status = lambda item_id, mem: "healthy"
         engine._memories = {
-            "m1": {"source": "user", "memory_type": "experience", "worth_success": 0, "worth_failure": 0}
+            "m1": {
+                "source": "user",
+                "memory_type": "experience",
+                "worth_success": 0,
+                "worth_failure": 0,
+            }
         }
 
         def text_retrieval(query, trust_boost=1.0, domain_hint=None):
@@ -609,7 +826,9 @@ class TestQueryExpansionIntegration:
 
         engine._text_retrieval = text_retrieval
 
-        pack = engine._supply_python("I forgot the config", [0.0], "debugging", "fixing", debug=True)
+        pack = engine._supply_python(
+            "I forgot the config", [0.0], "debugging", "fixing", debug=True
+        )
 
         assert pack.total_items == 1
         assert seen["query"] != "I forgot the config"
@@ -633,7 +852,9 @@ class TestQueryExpansionIntegration:
                 return ContextPack()
 
         monkeypatch.setattr(adaptive_retrieval, "should_retrieve", lambda query: True)
-        monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+        monkeypatch.setattr(
+            embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+        )
 
         result = asyncio.run(
             handle_memory_recall(FakeEngine(), {"query": "remember config", "debug": True})
@@ -642,6 +863,81 @@ class TestQueryExpansionIntegration:
 
         assert "error" not in payload
         assert "_os_env" not in result[0].text
+
+    def test_memory_recall_offloads_engine_supply_from_event_loop(self, monkeypatch):
+        import asyncio
+        import threading
+
+        import plastic_promise.adaptive_retrieval as adaptive_retrieval
+        import plastic_promise.core.embedder as embedder_mod
+        from plastic_promise.core.context_engine import ContextPack
+        from plastic_promise.mcp.tools.memory import handle_memory_recall
+
+        class FakeEmbedder:
+            async def aembed(self, _text):
+                return [0.0]
+
+        supply_threads = []
+
+        class FakeEngine:
+            def supply(self, query, vec, task_type, scope, debug=False):
+                supply_threads.append(threading.get_ident())
+                return ContextPack()
+
+        monkeypatch.setattr(adaptive_retrieval, "should_retrieve", lambda query: True)
+        monkeypatch.setattr(
+            embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+        )
+        event_loop_thread = threading.get_ident()
+
+        asyncio.run(handle_memory_recall(FakeEngine(), {"query": "remember project config"}))
+
+        assert supply_threads
+        assert supply_threads[0] != event_loop_thread
+
+    def test_memory_recall_times_out_blocking_engine(self, monkeypatch):
+        import asyncio
+        import json
+        import time
+
+        import plastic_promise.adaptive_retrieval as adaptive_retrieval
+        import plastic_promise.core.embedder as embedder_mod
+        from plastic_promise.mcp.tools.memory import handle_memory_recall
+
+        class FakeEmbedder:
+            async def aembed(self, _text):
+                return [0.0]
+
+        class SlowEngine:
+            def supply(self, query, vec, task_type, scope, debug=False):
+                time.sleep(0.2)
+                raise AssertionError("timed out supply result must be ignored")
+
+        monkeypatch.setenv("PP_MEMORY_RECALL_SUPPLY_TIMEOUT_SEC", "0.01")
+        monkeypatch.setattr(adaptive_retrieval, "should_retrieve", lambda query: True)
+        monkeypatch.setattr(
+            embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+        )
+        started = time.monotonic()
+
+        result = asyncio.run(
+            handle_memory_recall(
+                SlowEngine(),
+                {
+                    "query": "remember project config",
+                    "project_id": "project:app",
+                    "debug": True,
+                },
+            )
+        )
+        elapsed = time.monotonic() - started
+        payload = json.loads(result[0].text)
+
+        assert elapsed < 0.15
+        assert payload["degraded"] is True
+        assert payload["minimum_result"] == "degraded_recall"
+        assert payload["trace"]["project_id"] == "project:app"
+        assert "timed out" in payload["error"]
 
     def test_context_supply_handler_does_not_return_os_env_error(self, monkeypatch):
         import asyncio
@@ -659,7 +955,9 @@ class TestQueryExpansionIntegration:
             def supply(self, task_description, task_vector, task_type, scope):
                 return ContextPack()
 
-        monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+        monkeypatch.setattr(
+            embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+        )
 
         result = asyncio.run(
             handle_context_supply(FakeEngine(), {"task_description": "debug config recall"})

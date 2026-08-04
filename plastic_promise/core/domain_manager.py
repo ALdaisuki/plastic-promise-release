@@ -12,12 +12,29 @@
 """
 
 import datetime
+import hashlib
 import json
 import logging
+import os
+import re
 import threading
 from collections import Counter
+from contextlib import suppress
 
 from plastic_promise.core.paths import get_db_path
+
+DEFAULT_DOMAIN_PROJECT_ID = "project:legacy-global"
+_AUTOMATIC_DOMAIN_TAG_RE = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff]+")
+_NON_SEMANTIC_TAG_PREFIXES = (
+    "cat:",
+    "domain:",
+    "lifecycle:",
+    "llm_",
+    "project:",
+    "quality:",
+    "status:",
+    "visibility:",
+)
 
 
 class DomainInfo:
@@ -163,34 +180,43 @@ class DomainManager:
     all 域不参与记忆分配、不参与融合。
     """
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     MIGRATION_CHAIN = {
         1: "_migrate_v1_to_v2",
+        3: "_migrate_v2_to_v3",
     }
 
-    def __init__(self, db_path: str | None = None):
+    def __init__(self, db_path: str | None = None, *, project_id: str | None = None):
         self._lock = threading.RLock()
         self.domains: dict[str, DomainInfo] = {}
         self.tag_to_domain: dict[str, set[str]] = {}
+        self._scoped_managers: dict[str, DomainManager] = {}
+        self.project_id = self._normalize_project_id(project_id)
 
         # SQLite 持久化
         import sqlite3
 
         if db_path is None:
             db_path = get_db_path()
+        self._db_path = str(db_path)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
+        self._run_migrations()
         self._load_from_db()
 
         # Auto-rebuild guard: domains 表空但 memories 有数据 → 自动重建
         try:
             row = self._conn.execute(
-                "SELECT COUNT(*) FROM domains WHERE status != 'candidate'"
+                "SELECT COUNT(*) FROM domains WHERE project_id = ? AND status != 'candidate'",
+                (self.project_id,),
             ).fetchone()
             domain_count = row[0] if row else 0
-            mem_count_row = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()
+            mem_count_row = self._conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE COALESCE(NULLIF(TRIM(project_id), ''), ?) = ?",
+                (DEFAULT_DOMAIN_PROJECT_ID, self.project_id),
+            ).fetchone()
             mem_count = mem_count_row[0] if mem_count_row else 0
 
             if domain_count == 0 and mem_count > 0:
@@ -211,13 +237,12 @@ class DomainManager:
         except Exception:
             pass
 
-        self._run_migrations()
-
     def _init_schema(self):
         """建表: domains, audit_log"""
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS domains (
-                name TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT NOT NULL,
                 score REAL NOT NULL DEFAULT 0.3,
                 tags TEXT NOT NULL DEFAULT '[]',
                 aliases TEXT NOT NULL DEFAULT '[]',
@@ -229,7 +254,8 @@ class DomainManager:
                 access_count INTEGER NOT NULL DEFAULT 0,
                 last_accessed TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT '',
-                last_active TEXT NOT NULL DEFAULT ''
+                last_active TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (project_id, name)
             );
 
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -284,13 +310,105 @@ class DomainManager:
             ("tags", "TEXT", "'[]'"),
             ("domain", "TEXT", "'uncategorized'"),
         ]:
-            try:
+            with suppress(Exception):
                 self._conn.execute(
                     f"ALTER TABLE memories ADD COLUMN {col} {dtype} NOT NULL DEFAULT {default}"
                 )
-            except Exception:
-                pass  # 列已存在
         # domains 和 audit_log 在 _init_schema 中已用 IF NOT EXISTS 创建
+
+    def _migrate_v2_to_v3(self):
+        """v2→v3: scope every persisted domain by project without rewriting memories.
+
+        Legacy domain rows did not retain project provenance.  They are therefore
+        preserved losslessly under ``project:legacy-global``.  Existing memory
+        rows are intentionally not reclassified by this schema migration; a
+        project-scoped reclassification remains an explicit governed operation.
+        """
+        columns = {
+            str(row[1]) for row in self._conn.execute("PRAGMA table_info(domains)").fetchall()
+        }
+        if "project_id" in columns:
+            return
+        required = {
+            "name",
+            "score",
+            "tags",
+            "aliases",
+            "merged_from",
+            "parent",
+            "status",
+            "memory_count",
+            "principle_ids",
+            "access_count",
+            "last_accessed",
+            "created_at",
+            "last_active",
+        }
+        if not required.issubset(columns):
+            raise RuntimeError("domains_v2_schema_invalid")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._conn.execute("ALTER TABLE domains RENAME TO domains_v2_legacy")
+            self._conn.execute(
+                """CREATE TABLE domains (
+                    project_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    score REAL NOT NULL DEFAULT 0.3,
+                    tags TEXT NOT NULL DEFAULT '[]',
+                    aliases TEXT NOT NULL DEFAULT '[]',
+                    merged_from TEXT NOT NULL DEFAULT '[]',
+                    parent TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    memory_count INTEGER NOT NULL DEFAULT 0,
+                    principle_ids TEXT NOT NULL DEFAULT '[]',
+                    access_count INTEGER NOT NULL DEFAULT 0,
+                    last_accessed TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    last_active TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (project_id, name)
+                )"""
+            )
+            self._conn.execute(
+                """INSERT INTO domains (
+                    project_id, name, score, tags, aliases, merged_from, parent,
+                    status, memory_count, principle_ids, access_count,
+                    last_accessed, created_at, last_active
+                )
+                SELECT ?, name, score, tags, aliases, merged_from, parent,
+                    status, memory_count, principle_ids, access_count,
+                    last_accessed, created_at, last_active
+                FROM domains_v2_legacy""",
+                (DEFAULT_DOMAIN_PROJECT_ID,),
+            )
+            self._conn.execute("DROP TABLE domains_v2_legacy")
+        except BaseException:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+
+    @staticmethod
+    def _normalize_project_id(project_id: str | None) -> str:
+        candidate = str(
+            project_id
+            or os.environ.get("PLASTIC_PROJECT_ID")
+            or os.environ.get("PP_PROJECT_ID")
+            or DEFAULT_DOMAIN_PROJECT_ID
+        ).strip()
+        return candidate or DEFAULT_DOMAIN_PROJECT_ID
+
+    def _manager_for_project(self, project_id: str | None) -> "DomainManager":
+        if project_id is None:
+            return self
+        normalized = self._normalize_project_id(project_id)
+        if normalized == self.project_id:
+            return self
+        with self._lock:
+            manager = self._scoped_managers.get(normalized)
+            if manager is None:
+                manager = DomainManager(self._db_path, project_id=normalized)
+                self._scoped_managers[normalized] = manager
+            return manager
 
     def _load_from_db(self):
         """从 SQLite 加载域和标签索引，预定义域优先。"""
@@ -308,7 +426,8 @@ class DomainManager:
         rows = self._conn.execute(
             "SELECT name, score, tags, aliases, merged_from, parent, status, "
             "memory_count, principle_ids, access_count, last_accessed, "
-            "created_at, last_active FROM domains"
+            "created_at, last_active FROM domains WHERE project_id = ?",
+            (self.project_id,),
         ).fetchall()
         for row in rows:
             name = row[0]
@@ -369,12 +488,13 @@ class DomainManager:
 
     def _write_audit_log(self, operation: str, detail: dict):
         """写入审计日志。线程安全（调用方已持有锁）。"""
+        payload = {"project_id": self.project_id, **detail}
         self._conn.execute(
             "INSERT INTO audit_log (timestamp, operation, detail) VALUES (?,?,?)",
             (
                 datetime.datetime.now().isoformat(),
                 operation,
-                json.dumps(detail, ensure_ascii=False),
+                json.dumps(payload, ensure_ascii=False),
             ),
         )
         self._conn.commit()
@@ -386,7 +506,13 @@ class DomainManager:
 
     # ======== 公开 API ========
 
-    def assign(self, tags: list[str], agent_id: str = "") -> str:
+    def assign(
+        self,
+        tags: list[str],
+        agent_id: str = "",
+        *,
+        project_id: str | None = None,
+    ) -> str:
         """为记忆标签分配域。
 
         线程安全。tie-breaking: 匹配数→score→创建时间。
@@ -398,6 +524,9 @@ class DomainManager:
         Returns:
             域名字符串。
         """
+        manager = self._manager_for_project(project_id)
+        if manager is not self:
+            return manager.assign(tags, agent_id=agent_id)
         with self._lock:
             # Fast-path: domain:xxx tag prefix mapping
             for tag in tags:
@@ -484,17 +613,28 @@ class DomainManager:
 
             # 转正条件: ≥2 标签种类 + ≥5 记忆数
             if len(dom.tags) >= 2 and dom.memory_count >= 5:
+                auto_name = self._automatic_domain_name(dom.tags)
+                old_name = main_tag
+                self.domains.pop(old_name)
+                dom.name = auto_name
                 dom.status = "active"
                 dom.score = 0.5
+                expires = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
+                dom.aliases.append({"alias": old_name, "expires_at": expires})
+                self.domains[auto_name] = dom
+                self._persist_domain(old_name)
                 self._rebuild_tag_index()
                 self._write_audit_log(
                     "domain_create",
                     {
-                        "name": main_tag,
+                        "name": auto_name,
+                        "candidate_name": old_name,
                         "tags": sorted(dom.tags),
                         "memory_count": dom.memory_count,
                     },
                 )
+                self._persist_domain(auto_name)
+                return auto_name
 
             self._persist_domain(main_tag)
             return "uncategorized"
@@ -502,12 +642,51 @@ class DomainManager:
             # 已是正式域但匹配分低
             return "uncategorized"
 
-    def merge(self, source: str, target: str, agent_id: str = "") -> bool:
+    def _automatic_domain_name(self, tags: set[str] | list[str]) -> str:
+        """Build a stable, project-specific name for an emergent active domain."""
+
+        normalized_tags = sorted({str(tag).strip() for tag in tags if str(tag).strip()})
+        semantic_tags = [
+            tag
+            for tag in normalized_tags
+            if not tag.casefold().startswith(_NON_SEMANTIC_TAG_PREFIXES)
+        ]
+        label_source = semantic_tags or normalized_tags or ["domain"]
+        slugs: list[str] = []
+        for tag in label_source:
+            slug = _AUTOMATIC_DOMAIN_TAG_RE.sub("-", tag.casefold()).strip("-")
+            if slug and slug not in slugs:
+                slugs.append(slug[:32])
+            if len(slugs) == 2:
+                break
+        label = "-".join(slugs) or "domain"
+        fingerprint_material = "\0".join((self.project_id, *normalized_tags))
+        fingerprint = hashlib.sha256(fingerprint_material.encode()).hexdigest()[:8]
+        base = f"emergent:{label[:65]}-{fingerprint}"
+        existing = self.domains.get(base)
+        if existing is None or existing.tags == set(normalized_tags):
+            return base
+        suffix = 2
+        while f"{base}-{suffix}" in self.domains:
+            suffix += 1
+        return f"{base}-{suffix}"
+
+    def merge(
+        self,
+        source: str,
+        target: str,
+        agent_id: str = "",
+        *,
+        project_id: str | None = None,
+    ) -> bool:
         """合并两个域。source 标记为 merged，谱系写入 target.merged_from。
 
         Returns:
             True 如果合并成功，False 如果源/目标不存在或源=target。
         """
+        manager = self._manager_for_project(project_id)
+        if manager is not self:
+            return manager.merge(source, target, agent_id=agent_id)
         with self._lock:
             if source == target or source not in self.domains or target not in self.domains:
                 return False
@@ -544,8 +723,17 @@ class DomainManager:
             )
             return True
 
-    def unmerge(self, source: str) -> bool:
+    def unmerge(
+        self,
+        source: str,
+        agent_id: str = "",
+        *,
+        project_id: str | None = None,
+    ) -> bool:
         """从 merged_from 谱系恢复被合并的域。"""
+        manager = self._manager_for_project(project_id)
+        if manager is not self:
+            return manager.unmerge(source, agent_id=agent_id)
         with self._lock:
             if source not in self.domains:
                 return False
@@ -574,8 +762,18 @@ class DomainManager:
             )
             return True
 
-    def rename(self, old: str, new: str, agent_id: str = "") -> bool:
+    def rename(
+        self,
+        old: str,
+        new: str,
+        agent_id: str = "",
+        *,
+        project_id: str | None = None,
+    ) -> bool:
         """重命名域。旧名→aliases 保留 30 天。"""
+        manager = self._manager_for_project(project_id)
+        if manager is not self:
+            return manager.rename(old, new, agent_id=agent_id)
         with self._lock:
             if old not in self.domains or new in self.domains:
                 return False
@@ -594,7 +792,7 @@ class DomainManager:
             self._write_audit_log("domain_rename", {"old": old, "new": new})
             return True
 
-    def decay(self, agent_id: str = "") -> list[dict]:
+    def decay(self, agent_id: str = "", *, project_id: str | None = None) -> list[dict]:
         """衰减检测。返回被衰减的域列表。
 
         规则:
@@ -602,6 +800,9 @@ class DomainManager:
           - score < 0.1 → 萎缩，找 Jaccard 最相似的兄弟域合并
           - 候选域 (status='candidate') 7 天未达转正条件 → 清理
         """
+        manager = self._manager_for_project(project_id)
+        if manager is not self:
+            return manager.decay(agent_id=agent_id)
         with self._lock:
             now = datetime.datetime.now()
             decayed = []
@@ -625,7 +826,10 @@ class DomainManager:
                             {"name": name, "action": "remove_candidate", "days": days_inactive}
                         )
                         del self.domains[name]
-                        self._conn.execute("DELETE FROM domains WHERE name = ?", (name,))
+                        self._conn.execute(
+                            "DELETE FROM domains WHERE project_id = ? AND name = ?",
+                            (self.project_id, name),
+                        )
                         self._conn.commit()
                     continue
 
@@ -694,9 +898,12 @@ class DomainManager:
         msg = f"{from_domain} → {to_domain}: {context}"
         return msg[:200]
 
-    def stats(self, agent_id: str = "") -> dict:
+    def stats(self, agent_id: str = "", *, project_id: str | None = None) -> dict:
         # TODO(agent_id): 多 Agent 场景按 agent_id 过滤域可见性
         """返回所有域统计（只读，快照复制）。"""
+        manager = self._manager_for_project(project_id)
+        if manager is not self:
+            return manager.stats(agent_id=agent_id)
         result = {}
         for name, dom in sorted(self.domains.items()):
             result[name] = {
@@ -709,22 +916,27 @@ class DomainManager:
                 "last_active": dom.last_active,
                 "access_count": dom.access_count,
                 "aliases": [a["alias"] for a in dom.aliases],
+                "project_id": self.project_id,
             }
         return result
 
     def _persist_domain(self, name: str):
         """将单个域写入 SQLite（Upsert）。调用方需持有锁。"""
         if name not in self.domains:
-            self._conn.execute("DELETE FROM domains WHERE name = ?", (name,))
+            self._conn.execute(
+                "DELETE FROM domains WHERE project_id = ? AND name = ?",
+                (self.project_id, name),
+            )
             return
         dom = self.domains[name]
         self._conn.execute(
             """INSERT OR REPLACE INTO domains
-               (name, score, tags, aliases, merged_from, parent, status,
+               (project_id, name, score, tags, aliases, merged_from, parent, status,
                 memory_count, principle_ids, access_count, last_accessed,
                 created_at, last_active)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
+                self.project_id,
                 dom.name,
                 dom.score,
                 json.dumps(sorted(dom.tags), ensure_ascii=False)
@@ -744,7 +956,13 @@ class DomainManager:
         )
         self._conn.commit()
 
-    def rebuild_from_memories(self, memories_source=None, agent_id: str = "") -> dict:
+    def rebuild_from_memories(
+        self,
+        memories_source=None,
+        agent_id: str = "",
+        *,
+        project_id: str | None = None,
+    ) -> dict:
         """从记忆的 tags 字段全量逆向重建域联邦图谱。
 
         Args:
@@ -756,9 +974,16 @@ class DomainManager:
         import json as _json
         from collections import Counter
 
+        manager = self._manager_for_project(project_id)
+        if manager is not self:
+            return manager.rebuild_from_memories(memories_source, agent_id=agent_id)
         with self._lock:
             if memories_source is None or memories_source == "sqlite":
-                rows = self._conn.execute("SELECT id, tags FROM memories").fetchall()
+                rows = self._conn.execute(
+                    "SELECT id, tags FROM memories "
+                    "WHERE COALESCE(NULLIF(TRIM(project_id), ''), ?) = ?",
+                    (DEFAULT_DOMAIN_PROJECT_ID, self.project_id),
+                ).fetchall()
                 memories_source = [
                     {
                         "id": r[0],
@@ -813,7 +1038,7 @@ class DomainManager:
                 if best_jac > 0.4 and best_name:
                     merged_domains[best_name]["tags"].update(cluster_tags)
                 else:
-                    name = max(cluster_tags, key=lambda t: tag_freq.get(t, 0))
+                    name = self._automatic_domain_name(cluster_tags)
                     merged_domains[name] = {
                         "score": 0.5,
                         "tags": cluster_tags,
@@ -823,7 +1048,7 @@ class DomainManager:
 
             # Phase 4: 写入。先清理旧 domains 行，避免重建后 stale candidate/merged 行重载复活。
             self.domains.clear()
-            self._conn.execute("DELETE FROM domains")
+            self._conn.execute("DELETE FROM domains WHERE project_id = ?", (self.project_id,))
             for name, cfg in merged_domains.items():
                 self.domains[name] = DomainInfo(
                     name=name,

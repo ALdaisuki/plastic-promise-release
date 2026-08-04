@@ -1,7 +1,9 @@
 """DomainManager 单元测试"""
 
-import pytest
-from plastic_promise.core.domain_manager import DomainManager, DomainInfo, PREDEFINED_DOMAINS
+import json
+import sqlite3
+
+from plastic_promise.core.domain_manager import DomainManager
 
 
 class TestDomainManager:
@@ -35,12 +37,107 @@ class TestDomainManager:
         dm = DomainManager(db_path=":memory:")
         unique = f"ztag_{int(time.time() * 1000) % 100000}"
         # 第一次: 返回 uncategorized, 但候选域已创建
-        r1 = dm.assign([unique, "compute"])
+        dm.assign([unique, "compute"])
         # 第二次: 再加标签
-        r2 = dm.assign([unique, "simulate"])
+        dm.assign([unique, "simulate"])
         # 候选域应累积 (用唯一标签避免DB残留干扰)
         assert unique in dm.domains, f"Expected '{unique}' in {list(dm.domains.keys())}"
         assert dm.domains[unique].status == "candidate"
+
+    def test_candidate_promotion_uses_stable_automatic_active_name(self, tmp_path):
+        db_path = tmp_path / "automatic-domain.db"
+        dm = DomainManager(db_path=str(db_path), project_id="project:alpha")
+
+        results = [
+            dm.assign(
+                ["vector-governance", "memory-orchestration"],
+                project_id="project:alpha",
+            )
+            for _ in range(5)
+        ]
+
+        active_name = results[-1]
+        assert active_name.startswith("emergent:")
+        assert active_name != "vector-governance"
+        assert dm.stats(project_id="project:alpha")[active_name]["status"] == "active"
+        fresh = DomainManager(db_path=str(db_path), project_id="project:alpha")
+        assert fresh.stats()[active_name]["status"] == "active"
+
+    def test_candidate_counts_never_cross_project_scope(self, tmp_path):
+        dm = DomainManager(db_path=str(tmp_path / "scoped-domains.db"))
+        tags = ["tenant-isolation", "semantic-routing"]
+
+        for _ in range(4):
+            assert dm.assign(tags, project_id="project:alpha") == "uncategorized"
+        assert dm.assign(tags, project_id="project:beta") == "uncategorized"
+
+        alpha_name = dm.assign(tags, project_id="project:alpha")
+        alpha_stats = dm.stats(project_id="project:alpha")
+        beta_stats = dm.stats(project_id="project:beta")
+        assert alpha_name.startswith("emergent:")
+        assert alpha_stats[alpha_name]["memory_count"] == 5
+        assert beta_stats["tenant-isolation"]["status"] == "candidate"
+        assert beta_stats["tenant-isolation"]["memory_count"] == 1
+        assert alpha_name not in beta_stats
+
+    def test_v2_domain_rows_migrate_losslessly_to_legacy_project(self, tmp_path):
+        db_path = tmp_path / "domain-v2.db"
+        with sqlite3.connect(db_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE domains (
+                    name TEXT PRIMARY KEY,
+                    score REAL NOT NULL DEFAULT 0.3,
+                    tags TEXT NOT NULL DEFAULT '[]',
+                    aliases TEXT NOT NULL DEFAULT '[]',
+                    merged_from TEXT NOT NULL DEFAULT '[]',
+                    parent TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    memory_count INTEGER NOT NULL DEFAULT 0,
+                    principle_ids TEXT NOT NULL DEFAULT '[]',
+                    access_count INTEGER NOT NULL DEFAULT 0,
+                    last_accessed TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    last_active TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version VALUES (2);
+                """
+            )
+            connection.execute(
+                "INSERT INTO domains VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "legacy-emergent",
+                    0.5,
+                    json.dumps(["alpha", "beta"]),
+                    "[]",
+                    "[]",
+                    None,
+                    "active",
+                    9,
+                    "[]",
+                    2,
+                    "",
+                    "2026-07-01T00:00:00",
+                    "2026-07-02T00:00:00",
+                ),
+            )
+
+        manager = DomainManager(db_path=str(db_path), project_id="project:legacy-global")
+
+        assert manager.stats()["legacy-emergent"]["memory_count"] == 9
+        assert "legacy-emergent" not in manager.stats(project_id="project:other")
+        with sqlite3.connect(db_path) as connection:
+            pk_columns = {
+                row[1]: row[5]
+                for row in connection.execute("PRAGMA table_info(domains)").fetchall()
+            }
+            row = connection.execute(
+                "SELECT project_id, name, memory_count FROM domains WHERE name = 'legacy-emergent'"
+            ).fetchone()
+        assert pk_columns["project_id"] == 1
+        assert pk_columns["name"] == 2
+        assert row == ("project:legacy-global", "legacy-emergent", 9)
 
     def test_merge_domains(self):
         dm = DomainManager(db_path=":memory:")

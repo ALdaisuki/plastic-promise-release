@@ -1,6 +1,8 @@
 import asyncio
 import json
+import sqlite3
 import time
+from types import SimpleNamespace
 
 import plastic_promise.adaptive_retrieval as adaptive_retrieval
 import plastic_promise.core.embedder as embedder_mod
@@ -60,7 +62,9 @@ class HangingEmbedder:
 
 def test_memory_recall_surfaces_planner_metadata(monkeypatch):
     monkeypatch.setattr(adaptive_retrieval, "should_retrieve", lambda query: True)
-    monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+    monkeypatch.setattr(
+        embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+    )
 
     result = asyncio.run(
         handle_memory_recall(
@@ -77,12 +81,15 @@ def test_memory_recall_surfaces_planner_metadata(monkeypatch):
 
     assert payload["mode"] == "mix"
     assert payload["budget"]["raw_evidence"] == 10
-    assert payload["raw_evidence"][0]["id"] == "m1"
+    assert payload["diagnostics"]["summary"]["retrieval_mode"] == "mix"
+    assert "raw_evidence" not in payload
     assert payload["request_scope_id"].endswith("req:req:p0")
 
 
 def test_context_supply_prompt_renders_planner_metadata(monkeypatch):
-    monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+    monkeypatch.setattr(
+        embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+    )
 
     result = asyncio.run(
         handle_context_supply(
@@ -104,7 +111,9 @@ def test_context_supply_prompt_renders_planner_metadata(monkeypatch):
 
 
 def test_context_supply_times_out_blocking_engine(monkeypatch):
-    monkeypatch.setattr(embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder())
+    monkeypatch.setattr(
+        embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+    )
     monkeypatch.setenv("PP_CONTEXT_SUPPLY_TIMEOUT_SEC", "0.01")
 
     started = time.monotonic()
@@ -124,7 +133,8 @@ def test_context_supply_times_out_blocking_engine(monkeypatch):
     payload = json.loads(result[0].text)
 
     assert elapsed < 0.15
-    assert payload["audit_metadata"]["minimum_result"] == "degraded_context"
+    assert payload["minimum_result"] == "degraded_context"
+    assert payload["diagnostics"]["summary"]["trace"]["project_id"] == "project:app"
     assert "timed out" in payload["error"]
 
 
@@ -150,9 +160,48 @@ def test_context_supply_embedding_timeout_uses_sync_fallback(monkeypatch):
     )
     payload = json.loads(result[0].text)
 
-    assert payload["audit_metadata"]["mode"] == "mix"
+    assert payload["diagnostics"]["summary"]["retrieval_mode"] == "mix"
     assert payload["core"][0]["id"] == "m1"
     assert "error" not in payload
+
+
+def test_context_supply_does_not_wait_for_trace_persistence(monkeypatch, tmp_path):
+    from plastic_promise.core import traceability
+
+    monkeypatch.setattr(
+        embedder_mod, "get_embedder", lambda fallback_on_error=False: FakeEmbedder()
+    )
+    database = tmp_path / "trace.db"
+    connection = sqlite3.connect(database, check_same_thread=False)
+    traceability.ensure_traceability_schema(connection)
+    engine = FakeEngine()
+    engine._sqlite = SimpleNamespace(_conn=connection, _db_path=str(database))
+
+    def slow_record_call_span(_connection, **_kwargs):
+        time.sleep(0.2)
+
+    monkeypatch.setattr(traceability, "record_call_span", slow_record_call_span)
+
+    started = time.monotonic()
+    result = asyncio.run(
+        handle_context_supply(
+            engine,
+            {
+                "task_description": "trace persistence latency",
+                "task_type": "architecture",
+                "project_id": "project:app",
+                "response_mode": "compact",
+            },
+        )
+    )
+    elapsed = time.monotonic() - started
+    payload = json.loads(result[0].text)
+
+    drain = getattr(traceability, "drain_deferred_trace_writes", lambda timeout=1.0: True)
+    assert drain(timeout=1.0) is True
+    connection.close()
+    assert payload["degraded"] is False
+    assert elapsed < 0.15
 
 
 def test_governed_recall_cache_key_tracks_canonical_memory_version():

@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [Dev]
+    branches: [main, Dev]
   push:
-    branches: [Dev]
+    branches: [main, Dev]
 
 jobs:
   # ── Stage 1: P0 — MUST PASS ──────────────────────
@@ -73,11 +73,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install ruff
-      - run: ruff format --check plastic_promise/ tests/
+      - name: Check changed Python files
+        env:
+          PP_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ! git cat-file -e "$PP_BASE_SHA^{commit}" 2>/dev/null; then
+            PP_BASE_SHA="$(git rev-list --max-parents=0 "$PP_HEAD_SHA")"
+          fi
+          git diff --name-only --diff-filter=ACMR -z "$PP_BASE_SHA" "$PP_HEAD_SHA" -- '*.py' \
+            | xargs -0 -r ruff format --check
 
   coverage:
     name: "P1: Test coverage"

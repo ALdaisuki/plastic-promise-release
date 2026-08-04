@@ -27,6 +27,14 @@ from plastic_promise.launcher.subprocess_utils import hidden_subprocess_kwargs
 
 MAINTENANCE_HEARTBEAT_SCHEMA = "maintenance-heartbeat/v1"
 MCP_FUSION_IDENTITY_SCHEMA = "retrieval-fusion-identity/v1"
+MCP_TEXT_ONLY_VECTOR_REASONS = frozenset(
+    {
+        "retrieval_embedder_unavailable",
+        "retrieval_embedding_probe_failed",
+        "retrieval_embedding_zero_or_invalid",
+        "retrieval_lancedb_unavailable",
+    }
+)
 
 
 def canonical_source_root(path: str | Path) -> str:
@@ -87,6 +95,47 @@ def validate_mcp_health_identity(
     if source_revision != expected_source_revision:
         return False, "health_source_revision_mismatch"
 
+    if payload.get("identity_valid") is not True:
+        return False, "health_identity_invalid"
+    health_policy = payload.get("health_policy")
+    degraded = payload.get("degraded")
+    retrieval_status = payload.get("retrieval_status")
+    vector_ready = payload.get("vector_ready")
+    vector_reason = payload.get("vector_reason")
+    lancedb_ready = payload.get("lancedb_ready")
+    lancedb_required = payload.get("lancedb_required")
+    bm25_ready = payload.get("bm25_ready")
+    graph_ready = payload.get("graph_ready")
+    if health_policy not in {"strict", "text-only"} or not all(
+        isinstance(value, bool)
+        for value in (
+            degraded,
+            vector_ready,
+            lancedb_ready,
+            lancedb_required,
+            bm25_ready,
+            graph_ready,
+        )
+    ):
+        return False, "health_retrieval_readiness_invalid"
+    if bm25_ready is not True:
+        return False, "health_bm25_not_ready"
+    if vector_ready:
+        if (
+            degraded
+            or retrieval_status != "ready"
+            or vector_reason not in (None, "")
+            or (lancedb_required and not lancedb_ready)
+        ):
+            return False, "health_retrieval_readiness_mismatch"
+    elif (
+        not degraded
+        or health_policy != "text-only"
+        or retrieval_status != "degraded_text_only"
+        or vector_reason not in MCP_TEXT_ONLY_VECTOR_REASONS
+    ):
+        return False, "health_retrieval_readiness_mismatch"
+
     fusion_policy = payload.get("fusion_policy")
     if (
         not isinstance(fusion_policy, str)
@@ -115,17 +164,16 @@ def validate_mcp_health_identity(
         ("python", "python", "runtime_forced:python"),
         ("python", "python", "runtime_preferred:python"),
     }
+    valid_runtime_attestations.update(
+        {
+            ("rust", "rust", "rust_capability_satisfied"),
+            ("rust", "python", "rust_unavailable_or_failed"),
+        }
+    )
     if fusion_policy == "max-v1":
-        valid_runtime_attestations.add(("rust", "python", "policy_requires_python:max-v1"))
-    else:
-        valid_runtime_attestations.update(
-            {
-                ("rust", "rust", "rust_capability_satisfied"),
-                ("rust", "python", "rust_unavailable_or_failed"),
-            }
-        )
-        if fusion_policy.startswith("wrrf-v1:"):
-            valid_runtime_attestations.add(("rust", "python", "rust_capability_missing:fts"))
+        valid_runtime_attestations.add(("rust", "python", "rust_capability_missing:max-v1"))
+    elif fusion_policy.startswith("wrrf-v1:"):
+        valid_runtime_attestations.add(("rust", "python", "rust_capability_missing:fts"))
     if (requested_runtime, effective_runtime, capability_reason) not in valid_runtime_attestations:
         return False, "health_fusion_capability_mismatch"
     candidate_id = fusion_policy if fusion_policy.startswith("wrrf-v1:") else ""

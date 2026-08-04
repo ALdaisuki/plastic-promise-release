@@ -10,6 +10,7 @@ from plastic_promise.core.fusion_policy import (
     canonical_fusion_config_hash,
     load_fusion_config,
     resolve_cli_fusion_policy,
+    weighted_max_v1,
     weighted_rrf,
 )
 from plastic_promise.core.retrieval_planner import plan_retrieval
@@ -257,23 +258,66 @@ def _routing_engine(monkeypatch, *, has_fts=False):
     return engine, seen
 
 
-def test_max_v1_routes_to_python_before_rust_health_check(monkeypatch):
-    engine, seen = _routing_engine(monkeypatch)
+def test_max_v1_routes_to_rust_when_extension_is_healthy(monkeypatch):
+    from plastic_promise.core.context_engine import ContextPack
+
+    engine, _seen = _routing_engine(monkeypatch)
     monkeypatch.setenv("PP_PREFER_RUST_SUPPLY", "1")
     monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "0")
-    monkeypatch.setattr(
-        engine,
-        "_check_rust_health",
-        lambda: pytest.fail("max-v1 must route before Rust health"),
+    monkeypatch.setattr(engine, "_check_rust_health", lambda: True)
+    captured = {}
+
+    def rust_supply(*_args, **kwargs):
+        captured.update(kwargs)
+        return ContextPack()
+
+    monkeypatch.setattr(engine, "_supply_rust", rust_supply)
+
+    pack = engine.supply("query", [1.0] + [0.0] * 1023, fusion_policy="max-v1")
+
+    assert captured["fusion_policy"] == "max-v1"
+    assert pack.audit_metadata["retrieval_fusion"]["effective_runtime"] == "rust"
+    assert pack.audit_metadata["retrieval_fusion"]["algorithm"] == "weighted-max-v1"
+
+
+def test_weighted_max_v1_preserves_production_formula_and_tie_order():
+    result = weighted_max_v1(
+        {
+            "vector": [("vector", 1.0), ("shared", 0.8), ("tie-a", 0.4)],
+            "bm25": [("exact", 0.95), ("strong", 0.8), ("shared", 0.9)],
+            "fts": [("fts", 0.86), ("tie-b", 0.4)],
+        },
+        vector_weight=0.5,
     )
 
-    engine.supply("query", [1.0] + [0.0] * 1023, fusion_policy="max-v1")
+    assert result == [
+        ("exact", 0.95),
+        ("shared", 0.9),
+        ("fts", 0.86),
+        ("strong", 0.7200000000000001),
+        ("vector", 0.5),
+        ("tie-a", 0.2),
+        ("tie-b", 0.2),
+    ]
 
-    decision = seen["fusion_decision"]
-    assert decision.requested_policy == "max-v1"
-    assert decision.effective_policy == "max-v1"
-    assert decision.effective_runtime == "python"
-    assert decision.capability_reason == "policy_requires_python:max-v1"
+
+def test_weighted_max_v1_uses_text_only_fallback_without_vector_hits():
+    result = weighted_max_v1(
+        {
+            "vector": [("ignored", 1.0)],
+            "bm25": [("exact", 0.95), ("shared", 0.9)],
+            "fts": [("fts", 0.86), ("tail", 0.4)],
+        },
+        vector_weight=0.5,
+        has_vector=False,
+    )
+
+    assert result == [
+        ("fts", 0.86),
+        ("exact", 0.76),
+        ("shared", 0.7200000000000001),
+        ("tail", 0.32000000000000006),
+    ]
 
 
 def test_wrrf_plan_with_fts_routes_entire_request_to_python(monkeypatch):

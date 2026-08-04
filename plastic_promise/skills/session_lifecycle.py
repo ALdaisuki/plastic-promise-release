@@ -10,17 +10,20 @@ _CONTEXT_MODES = {"none", "light", "full"}
 _LIGHT_CONTEXT_LIMIT = 2
 _LIGHT_CONTEXT_TIMEOUT_S = 1.5
 _FULL_CONTEXT_TIMEOUT_S = 10.0
-_DEFAULT_WORKFLOW_ROUTE = "normal-development"
-_DEFAULT_WORKFLOW_ENTRY_STAGE = "brainstorming"
+_DEFAULT_WORKFLOW_ROUTE = "idea-to-ship"
+_DEFAULT_WORKFLOW_ENTRY_STAGE = "grill-with-docs"
 _VALID_WORKFLOW_ENTRYPOINTS = [
-    "brainstorming",
-    "systematic-debugging",
-    "requesting-code-review",
+    "grill-with-docs",
+    "diagnosing-bugs",
+    "research",
+    "prototype",
+    "resolving-merge-conflicts",
+    "code-review",
 ]
 _WORKFLOW_GOVERNANCE_CONTRACT = (
-    "Call sp-stage with stage_session_id, route, and flow_line_id. "
-    "The server validates chain transitions, binds required artifacts and the closure "
-    "reminder to the current stage, and isolates state by session and flow."
+    "Use the pinned official Matt Pocock flow and its invocation authority. "
+    "Call sp-stage only for a model-invoked skill or an explicitly user-invoked skill; "
+    "the server isolates state by stage_session_id and flow_line_id."
 )
 
 
@@ -31,16 +34,17 @@ def _nonempty_text(value, default: str) -> str:
 
 def _workflow_route_catalog() -> dict:
     try:
-        from plastic_promise.skills.superpowers_stages import STAGE_ROUTE_MAP
+        from plastic_promise.skills.tool_routing import OFFICIAL_WORKFLOW_ROUTES
 
         catalog = {}
-        for route_id, route in STAGE_ROUTE_MAP.items():
+        for route_id, route in OFFICIAL_WORKFLOW_ROUTES.items():
             stages = list(route.get("stages") or [])
             catalog[route_id] = {
                 "label": route.get("label", route_id),
                 "summary": route.get("summary", ""),
                 "entry_stage": stages[0] if stages else _DEFAULT_WORKFLOW_ENTRY_STAGE,
                 "stages": stages,
+                "branches": dict(route.get("branches") or {}),
             }
         if catalog:
             return catalog
@@ -49,19 +53,21 @@ def _workflow_route_catalog() -> dict:
 
     return {
         _DEFAULT_WORKFLOW_ROUTE: {
-            "label": "Normal development",
-            "summary": "Default SuperPowers development route.",
+            "label": "Idea to ship",
+            "summary": "Official Matt Pocock engineering flow.",
             "entry_stage": _DEFAULT_WORKFLOW_ENTRY_STAGE,
             "stages": [_DEFAULT_WORKFLOW_ENTRY_STAGE],
         }
     }
 
 
-def _build_workflow_contract(params: dict, stage_session_id: str) -> dict:
-    route = _nonempty_text(
+def _build_workflow_contract(params: dict, stage_session_id: str, ctx=None) -> dict:
+    requested_route = _nonempty_text(
         params.get("route") or params.get("workflow_route"),
         _DEFAULT_WORKFLOW_ROUTE,
     )
+    route_catalog = _workflow_route_catalog()
+    route = requested_route if requested_route in route_catalog else _DEFAULT_WORKFLOW_ROUTE
     flow_line_id = _nonempty_text(
         params.get("flow_line_id") or params.get("flow_id"),
         route,
@@ -70,11 +76,36 @@ def _build_workflow_contract(params: dict, stage_session_id: str) -> dict:
         stage_session_id or params.get("stage_session_id") or params.get("stage_id"),
         "default",
     )
-    route_catalog = _workflow_route_catalog()
+    from plastic_promise.core.workflow_state import compose_flow_scope
+
+    project_id = _nonempty_text(params.get("project_id"), "")
+    flow_scope_id = compose_flow_scope(public_stage_session_id, flow_line_id, project_id)
+    persisted_state = {}
+    try:
+        from plastic_promise.mcp.tools.skill_tracking import get_stage_chain_state
+
+        persisted_state = get_stage_chain_state(flow_scope_id, engine=ctx)
+    except Exception:
+        pass
+    persisted_route = str(persisted_state.get("route_id") or "")
+    if persisted_route in route_catalog:
+        route = persisted_route
     route_profile = route_catalog.get(route)
+    if route_profile is None:
+        route = _DEFAULT_WORKFLOW_ROUTE
+        route_profile = route_catalog[route]
     stages = list((route_profile or {}).get("stages") or [_DEFAULT_WORKFLOW_ENTRY_STAGE])
     entry_stage = stages[0] if stages else _DEFAULT_WORKFLOW_ENTRY_STAGE
-    flow_scope_id = f"{public_stage_session_id}::flow:{flow_line_id}"
+    from plastic_promise.skills.tool_routing import invocation_policy
+
+    entry_authority = invocation_policy(entry_stage)
+    current_step_index = int(persisted_state.get("current_step_index", -1))
+    current_stage = str(persisted_state.get("current_stage") or "")
+    if not (0 <= current_step_index < len(stages)) or stages[current_step_index] != current_stage:
+        current_step_index = stages.index(current_stage) if current_stage in stages else -1
+    next_step_index = current_step_index + 1
+    next_stage = stages[next_step_index] if next_step_index < len(stages) else ""
+    next_authority = invocation_policy(next_stage) if next_stage else "unknown"
 
     return {
         "default_route": _DEFAULT_WORKFLOW_ROUTE,
@@ -82,23 +113,36 @@ def _build_workflow_contract(params: dict, stage_session_id: str) -> dict:
         "route_id": route,
         "flow_line_id": flow_line_id,
         "stage_session_id": public_stage_session_id,
+        "project_id": project_id,
         "flow_scope_id": flow_scope_id,
         "entry_stage": entry_stage,
+        "entry_authority": entry_authority,
+        "current_stage": current_stage or None,
+        "current_step_index": current_step_index,
+        "next_stage": next_stage or None,
         "stages": stages,
-        "valid_root_entrypoints": list(_VALID_WORKFLOW_ENTRYPOINTS),
+        "branches": dict((route_profile or {}).get("branches") or {}),
+        "valid_root_entrypoints": sorted(
+            {
+                str(profile.get("entry_stage") or "")
+                for profile in route_catalog.values()
+                if profile.get("entry_stage")
+            }
+        )
+        or list(_VALID_WORKFLOW_ENTRYPOINTS),
         "available_routes": route_catalog,
-        "custom_route_policy": (
-            "Custom route ids are allowed, but every call must still pass a "
-            "non-empty flow_line_id and follow server-returned valid stage transitions."
-        ),
+        "custom_route_policy": "Only pinned official route ids are accepted.",
         "governance_contract": _WORKFLOW_GOVERNANCE_CONTRACT,
         "next_call": {
             "tool": "sp-stage",
-            "stage": entry_stage,
+            "stage": next_stage or None,
+            "invocation_source": next_authority if next_stage else None,
+            "auto_invoke": next_authority == "model",
             "task_description": params.get("task_description", ""),
             "stage_session_id": public_stage_session_id,
             "route": route,
             "flow_line_id": flow_line_id,
+            "project_id": project_id,
         },
     }
 
@@ -399,45 +443,33 @@ async def _session_init_handler(ctx, params, atom_results):
     defense_data = parse(atom_results.get("defense"))
     gc_data = parse(atom_results.get("memory_gc"))
 
-    # ── Chain state: report current SKILL_CHAIN_MAP position ──
+    # ── Chain state: resume the exact persisted session + flow cursor ──
     stage_session_id = ""
     try:
-        from plastic_promise.core.constants import (
-            SKILL_CHAIN_MAP as _CHAIN_MAP,
-        )
-        from plastic_promise.core.constants import (
-            normalize_stage_name,
-        )
         from plastic_promise.mcp.tools.skill_tracking import (
-            get_current_stage,
+            get_stage_chain_state,
             resolve_stage_session_id,
         )
 
         stage_session_id = resolve_stage_session_id(params)
-        current_stage = normalize_stage_name(get_current_stage(stage_session_id))
-        chain_state = {
-            "stage_session_id": stage_session_id,
-            "current_stage": current_stage or None,
-            "valid_next": [],
-            "predecessors": [],
-        }
-        if current_stage:
-            chain = _CHAIN_MAP.get(current_stage) or _CHAIN_MAP.get(f"sp-{current_stage}", {})
-            chain_state["valid_next"] = [
-                normalize_stage_name(s) for s in chain.get("successors", [])
-            ]
-            chain_state["predecessors"] = [
-                normalize_stage_name(s) for s in chain.get("predecessors", [])
-            ]
+        workflow_contract = _build_workflow_contract(params, stage_session_id, ctx)
+        chain_state = get_stage_chain_state(workflow_contract["flow_scope_id"], engine=ctx)
+        chain_state["stage_session_id"] = stage_session_id
+        chain_state["valid_next"] = (
+            [workflow_contract["next_stage"]] if workflow_contract["next_stage"] else []
+        )
+        chain_state["predecessors"] = []
     except Exception:
         chain_state = None
+        workflow_contract = None
 
     if not stage_session_id:
         stage_session_id = _nonempty_text(
             params.get("stage_session_id") or params.get("stage_id"),
             "default",
         )
-    workflow_contract = _build_workflow_contract(params, stage_session_id)
+    if workflow_contract is None:
+        workflow_contract = _build_workflow_contract(params, stage_session_id, ctx)
     if chain_state is not None:
         chain_state.update(
             {
@@ -460,7 +492,6 @@ async def _session_init_handler(ctx, params, atom_results):
         data={
             "principles": principle_data.get("activated", []),
             "scarf_baseline": scarf_data,
-            "context": context_data,
             "context_status": context_data,
             "inject_memory_id": memory_data.get("memory_id", ""),
             "memory_injection_status": memory_data,

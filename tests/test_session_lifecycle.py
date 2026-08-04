@@ -99,7 +99,7 @@ class TestSessionInit:
             "memory_gc",
         ]
         # Verify handler assembled the data
-        assert "context" in result.data
+        assert "context" not in result.data
         assert result.data["context_status"]["status"] == "deferred"
         assert result.data["memory_injection_status"]["status"] == "deferred"
         assert "domain_health" in result.data
@@ -206,6 +206,7 @@ class TestSessionInit:
         se._atoms["defense"] = await ok_atom({})
         se._atoms["memory_gc"] = await ok_atom({})
         se._atoms["skill_session_start"] = await ok_atom({"entity_id": "skill:session-init:..."})
+        se._atoms["skill_session_complete"] = await ok_atom({"status": "done"})
         se.register(skill_session_init)
 
         first = await se.exec(
@@ -242,6 +243,7 @@ class TestSessionInit:
         se._atoms["defense"] = await ok_atom({})
         se._atoms["memory_gc"] = await ok_atom({})
         se._atoms["skill_session_start"] = await ok_atom({"entity_id": "skill:session-init:..."})
+        se._atoms["skill_session_complete"] = await ok_atom({"status": "done"})
         se.register(skill_session_init)
 
         result = await se.exec(
@@ -252,17 +254,18 @@ class TestSessionInit:
 
         contract = result.data["workflow_contract"]
         stage_session_id = result.data["stage_session_id"]
-        assert contract["default_route"] == "normal-development"
-        assert contract["route"] == "normal-development"
-        assert contract["route_id"] == "normal-development"
-        assert contract["flow_line_id"] == "normal-development"
-        assert contract["flow_scope_id"] == f"{stage_session_id}::flow:normal-development"
-        assert contract["entry_stage"] == "brainstorming"
-        assert contract["stages"][:2] == ["brainstorming", "exemplar-research"]
+        assert contract["default_route"] == "idea-to-ship"
+        assert contract["route"] == "idea-to-ship"
+        assert contract["route_id"] == "idea-to-ship"
+        assert contract["flow_line_id"] == "idea-to-ship"
+        assert contract["flow_scope_id"] == f"{stage_session_id}::flow:idea-to-ship"
+        assert contract["entry_stage"] == "grill-with-docs"
+        assert contract["entry_authority"] == "user"
+        assert contract["next_call"]["auto_invoke"] is False
+        assert contract["stages"][:2] == ["grill-with-docs", "to-spec"]
         assert "sp-stage" in contract["governance_contract"]
-        assert "chain transitions" in contract["governance_contract"]
-        assert "required artifacts" in contract["governance_contract"]
-        assert "closure reminder" in contract["governance_contract"]
+        assert "pinned official Matt Pocock flow" in contract["governance_contract"]
+        assert "invocation authority" in contract["governance_contract"]
         assert "skill_authority" not in contract
         assert "official_skill" not in json.dumps(contract)
         assert "load/read" not in json.dumps(contract)
@@ -298,33 +301,70 @@ class TestSessionInit:
         se._atoms["defense"] = await ok_atom({})
         se._atoms["memory_gc"] = await ok_atom({})
         se._atoms["skill_session_start"] = await ok_atom({"entity_id": "skill:session-init:..."})
+        se._atoms["skill_session_complete"] = await ok_atom({"status": "done"})
         se.register(skill_session_init)
 
         result = await se.exec(
             "session-init",
             params={
-                "task_description": "bug hunt workflow",
+                "task_description": "bug onramp workflow",
                 "stage_session_id": "stage:test:explicit",
-                "route": "bug-hunt",
+                "route": "bug-onramp",
                 "flow_line_id": "debug-a",
             },
             caller="claude",
         )
 
         contract = result.data["workflow_contract"]
-        assert contract["route"] == "bug-hunt"
-        assert contract["route_id"] == "bug-hunt"
+        assert contract["route"] == "bug-onramp"
+        assert contract["route_id"] == "bug-onramp"
         assert contract["flow_line_id"] == "debug-a"
         assert contract["flow_scope_id"] == "stage:test:explicit::flow:debug-a"
-        assert contract["entry_stage"] == "systematic-debugging"
+        assert contract["entry_stage"] == "diagnosing-bugs"
+        assert contract["entry_authority"] == "model"
+        assert contract["next_call"]["auto_invoke"] is True
         assert contract["stages"] == [
-            "systematic-debugging",
-            "test-driven-development",
-            "verification-before-completion",
-            "finishing-a-development-branch",
+            "diagnosing-bugs",
+            "tdd",
+            "code-review",
         ]
-        assert result.data["chain_state"]["route"] == "bug-hunt"
+        assert result.data["chain_state"]["route"] == "bug-onramp"
         assert result.data["chain_state"]["flow_line_id"] == "debug-a"
+
+    @pytest.mark.asyncio
+    async def test_session_init_invalid_route_falls_back_before_scope_derivation(self, mock_engine):
+        se = SkillEngine(mock_engine)
+
+        async def ok_atom(engine, args):
+            return [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+        for atom_name in (
+            "principle_activate",
+            "scarf_reflect",
+            "domain",
+            "system",
+            "defense",
+            "memory_gc",
+            "skill_session_start",
+            "skill_session_complete",
+        ):
+            se._atoms[atom_name] = ok_atom
+        se.register(skill_session_init)
+
+        result = await se.exec(
+            "session-init",
+            params={
+                "task_description": "invalid route fallback",
+                "stage_session_id": "stage:test:fallback",
+                "route": "not-an-official-route",
+            },
+            caller="claude",
+        )
+
+        contract = result.data["workflow_contract"]
+        assert contract["route"] == "idea-to-ship"
+        assert contract["flow_line_id"] == "idea-to-ship"
+        assert contract["flow_scope_id"] == "stage:test:fallback::flow:idea-to-ship"
 
     @pytest.mark.asyncio
     async def test_session_init_degraded_domain_skip(self, mock_engine):

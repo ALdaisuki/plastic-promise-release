@@ -11,7 +11,11 @@ import pytest
 
 from plastic_promise.core.context_engine import ContextEngine, _SQLiteStorage
 from plastic_promise.core.lancedb_store import LanceDBStore
-from plastic_promise.core.memory_index import build_index_material, metadata_with_index_material
+from plastic_promise.core.memory_index import (
+    build_index_material,
+    effective_embedding_model_name,
+    metadata_with_index_material,
+)
 from plastic_promise.core.synthesis import SynthesisStore
 from plastic_promise.core.synthesis_maintenance import (
     enqueue_synthesis_index_job,
@@ -162,7 +166,7 @@ def _store_ordinary_index_candidate(engine, memory_id="ordinary-index"):
     material = build_index_material(
         {"content": "Canonical ordinary memory for derived indexing."},
         policy="legacy",
-        model_name=engine._embedder.model_name,
+        model_name=effective_embedding_model_name(engine._embedder),
     )
     engine._sqlite.upsert(
         memory_id,
@@ -184,6 +188,77 @@ def _store_ordinary_index_candidate(engine, memory_id="ordinary-index"):
         },
     )
     return material
+
+
+def test_cloud_index_identity_and_runtime_dimension_replay_end_to_end(synthesis_engine) -> None:
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    class CloudEmbedder:
+        model_name = "text-embedding-v4"
+        index_model_name = (
+            "text-embedding-v4|provider=openai-compatible|revision=revision-a|dim=3"
+            "|endpoint_sha256=" + "a" * 64
+        )
+        dim = 3
+
+        def embed(self, text):
+            assert text
+            return [0.1, 0.2, 0.3]
+
+    synthesis_engine._embedder = CloudEmbedder()
+    material = _store_ordinary_index_candidate(synthesis_engine, "ordinary-cloud")
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-cloud",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id="call-cloud-identity",
+    )
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    row = conn.execute(
+        "SELECT status FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.succeeded == 1
+    assert row == ("done",)
+    assert material.model_name == CloudEmbedder.index_model_name
+    assert synthesis_engine._ldb.rows["ordinary-cloud"]["vector"] == [0.1, 0.2, 0.3]
+
+
+def test_cloud_synthesis_replay_uses_index_identity_and_runtime_dimension(
+    synthesis_engine,
+) -> None:
+    class CloudEmbedder:
+        model_name = "text-embedding-v4"
+        index_model_name = (
+            "text-embedding-v4|provider=openai-compatible|revision=revision-a|dim=3"
+            "|endpoint_sha256=" + "b" * 64
+        )
+        dim = 3
+
+        def embed(self, text):
+            assert text
+            return [0.4, 0.5, 0.6]
+
+    synthesis_engine._embedder = CloudEmbedder()
+    synthesis_engine._ldb.fail_insert = True
+    verified = _create_and_verify(synthesis_engine, key="topic:cloud-synthesis")
+    synthesis_engine._ldb.fail_insert = False
+    synthesis_engine._sqlite._conn.execute(
+        "UPDATE store_outbox SET next_attempt_at = '' WHERE tool_name = 'synthesis_index'"
+    )
+    synthesis_engine._sqlite._conn.commit()
+
+    report = replay_synthesis_index_jobs(synthesis_engine)
+    job = _jobs(synthesis_engine._sqlite._conn, verified.memory_id)[-1]
+
+    assert report.succeeded == 1
+    assert job["status"] == "done"
+    assert synthesis_engine._ldb.rows[verified.memory_id]["vector"] == [0.4, 0.5, 0.6]
 
 
 def test_ordinary_memory_index_replay_is_checked_bound_and_idempotent(
@@ -224,6 +299,125 @@ def test_ordinary_memory_index_replay_is_checked_bound_and_idempotent(
         )
         == 1
     )
+
+
+def test_immutable_generation_mode_skips_index_replay(
+    synthesis_engine,
+    monkeypatch,
+) -> None:
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id="call-generation-read-only",
+    )
+    monkeypatch.setenv("PLASTIC_LANCEDB_GENERATION_ROOT", "/srv/generations")
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    status = conn.execute(
+        "SELECT status FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.selected == report.claimed == report.succeeded == 0
+    assert status == ("pending",)
+    assert "ordinary-index" not in synthesis_engine._ldb.rows
+
+
+def test_generation_live_index_mode_allows_checked_index_replay(
+    synthesis_engine,
+    monkeypatch,
+) -> None:
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    conn = synthesis_engine._sqlite._conn
+    base_material = _store_ordinary_index_candidate(synthesis_engine, "base-index")
+    base_job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="base-index",
+        project_id="project:test",
+        expected_embedding_hash=base_material.embedding_hash,
+        call_id="call-generation-base-index",
+    )
+    base_watermark = conn.execute(
+        "SELECT rowid FROM store_outbox WHERE outbox_id = ?",
+        (base_job_id,),
+    ).fetchone()[0]
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id="call-generation-live-index",
+    )
+    monkeypatch.setenv("PLASTIC_LANCEDB_GENERATION_ROOT", "/srv/generations")
+    monkeypatch.setenv("PLASTIC_LANCEDB_LIVE_ROOT", "/srv/live")
+    synthesis_engine._lancedb_sync_status = {
+        "success": True,
+        "status": "generation_live_index",
+        "base_generation_id": "generation-a",
+        "lag": {"base_outbox_watermark": base_watermark},
+    }
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    statuses = dict(
+        conn.execute(
+            "SELECT outbox_id, status FROM store_outbox WHERE outbox_id IN (?, ?)",
+            (base_job_id, job_id),
+        ).fetchall()
+    )
+
+    assert report.succeeded == 1
+    assert statuses == {base_job_id: "pending", job_id: "done"}
+    assert "base-index" not in synthesis_engine._ldb.rows
+    assert synthesis_engine._ldb.rows["ordinary-index"]["text"] == material.search_text
+
+
+@pytest.mark.parametrize("watermark", [None, True, -1])
+def test_generation_live_index_mode_requires_valid_base_watermark(
+    synthesis_engine,
+    monkeypatch,
+    watermark,
+) -> None:
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id="call-generation-live-index-invalid-watermark",
+    )
+    monkeypatch.setenv("PLASTIC_LANCEDB_GENERATION_ROOT", "/srv/generations")
+    monkeypatch.setenv("PLASTIC_LANCEDB_LIVE_ROOT", "/srv/live")
+    synthesis_engine._lancedb_sync_status = {
+        "success": True,
+        "status": "generation_live_index",
+        "base_generation_id": "generation-a",
+        "lag": {"base_outbox_watermark": watermark},
+    }
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    status = conn.execute(
+        "SELECT status FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.failed == 1
+    assert report.failed_ids == ("generation_live_index_watermark_unavailable",)
+    assert status == ("pending",)
+    assert "ordinary-index" not in synthesis_engine._ldb.rows
 
 
 def test_v3_upsert_replays_after_unrelated_memory_version_change(
@@ -683,8 +877,8 @@ def test_memory_index_v3_rejects_incomplete_payload_without_side_effect(
     ).fetchone()
 
     assert report.failed == 1
-    assert status == "pending"
-    assert error_class == "ValueError"
+    assert status == "failed"
+    assert error_class == "IndexJobValidationError"
     assert synthesis_engine._ldb.rows == before_rows
 
 
@@ -964,8 +1158,8 @@ def test_index_replay_rejects_unknown_schema_and_incomplete_payload(
         (job_id,),
     ).fetchone()
     assert report.failed == 1
-    assert row[0] == "pending"
-    assert row[1] == "ValueError"
+    assert row[0] == "failed"
+    assert row[1] == "IndexJobValidationError"
     assert synthesis_engine._ldb.rows == before_rows
 
 
@@ -1241,6 +1435,385 @@ def test_failed_checked_index_operation_remains_pending(synthesis_engine) -> Non
     assert row[1] == 1
     assert row[2]
     assert row[3] == "RuntimeError"
+
+
+@pytest.mark.parametrize(
+    ("reason", "status_code"),
+    [
+        ("provider_http_request_failed", 400),
+        ("provider_http_invalid_payload", None),
+        ("provider_http_request_too_large", None),
+    ],
+)
+def test_permanent_provider_failure_terminates_outbox_job_with_safe_reason(
+    synthesis_engine,
+    reason,
+    status_code,
+) -> None:
+    from plastic_promise.core.provider_http import (
+        ProviderHTTPDiagnostics,
+        ProviderHTTPError,
+    )
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id=f"call-permanent-provider-failure-{status_code}",
+    )
+
+    def fail_embedding(_text):
+        raise ProviderHTTPError(
+            reason,
+            ProviderHTTPDiagnostics(
+                status_code=status_code,
+                request_id="sensitive_request_metadata",
+            ),
+        )
+
+    synthesis_engine._embedder.embed = fail_embedding
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    row = conn.execute(
+        "SELECT status, attempt_count, next_attempt_at, error_class, error_message "
+        "FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.failed == 1
+    assert row == ("failed", 1, "", "ProviderHTTPError", reason)
+    assert "sensitive_request_metadata" not in " ".join(str(value) for value in row)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "embedding_input_too_large",
+        "embedding_input_utf8_invalid",
+        "embedding_total_input_too_large",
+    ],
+)
+def test_deterministic_embedding_input_failure_terminates_without_retry(
+    synthesis_engine,
+    reason,
+) -> None:
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id=f"call-deterministic-embedding-input-{reason}",
+    )
+
+    def fail_embedding(_text):
+        raise ValueError(reason)
+
+    synthesis_engine._embedder.embed = fail_embedding
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    row = conn.execute(
+        "SELECT status, attempt_count, next_attempt_at, error_class, error_message "
+        "FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.failed == 1
+    assert row == ("failed", 1, "", "ValueError", reason)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "embedding_plan_contract_mismatch",
+        "embedding_plan_mode_mismatch",
+        "embedding_plan_model_mismatch",
+        "structure_chunking_source_too_large",
+    ],
+)
+def test_embedding_plan_configuration_mismatch_blocks_until_operator_requeue(
+    synthesis_engine,
+    reason,
+) -> None:
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id=f"call-blocked-embedding-plan-{reason}",
+    )
+
+    def fail_embedding(_text):
+        raise ValueError(reason)
+
+    synthesis_engine._embedder.embed = fail_embedding
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    row = conn.execute(
+        "SELECT status, attempt_count, next_attempt_at, error_class, error_message "
+        "FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.failed == 1
+    assert report.blocked_ids == (job_id,)
+    assert row == ("blocked", 1, "", "ValueError", reason)
+
+
+@pytest.mark.parametrize(
+    ("reason", "status_code"),
+    [
+        ("provider_http_api_key_missing", None),
+        ("provider_http_documentation_base_url", None),
+        ("provider_http_unauthorized", 401),
+        ("provider_http_forbidden", 403),
+        ("provider_http_invalid_config", None),
+    ],
+)
+def test_recoverable_provider_configuration_blocks_outbox_until_operator_requeue(
+    synthesis_engine,
+    reason,
+    status_code,
+) -> None:
+    from plastic_promise.core.provider_http import (
+        ProviderHTTPDiagnostics,
+        ProviderHTTPError,
+    )
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id=f"call-blocked-provider-failure-{status_code}",
+    )
+
+    def fail_embedding(_text):
+        raise ProviderHTTPError(
+            reason,
+            ProviderHTTPDiagnostics(
+                status_code=status_code,
+                request_id="sensitive_request_metadata",
+            ),
+        )
+
+    synthesis_engine._embedder.embed = fail_embedding
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    row = conn.execute(
+        "SELECT status, attempt_count, next_attempt_at, error_class, error_message "
+        "FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.failed == 1
+    assert report.blocked_ids == (job_id,)
+    assert row == ("blocked", 1, "", "ProviderHTTPError", reason)
+    assert "sensitive_request_metadata" not in " ".join(str(value) for value in row)
+
+
+def test_transient_outbox_failure_dead_letters_at_bounded_attempt_ceiling(
+    synthesis_engine,
+) -> None:
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id="call-transient-attempt-ceiling",
+    )
+    conn.execute(
+        "UPDATE store_outbox SET attempt_count = 7, next_attempt_at = '' WHERE outbox_id = ?",
+        (job_id,),
+    )
+    conn.commit()
+
+    def fail_embedding(_text):
+        raise RuntimeError("sensitive_transient_failure")
+
+    synthesis_engine._embedder.embed = fail_embedding
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    row = conn.execute(
+        "SELECT status, attempt_count, next_attempt_at, error_class, error_message "
+        "FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.failed == 1
+    assert row == ("failed", 8, "", "RuntimeError", "operation_failed")
+
+
+def test_deterministic_invalid_embedding_response_fails_without_retry_loop(
+    synthesis_engine,
+) -> None:
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id="call-invalid-embedding-response",
+    )
+    synthesis_engine._embedder.embed = lambda _text: [0.5]
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    row = conn.execute(
+        "SELECT status, attempt_count, next_attempt_at, error_class, error_message "
+        "FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.failed == 1
+    assert row == (
+        "failed",
+        1,
+        "",
+        "RuntimeError",
+        "memory_index_embedding_invalid",
+    )
+
+
+def test_operator_requeue_requires_explicit_terminal_index_job_ids(
+    synthesis_engine,
+) -> None:
+    from plastic_promise.core.synthesis_maintenance import requeue_index_outbox_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    blocked_material = _store_ordinary_index_candidate(synthesis_engine, "ordinary-blocked")
+    failed_material = _store_ordinary_index_candidate(synthesis_engine, "ordinary-failed")
+    pending_material = _store_ordinary_index_candidate(synthesis_engine, "ordinary-pending")
+    conn = synthesis_engine._sqlite._conn
+    blocked_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-blocked",
+        project_id="project:test",
+        expected_embedding_hash=blocked_material.embedding_hash,
+        call_id="call-requeue-blocked",
+    )
+    conn.execute(
+        "UPDATE store_outbox SET status = 'blocked', attempt_count = 3, "
+        "error_class = 'ProviderHTTPError', error_message = 'provider_http_unauthorized' "
+        "WHERE outbox_id = ?",
+        (blocked_id,),
+    )
+    failed_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-failed",
+        project_id="project:test",
+        expected_embedding_hash=failed_material.embedding_hash,
+        call_id="call-requeue-failed",
+    )
+    conn.execute(
+        "UPDATE store_outbox SET status = 'failed', attempt_count = 8, "
+        "error_class = 'RuntimeError', error_message = 'operation_failed' "
+        "WHERE outbox_id = ?",
+        (failed_id,),
+    )
+    pending_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-pending",
+        project_id="project:test",
+        expected_embedding_hash=pending_material.embedding_hash,
+        call_id="call-requeue-pending",
+    )
+    conn.commit()
+
+    report = requeue_index_outbox_jobs(
+        conn,
+        [blocked_id, failed_id, pending_id, "missing-outbox-id"],
+    )
+    rows = dict(
+        conn.execute(
+            "SELECT outbox_id, status FROM store_outbox WHERE outbox_id IN (?, ?, ?)",
+            (blocked_id, failed_id, pending_id),
+        ).fetchall()
+    )
+
+    assert report.requested == 4
+    assert report.requeued_ids == (blocked_id, failed_id)
+    assert report.rejected_ids == (pending_id, "missing-outbox-id")
+    assert rows == {
+        blocked_id: "pending",
+        failed_id: "pending",
+        pending_id: "pending",
+    }
+    reset = conn.execute(
+        "SELECT attempt_count, next_attempt_at, error_class, error_message "
+        "FROM store_outbox WHERE outbox_id = ?",
+        (blocked_id,),
+    ).fetchone()
+    assert reset == (0, "", "", "")
+
+
+@pytest.mark.parametrize("provider_error", [False, True])
+def test_transient_outbox_failure_stays_pending_without_persisting_exception_text(
+    synthesis_engine,
+    provider_error,
+) -> None:
+    from plastic_promise.core.provider_http import ProviderHTTPError
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    material = _store_ordinary_index_candidate(synthesis_engine)
+    conn = synthesis_engine._sqlite._conn
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-index",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id="call-transient-provider-failure",
+    )
+    sensitive_marker = "sensitive_payload_marker"
+
+    def fail_embedding(_text):
+        if provider_error:
+            raise ProviderHTTPError(sensitive_marker)
+        raise RuntimeError(sensitive_marker)
+
+    synthesis_engine._embedder.embed = fail_embedding
+
+    report = replay_memory_index_jobs(synthesis_engine)
+    row = conn.execute(
+        "SELECT status, attempt_count, next_attempt_at, error_class, error_message "
+        "FROM store_outbox WHERE outbox_id = ?",
+        (job_id,),
+    ).fetchone()
+
+    assert report.failed == 1
+    assert row[0] == "pending"
+    assert row[1] == 1
+    assert row[2]
+    expected_class = "ProviderHTTPError" if provider_error else "RuntimeError"
+    assert row[3:] == (expected_class, "operation_failed")
+    assert sensitive_marker not in " ".join(str(value) for value in row)
 
 
 def test_contested_transition_queues_delete_for_previous_revision(synthesis_engine) -> None:

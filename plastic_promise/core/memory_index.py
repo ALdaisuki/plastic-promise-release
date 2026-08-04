@@ -35,21 +35,88 @@ def effective_embedding_model_name(embedder: object | None = None) -> str:
         )
         if value:
             return _model_name_with_chunking(value)
-    legacy = os.environ.get("EMBED_MODEL")
-    if legacy:
-        return _model_name_with_chunking(legacy)
     provider = os.environ.get("EMBEDDER_PROVIDER", "ollama").strip().casefold()
+    supported_providers = {
+        "ollama",
+        "local",
+        "openai",
+        "openai-compatible",
+        "cloud",
+        "fallback",
+    }
+    if provider not in supported_providers:
+        # Keep metadata and the provider factory on the same fail-closed
+        # contract.  Falling through to a legacy Ollama identity here could
+        # make an invalid runtime configuration look valid to an index.
+        raise ValueError("embedding_provider_invalid")
+
+    # Cloud providers and the official OpenAI adapter take their model from
+    # ``EMBEDDER_MODEL`` in the provider factory. Do not let an ambient legacy
+    # setting silently produce an identity for a different model or endpoint;
+    # retain the old override for legacy/local configurations.
+    legacy = os.environ.get("EMBED_MODEL")
+    if legacy and provider not in {"openai", "openai-compatible", "cloud"}:
+        return _model_name_with_chunking(legacy)
     if provider == "local":
         return _model_name_with_chunking(
             os.environ.get("EMBEDDER_LOCAL_MODEL", "BAAI/bge-large-zh-v1.5")
         )
     if provider == "openai":
+        model = os.environ.get("EMBEDDER_MODEL", "text-embedding-3-small")
+        revision = os.environ.get("EMBEDDER_MODEL_REVISION", model)
+        dimension = _configured_embedding_dimension(default=1536)
+        path = os.environ.get("EMBEDDER_PATH", "/embeddings").strip() or "/embeddings"
+        endpoint = hashlib.sha256(f"https://api.openai.com/v1\0{path}".encode()).hexdigest()
+        dimensions_mode = "" if _configured_send_dimensions() else "|dimensions=native"
         return _model_name_with_chunking(
-            os.environ.get("EMBEDDER_MODEL", "text-embedding-3-small")
+            f"{model}|provider=openai|revision={revision}|dim={dimension}"
+            f"|endpoint_sha256={endpoint}{dimensions_mode}"
+        )
+    if provider in {"openai-compatible", "cloud"}:
+        model = os.environ.get("EMBEDDER_MODEL", "text-embedding-v4")
+        revision = os.environ.get("EMBEDDER_MODEL_REVISION", model)
+        dimension = _configured_embedding_dimension(default=1024)
+        base_url = os.environ.get("EMBEDDER_BASE_URL", "").strip()
+        if not base_url:
+            raise ValueError("embedding_base_url_missing")
+        path = os.environ.get("EMBEDDER_PATH", "/embeddings").strip() or "/embeddings"
+        endpoint = hashlib.sha256(f"{base_url}\0{path}".encode()).hexdigest()
+        dimensions_mode = "" if _configured_send_dimensions() else "|dimensions=native"
+        return _model_name_with_chunking(
+            f"{model}|provider=openai-compatible|revision={revision}|dim={dimension}"
+            f"|endpoint_sha256={endpoint}{dimensions_mode}"
         )
     if provider == "fallback":
-        return _model_name_with_chunking("fallback-zero")
+        dimension = _configured_embedding_dimension(default=1024)
+        identity = "fallback-zero" if dimension == 1024 else f"fallback-zero|dim={dimension}"
+        return _model_name_with_chunking(identity)
     return _model_name_with_chunking(os.environ.get("EMBEDDER_MODEL", "mxbai-embed-large"))
+
+
+def _configured_embedding_dimension(*, default: int) -> int:
+    """Resolve the shared schema dimension without silently accepting bad input."""
+
+    raw = os.environ.get("PP_EMBEDDING_DIM")
+    if raw is None:
+        raw = os.environ.get("EMBEDDER_DIMENSION", str(default))
+    try:
+        dimension = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("embedding_dimension_invalid") from None
+    if dimension <= 0:
+        raise ValueError("embedding_dimension_invalid")
+    return dimension
+
+
+def _configured_send_dimensions() -> bool:
+    """Mirror the cloud embedder's strict dimensions-field configuration."""
+
+    raw = os.environ.get("EMBEDDER_SEND_DIMENSIONS", "1").strip().casefold()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("embedding_send_dimensions_invalid")
 
 
 def embedding_model_family(model_name: object) -> str:

@@ -103,6 +103,9 @@ _PIPELINE_STAGE_TIMING_FIELDS = (
     "principle_injection",
     "snapshot_parse",
     "candidate_retrieval",
+    "rerank",
+    "mmr",
+    "divergent_quality",
     "filter_and_layer",
     "fallback_filter_and_layer",
     "total",
@@ -266,9 +269,7 @@ def _project_channels(source: Any) -> tuple[list[dict[str, Any]], bool, bool]:
         raw_rows = rankings.get(name, [])
         raw_rows = raw_rows if isinstance(raw_rows, (list, tuple)) else []
         projected_rows = [
-            projected
-            for row in raw_rows
-            if (projected := _project_channel_item(row)) is not None
+            projected for row in raw_rows if (projected := _project_channel_item(row)) is not None
         ]
         if len(projected_rows) > MAX_CHANNEL_ITEMS:
             channel_items_truncated = True
@@ -350,11 +351,7 @@ def _project_item(value: Any) -> dict[str, Any] | None:
 def _project_items(source: Any) -> tuple[list[dict[str, Any]], bool]:
     raw_items = _source_value(source, "per_item_stats", [])
     raw_items = raw_items if isinstance(raw_items, (list, tuple)) else []
-    items = [
-        projected
-        for row in raw_items
-        if (projected := _project_item(row)) is not None
-    ]
+    items = [projected for row in raw_items if (projected := _project_item(row)) is not None]
     return items[:MAX_ITEMS], len(items) > MAX_ITEMS
 
 

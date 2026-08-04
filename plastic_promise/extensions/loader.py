@@ -23,8 +23,6 @@ logger = logging.getLogger("plastic-promise.extensions.loader")
 HOOK_MERGE_STRATEGIES = {
     "on_before_dispatch": "concat",
     "on_after_dispatch": "concat",
-    "on_transition_write_execute": "last_wins",
-    "on_after_verify": "all_or_nothing",
 }
 
 
@@ -180,10 +178,9 @@ class PluginLoader:
         for hook_cfg in pack.hooks.values():
             if hook_cfg.get("method") == "python":
                 mod_path = hook_cfg.get("module", "")
-                if mod_path:
-                    if importlib.util.find_spec(mod_path) is None:
-                        logger.warning("Module %s not found", mod_path)
-                        return False
+                if mod_path and importlib.util.find_spec(mod_path) is None:
+                    logger.warning("Module %s not found", mod_path)
+                    return False
         return True
 
     def _check_core_version(self, pack: PackInfo) -> bool:
@@ -199,10 +196,7 @@ class PluginLoader:
 
     def _check_trust(self, pack: PackInfo) -> bool:
         """Gate: trust score must meet threshold for plugin activation."""
-        if pack.author == "plastic-promise":
-            min_trust = 0.35  # D-tier minimum for official
-        else:
-            min_trust = 0.50  # B-tier required for community/third-party
+        min_trust = 0.35 if pack.author == "plastic-promise" else 0.50
         try:
             from plastic_promise.defense.trust_store import TrustStore
 

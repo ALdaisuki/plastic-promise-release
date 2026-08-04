@@ -33,6 +33,18 @@ class RecordingVectorEmbedder(VectorTestEmbedder):
         return super().embed(text)
 
 
+class NativeBatchRecordingEmbedder(RecordingVectorEmbedder):
+    supports_native_batch = True
+
+    def __init__(self):
+        super().__init__()
+        self.batches = []
+
+    def embed_batch(self, texts):
+        self.batches.append(list(texts))
+        return VectorTestEmbedder.embed_batch(self, texts)
+
+
 class StructuredVectorEmbedder(RecordingVectorEmbedder):
     index_model_name = (
         "mxbai-embed-large|chunking=structure-v1|target_chars=512|"
@@ -259,6 +271,21 @@ class TestLanceDBStore:
         assert set(result) == {"mem_001", "mem_003"}
         assert result["mem_001"] == pytest.approx(vectors["mem_001"])
         assert result["mem_003"] == pytest.approx(vectors["mem_003"])
+
+    def test_get_vectors_for_recall_reports_runtime_read_failure(self):
+        class FailingTable:
+            def search(self):
+                raise RuntimeError("backend unavailable")
+
+        store = object.__new__(LanceDBStore)
+        store._vectors_disabled = False
+        store._table = FailingTable()
+        store._vector_scan_allowed = lambda: True
+
+        vectors, available = store.get_vectors_for_recall(["mem_001"])
+
+        assert vectors == {}
+        assert available is False
 
     def test_search_scope_filter(self):
         """Scope filter should exclude non-matching rows."""
@@ -506,9 +533,7 @@ class TestLanceDBStore:
         }
         assert store.list_memory_ids() == {"mem_keep", "mem_missing"}
 
-    def test_sync_reindexes_existing_rows_when_chunking_model_changes(
-        self, tmp_path, monkeypatch
-    ):
+    def test_sync_reindexes_existing_rows_when_chunking_model_changes(self, tmp_path, monkeypatch):
         from plastic_promise.core.memory_index import build_index_material, index_metadata
 
         monkeypatch.setenv("PP_MEMORY_CHUNKING", "structure-v1")
@@ -542,9 +567,7 @@ class TestLanceDBStore:
             embedder.index_model_name
         )
 
-    def test_sync_removes_existing_row_with_invalid_v2_chunk_manifest(
-        self, tmp_path, monkeypatch
-    ):
+    def test_sync_removes_existing_row_with_invalid_v2_chunk_manifest(self, tmp_path, monkeypatch):
         from plastic_promise.core.memory_index import build_index_material, index_metadata
 
         monkeypatch.setenv("PP_MEMORY_CHUNKING", "structure-v1")
@@ -806,6 +829,44 @@ class TestLanceDBStore:
         assert embedder.texts == ["legacy full content", "legacy full content"]
         row = store._table.search().where("memory_id = 'legacy-memory'").limit(1).to_list()[0]
         assert row["text"] == "legacy full content"
+
+    def test_rebuild_uses_native_embedding_batches_for_persisted_material(
+        self, tmp_path, monkeypatch
+    ):
+        from plastic_promise.core.memory_index import build_index_material, index_metadata
+
+        monkeypatch.setenv("EMBEDDER_BATCH_SIZE", "2")
+        embedder = NativeBatchRecordingEmbedder()
+        memories = {}
+        for index in range(3):
+            vector_text = f"persisted vector text {index}"
+            material = build_index_material(
+                {
+                    "content": f"raw content {index}",
+                    "embedding_text": vector_text,
+                    "search_text": f"search text {index}",
+                },
+                model_name=embedder.model_name,
+            )
+            memories[f"batch-{index}"] = {
+                "id": f"batch-{index}",
+                "content": f"raw content {index}",
+                "memory_type": "experience",
+                "embedding_text": material.vector_text,
+                "search_text": material.search_text,
+                "embedding_hash": material.embedding_hash,
+                "metadata_json": {"memory_index": index_metadata(material)},
+                "tier": "L1",
+                "category": "fact",
+                "scope": "global",
+            }
+        engine = RepairEngine(memories)
+        store = LanceDBStore(str(tmp_path / "native-batch.lancedb"), embedder)
+
+        assert store.rebuild_all(engine) == 3
+        assert [len(batch) for batch in embedder.batches] == [2, 1]
+        assert embedder.texts == []
+        assert store.count_rows() == 3
 
     def test_pre_v2_repair_prepares_exact_document_material_before_persisting(
         self, tmp_path, monkeypatch

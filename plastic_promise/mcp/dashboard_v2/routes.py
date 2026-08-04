@@ -1,12 +1,13 @@
-"""Read-only Starlette routes for the scoped Dashboard V2 application."""
+"""Scoped Dashboard V2 routes with opt-in governed proposal review."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,18 +36,34 @@ if TYPE_CHECKING:
 RepositoryProvider = Callable[[DashboardScope], AbstractContextManager[DashboardRepository]]
 IdentityProvider = Callable[[], dict[str, Any]]
 IssueProvider = Callable[[], list[dict[str, Any]]]
+ProposalReviewProvider = Callable[[str, str, str, str], Awaitable[dict[str, Any]]]
+ProjectScopeProvider = Callable[[], list[dict[str, Any]]]
 
 _STATIC_DIR = Path(__file__).with_name("static")
 _ASSET_MEDIA_TYPES = {
     "app.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
 }
+_ACTION_HEADER_VALUE = "proposal-review-v1"
+_MAX_ACTION_BODY_BYTES = 4096
+_REJECTION_REASON_CODES = frozenset(
+    {
+        "duplicate",
+        "incorrect",
+        "not_durable",
+        "not_reusable",
+        "outdated",
+        "policy_rejected",
+        "reviewer_rejected",
+    }
+)
 _SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": (
         "default-src 'self'; img-src 'self' data:; style-src 'self'; "
         "style-src-attr 'unsafe-inline'; "
-        "script-src 'self'; connect-src 'self'; object-src 'none'; "
+        "script-src 'self'; connect-src 'self' http://127.0.0.1:9040 "
+        "http://127.0.0.1:19040; object-src 'none'; "
         "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
     ),
     "Referrer-Policy": "no-referrer",
@@ -63,6 +80,50 @@ def _default_repository_provider(scope: DashboardScope) -> Iterator[DashboardRep
     try:
         connection.execute("PRAGMA query_only = ON")
         yield DashboardRepository(connection, scope)
+    finally:
+        connection.close()
+
+
+def _default_project_scope_provider() -> list[dict[str, Any]]:
+    """Return bounded project activity metadata from canonical read-only SQLite."""
+    database = Path(get_db_path()).expanduser().resolve()
+    connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        aggregates: dict[str, dict[str, Any]] = {}
+        sources = (
+            ("runtime_events", "created_at", "event_count"),
+            ("memory_proposals", "created_at", "proposal_count"),
+            ("call_spans", "started_at", "call_count"),
+            ("memories", "created_at", "memory_count"),
+        )
+        for table, timestamp_column, count_key in sources:
+            try:
+                rows = connection.execute(
+                    f"SELECT project_id, COUNT(*), MAX({timestamp_column}) "
+                    f"FROM {table} WHERE project_id IS NOT NULL "
+                    f"AND TRIM(project_id) <> '' GROUP BY project_id"
+                ).fetchall()
+            except sqlite3.DatabaseError:
+                continue
+            for project_id, count, latest_at in rows:
+                normalized = str(project_id or "").strip()
+                if not normalized:
+                    continue
+                item = aggregates.setdefault(
+                    normalized,
+                    {"project_id": normalized, "latest_at": None},
+                )
+                item[count_key] = int(count or 0)
+                if latest_at and (
+                    item["latest_at"] is None or str(latest_at) > str(item["latest_at"])
+                ):
+                    item["latest_at"] = str(latest_at)
+        return sorted(
+            aggregates.values(),
+            key=lambda item: (str(item.get("latest_at") or ""), str(item["project_id"])),
+            reverse=True,
+        )
     finally:
         connection.close()
 
@@ -100,12 +161,28 @@ def _client_host(request: Request) -> str:
     return request.client.host if request.client is not None else ""
 
 
-def _scope(settings: DashboardSettings, request: Request) -> DashboardScope:
+def _scope(
+    settings: DashboardSettings,
+    request: Request,
+    project_scope_provider: ProjectScopeProvider,
+) -> DashboardScope:
+    requested_project_id = request.query_params.get("project_id")
+    allowed_project_ids: list[str] | None = None
+    if requested_project_id:
+        try:
+            allowed_project_ids = [
+                str(item.get("project_id") or "")
+                for item in project_scope_provider()
+                if isinstance(item, dict)
+            ]
+        except (OSError, sqlite3.DatabaseError):
+            allowed_project_ids = []
     return resolve_local_scope(
         settings,
         client_host=_client_host(request),
         request_host=request.headers.get("host", ""),
-        requested_project_id=request.query_params.get("project_id"),
+        requested_project_id=requested_project_id,
+        allowed_project_ids=allowed_project_ids,
     )
 
 
@@ -217,6 +294,8 @@ def create_dashboard_v2_routes(
     version: str = "",
     identity_provider: IdentityProvider | None = None,
     issue_provider: IssueProvider | None = None,
+    proposal_review_provider: ProposalReviewProvider | None = None,
+    project_scope_provider: ProjectScopeProvider | None = None,
 ) -> list[Route]:
     """Build the V2 route set only when its exact feature gate is enabled."""
     if not settings.enabled:
@@ -225,6 +304,10 @@ def create_dashboard_v2_routes(
     provide_repository = repository_provider or _default_repository_provider
     provide_identity = identity_provider or (lambda: {})
     provide_issues = issue_provider or (lambda: [])
+    provide_project_scopes = project_scope_provider or _default_project_scope_provider
+    review_actions_enabled = (
+        settings.review_actions_enabled and proposal_review_provider is not None
+    )
 
     def system_issues() -> tuple[list[dict[str, Any]], dict[str, str]]:
         """Project the process-local issue board without claiming project ownership.
@@ -252,7 +335,7 @@ def create_dashboard_v2_routes(
 
     async def dashboard(request: Request) -> Response:
         try:
-            _scope(settings, request)
+            _scope(settings, request, provide_project_scopes)
         except DashboardAccessError as exc:
             return _error(request, exc.status_code, exc.code, "Dashboard access denied")
         response = FileResponse(_STATIC_DIR / "index.html", media_type="text/html")
@@ -262,7 +345,7 @@ def create_dashboard_v2_routes(
 
     async def asset(request: Request) -> Response:
         try:
-            _scope(settings, request)
+            _scope(settings, request, provide_project_scopes)
         except DashboardAccessError as exc:
             return _error(request, exc.status_code, exc.code, "Dashboard access denied")
         asset_name = str(request.path_params.get("asset_name") or "")
@@ -331,6 +414,63 @@ def create_dashboard_v2_routes(
 
         return _run_repository(request, read)
 
+    async def scopes(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        try:
+            available = provide_project_scopes()
+        except (OSError, sqlite3.DatabaseError):
+            return _repository_error(request)
+
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in available:
+            if not isinstance(item, dict):
+                continue
+            project_id = str(item.get("project_id") or "").strip()
+            if not project_id or project_id in seen:
+                continue
+            seen.add(project_id)
+            normalized.append(
+                {
+                    "project_id": project_id,
+                    "latest_at": item.get("latest_at"),
+                    **{
+                        key: int(item[key])
+                        for key in (
+                            "event_count",
+                            "proposal_count",
+                            "call_count",
+                            "memory_count",
+                        )
+                        if isinstance(item.get(key), (int, float))
+                        and not isinstance(item.get(key), bool)
+                    },
+                }
+            )
+        if scope.project_id not in seen:
+            normalized.append({"project_id": scope.project_id, "latest_at": None})
+        normalized.sort(
+            key=lambda item: (str(item.get("latest_at") or ""), item["project_id"]),
+            reverse=True,
+        )
+        recommended = normalized[0]["project_id"] if normalized else scope.project_id
+        return _response(
+            request,
+            {
+                "data": {
+                    "scopes": normalized,
+                    "default_project_id": scope.project_id,
+                    "recommended_project_id": recommended,
+                },
+                "scope": scope.to_dict(),
+                "degraded": False,
+                "warnings": [],
+            },
+        )
+
     async def requests(request: Request) -> Response:
         try:
             limit = _limit(request)
@@ -363,6 +503,135 @@ def create_dashboard_v2_routes(
             ),
         )
 
+    async def passive_memory(request: Request) -> Response:
+        try:
+            limit = _limit(request)
+        except ValueError as exc:
+            return _error(request, 400, str(exc), "Invalid request filter")
+        return _run_repository(
+            request,
+            lambda repository: repository.passive_memory_overview(limit=limit),
+        )
+
+    async def memory_proposals(request: Request) -> Response:
+        try:
+            limit = _limit(request)
+        except ValueError as exc:
+            return _error(request, 400, str(exc), "Invalid request filter")
+        return _run_repository(
+            request,
+            lambda repository: repository.list_memory_proposals(
+                limit=limit,
+                cursor=request.query_params.get("cursor"),
+                status=request.query_params.get("status"),
+                category=request.query_params.get("category"),
+            ),
+        )
+
+    async def review_memory_proposal(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        fetch_site = str(request.headers.get("sec-fetch-site") or "").casefold()
+        if fetch_site == "cross-site":
+            return _error(
+                request,
+                403,
+                "dashboard_action_cross_site",
+                "Cross-site dashboard actions are not allowed",
+            )
+        if request.headers.get("x-pp-dashboard-action") != _ACTION_HEADER_VALUE:
+            return _error(
+                request,
+                403,
+                "dashboard_action_confirmation_required",
+                "Dashboard action confirmation header is required",
+            )
+        content_type = str(request.headers.get("content-type") or "").casefold()
+        if not content_type.startswith("application/json"):
+            return _error(
+                request,
+                415,
+                "dashboard_action_json_required",
+                "Dashboard actions require application/json",
+            )
+        body = await request.body()
+        if len(body) > _MAX_ACTION_BODY_BYTES:
+            return _error(
+                request,
+                413,
+                "dashboard_action_too_large",
+                "Dashboard action payload is too large",
+            )
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return _error(request, 400, "dashboard_action_invalid", "Invalid JSON payload")
+        if not isinstance(payload, dict):
+            return _error(request, 400, "dashboard_action_invalid", "JSON object required")
+        feedback_type = str(payload.get("feedback_type") or "").strip().casefold()
+        if feedback_type not in {"adopted", "rejected"}:
+            return _error(
+                request,
+                400,
+                "proposal_feedback_invalid",
+                "feedback_type must be adopted or rejected",
+            )
+        rejection_reason = (
+            str(payload.get("rejection_reason") or "reviewer_rejected").strip().casefold()
+        )
+        if feedback_type == "rejected" and rejection_reason not in _REJECTION_REASON_CODES:
+            return _error(
+                request,
+                400,
+                "proposal_rejection_reason_invalid",
+                "Unsupported proposal rejection reason",
+            )
+        proposal_id = str(request.path_params.get("proposal_id") or "").strip()
+        try:
+            with provide_repository(scope) as repository:
+                proposal = repository.get_memory_proposal(proposal_id)
+        except (OSError, sqlite3.DatabaseError):
+            return _repository_error(request)
+        if proposal is None:
+            return _not_found(request, "memory_proposal")
+        if proposal_review_provider is None:
+            return _error(
+                request,
+                503,
+                "proposal_review_unavailable",
+                "Proposal review is temporarily unavailable",
+            )
+        try:
+            result = await proposal_review_provider(
+                proposal_id,
+                feedback_type,
+                rejection_reason,
+                scope.project_id,
+            )
+        except Exception:
+            return _error(
+                request,
+                503,
+                "proposal_review_failed",
+                "Proposal review failed",
+            )
+        if not isinstance(result, dict):
+            return _error(
+                request,
+                503,
+                "proposal_review_invalid_response",
+                "Proposal review returned an invalid response",
+            )
+        if not result.get("updated"):
+            reason = str(result.get("reason") or "proposal_review_rejected")
+            if reason == "feedback_project_mismatch":
+                return _not_found(request, "memory_proposal")
+            status_code = 403 if reason == "feedback_runtime_authorization_denied" else 409
+            return _error(request, status_code, reason, "Proposal review was not applied")
+        return _response(request, _with_scope(redact_value(result), scope))
+
     async def memory_detail(request: Request) -> Response:
         memory_id = str(request.path_params["memory_id"])
 
@@ -394,6 +663,7 @@ def create_dashboard_v2_routes(
             limit = _limit(request)
         except ValueError as exc:
             return _error(request, 400, str(exc), "Invalid request filter")
+
         def read(repository: DashboardRepository) -> dict[str, Any]:
             result = repository.list_synthesis(
                 limit=limit,
@@ -449,15 +719,21 @@ def create_dashboard_v2_routes(
                 identity = {"status": "unavailable"}
                 degraded = True
                 warnings.append("runtime_identity_unavailable")
+            if settings.review_actions_enabled and not review_actions_enabled:
+                degraded = True
+                warnings.append("proposal_review_provider_unavailable")
             return {
                 "version": version,
                 "dashboard": {
                     "enabled": settings.enabled,
                     "retrieval_explain_enabled": settings.explain_enabled,
+                    "proposal_review_enabled": review_actions_enabled,
+                    "proposal_review_requested": settings.review_actions_enabled,
                     "auth_mode": settings.auth_mode,
                     "project_id": settings.project_id,
                     "bind_host": settings.bind_host,
-                    "read_only": True,
+                    "read_only": not review_actions_enabled,
+                    "write_surface": "proposal_review_only" if review_actions_enabled else "none",
                 },
                 "memory_governance": _synthesis_governance(),
                 "runtime": identity,
@@ -506,7 +782,7 @@ def create_dashboard_v2_routes(
 
     def _run_repository(request: Request, read: Callable[[DashboardRepository], Any]) -> Response:
         try:
-            scope = _scope(settings, request)
+            scope = _scope(settings, request, provide_project_scopes)
         except DashboardAccessError as exc:
             return _error(request, exc.status_code, exc.code, "Dashboard access denied")
         try:
@@ -526,8 +802,15 @@ def create_dashboard_v2_routes(
         Route("/dashboard", endpoint=dashboard, methods=["GET"]),
         Route("/dashboard/assets/v2/{asset_name}", endpoint=asset, methods=["GET"]),
         Route("/api/dashboard/v2/overview", endpoint=overview, methods=["GET"]),
+        Route("/api/dashboard/v2/scopes", endpoint=scopes, methods=["GET"]),
         Route("/api/dashboard/v2/requests", endpoint=requests, methods=["GET"]),
         Route("/api/dashboard/v2/memories", endpoint=memories, methods=["GET"]),
+        Route("/api/dashboard/v2/passive-memory", endpoint=passive_memory, methods=["GET"]),
+        Route(
+            "/api/dashboard/v2/memory-proposals",
+            endpoint=memory_proposals,
+            methods=["GET"],
+        ),
         Route(
             "/api/dashboard/v2/memories/{memory_id}/lineage",
             endpoint=lineage,
@@ -543,6 +826,14 @@ def create_dashboard_v2_routes(
         Route("/api/dashboard/v2/trust-issues", endpoint=trust_issues, methods=["GET"]),
         Route("/api/dashboard/v2/configuration", endpoint=configuration, methods=["GET"]),
     ]
+    if review_actions_enabled:
+        routes.append(
+            Route(
+                "/api/dashboard/v2/memory-proposals/{proposal_id}/review",
+                endpoint=review_memory_proposal,
+                methods=["POST"],
+            )
+        )
     if settings.explain_enabled:
         routes.append(
             Route(

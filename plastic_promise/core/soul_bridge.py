@@ -18,7 +18,12 @@ import asyncio
 import json
 import os
 import sys
+import threading
+from contextlib import suppress
+from contextvars import ContextVar
 from typing import Any
+
+from plastic_promise.core.constants import TRUST_DECAY_RATE
 
 # Ensure project root on sys.path for standalone subprocess / CLI use
 _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,10 +37,8 @@ PLASTIC_PROMISE_PATH = os.environ.get(
 )
 
 if SOUL_ENABLED:
-    try:
+    with suppress(Exception):
         sys.path.insert(0, PLASTIC_PROMISE_PATH)
-    except Exception:
-        pass
 
 
 class SoulBridge:
@@ -54,6 +57,10 @@ class SoulBridge:
         self._proprioception = None
         self._enforcer = None
         self._initialized = False
+        self._last_task_text: ContextVar[str] = ContextVar(
+            f"soul_bridge_last_task_text_{id(self)}", default=""
+        )
+        self._thread_context = threading.local()
 
     def _init_modules(self) -> bool:
         """延迟初始化所有模块。"""
@@ -63,11 +70,7 @@ class SoulBridge:
             return False
 
         try:
-            from plastic_promise.defense.soul_enforcer import (
-                TRUST_DECAY_RATE,
-                SoulEnforcer,
-                TrustManager,
-            )
+            from plastic_promise.defense.soul_enforcer import SoulEnforcer, TrustManager
             from plastic_promise.growth.soul_hormone import HormoneEngine
             from plastic_promise.loop.soul_loop import SoulLoop
             from plastic_promise.reflection.soul_curiosity import CuriosityExplorer
@@ -104,6 +107,9 @@ class SoulBridge:
                 layer: str | None,          # 触发拦截的防线层级
             }
         """
+        normalized_task = str(task or "").strip()
+        self._last_task_text.set(normalized_task)
+        self._thread_context.last_task_text = normalized_task
         result: dict[str, Any] = {
             "ok": True,
             "blocked": False,
@@ -162,6 +168,7 @@ class SoulBridge:
             inject_result = await handle_auto_context_inject(
                 engine,
                 {
+                    "event": "before_invoke",
                     "task_description": task,
                     "task_type": task_type,
                     "source": "pi_agent",
@@ -181,7 +188,13 @@ class SoulBridge:
         return result
 
     def post_task(
-        self, result_text: str, task_type: str = "general", success: bool = True
+        self,
+        result_text: str,
+        task_type: str = "general",
+        success: bool = True,
+        *,
+        user_text: str = "",
+        call_id: str = "",
     ) -> dict[str, Any]:
         """任务执行后管线。
 
@@ -204,8 +217,6 @@ class SoulBridge:
 
         if not self._init_modules():
             return output
-
-        old_trust = self._trust.get()
 
         # 1. 信任分更新
         try:
@@ -232,18 +243,50 @@ class SoulBridge:
         except Exception:
             pass
 
-        # 3. 记忆存储
+        # 3. 高可信闭环保留原路径；普通用户事实另走异步 proposal 审计。
         try:
-            self._soul_loop.post_task(result_text, task_type)
+            self._soul_loop.post_task(task_description=result_text, mode="full")
             output["memory_stored"] = True
         except Exception:
             pass
 
+        passive_user_text = str(
+            user_text
+            or self._last_task_text.get()
+            or getattr(self._thread_context, "last_task_text", "")
+            or ""
+        ).strip()
+        self._last_task_text.set("")
+        self._thread_context.last_task_text = ""
+        output["passive_memory_scheduled"] = False
+        if passive_user_text:
+            try:
+                from plastic_promise.core.context_engine import ContextEngine
+                from plastic_promise.passive_memory import schedule_after_invoke
+
+                engine = getattr(self._soul_loop, "_engine", None)
+                if engine is None:
+                    engine = ContextEngine()
+                    self._soul_loop._engine = engine
+                output["passive_memory_scheduled"] = schedule_after_invoke(
+                    engine,
+                    {
+                        "event": "after_invoke",
+                        "task_description": passive_user_text,
+                        "task_type": task_type,
+                        "source": "soul_bridge",
+                        "user_text": passive_user_text,
+                        "assistant_text": result_text,
+                        "call_id": call_id,
+                        "metadata": {"success": bool(success)},
+                    },
+                )
+            except Exception:
+                pass
+
         # 4. 惯性检查
-        try:
+        with suppress(Exception):
             self._proprioception.record_task(task_type, success)
-        except Exception:
-            pass
 
         return output
 
@@ -328,6 +371,8 @@ if __name__ == "__main__":
     post.add_argument("task_type", nargs="?", default="general")
     post.add_argument("--success", action="store_true", default=True)
     post.add_argument("--fail", dest="success", action="store_false")
+    post.add_argument("--user-text", default="")
+    post.add_argument("--call-id", default="")
 
     sub.add_parser("status")
     sub.add_parser("trust")
@@ -339,7 +384,13 @@ if __name__ == "__main__":
     if args.command == "pre_task":
         result = asyncio.run(bridge.pre_task(args.task, args.task_type))
     elif args.command == "post_task":
-        result = bridge.post_task(args.result, args.task_type, args.success)
+        result = bridge.post_task(
+            args.result,
+            args.task_type,
+            args.success,
+            user_text=args.user_text,
+            call_id=args.call_id,
+        )
     elif args.command == "status":
         result = bridge.status()
     elif args.command == "trust":

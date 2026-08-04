@@ -16,11 +16,25 @@ from typing import Any
 
 from mcp.types import TextContent
 
+from plastic_promise.core.recall_quality import (
+    LIVE_TRACE_METADATA_KEY,
+    evaluate_live_retrieval_quality,
+)
 from plastic_promise.core.retrieval_explain import (
     METADATA_KEY as RETRIEVAL_EXPLAIN_METADATA_KEY,
 )
 from plastic_promise.core.retrieval_explain import (
     build_retrieval_explain_snapshot,
+)
+from plastic_promise.launcher.runtime_mode import runtime_mode_status
+from plastic_promise.mcp.response_projection import (
+    build_diagnostics,
+    compact_context_item,
+    resolve_response_mode,
+)
+from plastic_promise.mcp.tools.supply_runner import (
+    float_env,
+    run_bounded_engine_supply,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,35 +43,6 @@ _CONTEXT_SUPPLY_EXECUTOR = ThreadPoolExecutor(
     max_workers=max(1, int(os.environ.get("PP_CONTEXT_SUPPLY_MAX_WORKERS", "2"))),
     thread_name_prefix="context-supply",
 )
-
-
-def _float_env(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _call_engine_supply(engine: Any, supply_args: dict[str, Any]):
-    try:
-        return engine.supply(**supply_args)
-    except TypeError:
-        legacy_args = {
-            "task_description": supply_args["task_description"],
-            "task_vector": supply_args["task_vector"],
-            "task_type": supply_args["task_type"],
-            "scope": supply_args["scope"],
-            "debug": supply_args["debug"],
-        }
-        try:
-            return engine.supply(**legacy_args)
-        except TypeError:
-            return engine.supply(
-                supply_args["task_description"],
-                supply_args["task_vector"],
-                supply_args["task_type"],
-                supply_args["scope"],
-            )
 
 
 def _degraded_context_response(
@@ -69,7 +54,8 @@ def _degraded_context_response(
     request_scope: dict[str, Any],
     project_ctx: Any,
     call_id: str,
-    debug: bool,
+    response_mode: str,
+    diagnostics_level: str,
 ) -> list[TextContent]:
     audit_metadata = {
         "engine_version": "context_supply-degraded",
@@ -86,32 +72,29 @@ def _degraded_context_response(
             "project_id": project_ctx.project_id,
         },
     }
-    if debug:
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(
-                    {
-                        "prompt": "",
-                        "core": [],
-                        "related": [],
-                        "divergent": [],
-                        "activated_principles": [],
-                        "audit_metadata": audit_metadata,
-                        "pipeline_stats": {},
-                        "per_item_stats": [],
-                        "channel_rankings": {},
-                        "channel_states": {},
-                        "request_scope": request_scope,
-                        "project_context": project_ctx.to_dict(),
-                        "trace": audit_metadata["trace"],
-                        "error": reason,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            )
-        ]
+    if response_mode in {"compact", "debug"}:
+        payload = {
+            "schema_version": "context-supply-response-v1",
+            "response_mode": response_mode,
+            "ephemeral": True,
+            "core": [],
+            "related": [],
+            "divergent": [],
+            "activated_principles": [],
+            "request_scope_id": request_scope["request_scope_id"],
+            "project_id": project_ctx.project_id,
+            "trace": audit_metadata["trace"],
+            "degraded": True,
+            "minimum_result": "degraded_context",
+            "error": reason,
+            "diagnostics": build_diagnostics(
+                call_id=call_id,
+                audit=audit_metadata,
+                level=diagnostics_level if response_mode == "debug" else "summary",
+                max_bytes=3072,
+            ),
+        }
+        return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
     prompt = "\n".join(
         [
             "## [CONTEXT_SUPPLY_DEGRADED]",
@@ -142,9 +125,9 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
         from plastic_promise.core.project_context import infer_project_context
         from plastic_promise.core.traceability import (
+            defer_record_call_span,
+            defer_record_degradation_event,
             new_call_id,
-            safe_record_call_span,
-            safe_record_degradation_event,
             utc_now,
         )
         from plastic_promise.mcp.tools.request_scope import build_request_scope
@@ -155,12 +138,13 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         scope = args.get("scope", "global")
         retrieval_mode = str(args.get("retrieval_mode") or "")
         fusion_policy = str(args.get("fusion_policy") or "").strip()
-        debug = bool(args.get("debug", False))
+        response_mode, diagnostics_level = resolve_response_mode(args, default="standard")
+        debug = response_mode == "debug"
         request_scope = build_request_scope(args, "context_supply")
         project_ctx = infer_project_context(args)
         call_id = args.get("call_id") or new_call_id()
-        embed_timeout = _float_env("PP_CONTEXT_EMBED_TIMEOUT_SEC", 3.0)
-        supply_timeout = _float_env("PP_CONTEXT_SUPPLY_TIMEOUT_SEC", 12.0)
+        embed_timeout = float_env("PP_CONTEXT_EMBED_TIMEOUT_SEC", 3.0)
+        supply_timeout = float_env("PP_CONTEXT_SUPPLY_TIMEOUT_SEC", 12.0)
 
         try:
             embedder = get_embedder(fallback_on_error=False)
@@ -190,20 +174,16 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 "fusion_policy": fusion_policy or None,
                 "debug": debug,
             }
-            loop = asyncio.get_running_loop()
-            pack = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _CONTEXT_SUPPLY_EXECUTOR,
-                    _call_engine_supply,
-                    engine,
-                    supply_args,
-                ),
+            pack = await run_bounded_engine_supply(
+                engine,
+                supply_args,
+                executor=_CONTEXT_SUPPLY_EXECUTOR,
                 timeout=supply_timeout,
             )
         except (TimeoutError, asyncio.TimeoutError):
             reason = f"engine.supply timed out after {supply_timeout:.2f}s"
             logger.error("context_supply degraded: %s", reason)
-            safe_record_degradation_event(
+            defer_record_degradation_event(
                 engine,
                 call_id=call_id,
                 request_scope_id=request_scope["request_scope_id"],
@@ -222,7 +202,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                     "fusion_policy": fusion_policy,
                 },
             )
-            safe_record_call_span(
+            defer_record_call_span(
                 engine,
                 call_id=call_id,
                 parent_call_id=str(args.get("parent_call_id") or args.get("parent_call") or ""),
@@ -250,7 +230,8 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 request_scope=request_scope,
                 project_ctx=project_ctx,
                 call_id=call_id,
-                debug=debug,
+                response_mode=response_mode,
+                diagnostics_level=diagnostics_level,
             )
         from plastic_promise.mcp.tools.memory import (
             _sanitize_pack_for_project,
@@ -283,26 +264,31 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             "retrieval_mode": retrieval_mode,
             "fusion_policy": fusion_policy,
             "debug": debug,
+            "response_mode": response_mode,
+            "diagnostics_level": diagnostics_level,
             "warnings": project_warnings,
         }
         if retrieval_explain is not None:
             span_metadata[RETRIEVAL_EXPLAIN_METADATA_KEY] = retrieval_explain
-        safe_record_call_span(
-            engine,
-            call_id=call_id,
-            parent_call_id=str(args.get("parent_call_id") or args.get("parent_call") or ""),
+        retrieval_quality = evaluate_live_retrieval_quality(
+            list(getattr(pack, "core", []))
+            + list(getattr(pack, "related", []))
+            + list(getattr(pack, "divergent", [])),
+            args.get("ground_truth"),
             request_scope_id=request_scope["request_scope_id"],
-            stage_session_id=request_scope["stage_session_id"],
-            flow_line_id=request_scope["flow_line_id"],
-            project_id=project_ctx.project_id,
+            runtime_mode=str(runtime_mode_status().get("mode") or "unknown"),
             tool_name="context_supply",
-            status="success",
-            degraded=bool(project_warnings),
-            metadata=span_metadata,
-            started_at=trace_started_at,
+            task_type=task_type,
+            scope=scope,
+            project_id=project_ctx.project_id,
+            project_policy=project_ctx.project_policy,
+            retrieval_mode=retrieval_mode,
+            fusion_policy=fusion_policy,
         )
+        if retrieval_quality is not None:
+            span_metadata[LIVE_TRACE_METADATA_KEY] = retrieval_quality
         if project_warnings:
-            safe_record_degradation_event(
+            defer_record_degradation_event(
                 engine,
                 call_id=call_id,
                 request_scope_id=request_scope["request_scope_id"],
@@ -317,45 +303,82 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             )
 
         prompt = pack.to_prompt()
-        if debug:
-            channel_rankings, channel_states = _serialize_channel_evidence(pack)
+        if response_mode == "standard":
+            span_metadata["response_bytes"] = len(prompt.encode("utf-8"))
+            defer_record_call_span(
+                engine,
+                call_id=call_id,
+                parent_call_id=str(args.get("parent_call_id") or args.get("parent_call") or ""),
+                request_scope_id=request_scope["request_scope_id"],
+                stage_session_id=request_scope["stage_session_id"],
+                flow_line_id=request_scope["flow_line_id"],
+                project_id=project_ctx.project_id,
+                tool_name="context_supply",
+                status="success",
+                degraded=bool(project_warnings),
+                metadata=span_metadata,
+                started_at=trace_started_at,
+            )
+            return [TextContent(type="text", text=prompt)]
 
-            def _item_to_dict(item: Any) -> dict:
-                return {
+        channel_rankings, channel_states = _serialize_channel_evidence(pack)
+        audit_metadata = getattr(pack, "audit_metadata", {}) or {}
+
+        def _item_to_dict(item: Any) -> dict[str, Any]:
+            return compact_context_item(
+                {
                     "id": getattr(item, "id", ""),
                     "content": getattr(item, "content", ""),
                     "relevance": getattr(item, "relevance", 0.0),
                     "source": getattr(item, "source", ""),
                     "freshness": getattr(item, "freshness", ""),
-                    "layer": getattr(item, "layer", ""),
-                    "is_principle": getattr(item, "is_principle", False),
                     "worth_score": getattr(item, "worth_score", 0.0),
-                    "decay_status": getattr(item, "decay_status", ""),
-                }
+                },
+                content_chars=180,
+            )
 
-            audit_metadata = getattr(pack, "audit_metadata", {}) or {}
-            payload = {
-                "prompt": prompt,
-                "core": [_item_to_dict(item) for item in getattr(pack, "core", [])],
-                "related": [_item_to_dict(item) for item in getattr(pack, "related", [])],
-                "divergent": [_item_to_dict(item) for item in getattr(pack, "divergent", [])],
-                "activated_principles": getattr(pack, "activated_principles", []),
-                "audit_metadata": audit_metadata,
-                "pipeline_stats": getattr(pack, "pipeline_stats", {}),
-                "per_item_stats": getattr(pack, "per_item_stats", []),
-                "channel_rankings": channel_rankings,
-                "channel_states": channel_states,
-                "request_scope": request_scope,
-                "project_context": project_ctx.to_dict(),
-                "trace": audit_metadata.get("trace", {}),
-            }
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(payload, ensure_ascii=False, indent=2),
-                )
-            ]
-        return [TextContent(type="text", text=prompt)]
+        payload = {
+            "schema_version": "context-supply-response-v1",
+            "response_mode": response_mode,
+            "ephemeral": True,
+            "core": [_item_to_dict(item) for item in getattr(pack, "core", [])[:4]],
+            "related": [_item_to_dict(item) for item in getattr(pack, "related", [])[:4]],
+            "divergent": [_item_to_dict(item) for item in getattr(pack, "divergent", [])[:2]],
+            "activated_principles": getattr(pack, "activated_principles", [])[:8],
+            "request_scope_id": request_scope["request_scope_id"],
+            "project_id": project_ctx.project_id,
+            "trace": audit_metadata.get("trace", {}),
+            "degraded": bool(project_warnings),
+            "warnings": project_warnings,
+            "minimum_result": "project_restricted_context" if project_ctx.degraded else "",
+            "diagnostics": build_diagnostics(
+                call_id=call_id,
+                audit=audit_metadata,
+                pipeline_stats=getattr(pack, "pipeline_stats", {}),
+                per_item_stats=getattr(pack, "per_item_stats", []),
+                channel_rankings=channel_rankings,
+                channel_states=channel_states,
+                level=diagnostics_level if response_mode == "debug" else "summary",
+                max_bytes=3072,
+            ),
+        }
+        response_text = json.dumps(payload, ensure_ascii=False)
+        span_metadata["response_bytes"] = len(response_text.encode("utf-8"))
+        defer_record_call_span(
+            engine,
+            call_id=call_id,
+            parent_call_id=str(args.get("parent_call_id") or args.get("parent_call") or ""),
+            request_scope_id=request_scope["request_scope_id"],
+            stage_session_id=request_scope["stage_session_id"],
+            flow_line_id=request_scope["flow_line_id"],
+            project_id=project_ctx.project_id,
+            tool_name="context_supply",
+            status="success",
+            degraded=bool(project_warnings),
+            metadata=span_metadata,
+            started_at=trace_started_at,
+        )
+        return [TextContent(type="text", text=response_text)]
     except Exception as e:
         return [
             TextContent(
@@ -546,34 +569,84 @@ async def handle_context_graph(engine: Any, args: dict) -> list[TextContent]:
 
 
 async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextContent]:
-    """Unified automated context injection across Pi Agent, Claude Code, and SoulBridge.
+    """Adapt MCP calls to provider-neutral before/after passive memory events."""
+    from plastic_promise.core.memory_proposals import ProposalPolicyError, proposal_mode
+    from plastic_promise.mcp.tools.request_scope import build_request_scope
+    from plastic_promise.passive_memory import after_invoke, before_invoke
+    from plastic_promise.passive_memory.coordinator import (
+        passive_context_mode,
+        passive_memory_mode,
+    )
 
-    Chains: skill_session_start → SoulLoop.pre_task_v2 → memory_store → skill_session_complete.
-    Graceful degradation: any internal failure returns partial data, never blocks.
-
-    Args:
-        engine: ContextEngine instance.
-        args:
-            task_description: str (required) — Current task description
-            task_type: str — Task type (default "general")
-            source: str — "pi_agent" | "claude_code" | "manual" (default "manual")
-            scope: str — Retrieval scope (default "global")
-
-    Returns:
-        list[TextContent]: entity_id, context_pack, principles, inject_memory_id, stats
-    """
-    task_description = args.get("task_description", "")
-    task_type = args.get("task_type", "general")
-    source = args.get("source", "manual")
-
+    values = dict(args or {})
+    event = str(values.get("event") or "before_invoke").strip().casefold()
+    source = str(values.get("source") or "manual")
+    task_description = str(values.get("task_description") or "")
     skill_name = f"auto_inject:{source}"
     entity_id = None
-    context_pack = None
-    principles: list[dict] = []
-    inject_memory_id = None
+    tracked_principles: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    # ── Step 1: skill_session_start ──
+    disabled_reason = ""
+    proposal_error = ""
+    context_mode = passive_context_mode()
+    memory_mode = passive_memory_mode()
+    try:
+        proposal_setting = proposal_mode()
+    except ProposalPolicyError as exc:
+        proposal_setting = "invalid"
+        proposal_error = str(exc) or "unknown_proposal_mode"
+    if event == "before_invoke" and context_mode == "off":
+        disabled_reason = "passive_context_disabled"
+    elif event == "after_invoke" and proposal_error:
+        disabled_reason = "invalid_proposal_mode"
+    elif event == "after_invoke" and memory_mode == "off":
+        disabled_reason = "passive_memory_disabled"
+    elif event == "after_invoke" and proposal_setting == "off":
+        disabled_reason = "proposal_gate_closed"
+    if disabled_reason:
+        request_scope = build_request_scope(
+            values,
+            "passive_context" if event == "before_invoke" else "passive_memory",
+        )
+        configuration_errors = (
+            [f"proposal_mode: {proposal_error}"]
+            if event == "after_invoke" and proposal_error
+            else None
+        )
+        payload: dict[str, Any] = {
+            "entity_id": None,
+            "skill_name": skill_name,
+            "event": event,
+            "status": "degraded" if configuration_errors else "skipped",
+            "reason": disabled_reason,
+            "mode": context_mode if event == "before_invoke" else memory_mode,
+            "queued": False,
+            "inject_memory_id": None,
+            "request_scope_id": request_scope["request_scope_id"],
+            "errors": configuration_errors,
+            "partial": bool(configuration_errors),
+        }
+        if event == "before_invoke":
+            payload.update(
+                {
+                    "ephemeral": True,
+                    "injection": "",
+                    "memory_ids": [],
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "proposal_mode": proposal_setting,
+                    "worker_scheduled": False,
+                    "candidate_count": None,
+                    "candidate_hashes": [],
+                    "outbox_id": None,
+                }
+            )
+        return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+
     try:
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
 
@@ -581,100 +654,65 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
             engine,
             {
                 "skill_name": skill_name,
-                "task_description": task_description,
+                "task_description": task_description or event,
                 "parent_entity_id": None,
+                "record_memory": False,
             },
         )
         start_data = json.loads(start_result[0].text)
         entity_id = start_data.get("entity_id")
-        principles = start_data.get("activated_principles", [])
-    except Exception as e:
-        errors.append(f"skill_session_start: {e}")
+        tracked_principles = list(start_data.get("activated_principles") or [])
+    except Exception as exc:
+        errors.append(f"skill_session_start: {exc}")
 
-    # ── Step 2: SoulLoop.pre_task_v2 → ContextEngine.supply() ──
+    values["event"] = event
     try:
-        from plastic_promise.loop.soul_loop import SoulLoop
+        if event == "before_invoke":
+            payload = await before_invoke(engine, values)
+            if not payload.get("principles") and tracked_principles:
+                payload["principles"] = tracked_principles
+            if not payload.get("principles"):
+                try:
+                    from plastic_promise.mcp.tools.principles import (
+                        handle_principle_activate,
+                    )
 
-        loop = SoulLoop(engine=engine)
-        pack = loop.pre_task_v2(task_description, task_type)
-        context_pack = {
-            "core": [
-                {"id": i.id, "content": i.content[:200], "relevance": i.relevance}
-                for i in getattr(pack, "core", [])
-            ],
-            "related": [
-                {"id": i.id, "content": i.content[:200], "relevance": i.relevance}
-                for i in getattr(pack, "related", [])
-            ],
-            "divergent": [
-                {"id": i.id, "content": i.content[:200], "relevance": i.relevance}
-                for i in getattr(pack, "divergent", [])
-            ],
-        }
-        # Extract principles from pack if not already populated
-        if not principles:
-            pack_principles = getattr(pack, "activated_principles", [])
-            if pack_principles:
-                principles = pack_principles
-    except Exception as e:
-        errors.append(f"pre_task_v2: {e}")
-        # Fallback: call principle_activate directly as safety net
-        try:
-            from plastic_promise.mcp.tools.principles import handle_principle_activate
-
-            pa_result = await handle_principle_activate(
-                engine,
-                {
-                    "task_type": task_type,
-                    "task_description": task_description,
-                },
-            )
-            pa_data = json.loads(pa_result[0].text)
-            principles = pa_data.get("activated", [])
-        except Exception:
-            pass
-
-    # ── Step 3: memory_store — inject record into memory pool ──
-    try:
-        from plastic_promise.core.memory_proposals import trusted_memory_origin
-        from plastic_promise.mcp.tools.memory import handle_memory_store
-
-        core_count = len(context_pack.get("core", [])) if context_pack else 0
-        principle_names = ", ".join(p.get("name", "?") for p in principles[:5])
-        content = (
-            f"[AUTO INJECT] {task_description}\n"
-            f"core_items: {core_count}\n"
-            f"activated_principles: {principle_names}"
-        )
-        tags = [
-            "auto_inject",
-            f"source:{source}",
-            f"skill:{skill_name}",
-            "task:done",
-        ]
-        if entity_id:
-            tags.append(f"entity:{entity_id}")
-        with trusted_memory_origin("auto_context_inject"):
-            store_result = await handle_memory_store(
-                engine,
-                {
-                    "content": content,
-                    "memory_type": "experience",
-                    "source": "auto_inject",
-                    "entity_ids": [entity_id] if entity_id else [],
-                    "tags": tags,
-                    "max_llm_calls": 0,  # skip LLM classify — auto_inject content is structured already
-                },
-            )
-        if store_result and len(store_result) > 0:
-            store_data = json.loads(store_result[0].text)
-            inject_memory_id = store_data.get("memory_id") if isinstance(store_data, dict) else None
+                    principle_result = await handle_principle_activate(
+                        engine,
+                        {
+                            "task_type": values.get("task_type") or "general",
+                            "task_description": task_description,
+                            "domain_hint": values.get("domain_hint"),
+                            "project_id": values.get("project_id"),
+                        },
+                    )
+                    principle_data = json.loads(principle_result[0].text)
+                    payload["principles"] = list(principle_data.get("activated") or [])
+                    if principle_data.get("error"):
+                        errors.append(f"principle_activate: {principle_data['error']}")
+                except Exception as exc:
+                    errors.append(f"principle_activate: {exc}")
+        elif event == "after_invoke":
+            payload = await after_invoke(engine, values)
         else:
-            inject_memory_id = None
-    except Exception as e:
-        errors.append(f"memory_store: {e}")
+            payload = {
+                "event": event,
+                "status": "rejected",
+                "reason": "unknown_event",
+                "queued": False,
+                "inject_memory_id": None,
+            }
+            errors.append(f"unknown event: {event}")
+    except Exception as exc:
+        payload = {
+            "event": event,
+            "status": "degraded",
+            "reason": "passive_memory_coordinator_failed",
+            "queued": False,
+            "inject_memory_id": None,
+        }
+        errors.append(f"passive_memory: {exc}")
 
-    # ── Step 4: skill_session_complete — auto-complete (inject is instant) ──
     if entity_id:
         try:
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
@@ -683,22 +721,19 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
                 engine,
                 {
                     "entity_id": entity_id,
-                    "outcome": "注入完成",
+                    "outcome": f"{event} completed",
                     "artifacts": [],
                 },
             )
-        except Exception as e:
-            errors.append(f"skill_session_complete: {e}")
+        except Exception as exc:
+            errors.append(f"skill_session_complete: {exc}")
 
-    # ── Build response ──
     response = {
         "entity_id": entity_id,
         "skill_name": skill_name,
-        "context_pack": context_pack,
-        "principles": principles,
-        "inject_memory_id": inject_memory_id,
-        "errors": errors if errors else None,
-        "partial": len(errors) > 0,
+        **payload,
+        "inject_memory_id": None,
+        "errors": errors or payload.get("errors"),
+        "partial": bool(errors or payload.get("partial") or payload.get("status") == "degraded"),
     }
-
-    return [TextContent(type="text", text=json.dumps(response, ensure_ascii=False, indent=2))]
+    return [TextContent(type="text", text=json.dumps(response, ensure_ascii=False))]

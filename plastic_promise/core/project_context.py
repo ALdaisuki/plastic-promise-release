@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import configparser
+import hashlib
 import os
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
-
+from urllib.parse import urlsplit
 
 VALID_PROJECT_POLICIES = {"strict", "balanced", "open"}
 VALID_VISIBILITIES = {"project", "global", "shared", "private"}
 TELEMETRY_SOURCES = {"maintenance_daemon", "skill_session", "step_auditor"}
 PROJECT_ID_ENV_KEYS = ("PLASTIC_PROJECT_ID", "PP_PROJECT_ID")
+_REPO_COMPONENT_RE = re.compile(r"[^a-z0-9._-]+")
 
 
 @dataclass
@@ -53,9 +58,7 @@ def infer_project_context(args: dict[str, Any] | None) -> ProjectContext:
 
     project_policy = str(values.get("project_policy") or "balanced")
     if project_policy not in VALID_PROJECT_POLICIES:
-        warnings.append(
-            f"invalid project_policy {project_policy!r}; using balanced"
-        )
+        warnings.append(f"invalid project_policy {project_policy!r}; using balanced")
         project_policy = "balanced"
 
     if visibility not in VALID_VISIBILITIES:
@@ -139,3 +142,87 @@ def _infer_env_project_id() -> str:
         if value and value.strip():
             return _normalize_project_id(value)
     return ""
+
+
+def infer_repository_project_id(cwd: str | os.PathLike[str] | None) -> str:
+    """Derive a clone-stable project id from origin, with a local path fallback."""
+
+    root = _repository_root(Path(cwd).expanduser() if cwd else Path.cwd())
+    remote = _origin_remote(root)
+    remote_identity = _remote_identity(remote)
+    if remote_identity:
+        return f"project:repo:{remote_identity}"
+    resolved = str(root.resolve(strict=False))
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
+    label = _REPO_COMPONENT_RE.sub("-", root.name.casefold()).strip("-._") or "repository"
+    return f"project:local:{label[:48]}-{digest}"
+
+
+def _repository_root(start: Path) -> Path:
+    candidate = start if start.is_dir() else start.parent
+    for path in (candidate, *candidate.parents):
+        if (path / ".git").exists():
+            return path
+    return candidate
+
+
+def _origin_remote(root: Path) -> str:
+    git_marker = root / ".git"
+    config_paths: list[Path] = []
+    if git_marker.is_dir():
+        config_paths.append(git_marker / "config")
+    elif git_marker.is_file():
+        try:
+            marker = git_marker.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            marker = ""
+        if marker.casefold().startswith("gitdir:"):
+            git_dir = Path(marker.split(":", 1)[1].strip()).expanduser()
+            if not git_dir.is_absolute():
+                git_dir = root / git_dir
+            config_paths.extend(
+                (
+                    git_dir / "config",
+                    git_dir.parent.parent / "config",
+                )
+            )
+    parser = configparser.ConfigParser(interpolation=None)
+    for config_path in config_paths:
+        try:
+            with config_path.open(encoding="utf-8", errors="replace") as handle:
+                parser.read_file(handle)
+        except (OSError, configparser.Error):
+            continue
+        if parser.has_option('remote "origin"', "url"):
+            return parser.get('remote "origin"', "url").strip()
+    return ""
+
+
+def _remote_identity(remote: str) -> str:
+    value = str(remote or "").strip()
+    if not value:
+        return ""
+    host = ""
+    path = ""
+    if "://" in value:
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return ""
+        host = str(parsed.hostname or "").casefold()
+        path = parsed.path
+    else:
+        match = re.fullmatch(r"(?:[^@\s]+@)?(?P<host>[^:\s]+):(?P<path>.+)", value)
+        if not match:
+            return ""
+        host = match.group("host").casefold()
+        path = match.group("path")
+    parts = [
+        _REPO_COMPONENT_RE.sub("-", part.casefold()).strip("-._")
+        for part in path.strip("/").removesuffix(".git").split("/")
+    ]
+    parts = [part for part in parts if part]
+    safe_host = _REPO_COMPONENT_RE.sub("-", host).strip("-._")
+    if not safe_host or len(parts) < 2:
+        return ""
+    return "/".join((safe_host, parts[-2], parts[-1]))[:180]

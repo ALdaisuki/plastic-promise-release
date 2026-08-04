@@ -18,6 +18,13 @@ pub struct WrrfConfig {
     pub windows: HashMap<String, usize>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaxV1Config {
+    pub policy: String,
+    pub vector_weight: f64,
+}
+
 fn validate_wrrf_config(config: &WrrfConfig) -> Result<(), String> {
     if config.k == 0 {
         return Err("invalid_k:must_be_positive_integer".into());
@@ -138,6 +145,99 @@ pub fn weighted_rrf_fuse(
             .partial_cmp(&left.1)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.0.cmp(&right.0))
+    });
+    Ok(fused)
+}
+
+/// Production max-v1 fusion shared with the Python retrieval path.
+pub fn weighted_max_v1_fuse(
+    channel_results: &[(String, Vec<(String, f64)>)],
+    vector_weight: f64,
+    has_vector: bool,
+) -> Result<Vec<(String, f64)>, String> {
+    if !vector_weight.is_finite() || !(0.0..=1.0).contains(&vector_weight) {
+        return Err("invalid_vector_weight".into());
+    }
+    let expected = ["vector", "bm25", "fts"];
+    if channel_results.len() != expected.len()
+        || expected.iter().any(|expected_channel| {
+            !channel_results
+                .iter()
+                .any(|(channel, _)| channel == expected_channel)
+        })
+    {
+        return Err("invalid_rankings:channel_mismatch".into());
+    }
+
+    for (channel, rankings) in channel_results {
+        for (id, score) in rankings {
+            if id.is_empty() {
+                return Err(format!("invalid_rankings:empty_id:{channel}"));
+            }
+            if !score.is_finite() {
+                return Err(format!("invalid_rankings:score:{channel}"));
+            }
+        }
+    }
+
+    let rows = |channel: &str| -> &Vec<(String, f64)> {
+        &channel_results
+            .iter()
+            .find(|(name, _)| name == channel)
+            .expect("validated max-v1 channel")
+            .1
+    };
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    let mut encounter_order: HashMap<String, usize> = HashMap::new();
+    let mut merge = |id: &str, score: f64| {
+        let next_order = encounter_order.len();
+        encounter_order.entry(id.to_string()).or_insert(next_order);
+        scores
+            .entry(id.to_string())
+            .and_modify(|current| *current = current.max(score))
+            .or_insert(score);
+    };
+
+    if has_vector && !rows("vector").is_empty() {
+        let text_weight = 1.0 - vector_weight;
+        for (id, score) in rows("vector") {
+            merge(id, score * vector_weight);
+        }
+        for (id, score) in rows("bm25") {
+            let weighted = if *score >= 0.90 {
+                *score
+            } else if *score >= 0.75 {
+                (score * text_weight).max(score * 0.9)
+            } else {
+                score * text_weight
+            };
+            merge(id, weighted);
+        }
+        for (id, score) in rows("fts") {
+            let weighted = if *score >= 0.85 {
+                *score
+            } else {
+                score * text_weight
+            };
+            merge(id, weighted);
+        }
+    } else {
+        for (id, score) in rows("bm25") {
+            merge(id, score * 0.8);
+        }
+        for (id, score) in rows("fts") {
+            let weighted = if *score >= 0.85 { *score } else { score * 0.8 };
+            merge(id, weighted);
+        }
+    }
+
+    let mut fused: Vec<(String, f64)> = scores.into_iter().collect();
+    fused.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| encounter_order[&left.0].cmp(&encounter_order[&right.0]))
     });
     Ok(fused)
 }

@@ -5,8 +5,8 @@ import importlib.util
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
-
 
 MODULE_NAME = "context_engine_core"
 _MISSING_MODULE = object()
@@ -46,25 +46,43 @@ def test_import_from_temp_artifact_restores_existing_module(tmp_path, monkeypatc
 def test_release_context_engine_core_import_contract(tmp_path):
     repo = Path(__file__).resolve().parents[1]
     crate_dir = repo / "rust" / "context-engine-core"
+    cargo = shutil.which("cargo")
+    assert cargo is not None, "cargo is required for the fail-closed release build smoke"
+    maturin = shutil.which("maturin")
+    assert maturin is not None, "maturin is required for the fail-closed release build smoke"
+    wheel_dir = tmp_path / "wheel"
 
     subprocess.run(
-        ["cargo", "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")],
+        [
+            maturin,
+            "build",
+            "--release",
+            "--manifest-path",
+            str(crate_dir / "Cargo.toml"),
+            "--interpreter",
+            sys.executable,
+            "--out",
+            str(wheel_dir),
+        ],
         cwd=repo,
         check=True,
     )
 
-    if sys.platform == "win32":
-        built = crate_dir / "target" / "release" / "context_engine_core.dll"
-    elif sys.platform == "darwin":
-        built = crate_dir / "target" / "release" / "libcontext_engine_core.dylib"
-    else:
-        built = crate_dir / "target" / "release" / "libcontext_engine_core.so"
-
-    assert built.exists(), f"release extension artifact not found: {built}"
-
     extension_suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
     importable = tmp_path / f"context_engine_core{extension_suffix}"
-    shutil.copy2(built, importable)
+    wheels = list(wheel_dir.glob("*.whl"))
+    assert len(wheels) == 1, f"expected one Rust wheel, found: {wheels}"
+    with zipfile.ZipFile(wheels[0]) as archive:
+        extension_members = [
+            name
+            for name in archive.namelist()
+            if Path(name).name.startswith("context_engine_core")
+            and Path(name).suffix in {".so", ".pyd"}
+        ]
+        assert len(extension_members) == 1, (
+            f"expected one compiled extension in Rust wheel, found: {extension_members}"
+        )
+        importable.write_bytes(archive.read(extension_members[0]))
 
     module = _import_from_temp_artifact(importable)
 

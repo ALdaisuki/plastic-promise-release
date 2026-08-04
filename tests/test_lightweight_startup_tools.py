@@ -85,9 +85,9 @@ def test_skill_session_start_uses_lightweight_creation_only_memory():
 
     engine = MagicMock()
     engine.register_entity.return_value = {
-        "node_id": "skill_session:skill:brainstorming:2026-01-01T00:00:00",
+        "node_id": "skill_session:skill:grill-with-docs:2026-01-01T00:00:00",
         "type": "skill_session",
-        "name": "brainstorming",
+        "name": "grill-with-docs",
         "is_new": True,
         "edges_created": 0,
     }
@@ -98,7 +98,7 @@ def test_skill_session_start_uses_lightweight_creation_only_memory():
             handle_skill_session_start(
                 engine,
                 {
-                    "skill_name": "brainstorming",
+                    "skill_name": "grill-with-docs",
                     "task_description": "lightweight startup",
                 },
             )

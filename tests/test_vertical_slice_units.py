@@ -1,5 +1,9 @@
 """Tests for 7-unit vertical slice — query_expander, decay_ranking, reranker, MMR."""
 
+import pytest
+
+import plastic_promise.core.reranker as reranker_module
+
 
 class TestQueryExpander:
     def test_chinese_substring_match(self):
@@ -138,7 +142,6 @@ class TestReranker:
 
     def test_ollama_reranker_default_uses_generation_model(self, monkeypatch):
         import json
-        import urllib.request
 
         from plastic_promise.core.reranker import MultiProviderReranker
 
@@ -148,13 +151,15 @@ class TestReranker:
             def read(self):
                 return json.dumps({"response": '{"scores": [100]}'}).encode()
 
-        def fake_urlopen(req, timeout):
+        def fake_urlopen(req, *, timeout, failure_reason):
             seen["url"] = req.full_url
             payload = json.loads(req.data.decode("utf-8"))
             seen["model"] = payload["model"]
+            seen["timeout"] = timeout
+            seen["failure_reason"] = failure_reason
             return FakeResponse()
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(reranker_module, "_safe_urlopen", fake_urlopen)
         monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0")
         monkeypatch.delenv("PP_RERANK_MODEL", raising=False)
 
@@ -162,7 +167,58 @@ class TestReranker:
 
         assert seen["url"] == "http://127.0.0.1:11434/api/generate"
         assert seen["model"] == "qwen2.5:3b"
+        assert seen["failure_reason"] == "ollama_redirect_blocked"
+        assert seen["timeout"] > 0
         assert scores == {0: 1.0}
+
+    def test_ollama_reranker_uses_safe_opener(self, monkeypatch):
+        import urllib.request
+
+        from plastic_promise.core.reranker import (
+            MultiProviderReranker,
+            _NoRedirectHandler,
+            _RerankFailure,
+        )
+
+        opener_handlers = []
+
+        class RedirectingOpener:
+            def __init__(self, handlers):
+                self._redirect_handler = next(
+                    handler for handler in handlers if isinstance(handler, _NoRedirectHandler)
+                )
+
+            def open(self, request, timeout):
+                del timeout
+                target = "https://evil.example/capture"
+                return self._redirect_handler.redirect_request(
+                    request,
+                    object(),
+                    302,
+                    "Found",
+                    {"Location": target},
+                    target,
+                )
+
+        def fake_build_opener(*handlers):
+            opener_handlers.extend(handlers)
+            return RedirectingOpener(handlers)
+
+        monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+        with pytest.raises(_RerankFailure, match="^ollama_redirect_blocked$"):
+            MultiProviderReranker()._rerank_ollama(
+                "private query",
+                [("id", "private document", 0.5)],
+                9999999999,
+            )
+
+        proxy = next(
+            handler
+            for handler in opener_handlers
+            if isinstance(handler, urllib.request.ProxyHandler)
+        )
+        assert proxy.proxies == {}
 
     def test_ollama_reranker_parses_qwen_ellipsis_response(self):
         from plastic_promise.core.reranker import _parse_ollama_score_response
@@ -173,7 +229,6 @@ class TestReranker:
 
     def test_jina_auth_header_is_optional(self, monkeypatch):
         import json
-        import urllib.request
 
         from plastic_promise.core.reranker import MultiProviderReranker
 
@@ -183,14 +238,16 @@ class TestReranker:
             def read(self):
                 return json.dumps({"results": [{"index": 0, "relevance_score": 0.9}]}).encode()
 
-        def fake_urlopen(req, timeout):
+        def fake_urlopen(req, *, timeout, failure_reason):
             seen["auth"] = req.get_header("Authorization")
+            seen["failure_reason"] = failure_reason
             return FakeResponse()
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(reranker_module, "_safe_urlopen", fake_urlopen)
         monkeypatch.delenv("JINA_API_KEY", raising=False)
         MultiProviderReranker()._rerank_jina("q", [("id", "content", 0.5)], 9999999999)
         assert seen["auth"] is None
+        assert seen["failure_reason"] == "jina_redirect_blocked"
 
         monkeypatch.setenv("JINA_API_KEY", "test-key")
         MultiProviderReranker()._rerank_jina("q", [("id", "content", 0.5)], 9999999999)
@@ -198,7 +255,6 @@ class TestReranker:
 
     def test_siliconflow_auth_header_is_optional(self, monkeypatch):
         import json
-        import urllib.request
 
         from plastic_promise.core.reranker import MultiProviderReranker
 
@@ -208,18 +264,116 @@ class TestReranker:
             def read(self):
                 return json.dumps({"results": [{"index": 0, "relevance_score": 0.9}]}).encode()
 
-        def fake_urlopen(req, timeout):
+        def fake_urlopen(req, *, timeout, failure_reason):
             seen["auth"] = req.get_header("Authorization")
+            seen["failure_reason"] = failure_reason
             return FakeResponse()
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(reranker_module, "_safe_urlopen", fake_urlopen)
         monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
         MultiProviderReranker()._rerank_siliconflow("q", [("id", "content", 0.5)], 9999999999)
         assert seen["auth"] is None
+        assert seen["failure_reason"] == "siliconflow_redirect_blocked"
 
         monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
         MultiProviderReranker()._rerank_siliconflow("q", [("id", "content", 0.5)], 9999999999)
         assert seen["auth"] == "Bearer test-key"
+
+    def test_legacy_response_body_is_size_bounded(self):
+        from plastic_promise.core.reranker import (
+            _MAX_LEGACY_RESPONSE_BYTES,
+            _read_legacy_response,
+            _RerankFailure,
+        )
+
+        class OversizedResponse:
+            headers = {"Content-Length": str(_MAX_LEGACY_RESPONSE_BYTES + 1)}
+
+            def read(self, *_args):
+                raise AssertionError("oversized response should be rejected before reading")
+
+        with pytest.raises(_RerankFailure, match="^jina_response_too_large$"):
+            _read_legacy_response(
+                OversizedResponse(),
+                provider="jina",
+                deadline=9999999999,
+            )
+
+    def test_legacy_response_body_enforces_total_deadline(self, monkeypatch):
+        from plastic_promise.core.reranker import _read_legacy_response, _RerankFailure
+
+        monkeypatch.setattr(reranker_module.time, "monotonic", lambda: 10.0)
+        with pytest.raises(_RerankFailure, match="^siliconflow_total_timeout$"):
+            _read_legacy_response(
+                object(),
+                provider="siliconflow",
+                deadline=9.0,
+            )
+
+    @pytest.mark.parametrize(
+        ("method_name", "env_name", "failure_reason"),
+        [
+            ("_rerank_jina", "JINA_API_KEY", "jina_redirect_blocked"),
+            ("_rerank_siliconflow", "SILICONFLOW_API_KEY", "siliconflow_redirect_blocked"),
+        ],
+    )
+    def test_legacy_provider_blocks_cross_host_redirect(
+        self,
+        monkeypatch,
+        method_name,
+        env_name,
+        failure_reason,
+    ):
+        import urllib.request
+
+        from plastic_promise.core.reranker import (
+            MultiProviderReranker,
+            _NoRedirectHandler,
+            _RerankFailure,
+        )
+
+        opened = []
+        opener_handlers = []
+
+        class RedirectingOpener:
+            def __init__(self, handlers):
+                self._redirect_handler = next(
+                    handler for handler in handlers if isinstance(handler, _NoRedirectHandler)
+                )
+
+            def open(self, request, timeout):
+                opened.append((request.full_url, request.get_header("Authorization"), timeout))
+                target = "https://evil.example/capture"
+                return self._redirect_handler.redirect_request(
+                    request,
+                    object(),
+                    302,
+                    "Found",
+                    {"Location": target},
+                    target,
+                )
+
+        def fake_build_opener(*handlers):
+            opener_handlers.extend(handlers)
+            return RedirectingOpener(handlers)
+
+        monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+        monkeypatch.setenv(env_name, "test-key")
+
+        with pytest.raises(_RerankFailure, match=f"^{failure_reason}$"):
+            getattr(MultiProviderReranker(), method_name)("q", [("id", "content", 0.5)], 9999999999)
+
+        # Only the fixed provider endpoint was opened; urllib never created a
+        # second request for the cross-host Location.
+        assert len(opened) == 1
+        assert opened[0][1] == "Bearer test-key"
+        assert not any("evil.example" in url for url, _auth, _timeout in opened)
+        proxy = next(
+            handler
+            for handler in opener_handlers
+            if isinstance(handler, urllib.request.ProxyHandler)
+        )
+        assert proxy.proxies == {}
 
 
 class TestMMRFix:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -13,7 +14,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from plastic_promise.core.memory_index import read_persisted_index_material
+from plastic_promise.core.memory_index import (
+    effective_embedding_model_name,
+    read_persisted_index_material,
+)
+from plastic_promise.core.provider_http import ProviderHTTPError
 from plastic_promise.core.synthesis import SynthesisStore
 from plastic_promise.core.synthesis_retrieval import (
     read_memory_version,
@@ -35,6 +40,8 @@ _SYNTHESIS_INDEX_JOB_SCHEMA = "synthesis-index/v1"
 _TEST_INDEX_FAILURE_SCHEMA = "test-index-failure/v1"
 _TEST_MODE_VALUES = frozenset({"1", "true", "yes", "on"})
 _TEST_INDEX_FAILURE_LOCK_TIMEOUT_SECONDS = 5.0
+_MAX_OUTBOX_ATTEMPTS = 8
+_INDEX_OUTBOX_TOOLS = frozenset({"memory_index", "synthesis_index"})
 
 
 @dataclass(frozen=True)
@@ -55,6 +62,14 @@ class ReplayReport:
     skipped: int
     done_ids: tuple[str, ...]
     failed_ids: tuple[str, ...]
+    blocked_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RequeueReport:
+    requested: int
+    requeued_ids: tuple[str, ...]
+    rejected_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -81,6 +96,10 @@ class _LeaseOwnershipLost(RuntimeError):
 
 class InjectedIndexFailure(RuntimeError):
     """Test-only failure injected exactly before a checked index side effect."""
+
+
+class IndexJobValidationError(ValueError):
+    """A durable index job is malformed and cannot succeed on retry."""
 
 
 def _json(value: object) -> str:
@@ -503,12 +522,16 @@ def _runtime_embedder(engine: Any, *, unavailable_reason: str):
     embedder = state.get("_embedder") if isinstance(state, dict) else None
     if embedder is None or not callable(getattr(embedder, "embed", None)):
         raise RuntimeError(unavailable_reason)
-    model_name = str(
-        getattr(embedder, "model_name", None)
-        or getattr(embedder, "model", None)
-        or embedder.__class__.__name__
-    )
-    return embedder, model_name
+    model_name = effective_embedding_model_name(embedder)
+    dimension = getattr(embedder, "dim", None)
+    if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
+        try:
+            dimension = int(os.environ.get("PP_EMBEDDING_DIM", "1024"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("embedding_dimension_unavailable") from exc
+    if dimension <= 0:
+        raise RuntimeError("embedding_dimension_unavailable")
+    return embedder, model_name, dimension
 
 
 def _ordinary_index_state(
@@ -574,7 +597,7 @@ def _parse_memory_index_job(
         expected_hash_key = "expected_embedding_hash"
         project_id = ""
     else:
-        raise ValueError("invalid_index_job_schema")
+        raise IndexJobValidationError("invalid_index_job_schema")
 
     string_fields = {
         "action",
@@ -587,7 +610,7 @@ def _parse_memory_index_job(
     if set(payload) != expected_keys or any(
         type(payload.get(field)) is not str for field in string_fields
     ):
-        raise ValueError("invalid_memory_index_payload")
+        raise IndexJobValidationError("invalid_memory_index_payload")
 
     memory_id = payload["memory_id"].strip()
     action = payload["action"].strip().casefold()
@@ -606,7 +629,7 @@ def _parse_memory_index_job(
         or memory_version < 0
         or (job_schema == _MEMORY_INDEX_JOB_SCHEMA and not project_id)
     ):
-        raise ValueError("invalid_memory_index_payload")
+        raise IndexJobValidationError("invalid_memory_index_payload")
     return _MemoryIndexJob(
         schema=job_schema,
         action=action,
@@ -742,7 +765,7 @@ def _replay_memory_index_job(
     ):
         return
 
-    embedder, model_name = _runtime_embedder(
+    embedder, model_name, embedding_dimension = _runtime_embedder(
         engine,
         unavailable_reason="memory_index_embedder_unavailable",
     )
@@ -770,7 +793,7 @@ def _replay_memory_index_job(
         return
 
     vector = embedder.embed(material.vector_text)
-    if not isinstance(vector, list) or len(vector) != 1024 or not any(vector):
+    if not isinstance(vector, list) or len(vector) != embedding_dimension or not any(vector):
         raise RuntimeError("memory_index_embedding_invalid")
 
     with _index_state_lock(conn, lease_owner=lease_owner):
@@ -819,7 +842,7 @@ def _replay_index_job(
     if conn is None:
         raise RuntimeError("canonical_store_unavailable")
     if job_schema != _SYNTHESIS_INDEX_JOB_SCHEMA:
-        raise ValueError("invalid_index_job_schema")
+        raise IndexJobValidationError("invalid_index_job_schema")
     memory_id = str(payload.get("memory_id") or "")
     revision = payload.get("revision")
     action = str(payload.get("action") or "")
@@ -830,7 +853,7 @@ def _replay_index_job(
         or revision < 1
         or action not in _INDEX_ACTIONS
     ):
-        raise ValueError("invalid_synthesis_index_payload")
+        raise IndexJobValidationError("invalid_synthesis_index_payload")
 
     control = _index_control_state(conn, memory_id)
     if control.eligible and (action != "upsert" or control.revision != revision):
@@ -848,7 +871,7 @@ def _replay_index_job(
     memory = _canonical_memory(engine, memory_id)
     if memory is None:
         raise RuntimeError("canonical_memory_unavailable")
-    embedder, model_name = _runtime_embedder(
+    embedder, model_name, embedding_dimension = _runtime_embedder(
         engine,
         unavailable_reason="synthesis_embedder_unavailable",
     )
@@ -856,7 +879,7 @@ def _replay_index_job(
     if material is None:
         raise RuntimeError("synthesis_index_material_unavailable")
     vector = embedder.embed(material.vector_text)
-    if not isinstance(vector, list) or len(vector) != 1024 or not any(vector):
+    if not isinstance(vector, list) or len(vector) != embedding_dimension or not any(vector):
         raise RuntimeError("synthesis_embedding_invalid")
 
     after_embedding = _index_control_state(conn, memory_id)
@@ -922,6 +945,54 @@ def _replay_outbox_jobs(
     limit: int,
     lease_seconds: int | None,
 ) -> ReplayReport:
+    # A bare generation is immutable. Replay is enabled only after ContextEngine
+    # has validated and opened the explicitly configured generation-bound live
+    # view; merely setting a writable-looking path must not consume jobs.
+    live_base_watermark: int | None = None
+    if os.environ.get("PLASTIC_LANCEDB_GENERATION_ROOT"):
+        if not os.environ.get("PLASTIC_LANCEDB_LIVE_ROOT"):
+            return ReplayReport(0, 0, 0, 0, 0, (), (), ())
+        ensure_heavy = getattr(engine, "ensure_heavy_init", None)
+        if callable(ensure_heavy):
+            ensure_heavy()
+        sync_status = getattr(engine, "_lancedb_sync_status", None)
+        lancedb = getattr(engine, "lancedb_store", None)
+        if (
+            not isinstance(sync_status, dict)
+            or sync_status.get("success") is not True
+            or sync_status.get("status") != "generation_live_index"
+            or lancedb is None
+            or getattr(lancedb, "read_only", False) is True
+        ):
+            return ReplayReport(
+                0,
+                0,
+                0,
+                1,
+                0,
+                (),
+                ("generation_live_index_unavailable",),
+                (),
+            )
+        live_lag = sync_status.get("lag")
+        live_base_watermark = (
+            live_lag.get("base_outbox_watermark") if isinstance(live_lag, dict) else None
+        )
+        if (
+            isinstance(live_base_watermark, bool)
+            or not isinstance(live_base_watermark, int)
+            or live_base_watermark < 0
+        ):
+            return ReplayReport(
+                0,
+                0,
+                0,
+                1,
+                0,
+                (),
+                ("generation_live_index_watermark_unavailable",),
+                (),
+            )
     conn = _canonical_connection(engine)
     if conn is None:
         return ReplayReport(0, 0, 0, 1, 0, (), ("canonical_store_unavailable",))
@@ -933,17 +1004,29 @@ def _replay_outbox_jobs(
     )
     limit = max(0, min(int(limit), 1000))
     now, lease_cutoff = _replay_window(lease_seconds)
+    live_window = ""
+    query_parameters: tuple[Any, ...] = (tool_name, now, lease_cutoff, limit)
+    if live_base_watermark is not None:
+        live_window = " AND rowid > ?"
+        query_parameters = (
+            tool_name,
+            live_base_watermark,
+            now,
+            lease_cutoff,
+            limit,
+        )
     rows = conn.execute(
         "SELECT outbox_id, payload_json, metadata_json, attempt_count FROM store_outbox "
-        "WHERE tool_name = ? AND ("
+        f"WHERE tool_name = ?{live_window} AND ("
         "(status = 'pending' AND (next_attempt_at = '' OR next_attempt_at <= ?)) OR "
         "(status = 'processing' AND updated_at <= ?)) "
         "ORDER BY created_at, outbox_id LIMIT ?",
-        (tool_name, now, lease_cutoff, limit),
+        query_parameters,
     ).fetchall()
     claimed = succeeded = failed = skipped = 0
     done_ids: list[str] = []
     failed_ids: list[str] = []
+    blocked_ids: list[str] = []
     for outbox_id_raw, payload_json, metadata_json, attempt_count_raw in rows:
         outbox_id = str(outbox_id_raw)
         claimed_at = utc_now()
@@ -957,13 +1040,16 @@ def _replay_outbox_jobs(
             continue
         claimed += 1
         try:
-            payload = json.loads(payload_json)
-            metadata = json.loads(metadata_json)
+            try:
+                payload = json.loads(payload_json)
+                metadata = json.loads(metadata_json)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise IndexJobValidationError("invalid_index_job_json") from exc
             schema = metadata.get("job_schema") if isinstance(metadata, dict) else None
             if schema not in accepted_schemas:
-                raise ValueError("invalid_index_job_schema")
+                raise IndexJobValidationError("invalid_index_job_schema")
             if not isinstance(payload, dict):
-                raise ValueError(invalid_payload_reason)
+                raise IndexJobValidationError(invalid_payload_reason)
             replay_job(
                 engine,
                 payload,
@@ -972,22 +1058,34 @@ def _replay_outbox_jobs(
             )
         except Exception as exc:
             attempts = max(0, int(attempt_count_raw or 0)) + 1
-            delay_seconds = min(300, 2 ** min(attempts, 8))
-            next_attempt = (
-                (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds))
-                .isoformat()
-                .replace("+00:00", "Z")
-            )
+            blocked = _blocked_outbox_failure(exc)
+            permanent = _permanent_outbox_failure(exc) or attempts >= _MAX_OUTBOX_ATTEMPTS
+            if blocked:
+                status = "blocked"
+                next_attempt = ""
+            elif permanent:
+                status = "failed"
+                next_attempt = ""
+            else:
+                status = "pending"
+                delay_seconds = min(300, 2 ** min(attempts, 8))
+                next_attempt = (
+                    (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds))
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            error_class, error_message = _safe_outbox_error(exc)
             cursor = conn.execute(
-                "UPDATE store_outbox SET status = 'pending', attempt_count = ?, "
+                "UPDATE store_outbox SET status = ?, attempt_count = ?, "
                 "updated_at = ?, next_attempt_at = ?, error_class = ?, error_message = ? "
                 "WHERE outbox_id = ? AND status = 'processing' AND updated_at = ?",
                 (
+                    status,
                     attempts,
                     utc_now(),
                     next_attempt,
-                    exc.__class__.__name__[:128],
-                    str(exc)[:500],
+                    error_class,
+                    error_message,
                     outbox_id,
                     claimed_at,
                 ),
@@ -996,6 +1094,8 @@ def _replay_outbox_jobs(
             if cursor.rowcount == 1:
                 failed += 1
                 failed_ids.append(outbox_id)
+                if blocked:
+                    blocked_ids.append(outbox_id)
             else:
                 skipped += 1
         else:
@@ -1019,7 +1119,212 @@ def _replay_outbox_jobs(
         skipped=skipped,
         done_ids=tuple(done_ids),
         failed_ids=tuple(failed_ids),
+        blocked_ids=tuple(blocked_ids),
     )
+
+
+_SAFE_OUTBOX_REASON = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}\Z")
+_SAFE_PROVIDER_REASONS = frozenset(
+    {
+        "provider_http_api_key_missing",
+        "provider_http_circuit_open",
+        "provider_http_client_closed",
+        "provider_http_deadline_exceeded",
+        "provider_http_documentation_base_url",
+        "provider_http_forbidden",
+        "provider_http_invalid_base_url",
+        "provider_http_invalid_config",
+        "provider_http_invalid_deadline",
+        "provider_http_invalid_endpoint",
+        "provider_http_invalid_json",
+        "provider_http_invalid_payload",
+        "provider_http_invalid_provider",
+        "provider_http_invalid_response",
+        "provider_http_invalid_utf8",
+        "provider_http_json_object_required",
+        "provider_http_request_failed",
+        "provider_http_request_too_large",
+        "provider_http_response_too_large",
+        "provider_http_retry_exhausted",
+        "provider_http_unauthorized",
+    }
+)
+_SAFE_INDEX_JOB_REASONS = frozenset(
+    {
+        "invalid_index_job_json",
+        "invalid_index_job_schema",
+        "invalid_memory_index_payload",
+        "invalid_synthesis_index_payload",
+    }
+)
+_PERMANENT_RUNTIME_REASONS = frozenset(
+    {
+        "embedding_response_count_mismatch",
+        "embedding_response_dimension_mismatch",
+        "embedding_response_index_invalid",
+        "embedding_response_schema_invalid",
+        "embedding_response_value_invalid",
+        "embedding_response_zero_vector",
+        "memory_index_embedding_invalid",
+        "synthesis_embedding_invalid",
+    }
+)
+_PERMANENT_VALUE_REASONS = frozenset(
+    {
+        "embedding_input_too_large",
+        "embedding_input_utf8_invalid",
+        "embedding_total_input_too_large",
+    }
+)
+_BLOCKED_VALUE_REASONS = frozenset(
+    {
+        "embedding_plan_contract_mismatch",
+        "embedding_plan_mode_mismatch",
+        "embedding_plan_model_mismatch",
+        "structure_chunking_source_too_large",
+    }
+)
+_BLOCKED_PROVIDER_REASONS = frozenset(
+    {
+        "provider_http_api_key_missing",
+        "provider_http_documentation_base_url",
+        "provider_http_forbidden",
+        "provider_http_invalid_base_url",
+        "provider_http_invalid_config",
+        "provider_http_invalid_deadline",
+        "provider_http_invalid_endpoint",
+        "provider_http_invalid_provider",
+        "provider_http_unauthorized",
+    }
+)
+_PERMANENT_PROVIDER_REASONS = frozenset(
+    {
+        "provider_http_invalid_payload",
+        "provider_http_request_too_large",
+    }
+)
+
+
+def _safe_outbox_error(exc: Exception) -> tuple[str, str]:
+    """Return bounded diagnostics that cannot persist provider content or secrets."""
+
+    error_class = exc.__class__.__name__
+    if not _SAFE_OUTBOX_REASON.fullmatch(error_class):
+        error_class = "OperationError"
+    if isinstance(exc, ProviderHTTPError):
+        reason = exc.reason
+        allowed_reasons = _SAFE_PROVIDER_REASONS
+    elif isinstance(exc, IndexJobValidationError):
+        reason = str(exc)
+        allowed_reasons = _SAFE_INDEX_JOB_REASONS
+    elif isinstance(exc, RuntimeError):
+        reason = str(exc)
+        allowed_reasons = _PERMANENT_RUNTIME_REASONS
+    elif isinstance(exc, ValueError):
+        reason = str(exc)
+        allowed_reasons = _PERMANENT_VALUE_REASONS | _BLOCKED_VALUE_REASONS
+    else:
+        reason = None
+        allowed_reasons = frozenset()
+    if not isinstance(reason, str) or reason not in allowed_reasons:
+        reason = "operation_failed"
+    return error_class[:128], reason
+
+
+def _permanent_outbox_failure(exc: Exception) -> bool:
+    if isinstance(exc, IndexJobValidationError):
+        return True
+    if isinstance(exc, RuntimeError) and str(exc) in _PERMANENT_RUNTIME_REASONS:
+        return True
+    if isinstance(exc, ValueError) and str(exc) in _PERMANENT_VALUE_REASONS:
+        return True
+    if not isinstance(exc, ProviderHTTPError):
+        return False
+    reason = exc.reason
+    if not isinstance(reason, str):
+        return False
+    if reason in _PERMANENT_PROVIDER_REASONS:
+        return True
+    status_code = exc.status_code
+    return (
+        reason == "provider_http_request_failed"
+        and isinstance(status_code, int)
+        and not isinstance(status_code, bool)
+        and 300 <= status_code < 500
+        and status_code not in {408, 429}
+    )
+
+
+def _blocked_outbox_failure(exc: Exception) -> bool:
+    if isinstance(exc, ProviderHTTPError):
+        return exc.reason in _BLOCKED_PROVIDER_REASONS
+    return isinstance(exc, ValueError) and str(exc) in _BLOCKED_VALUE_REASONS
+
+
+def requeue_index_outbox_jobs(
+    conn: sqlite3.Connection,
+    outbox_ids: list[str] | tuple[str, ...],
+) -> RequeueReport:
+    """Explicitly requeue selected terminal index jobs after operator remediation."""
+
+    if conn is None or not callable(getattr(conn, "execute", None)):
+        raise TypeError("canonical_connection_required")
+    if conn.in_transaction:
+        raise RuntimeError("canonical_transaction_open")
+    if not isinstance(outbox_ids, (list, tuple)):
+        raise TypeError("outbox_ids_must_be_sequence")
+    normalized: list[str] = []
+    for value in outbox_ids:
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > 256
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise ValueError("invalid_outbox_id")
+        if value not in normalized:
+            normalized.append(value)
+    if not normalized:
+        raise ValueError("outbox_ids_required")
+    if len(normalized) > 1000:
+        raise ValueError("too_many_outbox_ids")
+
+    ensure_traceability_schema(conn)
+    placeholders = ",".join("?" for _ in normalized)
+    rows = conn.execute(
+        "SELECT outbox_id, tool_name, status FROM store_outbox "
+        f"WHERE outbox_id IN ({placeholders})",
+        tuple(normalized),
+    ).fetchall()
+    eligible = {
+        str(outbox_id)
+        for outbox_id, tool_name, status in rows
+        if str(tool_name) in _INDEX_OUTBOX_TOOLS and str(status) in {"blocked", "failed"}
+    }
+    requeued_ids = tuple(value for value in normalized if value in eligible)
+    rejected_ids = tuple(value for value in normalized if value not in eligible)
+    if not requeued_ids:
+        return RequeueReport(len(normalized), (), rejected_ids)
+
+    now = utc_now()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for outbox_id in requeued_ids:
+            cursor = conn.execute(
+                "UPDATE store_outbox SET status = 'pending', attempt_count = 0, "
+                "updated_at = ?, next_attempt_at = '', error_class = '', error_message = '' "
+                "WHERE outbox_id = ? AND tool_name IN ('memory_index', 'synthesis_index') "
+                "AND status IN ('blocked', 'failed')",
+                (now, outbox_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("outbox_requeue_race")
+        conn.commit()
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    return RequeueReport(len(normalized), requeued_ids, rejected_ids)
 
 
 def replay_memory_index_jobs(

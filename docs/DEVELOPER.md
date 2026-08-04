@@ -45,16 +45,16 @@ plastic-promise market status
 
 ### HookProvider — Workflow Hooks
 
-Hook into SuperPowers pipeline stages. Declare in `pack.yml`:
+Hook into the pinned official workflow stages. Declare in `pack.yml`:
 
 ```yaml
 hooks:
-  on_before_dispatch:
+  on_before_research:
     method: mcp
     command: codebase-memory-mcp
     tool: trace_path
     timeout: 30
-  on_transition_write_execute:
+  on_before_implement:
     method: cli
     command: my-tool
     timeout: 10
@@ -68,7 +68,7 @@ on_after_<stage>
 on_transition_<from>_<to>
 ```
 
-Common stages include `brainstorming`, `exemplar-research`, `using-git-worktrees`, `writing-plans`, `executing-plans`, `subagent-driven-development`, `test-driven-development`, `verification-before-completion`, and `finishing-a-development-branch`.
+Supported stage names are the registered Matt Pocock skills, including `grill-with-docs`, `to-spec`, `to-tickets`, `implement`, `tdd`, `code-review`, `diagnosing-bugs`, `research`, `prototype`, `triage`, `wayfinder`, `improve-codebase-architecture`, `domain-modeling`, `codebase-design`, and `resolving-merge-conflicts`. Removed legacy stage names are not valid extension slots.
 
 ### ToolProvider — MCP Tools
 

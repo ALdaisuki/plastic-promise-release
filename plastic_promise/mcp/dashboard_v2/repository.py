@@ -9,11 +9,12 @@ import json
 import re
 import sqlite3
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from plastic_promise.core.chunking import chunk_manifest_hash
 from plastic_promise.core.memory_index import chunk_manifest_source_hash
+from plastic_promise.core.recall_quality import LIVE_TRACE_METADATA_KEY
 from plastic_promise.core.retrieval_explain import (
     METADATA_KEY,
     sanitize_retrieval_explain_snapshot,
@@ -170,6 +171,66 @@ def _span_duration(started_at: object, ended_at: object) -> tuple[float | None, 
     return round(duration_ms, 3), "measured"
 
 
+def _age_seconds(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
+    return round(max(age, 0.0), 3)
+
+
+def _metric_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 0.0 <= number <= 1.0 else None
+
+
+def _quality_case(row: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = _json_object(row.pop("metadata_json", "{}"))
+    quality = metadata.get(LIVE_TRACE_METADATA_KEY)
+    if not isinstance(quality, Mapping):
+        return None
+    hit_at = quality.get("hit_at")
+    projected_hits = (
+        {
+            str(key): bool(value)
+            for key, value in hit_at.items()
+            if str(key).isdigit() and isinstance(value, bool)
+        }
+        if isinstance(hit_at, Mapping)
+        else {}
+    )
+    duration_ms, duration_status = _span_duration(row.get("started_at"), row.get("ended_at"))
+    return {
+        "call_id": str(row.get("call_id") or "")[:200],
+        "tool_name": str(row.get("tool_name") or "")[:100],
+        "status": str(row.get("status") or "")[:50],
+        "degraded": bool(row.get("degraded")),
+        "started_at": str(row.get("started_at") or ""),
+        "duration_ms": duration_ms,
+        "duration_status": duration_status,
+        "case_id": str(quality.get("case_id") or "")[:200],
+        "dataset_revision": str(quality.get("dataset_revision") or "")[:100],
+        "runtime_mode": str(quality.get("runtime_mode") or "unknown")[:50],
+        "ranked_count": _bounded_int(quality.get("ranked_count")) or 0,
+        "relevant_rank": _bounded_int(quality.get("relevant_rank")),
+        "hit_at": projected_hits,
+        "mrr": _metric_number(quality.get("mrr")),
+        "forbidden_hit": bool(quality.get("forbidden_hit")),
+        "evidence_status": str(quality.get("evidence_status") or "")[:100],
+    }
+
+
 def _project_call_span(row: dict[str, Any]) -> dict[str, Any]:
     row["degraded"] = bool(row["degraded"])
     row["metadata"] = _metadata_object(row.pop("metadata_json"))
@@ -215,6 +276,54 @@ _MEMORY_COLUMNS = """
     created_by_call_id, origin_kind, origin_uri, origin_ref, metadata_json,
     embedding_text, l0_abstract, l1_summary
 """
+
+_PASSIVE_EVENT_NAMES = (
+    "passive_context_injected",
+    "passive_context_shadowed",
+    "passive_context_skipped",
+    "passive_memory_after_invoke",
+    "passive_memory_proposals_created",
+    "passive_memory_proposal_retry",
+)
+_PASSIVE_DERIVED_JOB_KINDS = ("passive_semantic", "proposal_promotion")
+_ACTIVE_DERIVED_STATUSES = frozenset({"pending", "retry_wait", "leased"})
+_MAX_DERIVED_FAILURE_CODES = 8
+_PROPOSAL_STATUSES = frozenset({"pending", "adopted", "rejected", "expired"})
+_PROPOSAL_CATEGORIES = frozenset({"fact", "preference", "decision"})
+_PROPOSAL_COLUMNS = """
+    proposal.proposal_id, proposal.project_id, proposal.visibility,
+    proposal.origin_visibility, proposal.content, proposal.content_hash,
+    proposal.category, proposal.origin_role, proposal.origin_turn_hash,
+    proposal.origin_call_id, proposal.status, proposal.approval_actor,
+    proposal.approval_call_id, proposal.promoted_memory_id,
+    proposal.rejection_reason, proposal.metadata_json, proposal.expires_at,
+    proposal.redacted_at, proposal.created_at, proposal.updated_at
+"""
+_PROPOSAL_SCORE_NAMES = (
+    "observation_count",
+    "distinct_session_count",
+    "distinct_turn_count",
+    "exposure_count",
+    "distinct_call_count",
+    "quality_score",
+    "principle_score",
+    "memory_similarity",
+    "query_similarity",
+    "conflict_count",
+    "composite_score",
+    "eligible",
+    "blocked_reason",
+    "score_revision",
+)
+
+
+def _project_memory_proposal(row: dict[str, Any]) -> dict[str, Any]:
+    row["metadata"] = _metadata_object(row.pop("metadata_json", "{}"))
+    row["score_available"] = row.get("score_revision") is not None
+    if row.get("eligible") is not None:
+        row["eligible"] = bool(row["eligible"])
+    return row
+
 
 # Chunk manifests are persisted inside the canonical memory's index metadata.
 # Dashboard projections intentionally cap the material so one unusually large
@@ -350,11 +459,13 @@ def _chunk_manifest_projection(
     chunks = [
         projected
         for raw in raw_chunks[:projection_limit]
-        if (projected := _chunk_projection(
-            raw,
-            parent_memory_id=parent_memory_id,
-            include_text=include_text,
-        ))
+        if (
+            projected := _chunk_projection(
+                raw,
+                parent_memory_id=parent_memory_id,
+                include_text=include_text,
+            )
+        )
         is not None
     ]
     summary = {
@@ -457,6 +568,27 @@ class DashboardRepository:
         self._conn = connection
         self.scope = scope
 
+    def _proposal_score_projection(self) -> tuple[str, str]:
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("memory_proposal_scores",),
+        ).fetchone()
+        if exists is None:
+            return "", ", ".join(f"NULL AS {name}" for name in _PROPOSAL_SCORE_NAMES)
+        join = (
+            "LEFT JOIN memory_proposal_scores AS score "
+            "ON score.proposal_id = proposal.proposal_id "
+            "AND score.project_id = proposal.project_id"
+        )
+        available = {
+            str(row[1]) for row in self._conn.execute("PRAGMA table_info(memory_proposal_scores)")
+        }
+        columns = [
+            f"score.{name} AS {name}" if name in available else f"NULL AS {name}"
+            for name in _PROPOSAL_SCORE_NAMES
+        ]
+        return join, ", ".join(columns)
+
     @property
     def connection(self) -> sqlite3.Connection:
         return self._conn
@@ -548,7 +680,7 @@ class DashboardRepository:
         except Exception as exc:
             raise DashboardCursorError("cursor_invalid") from exc
 
-    def overview(self) -> dict[str, int]:
+    def overview(self) -> dict[str, Any]:
         project_id = self.scope.project_id
         memory_count = self._conn.execute(
             "SELECT COUNT(*) FROM memories WHERE project_id = ? OR visibility = 'global'",
@@ -579,6 +711,44 @@ class DashboardRepository:
             "SELECT COUNT(*) FROM store_outbox WHERE project_id = ? AND status IN ('pending','processing')",
             (project_id,),
         ).fetchone()[0]
+        derived_counts = {
+            "pending": 0,
+            "retry_wait": 0,
+            "leased": 0,
+            "dead": 0,
+        }
+        derived_oldest: str | None = None
+        derived_exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("derived_work_jobs",),
+        ).fetchone()
+        if derived_exists is not None:
+            derived_counts.update(
+                {
+                    str(row[0]): int(row[1])
+                    for row in self._conn.execute(
+                        "SELECT status, COUNT(*) FROM derived_work_jobs "
+                        "WHERE project_id = ? GROUP BY status",
+                        (project_id,),
+                    ).fetchall()
+                    if str(row[0]) in derived_counts
+                }
+            )
+            derived_oldest = self._conn.execute(
+                "SELECT MIN(created_at) FROM derived_work_jobs "
+                "WHERE project_id = ? AND status IN ('pending', 'retry_wait')",
+                (project_id,),
+            ).fetchone()[0]
+        derived_oldest_age: int | None = None
+        if isinstance(derived_oldest, str) and derived_oldest:
+            try:
+                queued_at = datetime.fromisoformat(derived_oldest.replace("Z", "+00:00"))
+                derived_oldest_age = max(
+                    0,
+                    int((datetime.now(timezone.utc) - queued_at).total_seconds()),
+                )
+            except (TypeError, ValueError):
+                derived_oldest = None
         return {
             "memory_count": int(memory_count),
             "request_count": int(request_count),
@@ -588,7 +758,423 @@ class DashboardRepository:
             "degradation_count": int(degradation_count),
             "outbox_count": int(outbox_count),
             "pending_outbox_count": int(pending_outbox_count),
+            "derived_work_queue_depth": (derived_counts["pending"] + derived_counts["retry_wait"]),
+            "derived_work_pending_count": derived_counts["pending"],
+            "derived_work_retry_count": derived_counts["retry_wait"],
+            "derived_work_leased_count": derived_counts["leased"],
+            "derived_work_dead_count": derived_counts["dead"],
+            "derived_work_oldest_queued_at": derived_oldest,
+            "derived_work_oldest_age_seconds": derived_oldest_age,
         }
+
+    def _passive_derived_work(self, *, limit: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        def empty_kind() -> dict[str, Any]:
+            return {
+                "total": 0,
+                "status_counts": {},
+                "active_count": 0,
+                "retry_count": 0,
+                "dead_count": 0,
+                "oldest_active_age_seconds": None,
+                "failure_codes": {},
+            }
+
+        kinds = {job_kind: empty_kind() for job_kind in _PASSIVE_DERIVED_JOB_KINDS}
+        summary = {
+            "available": False,
+            "reason": "table_unavailable",
+            "total": 0,
+            "status_counts": {},
+            "active_count": 0,
+            "retry_count": 0,
+            "dead_count": 0,
+            "oldest_active_age_seconds": None,
+            "job_kinds": kinds,
+        }
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("derived_work_jobs",),
+        ).fetchone()
+        if exists is None:
+            return summary, []
+        available = {
+            str(row[1]) for row in self._conn.execute("PRAGMA table_info(derived_work_jobs)")
+        }
+        required = {
+            "job_id",
+            "project_id",
+            "job_kind",
+            "status",
+            "attempt_count",
+            "max_attempts",
+            "failure_code",
+            "provider_identity",
+            "config_revision",
+            "subject_id",
+            "created_at",
+            "updated_at",
+            "not_before_at",
+        }
+        if not required.issubset(available):
+            summary["reason"] = "schema_unavailable"
+            return summary, []
+
+        placeholders = ", ".join("?" for _ in _PASSIVE_DERIVED_JOB_KINDS)
+        params = (self.scope.project_id, *_PASSIVE_DERIVED_JOB_KINDS)
+        status_rows = self._conn.execute(
+            f"""
+            SELECT job_kind, status, COUNT(*)
+            FROM derived_work_jobs
+            WHERE project_id = ? AND job_kind IN ({placeholders})
+            GROUP BY job_kind, status
+            """,
+            params,
+        ).fetchall()
+        oldest_rows = self._conn.execute(
+            f"""
+            SELECT job_kind, MIN(created_at)
+            FROM derived_work_jobs
+            WHERE project_id = ? AND job_kind IN ({placeholders})
+              AND status IN ('pending', 'retry_wait', 'leased')
+            GROUP BY job_kind
+            """,
+            params,
+        ).fetchall()
+
+        combined_statuses: dict[str, int] = {}
+        for raw_kind, raw_status, raw_count in status_rows:
+            job_kind = str(raw_kind)
+            status = str(raw_status)
+            if job_kind not in kinds:
+                continue
+            count = int(raw_count)
+            kinds[job_kind]["status_counts"][status] = count
+            kinds[job_kind]["total"] += count
+            combined_statuses[status] = combined_statuses.get(status, 0) + count
+        for job_kind in _PASSIVE_DERIVED_JOB_KINDS:
+            failure_rows = self._conn.execute(
+                """
+                SELECT failure_code, COUNT(*)
+                FROM derived_work_jobs
+                WHERE project_id = ? AND job_kind = ?
+                  AND failure_code IS NOT NULL AND failure_code != ''
+                GROUP BY failure_code
+                ORDER BY COUNT(*) DESC, failure_code
+                LIMIT ?
+                """,
+                (self.scope.project_id, job_kind, _MAX_DERIVED_FAILURE_CODES),
+            ).fetchall()
+            for raw_code, raw_count in failure_rows:
+                code = str(redact_value(str(raw_code)))[:200]
+                kinds[job_kind]["failure_codes"][code] = int(raw_count)
+        for raw_kind, raw_created_at in oldest_rows:
+            job_kind = str(raw_kind)
+            if job_kind in kinds:
+                kinds[job_kind]["oldest_active_age_seconds"] = _age_seconds(raw_created_at)
+        for kind_summary in kinds.values():
+            statuses = kind_summary["status_counts"]
+            kind_summary["active_count"] = sum(
+                int(statuses.get(status, 0)) for status in _ACTIVE_DERIVED_STATUSES
+            )
+            kind_summary["retry_count"] = int(statuses.get("retry_wait", 0))
+            kind_summary["dead_count"] = int(statuses.get("dead", 0))
+
+        recent_cursor = self._conn.execute(
+            f"""
+            SELECT job_id, job_kind, status, attempt_count, max_attempts,
+                   failure_code, provider_identity, config_revision, subject_id,
+                   created_at, updated_at, not_before_at
+            FROM derived_work_jobs
+            WHERE project_id = ? AND job_kind IN ({placeholders})
+            ORDER BY updated_at DESC, job_id DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        )
+        recent_jobs = []
+        for row in _rows(recent_cursor):
+            recent_jobs.append(
+                {
+                    "job_id": str(row.get("job_id") or "")[:200],
+                    "job_kind": str(row.get("job_kind") or "")[:100],
+                    "status": str(row.get("status") or "")[:50],
+                    "attempt_count": _bounded_int(row.get("attempt_count")) or 0,
+                    "max_attempts": _bounded_int(row.get("max_attempts")) or 0,
+                    "failure_code": str(redact_value(str(row.get("failure_code") or "")))[:200],
+                    "provider_identity": str(redact_value(str(row.get("provider_identity") or "")))[
+                        :300
+                    ],
+                    "config_revision": str(row.get("config_revision") or "")[:200],
+                    "subject_id": str(row.get("subject_id") or "")[:200],
+                    "created_at": str(row.get("created_at") or ""),
+                    "updated_at": str(row.get("updated_at") or ""),
+                    "not_before_at": str(row.get("not_before_at") or ""),
+                }
+            )
+
+        active_ages = [
+            float(value)
+            for kind_summary in kinds.values()
+            if (value := kind_summary["oldest_active_age_seconds"]) is not None
+        ]
+        summary.update(
+            {
+                "available": True,
+                "reason": "",
+                "total": sum(int(item["total"]) for item in kinds.values()),
+                "status_counts": combined_statuses,
+                "active_count": sum(int(item["active_count"]) for item in kinds.values()),
+                "retry_count": int(combined_statuses.get("retry_wait", 0)),
+                "dead_count": int(combined_statuses.get("dead", 0)),
+                "oldest_active_age_seconds": max(active_ages) if active_ages else None,
+            }
+        )
+        return summary, recent_jobs
+
+    def passive_memory_overview(self, *, limit: int = 25) -> dict[str, Any]:
+        bounded = _limit(limit)
+        project_id = self.scope.project_id
+        placeholders = ", ".join("?" for _ in _PASSIVE_EVENT_NAMES)
+        event_counts = {
+            str(row[0]): int(row[1])
+            for row in self._conn.execute(
+                f"""
+                SELECT event_name, COUNT(*)
+                FROM runtime_events
+                WHERE project_id = ? AND event_name IN ({placeholders})
+                GROUP BY event_name
+                """,
+                (project_id, *_PASSIVE_EVENT_NAMES),
+            ).fetchall()
+        }
+        event_cursor = self._conn.execute(
+            f"""
+            SELECT event_id, event_name, status, actor, request_scope_id,
+                   metadata_json, created_at
+            FROM runtime_events
+            WHERE project_id = ? AND event_name IN ({placeholders})
+            ORDER BY created_at DESC, event_id DESC
+            LIMIT 1000
+            """,
+            (project_id, *_PASSIVE_EVENT_NAMES),
+        )
+        event_sample = _rows(event_cursor)
+        for row in event_sample:
+            row["metadata"] = _metadata_object(row.pop("metadata_json", "{}"))
+
+        context_sample = [
+            row
+            for row in event_sample
+            if str(row.get("event_name") or "").startswith("passive_context_")
+        ]
+        injection_chars = [
+            int(value)
+            for row in context_sample
+            if not isinstance((value := row["metadata"].get("injection_chars")), bool)
+            and isinstance(value, (int, float))
+            and value >= 0
+        ]
+        memory_counts = [
+            int(value)
+            for row in context_sample
+            if not isinstance((value := row["metadata"].get("memory_count")), bool)
+            and isinstance(value, (int, float))
+            and value >= 0
+        ]
+        capture_status_counts: dict[str, int] = {}
+        for row in event_sample:
+            if row.get("event_name") != "passive_memory_after_invoke":
+                continue
+            capture_status = str(row["metadata"].get("status") or "unknown")
+            capture_status_counts[capture_status] = capture_status_counts.get(capture_status, 0) + 1
+
+        proposal_counts = {
+            str(row[0]): int(row[1])
+            for row in self._conn.execute(
+                "SELECT status, COUNT(*) FROM memory_proposals "
+                "WHERE project_id = ? GROUP BY status",
+                (project_id,),
+            ).fetchall()
+        }
+        outbox_counts = {
+            str(row[0]): int(row[1])
+            for row in self._conn.execute(
+                "SELECT status, COUNT(*) FROM store_outbox "
+                "WHERE project_id = ? AND tool_name = 'passive_memory_proposal' "
+                "GROUP BY status",
+                (project_id,),
+            ).fetchall()
+        }
+        oldest_active = self._conn.execute(
+            "SELECT MIN(created_at) FROM store_outbox "
+            "WHERE project_id = ? AND tool_name = 'passive_memory_proposal' "
+            "AND status IN ('pending', 'processing')",
+            (project_id,),
+        ).fetchone()[0]
+
+        quality_cursor = self._conn.execute(
+            """
+            SELECT call_id, tool_name, status, degraded, metadata_json,
+                   started_at, ended_at
+            FROM call_spans
+            WHERE project_id = ? AND metadata_json LIKE ?
+            ORDER BY started_at DESC, call_id DESC
+            LIMIT 500
+            """,
+            (project_id, f'%"{LIVE_TRACE_METADATA_KEY}"%'),
+        )
+        quality_cases = [
+            projected
+            for row in _rows(quality_cursor)
+            if (projected := _quality_case(row)) is not None
+        ]
+        mrr_values = [float(case["mrr"]) for case in quality_cases if case.get("mrr") is not None]
+        cutoffs = sorted(
+            {key for case in quality_cases for key in case.get("hit_at", {}) if str(key).isdigit()},
+            key=int,
+        )
+        hit_at: dict[str, float] = {}
+        for cutoff in cutoffs:
+            values = [
+                bool(case["hit_at"][cutoff])
+                for case in quality_cases
+                if cutoff in case.get("hit_at", {})
+            ]
+            if values:
+                hit_at[cutoff] = round(sum(values) / len(values), 4)
+
+        derived_work, derived_jobs = self._passive_derived_work(limit=bounded)
+
+        return {
+            "summary": {
+                "context": {
+                    "total": sum(
+                        event_counts.get(name, 0)
+                        for name in _PASSIVE_EVENT_NAMES
+                        if name.startswith("passive_context_")
+                    ),
+                    "injected": event_counts.get("passive_context_injected", 0),
+                    "shadowed": event_counts.get("passive_context_shadowed", 0),
+                    "skipped": event_counts.get("passive_context_skipped", 0),
+                    "average_injection_chars": round(sum(injection_chars) / len(injection_chars), 2)
+                    if injection_chars
+                    else None,
+                    "average_memory_count": round(sum(memory_counts) / len(memory_counts), 2)
+                    if memory_counts
+                    else None,
+                    "sample_size": len(context_sample),
+                },
+                "capture": {
+                    "total": event_counts.get("passive_memory_after_invoke", 0),
+                    "proposal_created_events": event_counts.get(
+                        "passive_memory_proposals_created", 0
+                    ),
+                    "retry_events": event_counts.get("passive_memory_proposal_retry", 0),
+                    "sample_status_counts": capture_status_counts,
+                },
+                "proposals": {
+                    "total": sum(proposal_counts.values()),
+                    "status_counts": proposal_counts,
+                },
+                "outbox": {
+                    "total": sum(outbox_counts.values()),
+                    "status_counts": outbox_counts,
+                    "oldest_active_age_seconds": _age_seconds(oldest_active),
+                },
+                "quality": {
+                    "case_count": len(quality_cases),
+                    "hit_at": hit_at,
+                    "mrr": round(sum(mrr_values) / len(mrr_values), 4) if mrr_values else None,
+                    "forbidden_hit_rate": round(
+                        sum(bool(case.get("forbidden_hit")) for case in quality_cases)
+                        / len(quality_cases),
+                        4,
+                    )
+                    if quality_cases
+                    else None,
+                    "sample_limit": 500,
+                },
+                "derived_work": derived_work,
+            },
+            "events": event_sample[:bounded],
+            "quality_cases": quality_cases[:bounded],
+            "derived_jobs": derived_jobs,
+        }
+
+    def list_memory_proposals(
+        self,
+        *,
+        limit: int = 25,
+        cursor: str | None = None,
+        status: str | None = None,
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        if status is not None and status not in _PROPOSAL_STATUSES:
+            raise ValueError("proposal_status_invalid")
+        if category is not None and category not in _PROPOSAL_CATEGORIES:
+            raise ValueError("proposal_category_invalid")
+        bounded = _limit(limit)
+        filters = {"status": str(status or ""), "category": str(category or "")}
+        keyset = self._decode_cursor(cursor, "memory-proposals", filters)
+        clauses = ["proposal.project_id = ?"]
+        params: list[Any] = [self.scope.project_id]
+        if status:
+            clauses.append("proposal.status = ?")
+            params.append(status)
+        if category:
+            clauses.append("proposal.category = ?")
+            params.append(category)
+        count = self._conn.execute(
+            f"SELECT COUNT(*) FROM memory_proposals AS proposal WHERE {' AND '.join(clauses)}",
+            params,
+        ).fetchone()[0]
+        if keyset:
+            clauses.append(
+                "(proposal.created_at < ? OR "
+                "(proposal.created_at = ? AND proposal.proposal_id < ?))"
+            )
+            params.extend((keyset[0], keyset[0], keyset[1]))
+        score_join, score_columns = self._proposal_score_projection()
+        rows = _rows(
+            self._conn.execute(
+                f"""
+                SELECT {_PROPOSAL_COLUMNS}, {score_columns}
+                FROM memory_proposals AS proposal
+                {score_join}
+                WHERE {" AND ".join(clauses)}
+                ORDER BY proposal.created_at DESC, proposal.proposal_id DESC
+                LIMIT ?
+                """,
+                (*params, bounded + 1),
+            )
+        )
+        has_more = len(rows) > bounded
+        rows = rows[:bounded]
+        for row in rows:
+            _project_memory_proposal(row)
+        next_cursor = (
+            self._encode_cursor(
+                "memory-proposals",
+                filters,
+                rows[-1]["created_at"],
+                rows[-1]["proposal_id"],
+            )
+            if has_more and rows
+            else None
+        )
+        return self._envelope(rows, total=int(count), limit=bounded, next_cursor=next_cursor)
+
+    def get_memory_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        score_join, score_columns = self._proposal_score_projection()
+        cursor = self._conn.execute(
+            f"SELECT {_PROPOSAL_COLUMNS}, {score_columns} "
+            "FROM memory_proposals AS proposal "
+            f"{score_join} "
+            "WHERE proposal.proposal_id = ? AND proposal.project_id = ?",
+            (str(proposal_id or "").strip(), self.scope.project_id),
+        )
+        row = _row(cursor, cursor.fetchone())
+        return _project_memory_proposal(row) if row is not None else None
 
     def list_requests(
         self,
@@ -629,7 +1215,7 @@ class DashboardRepository:
                    status, degraded, input_hash, output_hash, metadata_json,
                    started_at, ended_at
             FROM call_spans
-            WHERE {' AND '.join(clauses)}
+            WHERE {" AND ".join(clauses)}
             ORDER BY started_at DESC, call_id DESC
             LIMIT ?
         """
@@ -692,7 +1278,7 @@ class DashboardRepository:
                 f"""
                 SELECT {_MEMORY_COLUMNS}
                 FROM memories
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
                 """,
@@ -951,16 +1537,13 @@ class DashboardRepository:
                 "node_count": len(nodes),
                 "edge_count": len(edges),
                 "chunk_anchor_count": sum(
-                    int(node.get("chunk_anchor_summary", {}).get("total", 0))
-                    for node in nodes
+                    int(node.get("chunk_anchor_summary", {}).get("total", 0)) for node in nodes
                 ),
                 "chunk_anchor_returned": sum(
-                    int(node.get("chunk_anchor_summary", {}).get("returned", 0))
-                    for node in nodes
+                    int(node.get("chunk_anchor_summary", {}).get("returned", 0)) for node in nodes
                 ),
                 "chunk_anchors_truncated": any(
-                    node.get("chunk_anchor_summary", {}).get("truncated") is True
-                    for node in nodes
+                    node.get("chunk_anchor_summary", {}).get("truncated") is True for node in nodes
                 ),
             },
         }
@@ -1016,10 +1599,7 @@ class DashboardRepository:
                 return {}
             result = dict(item)
             memory_id = str(
-                result.get("parent_memory_id")
-                or result.get("memory_id")
-                or result.get("id")
-                or ""
+                result.get("parent_memory_id") or result.get("memory_id") or result.get("id") or ""
             ).strip()
             chunk_data = chunks_for(memory_id)
             metadata, source_text, chunking, anchors = chunk_data or ({}, "", {}, [])
@@ -1148,7 +1728,7 @@ class DashboardRepository:
                        sa.verified_by_call_id, sa.metadata_json, sa.created_at,
                        sa.updated_at, m.content, m.project_id, m.visibility
                 {from_sql}
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY sa.updated_at DESC, sa.memory_id DESC
                 LIMIT ?
                 """,
@@ -1161,9 +1741,7 @@ class DashboardRepository:
             row["content_preview"] = str(row.pop("content") or "")[:300]
             row["metadata"] = _metadata_object(row.pop("metadata_json"))
         next_cursor = (
-            self._encode_cursor(
-                "synthesis", filters, rows[-1]["updated_at"], rows[-1]["memory_id"]
-            )
+            self._encode_cursor("synthesis", filters, rows[-1]["updated_at"], rows[-1]["memory_id"])
             if has_more and rows
             else None
         )

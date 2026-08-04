@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -105,6 +106,58 @@ def test_release_validation_checks_variant_before_optional_profile_skip():
     assert release_sync.validate_release(Path.cwd(), profile="none") is True
 
 
+def test_release_validation_reports_bounded_pytest_stdout_and_stderr(monkeypatch, tmp_path, capsys):
+    release_sync = _load_release_sync()
+    monkeypatch.setattr(release_sync.shutil, "which", lambda _name: "/usr/bin/cargo")
+    results = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                [],
+                1,
+                stdout="pytest stdout failure\n",
+                stderr="pytest stderr failure\n",
+            ),
+        ]
+    )
+    monkeypatch.setattr(release_sync.subprocess, "run", lambda *args, **kwargs: next(results))
+
+    assert release_sync.validate_release(tmp_path, profile="full") is False
+
+    output = capsys.readouterr().out
+    assert "FAIL: pytest" in output
+    assert "pytest stdout failure" in output
+    assert "pytest stderr failure" in output
+
+
+def test_release_validation_diagnostic_keeps_tail_with_a_bound():
+    release_sync = _load_release_sync()
+    value = "prefix" + ("x" * (release_sync.MAX_VALIDATION_DIAGNOSTIC_CHARS + 50)) + "tail"
+
+    result = release_sync._bounded_diagnostic(value)
+
+    assert result.startswith("prefix")
+    assert "[... truncated " in result
+    assert result.endswith("tail")
+    assert len(result) < release_sync.MAX_VALIDATION_DIAGNOSTIC_CHARS + 100
+
+
+def test_release_validation_environment_isolates_state_without_overriding_provider(
+    monkeypatch, tmp_path
+):
+    release_sync = _load_release_sync()
+    monkeypatch.setenv("EMBEDDER_PROVIDER", "openai-compatible")
+
+    env = release_sync._validation_environment(tmp_path)
+
+    validation_root = tmp_path / ".release-validation"
+    assert validation_root.is_dir()
+    assert env["EMBEDDER_PROVIDER"] == "openai-compatible"
+    assert env["PLASTIC_DB_PATH"] == str(validation_root / "plastic_memory.db")
+    assert env["PLASTIC_LANCEDB_PATH"] == str(validation_root / "lancedb")
+
+
 def test_release_push_is_explicit_opt_in_and_dry_run_default_is_unchanged():
     release_sync = _load_release_sync()
 
@@ -114,6 +167,204 @@ def test_release_push_is_explicit_opt_in_and_dry_run_default_is_unchanged():
 
     assert args.dry_run is True
     assert args.push is False
+    assert args.release_evidence is None
+    assert args.release_repo == "../plastic-promise-release"
+
+
+@pytest.mark.parametrize("profile", ["none", "compile", "targeted"])
+def test_release_push_requires_full_validation_profile(profile):
+    release_sync = _load_release_sync()
+
+    with pytest.raises(ValueError, match="release_push_requires_full_validation"):
+        release_sync.validate_publication_options(
+            push=True,
+            dry_run=False,
+            validation_profile=profile,
+            release_evidence="evidence.json",
+        )
+
+
+def test_release_live_requires_push_and_external_evidence():
+    release_sync = _load_release_sync()
+
+    with pytest.raises(ValueError, match="release_live_requires_push"):
+        release_sync.validate_publication_options(
+            push=False,
+            dry_run=False,
+            validation_profile="full",
+            release_evidence=None,
+        )
+    with pytest.raises(ValueError, match="release_push_requires_external_evidence"):
+        release_sync.validate_publication_options(
+            push=True,
+            dry_run=False,
+            validation_profile="full",
+            release_evidence=None,
+        )
+
+
+def _release_evidence(source_commit: str = "a" * 40) -> dict:
+    return {
+        "schema_version": 1,
+        "release_version": "0.1.20",
+        "source_commit": source_commit,
+        "source_range": f"{'0' * 40}..{source_commit}",
+        "audit_range": f"{'0' * 40}..{source_commit}",
+        "release_scope_sha256": "c" * 64,
+        "automated_audit_score": 0.60,
+        "blocking_findings": 0,
+        "major_findings": 0,
+        "gates": dict.fromkeys(
+            {
+                "diff_check",
+                "high_risk_review",
+                "javascript_syntax",
+                "live_http_smoke",
+                "release_sync_preview",
+                "restart_recovery",
+                "scoped_ruff",
+                "secret_scan",
+                "targeted_tests",
+            },
+            True,
+        ),
+    }
+
+
+def test_release_evidence_binds_version_source_ranges_scope_and_all_external_gates(tmp_path):
+    release_sync = _load_release_sync()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(json.dumps(_release_evidence()), encoding="utf-8")
+
+    digest = release_sync.validate_release_evidence(
+        evidence,
+        version="v0.1.20",
+        source_commit="a" * 40,
+        source_range=f"{'0' * 40}..{'a' * 40}",
+        audit_range=f"{'0' * 40}..{'a' * 40}",
+        release_scope_sha256="c" * 64,
+    )
+
+    assert len(digest) == 64
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        (lambda payload: payload.update(automated_audit_score=0.59), "audit_score"),
+        (lambda payload: payload.update(blocking_findings=1), "blocking_findings"),
+        (lambda payload: payload["gates"].update(secret_scan=False), "gate_failed"),
+        (lambda payload: payload["gates"].pop("restart_recovery"), "gates_invalid"),
+        (lambda payload: payload.update(source_commit="b" * 40), "source_mismatch"),
+        (
+            lambda payload: payload.update(source_range=f"{'1' * 40}..{'a' * 40}"),
+            "source_range_mismatch",
+        ),
+        (
+            lambda payload: payload.update(audit_range=f"{'1' * 40}..{'a' * 40}"),
+            "audit_range_mismatch",
+        ),
+        (lambda payload: payload.update(release_scope_sha256="d" * 64), "scope_mismatch"),
+    ],
+)
+def test_release_evidence_rejects_incomplete_or_unbound_claims(tmp_path, mutation, error):
+    release_sync = _load_release_sync()
+    payload = _release_evidence()
+    mutation(payload)
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        release_sync.validate_release_evidence(
+            evidence,
+            version="v0.1.20",
+            source_commit="a" * 40,
+            source_range=f"{'0' * 40}..{'a' * 40}",
+            audit_range=f"{'0' * 40}..{'a' * 40}",
+            release_scope_sha256="c" * 64,
+        )
+
+
+def test_release_scope_digest_is_order_independent_and_binds_paths_and_bytes():
+    release_sync = _load_release_sync()
+
+    expected = release_sync.release_scope_sha256(
+        {"b.txt": b"beta", "deleted.txt": None, "a.txt": b"alpha"}
+    )
+
+    assert expected == release_sync.release_scope_sha256(
+        {"a.txt": b"alpha", "deleted.txt": None, "b.txt": b"beta"}
+    )
+    assert expected != release_sync.release_scope_sha256(
+        {"a.txt": b"alpha", "deleted.txt": None, "b.txt": b"changed"}
+    )
+    assert expected != release_sync.release_scope_sha256(
+        {"a.txt": b"alpha", "renamed.txt": None, "b.txt": b"beta"}
+    )
+
+
+def test_canonical_revision_range_resolves_immutable_endpoints(tmp_path):
+    release_sync = _load_release_sync()
+    repo, _remote = _source_repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _commit_readme(repo, "second\n", "second")
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    assert release_sync.canonical_revision_range(repo, "HEAD~1..HEAD") == f"{base}..{head}"
+    assert release_sync.canonical_revision_range(repo, "HEAD~1...HEAD") == f"{base}...{head}"
+
+
+def test_release_full_validation_fails_closed_without_cargo(monkeypatch, tmp_path, capsys):
+    release_sync = _load_release_sync()
+    monkeypatch.setattr(
+        release_sync.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(release_sync.shutil, "which", lambda _name: None)
+
+    assert release_sync.validate_release(tmp_path, profile="full") is False
+    assert "cargo" in capsys.readouterr().out.lower()
+
+
+def test_release_full_validation_fails_closed_without_maturin(monkeypatch, tmp_path, capsys):
+    release_sync = _load_release_sync()
+    monkeypatch.setattr(
+        release_sync.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        release_sync.shutil,
+        "which",
+        lambda name: "/usr/bin/cargo" if name == "cargo" else None,
+    )
+
+    assert release_sync.validate_release(tmp_path, profile="full") is False
+    assert "maturin" in capsys.readouterr().out.lower()
+
+
+def test_release_artifact_scope_accepts_exact_wheel_and_sdist(tmp_path):
+    release_sync = _load_release_sync()
+    wheel = tmp_path / "plastic_promise-0.1.20-py3-none-any.whl"
+    sdist = tmp_path / "plastic_promise-0.1.20.tar.gz"
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"sdist")
+
+    assert release_sync.validate_release_artifact_scope(tmp_path, "v0.1.20") == [
+        wheel,
+        sdist,
+    ]
+
+
+def test_release_artifact_scope_rejects_stale_or_wrong_version_files(tmp_path):
+    release_sync = _load_release_sync()
+    (tmp_path / "plastic_promise-0.1.20-py3-none-any.whl").write_bytes(b"wheel")
+    (tmp_path / "plastic_promise-0.1.20.tar.gz").write_bytes(b"sdist")
+    (tmp_path / "plastic_promise-0.1.19.tar.gz").write_bytes(b"stale")
+
+    with pytest.raises(ValueError, match="release_artifact_scope_mismatch"):
+        release_sync.validate_release_artifact_scope(tmp_path, "v0.1.20")
 
 
 def test_release_sync_keeps_internal_superpowers_docs_excluded():
@@ -144,17 +395,18 @@ def test_release_sync_includes_authoritative_retrieval_plan_exception():
     assert excluded == ["docs/superpowers/specs/2026-07-18-rag-shadow-chunking-benchmark-design.md"]
 
 
-def test_release_sync_includes_engineering_pattern_records():
+def test_release_sync_only_includes_allowlisted_engineering_pattern_records():
     release_sync = _load_release_sync()
 
     included, excluded = release_sync.filter_files(
-        ["docs/engineering-patterns/2026-07-12-ordinary-memory-caller-inventory.md"]
+        [
+            "docs/engineering-patterns/2026-07-12-ordinary-memory-caller-inventory.md",
+            "docs/engineering-patterns/private-draft.md",
+        ]
     )
 
-    assert included == [
-        "docs/engineering-patterns/2026-07-12-ordinary-memory-caller-inventory.md"
-    ]
-    assert excluded == []
+    assert included == ["docs/engineering-patterns/2026-07-12-ordinary-memory-caller-inventory.md"]
+    assert excluded == ["docs/engineering-patterns/private-draft.md"]
 
 
 def test_release_sync_normalizes_https_and_ssh_github_origins():
@@ -185,9 +437,7 @@ def test_release_sync_promotes_runtime_package_version(tmp_path):
     package_init.parent.mkdir(parents=True)
     package_init.write_text('__version__ = "0.1.16"\n', encoding="utf-8")
 
-    transformed = release_sync.apply_transform(
-        "plastic_promise/__init__.py", "v0.1.17", tmp_path
-    )
+    transformed = release_sync.apply_transform("plastic_promise/__init__.py", "v0.1.17", tmp_path)
 
     assert transformed == '__version__ = "0.1.17"\n'
 
@@ -289,6 +539,7 @@ def test_release_sync_promotes_goal_release_status_without_changing_dev_file(tmp
         "## 2026-07-12 Canonical Mutation and Release Note\n\n"
         "- Release version `0.1.15` follows the active package line.\n"
         "- Verification status is **Draft/BLOCK**. Final verification remains pending.\n"
+        "  Secret audit and live restart evidence are still required.\n"
     )
     goal.write_text(original, encoding="utf-8")
 
@@ -298,7 +549,32 @@ def test_release_sync_promotes_goal_release_status_without_changing_dev_file(tmp
     assert "Draft/BLOCK" not in transformed
     assert "Release verification for `0.1.15` is **audited and approved**" in transformed
     assert "Release-specific benchmark and runtime evidence" in transformed
+    assert "Secret audit and live restart evidence are still required." not in transformed
     assert goal.read_text(encoding="utf-8") == original
+
+
+def test_release_sync_ignores_draft_status_in_older_goal_sections(tmp_path):
+    release_sync = _load_release_sync()
+    goal = tmp_path / "docs" / "GOAL.md"
+    goal.parent.mkdir(parents=True)
+    goal.write_text(
+        "# Goal\n\n"
+        "## Current release\n\n"
+        "- Release version `0.1.20` follows the active package line.\n"
+        "- Verification status is **Draft/BLOCK**. Current verification is pending.\n\n"
+        "## Older release\n\n"
+        "- Release version `0.1.19` follows the prior package line.\n"
+        "- Verification status is **Draft/BLOCK**. Historical text remains unchanged.\n",
+        encoding="utf-8",
+    )
+
+    transformed = release_sync.apply_transform("docs/GOAL.md", "v0.1.20", tmp_path)
+
+    assert transformed is not None
+    current_section = transformed.split("## Older release", 1)[0]
+    assert "Draft/BLOCK" not in current_section
+    assert "Release verification for `0.1.20` is **audited and approved**" in current_section
+    assert "Historical text remains unchanged." in transformed
 
 
 def test_release_sync_rejects_formal_changelog_heading_with_draft_status(tmp_path):
@@ -421,6 +697,26 @@ def test_live_copy_reads_bound_commit_instead_of_uncommitted_worktree(monkeypatc
     )
 
     assert copied == ["README.md"]
+    assert (destination / "README.md").read_text(encoding="utf-8") == "committed source\n"
+
+
+def test_release_copy_skips_paths_already_equal_to_bound_source(monkeypatch, tmp_path):
+    release_sync = _load_release_sync()
+    source, _remote = _source_repo(tmp_path)
+    head = _git(source, "rev-parse", "HEAD").stdout.strip()
+    destination = tmp_path / "release-output"
+    destination.mkdir()
+    (destination / "README.md").write_text("committed source\n", encoding="utf-8")
+    monkeypatch.setattr(release_sync, "PROJECT_ROOT", source)
+
+    copied = release_sync.apply_to_release(
+        ["README.md"],
+        "v0.1.15",
+        destination,
+        source_commit=head,
+    )
+
+    assert copied == []
     assert (destination / "README.md").read_text(encoding="utf-8") == "committed source\n"
 
 
@@ -554,6 +850,30 @@ def test_release_staging_rejects_noncomputed_validation_side_effect(tmp_path):
 
     with pytest.raises(ValueError, match="release_unexpected_worktree_changes"):
         release_sync.stage_release_paths(repo, ["README.md"])
+
+
+def test_release_staging_accepts_computed_tracked_file_newly_ignored(tmp_path):
+    release_sync = _load_release_sync()
+    repo, _remote = _release_repo(tmp_path)
+    pack = repo / "plugins" / "code-memory" / "pack.yml"
+    pack.parent.mkdir(parents=True)
+    pack.write_text("version: 1\n", encoding="utf-8")
+    _git(repo, "add", "plugins/code-memory/pack.yml")
+    _git(repo, "commit", "-m", "track release plugin")
+
+    ignore = repo / ".gitignore"
+    ignore.write_text("plugins/\n", encoding="utf-8")
+    pack.write_text("version: 2\n", encoding="utf-8")
+    expected = {
+        ".gitignore": b"plugins/\n",
+        "plugins/code-memory/pack.yml": b"version: 2\n",
+    }
+
+    assert release_sync.stage_release_paths(
+        repo,
+        list(expected),
+        expected_index_bytes=expected,
+    ) == list(expected)
 
 
 def test_release_tag_must_resolve_to_current_head(tmp_path):

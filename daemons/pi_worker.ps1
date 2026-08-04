@@ -1,4 +1,4 @@
-# Pi Worker — SuperPowers Pipeline mode-based dispatch
+# Pi Worker - Plastic Promise role-based dispatch
 param(
     [string]$Mode = "builder",
     [int]$Interval = 30
@@ -32,7 +32,7 @@ while ($true) {
         $prompt = @"
 You are $($cfg.Role), domain $($cfg.Domain), mode=$Mode.
 
-SuperPowers pipeline stage: requesting-code-review. You are the code reviewer in the Plastic Promise multi-agent team. Claude is the PM.
+Official workflow stage: code-review. You are the code reviewer in the Plastic Promise multi-agent team. Claude is the PM.
 
 ## Review Protocol (see .pi/team-protocol-reviewer.md)
 
@@ -53,7 +53,7 @@ CRITICAL: Do NOT output markdown. Your final output must be valid JSON matching 
 "@
         pi --print $prompt --session-id "${Mode}_worker" 2>&1 | Select-Object -Last 5
     } else {
-        pi --print "You are $($cfg.Role), domain $($cfg.Domain), mode=$Mode.`n`nSuperPowers pipeline stage: $Mode.`n`n1. Call memory_recall(domain_hint='$($cfg.Domain)', query='$($cfg.Query)') to find your input.`n2. Process it according to your pipeline stage.`n3. When done, call memory_store(content='<summary>', memory_type='experience', domain='$($cfg.Domain)', tags=[$($cfg.OutputTags | ForEach-Object { "'$_'" } | Join-String -Separator ',')]).`n`nIf no matching memories found, reply IDLE." `
+        pi --print "You are $($cfg.Role), domain $($cfg.Domain), mode=$Mode.`n`nPlastic Promise worker role: $Mode.`n`n1. Call memory_recall(domain_hint='$($cfg.Domain)', query='$($cfg.Query)') to find your input.`n2. Process it according to your assigned role.`n3. When done, call memory_store(content='<summary>', memory_type='experience', domain='$($cfg.Domain)', tags=[$($cfg.OutputTags | ForEach-Object { "'$_'" } | Join-String -Separator ',')]).`n`nIf no matching memories found, reply IDLE." `
         --session-id "${Mode}_worker" 2>&1 | Select-Object -Last 5
 
     Start-Sleep -Seconds $Interval

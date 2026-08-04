@@ -49,8 +49,8 @@ def test_rust_health_check_initial_state():
 
     # Health check runs without crashing
     result = engine._check_rust_health()
-    # Result is True or None (False is never used per design)
-    assert result is True or result is None
+    # A completed probe always has a cacheable boolean result.
+    assert result is True or result is False
 
 
 def test_rust_health_check_uses_explicit_canonical_backends(monkeypatch, tmp_path):
@@ -105,15 +105,26 @@ def test_rust_health_check_uses_explicit_canonical_backends(monkeypatch, tmp_pat
     assert calls["new_with_backends"] == [(str(db_path), str(lancedb_path))]
 
 
-def test_rust_health_cache_ttl():
-    """Health check caches result for TTL duration (when Rust is healthy).
+def test_rust_health_cache_ttl(monkeypatch):
+    """Health check caches deterministic failures until reset or TTL expiry."""
+    import sys
+    import types
 
-    Design note: _rust_healthy=None (NOT False) on failure forces immediate
-    re-probe on every call. The cache only applies when _rust_healthy is not None.
-    This test validates the function doesn't crash and returns consistent values.
-    """
     from plastic_promise.core.context_engine import ContextEngine
 
+    calls = {"new_with_backends": 0}
+
+    class UnavailableRustEngine:
+        @staticmethod
+        def new_with_backends(_sqlite_path, _lancedb_path):
+            calls["new_with_backends"] += 1
+            raise RuntimeError("derived index unavailable")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "context_engine_core",
+        types.SimpleNamespace(ContextEngine=UnavailableRustEngine),
+    )
     engine = ContextEngine(use_sqlite=False)
 
     # First call — probes
@@ -124,13 +135,15 @@ def test_rust_health_cache_ttl():
     result2 = engine._check_rust_health()
     checked_at2 = engine._rust_health_checked_at
 
-    assert result1 == result2  # consistent result regardless of cache
-    # If Rust is healthy, cache prevents re-probe (same checked_at).
-    # If Rust unavailable, None bypasses cache and re-probes (checked_at advances).
-    # Either is valid — verify the function runs without error.
-    assert checked_at1 <= checked_at2  # monotonic timestamp
+    assert result1 is False
+    assert result2 is False
+    assert checked_at1 == checked_at2
+    assert calls["new_with_backends"] == 1
     assert engine._rust_lock is not None
-    print(f"Rust health cache: result={result1}, checked_at_diff={checked_at2 - checked_at1:.6f}s")
+
+    engine.reset_rust_health()
+    assert engine._check_rust_health() is False
+    assert calls["new_with_backends"] == 2
 
 
 def test_reset_rust_health():
@@ -141,7 +154,7 @@ def test_reset_rust_health():
 
     # Call once to attempt probe
     engine._check_rust_health()
-    # _rust_healthy may be None (Rust unavailable) or True (Rust available)
+    # _rust_healthy is now a completed boolean probe result.
 
     # Reset — always clears regardless of state
     engine.reset_rust_health()

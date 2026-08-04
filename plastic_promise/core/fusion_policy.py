@@ -54,6 +54,48 @@ def canonical_fusion_config_hash(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def validate_fusion_candidate_binding(
+    candidate_id: object,
+    payload: object,
+) -> dict[str, Any]:
+    """Validate a serialized WRRF candidate and return its canonical payload.
+
+    Benchmark evidence is consumed outside the retrieval planner, so it must
+    not trust a candidate id or a JSON object merely because both are present.
+    Reusing the planner's validators keeps the evidence binding identical to
+    the runtime binding.
+    """
+
+    if not isinstance(candidate_id, str) or not _CANDIDATE_RE.fullmatch(candidate_id):
+        raise FusionConfigurationError("fusion_candidate_binding_invalid")
+    if not isinstance(payload, Mapping):
+        raise FusionConfigurationError("fusion_config_invalid")
+    expected_fields = {"k", "channels", "weights", "windows"}
+    if set(payload) != expected_fields:
+        raise FusionConfigurationError("fusion_config_fields_invalid")
+    channels = payload.get("channels")
+    if not isinstance(channels, (list, tuple)):
+        raise FusionConfigurationError("fusion_config_channels_invalid")
+    config = _validated_config(
+        FusionConfig(
+            k=payload.get("k"),
+            channels=tuple(channels),
+            weights=payload.get("weights"),
+            windows=payload.get("windows"),
+            config_hash=candidate_id.split(":", 1)[1],
+        )
+    )
+    canonical = _canonical_payload(
+        k=config.k,
+        channels=config.channels,
+        weights=config.weights,
+        windows=config.windows,
+    )
+    if f"wrrf-v1:{config.config_hash}" != candidate_id:
+        raise FusionConfigurationError("fusion_candidate_binding_mismatch")
+    return canonical
+
+
 def _validate_k(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 0xFFFFFFFF:
         raise FusionConfigurationError("invalid_k:must_be_positive_integer")
@@ -272,3 +314,71 @@ def weighted_rrf(
             )
 
     return sorted(fused.items(), key=lambda row: (-row[1], row[0]))
+
+
+def weighted_max_v1(
+    rankings: Mapping[str, Sequence[tuple[str, float]]],
+    *,
+    vector_weight: float = 0.5,
+    has_vector: bool = True,
+) -> list[tuple[str, float]]:
+    """Fuse vector, BM25, and FTS scores with the production max-v1 policy."""
+    expected_channels = {"vector", "bm25", "fts"}
+    if not isinstance(rankings, Mapping) or set(rankings) != expected_channels:
+        raise FusionConfigurationError("invalid_rankings:channel_mismatch")
+    if (
+        isinstance(vector_weight, bool)
+        or not isinstance(vector_weight, (int, float))
+        or not math.isfinite(float(vector_weight))
+        or not 0.0 <= float(vector_weight) <= 1.0
+    ):
+        raise FusionConfigurationError("invalid_vector_weight")
+
+    normalized: dict[str, list[tuple[str, float]]] = {}
+    for channel in FUSION_CHANNEL_ORDER:
+        rows: list[tuple[str, float]] = []
+        for row in rankings[channel]:
+            if not isinstance(row, (tuple, list)) or len(row) < 2:
+                raise FusionConfigurationError(f"invalid_rankings:row:{channel}")
+            memory_id = str(row[0])
+            score = row[1]
+            if not memory_id:
+                raise FusionConfigurationError(f"invalid_rankings:empty_id:{channel}")
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                raise FusionConfigurationError(f"invalid_rankings:score:{channel}")
+            numeric_score = float(score)
+            if not math.isfinite(numeric_score):
+                raise FusionConfigurationError(f"invalid_rankings:score:{channel}")
+            rows.append((memory_id, numeric_score))
+        normalized[channel] = rows
+
+    fused: dict[str, float] = {}
+    encounter_order: dict[str, int] = {}
+
+    def merge(memory_id: str, score: float) -> None:
+        encounter_order.setdefault(memory_id, len(encounter_order))
+        fused[memory_id] = max(fused.get(memory_id, -math.inf), score)
+
+    if has_vector and normalized["vector"]:
+        weight = float(vector_weight)
+        text_weight = 1.0 - weight
+        for memory_id, score in normalized["vector"]:
+            merge(memory_id, score * weight)
+        for memory_id, score in normalized["bm25"]:
+            weighted = score * text_weight
+            if score >= 0.90:
+                weighted = score
+            elif score >= 0.75:
+                weighted = max(weighted, score * 0.9)
+            merge(memory_id, weighted)
+        for memory_id, score in normalized["fts"]:
+            weighted = score if score >= 0.85 else score * text_weight
+            merge(memory_id, weighted)
+    else:
+        for memory_id, score in normalized["bm25"]:
+            merge(memory_id, score * 0.8)
+        for memory_id, score in normalized["fts"]:
+            weighted = score if score >= 0.85 else score * 0.8
+            merge(memory_id, weighted)
+
+    return sorted(fused.items(), key=lambda row: (-row[1], encounter_order[row[0]]))

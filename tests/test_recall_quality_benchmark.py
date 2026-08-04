@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -25,6 +26,7 @@ from scripts.http_mcp_harness import require_owned_health
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET = ROOT / "tests" / "fixtures" / "recall_quality" / "v1.json"
+HELDOUT_DATASET = ROOT / "tests" / "fixtures" / "recall_quality" / "v2-heldout.json"
 CURRENT_SOURCE_FINGERPRINT = benchmark_recall_quality._source_fingerprint(DATASET)
 
 
@@ -34,6 +36,16 @@ def _owned_health_payload(root: Path, *, pid: int = 7331, revision: str = "a" * 
         "pid": pid,
         "source_root": str(root),
         "source_revision": revision,
+        "identity_valid": True,
+        "health_policy": "strict",
+        "degraded": False,
+        "retrieval_status": "ready",
+        "vector_ready": True,
+        "vector_reason": None,
+        "lancedb_ready": True,
+        "lancedb_required": True,
+        "bm25_ready": True,
+        "graph_ready": True,
         "fusion_policy": "max-v1",
         "fusion_attestation": {
             "schema": "retrieval-fusion-identity/v1",
@@ -479,6 +491,106 @@ def test_zero_weight_constituent_still_participates_in_quality_gate():
     assert any(check["metric"] == "hit_at_5" for check in gate["failures"])
 
 
+def test_public_channel_evidence_reads_bounded_debug_diagnostics():
+    payload = {
+        "diagnostics": {
+            "level": "full",
+            "details": {
+                "channel_rankings": {
+                    "lexical": [{"id": "actual-1", "score": 0.75, "rank": 1}],
+                    "vector": [{"id": "actual-2", "score": 0.9, "rank": 1}],
+                },
+                "channel_states": {
+                    "lexical": _channel_state(),
+                    "vector": _channel_state(),
+                },
+            },
+        }
+    }
+
+    rankings, states = benchmark_recall_quality._remap_public_channel_evidence(
+        payload,
+        {"actual-1": "fixture-1", "actual-2": "fixture-2"},
+    )
+
+    assert rankings["bm25"] == [{"id": "fixture-1", "score": 0.75, "rank": 1}]
+    assert rankings["vector"] == [{"id": "fixture-2", "score": 0.9, "rank": 1}]
+    assert states["bm25"]["available"] is True
+    assert states["vector"]["available"] is True
+
+
+def test_public_fusion_attestation_reads_bounded_debug_summary():
+    fusion = {
+        "requested_policy": "max-v1",
+        "effective_policy": "max-v1",
+        "requested_runtime": "python",
+        "effective_runtime": "python",
+        "algorithm": "weighted-max-v1",
+    }
+
+    attestation = benchmark_recall_quality._public_fusion_attestation(
+        {"diagnostics": {"summary": {"retrieval_fusion": fusion}}}
+    )
+
+    assert attestation == {**fusion, "config": None}
+
+
+def test_public_channel_evidence_breaks_score_ties_by_fixture_id():
+    state = _channel_state()
+    first = {
+        "channel_rankings": {
+            "bm25": [
+                {"id": "actual-z", "score": 1.0, "rank": 1},
+                {"id": "actual-a", "score": 1.0, "rank": 2},
+            ]
+        },
+        "channel_states": {"bm25": state},
+    }
+    second = {
+        "channel_rankings": {
+            "bm25": [
+                {"id": "actual-a", "score": 1.0, "rank": 1},
+                {"id": "actual-z", "score": 1.0, "rank": 2},
+            ]
+        },
+        "channel_states": {"bm25": state},
+    }
+    mapping = {"actual-z": "fixture-z", "actual-a": "fixture-a"}
+
+    first_rankings, _ = benchmark_recall_quality._remap_public_channel_evidence(first, mapping)
+    second_rankings, _ = benchmark_recall_quality._remap_public_channel_evidence(second, mapping)
+
+    assert (
+        first_rankings["bm25"]
+        == second_rankings["bm25"]
+        == [
+            {"id": "fixture-a", "score": 1.0, "rank": 1},
+            {"id": "fixture-z", "score": 1.0, "rank": 2},
+        ]
+    )
+
+
+def test_public_fused_ranking_breaks_relevance_ties_by_fixture_id():
+    payload = {
+        "core": [
+            {"id": "actual-z", "relevance": 0.9},
+            {"id": "actual-a", "relevance": 0.9},
+        ],
+        "related": [{"id": "actual-low", "relevance": 0.5}],
+    }
+
+    ranked = benchmark_recall_quality._remap_public_fused_ranking(
+        payload,
+        {
+            "actual-z": "fixture-z",
+            "actual-a": "fixture-a",
+            "actual-low": "fixture-low",
+        },
+    )
+
+    assert ranked == ["fixture-a", "fixture-z", "fixture-low"]
+
+
 def test_planned_enabled_unavailable_channel_fails_before_metric_comparison():
     cases = [
         _case("en", language="en", group="token-overlap"),
@@ -744,8 +856,16 @@ def test_live_report_uses_isolated_seeded_corpus_restores_environment_and_requir
         return (
             retrieve,
             {
+                "provider": "openai-compatible",
                 "model": embedder.model_name,
+                "model_revision": "real-multilingual-model-r1",
                 "dimension": embedder.dim,
+                "usage": {
+                    "embedding_requests": 7,
+                    "embedding_input_tokens": 101,
+                    "cost_usd": 0.0042,
+                    "pricing_revision": "provider-price-2026-07",
+                },
                 "index_text_policy": candidate,
                 "runtime": {"os": "test"},
             },
@@ -782,9 +902,26 @@ def test_live_report_uses_isolated_seeded_corpus_restores_environment_and_requir
     assert live["publishable_claim"] is True
     assert live["backend"]["fallback_used"] is False
     assert live["backend"]["model"] == "real-multilingual-model"
+    assert live["backend"]["model_revision"] == "real-multilingual-model-r1"
     assert live["backend"]["dimension"] == 3
+    assert live["usage"] == {
+        "embedding_requests": 7,
+        "embedding_input_tokens": 101,
+        "cost": 0.0042,
+        "cost_currency": "USD",
+        "cost_usd": 0.0042,
+        "pricing_revision": "provider-price-2026-07",
+    }
     assert live["isolated_corpus"]["seeded"] is True
     assert live["smoke"]["passed"] is True
+    assert live["environment"] == benchmark_recall_quality._environment_metadata(
+        DATASET,
+        environ=benchmark_recall_quality._benchmark_evidence_environment(
+            "compact-v2",
+            "legacy-auto",
+        ),
+    )
+    assert live["environment"]["supply_runtime"] == "python"
     assert "cold_latency_ms" in live["backend"]
     assert "warm_p95_ms" in live["backend"]
     assert observed["candidate"] == "compact-v2"
@@ -797,6 +934,38 @@ def test_live_report_uses_isolated_seeded_corpus_restores_environment_and_requir
     assert {name: os.environ[name] for name in ambient_retrieval} == ambient_retrieval
     paths = observed["paths"]
     assert not paths.root.exists()
+
+
+def test_live_benchmark_binds_process_and_evidence_to_heldout_project():
+    dataset = benchmark_recall_quality.load_dataset_bundle(HELDOUT_DATASET)
+
+    project_id = benchmark_recall_quality._live_dataset_project_id(dataset)
+    process = benchmark_recall_quality._isolated_benchmark_overrides(
+        "legacy",
+        "max-v1",
+        project_id=project_id,
+    )
+    evidence = benchmark_recall_quality._benchmark_evidence_environment(
+        "legacy",
+        "max-v1",
+        environ={},
+        project_id=project_id,
+    )
+
+    assert project_id == "project:heldout"
+    assert process["PLASTIC_PROJECT_ID"] == project_id
+    assert evidence["PLASTIC_PROJECT_ID"] == project_id
+
+
+def test_live_benchmark_rejects_multi_project_dataset():
+    dataset = benchmark_recall_quality.load_dataset_bundle(HELDOUT_DATASET)
+    mixed = replace(
+        dataset,
+        cases=(replace(dataset.cases[0], project_id="project:other"), *dataset.cases[1:]),
+    )
+
+    with pytest.raises(ValueError, match="exactly one dataset project"):
+        benchmark_recall_quality._live_dataset_project_id(mixed)
 
 
 def test_live_backend_closes_owned_resources_when_corpus_install_fails(tmp_path, monkeypatch):
@@ -1072,8 +1241,16 @@ def test_source_fingerprint_covers_entire_python_package():
     assert package_sources <= fingerprinted
 
 
-def test_experiment_fingerprint_includes_http_process_harness():
-    assert ROOT / "scripts/http_mcp_harness.py" in benchmark_recall_quality.BENCHMARK_SOURCE_PATHS
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "scripts/http_mcp_harness.py",
+        "scripts/manage_lancedb_generations.py",
+        "scripts/rebuild_lancedb.py",
+    ],
+)
+def test_experiment_fingerprint_includes_generation_lifecycle(relative_path):
+    assert ROOT / relative_path in benchmark_recall_quality.BENCHMARK_SOURCE_PATHS
 
 
 def test_environment_metadata_records_native_retrieval_dependencies():
@@ -1086,6 +1263,247 @@ def test_environment_metadata_records_native_retrieval_dependencies():
         name: os.environ.get(name, default)
         for name, default in benchmark_recall_quality.LIVE_RETRIEVAL_CONFIGURATION.items()
     }
+
+
+def test_environment_metadata_canonicalizes_cloud_provider_alias(monkeypatch):
+    monkeypatch.setenv("EMBEDDER_PROVIDER", "cloud")
+
+    environment = benchmark_recall_quality._environment_metadata(DATASET)
+
+    assert environment["provider"] == "openai-compatible"
+
+
+def test_benchmark_rejects_nonsecret_environment_change_during_run(monkeypatch):
+    original = benchmark_recall_quality.evaluate_cases
+
+    def evaluate_then_drift(*args, **kwargs):
+        result = original(*args, **kwargs)
+        monkeypatch.setenv("EMBEDDER_TIMEOUT", "37")
+        return result
+
+    monkeypatch.delenv("EMBEDDER_TIMEOUT", raising=False)
+    monkeypatch.setattr(benchmark_recall_quality, "evaluate_cases", evaluate_then_drift)
+    with pytest.raises(RuntimeError, match="^benchmark_environment_changed_during_run$"):
+        benchmark_recall_quality.run_benchmark(
+            dataset_path=DATASET,
+            backend="deterministic",
+            candidate="legacy",
+            fusion_policy="max-v1",
+            warmup=0,
+            repeat=1,
+        )
+
+
+def test_benchmark_rejects_environment_change_before_report_binding(monkeypatch):
+    monkeypatch.delenv("EMBEDDER_TIMEOUT", raising=False)
+    dataset = recall_quality.load_dataset_bundle(DATASET)
+    with benchmark_recall_quality._fusion_environment(None, "max-v1"):
+        report = benchmark_recall_quality.run_benchmark(
+            dataset_path=DATASET,
+            backend="deterministic",
+            candidate="legacy",
+            fusion_policy="max-v1",
+            warmup=0,
+            repeat=1,
+        )
+        monkeypatch.setenv("EMBEDDER_TIMEOUT", "37")
+        with pytest.raises(RuntimeError, match="^benchmark_environment_changed_during_run$"):
+            benchmark_recall_quality._bind_experiment_report(
+                report,
+                dataset=dataset,
+                dataset_path=DATASET,
+                fusion_policy="max-v1",
+            )
+
+
+def _quality_environment() -> dict[str, str]:
+    return {
+        "EMBEDDER_PROVIDER": "cloud",
+        "EMBEDDER_CHUNK_CHARS": "512",
+        "EMBEDDER_MAX_CHUNKS": "8",
+        "EMBEDDER_LOCAL_MODEL": "BAAI/bge-large-zh-v1.5",
+        "EMBED_MODEL": "legacy-model",
+        "PP_RETRIEVAL_FUSION_POLICY": "max-v1",
+        "PP_RETRIEVAL_RRF_K": "60",
+        "PP_RETRIEVAL_RRF_WEIGHTS_JSON": '{"bm25":0.4,"vector":0.6}',
+        "PP_RETRIEVAL_RRF_WINDOWS_JSON": '{"bm25":20,"vector":20}',
+        "PP_HARD_MIN_SCORE": "0.30",
+        "PP_MMR_VECTOR": "1",
+        "PP_BM25_PRESERVATION": "1",
+        "PP_BM25_PRESERVATION_THRESHOLD": "0.72",
+        "PP_BM25_PRESERVATION_LIMIT": "2",
+        "PP_RERANK_PROVIDERS": "cloud,original",
+        "PP_RERANK_BASE_URL": "https://api.provider.example/v1",
+        "PP_RERANK_CLOUD_MODEL": "reranker-v1",
+        "PP_RERANK_CLOUD_MODEL_REVISION": "revision-a",
+        "OPENAI_API_KEY": "first-secret",
+        "PP_RERANK_API_KEY": "first-rerank-secret",
+        "JINA_API_KEY": "first-jina-secret",
+        "SILICONFLOW_API_KEY": "first-siliconflow-secret",
+    }
+
+
+def test_environment_fingerprint_excludes_secrets():
+    from plastic_promise.core.recall_quality_environment import (
+        recall_quality_environment_fingerprint,
+    )
+
+    base = _quality_environment()
+    canonical = recall_quality_environment_fingerprint(base)
+    changed_secret = recall_quality_environment_fingerprint(
+        {
+            **base,
+            "OPENAI_API_KEY": "second-secret",
+            "PP_RERANK_API_KEY": "second-rerank-secret",
+            "JINA_API_KEY": "second-jina-secret",
+            "SILICONFLOW_API_KEY": "second-siliconflow-secret",
+        }
+    )
+
+    assert canonical == changed_secret
+
+
+def test_environment_fingerprint_canonicalizes_explicit_defaults():
+    from plastic_promise.core.recall_quality_environment import (
+        RECALL_QUALITY_ENVIRONMENT_DEFAULTS,
+        recall_quality_environment_fingerprint,
+    )
+
+    explicit_defaults = {
+        name: RECALL_QUALITY_ENVIRONMENT_DEFAULTS[name]
+        for name in (
+            "EMBEDDER_PROVIDER",
+            "PP_DECAY_IN_RANKING",
+            "PP_CONTEXT_GATE",
+            "PP_SOURCE_FILTER",
+            "PP_CORE_MIN_RELEVANCE",
+            "PP_BM25_PRESERVATION",
+            "PP_BM25_PRESERVATION_THRESHOLD",
+            "PP_BM25_PRESERVATION_LIMIT",
+        )
+    }
+
+    assert recall_quality_environment_fingerprint({}) == recall_quality_environment_fingerprint(
+        explicit_defaults
+    )
+
+
+def test_environment_fingerprint_ignores_lancedb_lifecycle_controls():
+    from plastic_promise.core.recall_quality_environment import (
+        recall_quality_environment_fingerprint,
+    )
+
+    base = _quality_environment()
+    changed = {
+        **base,
+        "LDB_INIT_ON_HEAVY_INIT": "1",
+        "LDB_BACKFILL_ON_INIT": "1",
+        "LDB_REBUILD_ON_INIT": "1",
+    }
+
+    assert recall_quality_environment_fingerprint(base) == recall_quality_environment_fingerprint(
+        changed
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "replacement"),
+    [
+        ("PP_RETRIEVAL_FUSION_POLICY", "wrrf-v1:" + "a" * 64),
+        ("PP_RETRIEVAL_RRF_K", "61"),
+        ("PP_RETRIEVAL_RRF_WEIGHTS_JSON", '{"bm25":0.5,"vector":0.5}'),
+        ("PP_RETRIEVAL_RRF_WINDOWS_JSON", '{"bm25":30,"vector":20}'),
+    ],
+)
+def test_comparison_fingerprint_excludes_only_fusion_candidate_settings(name, replacement):
+    from plastic_promise.core.recall_quality_environment import (
+        recall_quality_comparison_environment_fingerprint,
+        recall_quality_environment_fingerprint,
+    )
+
+    base = _quality_environment()
+    changed = {**base, name: replacement}
+
+    assert recall_quality_environment_fingerprint(base) != recall_quality_environment_fingerprint(
+        changed
+    )
+    assert recall_quality_comparison_environment_fingerprint(
+        base
+    ) == recall_quality_comparison_environment_fingerprint(changed)
+
+
+@pytest.mark.parametrize(
+    ("name", "replacement"),
+    [
+        ("PP_RERANK_PROVIDERS", "jina,original"),
+        ("PP_RERANK_BASE_URL", "https://second.provider.example/v1"),
+        ("PP_RERANK_CLOUD_MODEL", "reranker-v2"),
+        ("PP_RERANK_CLOUD_MODEL_REVISION", "revision-b"),
+        ("PP_HARD_MIN_SCORE", "0.45"),
+        ("PP_MMR_VECTOR", "0"),
+        ("PP_BM25_PRESERVATION", "0"),
+        ("PP_BM25_PRESERVATION_THRESHOLD", "0.85"),
+        ("PP_BM25_PRESERVATION_LIMIT", "3"),
+        ("EMBEDDER_CHUNK_CHARS", "768"),
+        ("EMBEDDER_MAX_CHUNKS", "12"),
+        ("EMBEDDER_LOCAL_MODEL", "local-model-v2"),
+        ("EMBED_MODEL", "legacy-model-v2"),
+    ],
+)
+def test_comparison_fingerprint_binds_reranker_identity(name, replacement):
+    from plastic_promise.core.recall_quality_environment import (
+        recall_quality_comparison_environment_fingerprint,
+        recall_quality_environment_fingerprint,
+    )
+
+    base = _quality_environment()
+    changed = {**base, name: replacement}
+
+    assert recall_quality_environment_fingerprint(base) != recall_quality_environment_fingerprint(
+        changed
+    )
+    assert recall_quality_comparison_environment_fingerprint(
+        base
+    ) != recall_quality_comparison_environment_fingerprint(changed)
+
+
+def test_loaded_rust_extension_identity_binds_binary_and_build_sources(tmp_path):
+    from plastic_promise.core.recall_quality_environment import (
+        loaded_rust_extension_identity,
+        rust_source_fingerprint,
+    )
+
+    crate = tmp_path / "rust" / "context-engine-core"
+    for path, content in (
+        (crate / "Cargo.toml", "[package]\nname = 'fixture'\n"),
+        (crate / "Cargo.lock", "# fixture lock\n"),
+        (crate / "build.rs", "fn main() {}\n"),
+        (crate / "src" / "lib.rs", "pub fn fixture() {}\n"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    binary = tmp_path / "context_engine_core.so"
+    binary.write_bytes(b"native-extension-binary")
+    source_sha256 = rust_source_fingerprint(tmp_path)
+    module = SimpleNamespace(
+        __name__="context_engine_core",
+        __version__="0.1.0",
+        __source_sha256__=source_sha256,
+        __file__=str(binary),
+    )
+
+    identity = loaded_rust_extension_identity(tmp_path, module)
+
+    assert identity == {
+        "module": "context_engine_core",
+        "version": "0.1.0",
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "source_sha256": source_sha256,
+    }
+
+    module.__source_sha256__ = "0" * 64
+    with pytest.raises(ValueError, match="^rust_extension_source_identity_mismatch$"):
+        loaded_rust_extension_identity(tmp_path, module)
 
 
 def test_live_index_material_requires_canonical_persisted_candidate():
@@ -1217,11 +1635,41 @@ def test_live_adapter_consumes_complete_rankings_without_survivor_reconstruction
             {"retrieval_degradations": [{"channel": "fts", "reason": "query_failed"}]},
             True,
         ),
+        (
+            SimpleNamespace(),
+            {"rerank": {"provider": "original", "status": "degraded", "degraded": True}},
+            True,
+        ),
         (SimpleNamespace(degraded=False, project_context={"degraded": False}), {}, False),
     ],
 )
 def test_live_adapter_combines_all_degradation_signals(pack, audit, expected):
     assert benchmark_recall_quality._pack_is_degraded(pack, audit) is expected
+
+
+def test_live_adapter_reports_rerank_fallback_but_not_cloud_success():
+    degraded = {
+        "rerank": {
+            "provider": "original",
+            "status": "degraded",
+            "degraded": True,
+            "reason": "cloud_provider_http_unauthorized",
+        }
+    }
+    success = {
+        "rerank": {
+            "provider": "cloud",
+            "status": "success",
+            "degraded": False,
+            "reason": "",
+        }
+    }
+
+    assert benchmark_recall_quality._fallback_reasons(degraded) == ["rerank:original:degraded"]
+    assert benchmark_recall_quality._fallback_reasons(success) == []
+    assert benchmark_recall_quality._pack_is_degraded(SimpleNamespace(), success) is False
+    assert benchmark_recall_quality._public_result_is_degraded({}, {}, degraded) is True
+    assert benchmark_recall_quality._public_result_is_degraded({}, {}, success) is False
 
 
 def test_configured_absolute_gate_fails_closed():
@@ -1648,6 +2096,60 @@ def _public_backend_evidence(dataset, *, index_text_policy, fusion_policy, paths
     )
 
 
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [
+        ("openai", {"OPENAI_API_KEY"}),
+        ("openai-compatible", {"EMBEDDER_API_KEY"}),
+        ("cloud", {"EMBEDDER_API_KEY"}),
+        ("ollama", set()),
+        ("local", set()),
+        ("fallback", set()),
+    ],
+)
+def test_benchmark_forwards_only_configured_embedding_credentials(provider, expected):
+    environ = {
+        "EMBEDDER_PROVIDER": provider,
+        "OPENAI_API_KEY": "openai-secret",
+        "EMBEDDER_API_KEY": "compatible-secret",
+    }
+
+    assert benchmark_recall_quality._required_embedding_credential_keys(environ) == expected
+
+
+@pytest.mark.parametrize(
+    ("providers", "expected"),
+    [
+        ("cloud,original", {"PP_RERANK_API_KEY"}),
+        ("jina,original", {"JINA_API_KEY"}),
+        ("siliconflow,original", {"SILICONFLOW_API_KEY"}),
+        (
+            "cloud,jina,siliconflow,original",
+            {"PP_RERANK_API_KEY", "JINA_API_KEY", "SILICONFLOW_API_KEY"},
+        ),
+        ("ollama,original", set()),
+    ],
+)
+def test_benchmark_forwards_only_configured_reranker_credentials(providers, expected):
+    environ = {
+        "PP_RERANK_PROVIDERS": providers,
+        "PP_RERANK_API_KEY": "cloud-secret",
+        "JINA_API_KEY": "jina-secret",
+        "SILICONFLOW_API_KEY": "siliconflow-secret",
+    }
+
+    assert benchmark_recall_quality._required_rerank_credential_keys(environ) == expected
+
+
+def test_benchmark_forwards_no_reranker_credentials_when_disabled():
+    environ = {
+        "PP_RERANK_DISABLED": "1",
+        "PP_RERANK_PROVIDERS": "cloud,jina,siliconflow",
+    }
+
+    assert benchmark_recall_quality._required_rerank_credential_keys(environ) == set()
+
+
 def test_live_backend_requires_health_pid_equal_spawned_process(tmp_path, monkeypatch):
     dataset = recall_quality.load_dataset_bundle(DATASET)
     paths = benchmark_recall_quality.LivePaths(
@@ -1656,6 +2158,20 @@ def test_live_backend_requires_health_pid_equal_spawned_process(tmp_path, monkey
         lancedb=tmp_path / "lancedb",
     )
     seeded = False
+    started_env = {}
+
+    for name, value in {
+        "EMBEDDER_PROVIDER": "cloud",
+        "EMBEDDER_API_KEY": "embedding-secret",
+        "OPENAI_API_KEY": "openai-secret",
+        "PP_RERANK_PROVIDERS": "cloud,original",
+        "PP_RERANK_CLOUD_MODEL_REVISION": "revision-a",
+        "PP_RERANK_API_KEY": "rerank-secret",
+        "JINA_API_KEY": "jina-secret",
+        "SILICONFLOW_API_KEY": "siliconflow-secret",
+        "UNRELATED_SECRET": "must-not-leak",
+    }.items():
+        monkeypatch.setenv(name, value)
 
     class FakeManaged:
         pid = 4101
@@ -1665,11 +2181,12 @@ def test_live_backend_requires_health_pid_equal_spawned_process(tmp_path, monkey
         def terminate(self, timeout=10.0):
             return None
 
-    monkeypatch.setattr(
-        benchmark_recall_quality.ManagedProcess,
-        "start",
-        lambda *args, **kwargs: FakeManaged(),
-    )
+    def capture_start(*args, **kwargs):
+        del args
+        started_env.update(kwargs["env"])
+        return FakeManaged()
+
+    monkeypatch.setattr(benchmark_recall_quality.ManagedProcess, "start", capture_start)
 
     async def mismatched_health(*args, **kwargs):
         return {"status": "ok", "pid": 4102}
@@ -1691,6 +2208,20 @@ def test_live_backend_requires_health_pid_equal_spawned_process(tmp_path, monkey
             )
         )
     assert seeded is False
+    assert started_env["EMBEDDER_API_KEY"] == "embedding-secret"
+    assert "OPENAI_API_KEY" not in started_env
+    assert started_env["EMBEDDER_CHUNK_CHARS"] == "512"
+    assert started_env["EMBEDDER_MAX_CHUNKS"] == "8"
+    assert started_env["EMBEDDER_LOCAL_MODEL"] == "BAAI/bge-large-zh-v1.5"
+    assert started_env["PP_MEMORY_CHUNKING"] == "off"
+    assert started_env["PP_CONTEXT_GATE"] == "0"
+    assert started_env["PP_HARD_MIN_SCORE"] == "0.30"
+    assert started_env["PP_RERANK_PROVIDERS"] == "cloud,original"
+    assert started_env["PP_RERANK_CLOUD_MODEL_REVISION"] == "revision-a"
+    assert started_env["PP_RERANK_API_KEY"] == "rerank-secret"
+    assert "JINA_API_KEY" not in started_env
+    assert "SILICONFLOW_API_KEY" not in started_env
+    assert "UNRELATED_SECRET" not in started_env
 
 
 def test_engine_diagnostic_report_can_never_be_publishable(monkeypatch):
@@ -1824,6 +2355,26 @@ def test_calibration_inputs_hash_heldout_without_loading_cases(tmp_path, monkeyp
     assert len(fingerprint) == 64
 
 
+@pytest.mark.parametrize("candidate_fingerprint", ["b" * 64, "z" * 64])
+def test_calibration_selection_rejects_environment_fingerprint_drift(candidate_fingerprint):
+    baseline = _comparable_live_report("legacy")
+    candidate = _comparable_live_report("legacy")
+    baseline["environment"]["comparison_environment_fingerprint"] = "a" * 64
+    candidate["environment"]["comparison_environment_fingerprint"] = candidate_fingerprint
+    grid = benchmark_recall_quality.load_calibration_grid(
+        ROOT / "tests/fixtures/recall_quality/wrrf-v1-grid.json"
+    )
+
+    payload = benchmark_recall_quality._calibration_selection_payload(
+        baseline,
+        candidate,
+        grid,
+    )
+
+    assert payload["calibration_gate"]["overall_no_regression"] is False
+    assert payload["calibration_gate"]["required_splits_no_regression"] is False
+
+
 def test_bare_wrrf_requires_manifest_and_normalizes_to_hash_candidate():
     candidate_id = f"wrrf-v1:{'a' * 64}"
     manifest = SimpleNamespace(candidate_id=candidate_id)
@@ -1831,6 +2382,37 @@ def test_bare_wrrf_requires_manifest_and_normalizes_to_hash_candidate():
     with pytest.raises(ValueError, match="manifest_required"):
         benchmark_recall_quality._resolve_fusion_policy("wrrf-v1", None)
     assert benchmark_recall_quality._resolve_fusion_policy("wrrf-v1", manifest) == candidate_id
+
+
+def test_manifestless_max_v1_heldout_report_uses_opaque_v2_binding(tmp_path):
+    output = tmp_path / "heldout-max-v1.json"
+    heldout = ROOT / "tests/fixtures/recall_quality/v2-heldout.json"
+
+    result = benchmark_recall_quality.main(
+        [
+            "--dataset",
+            str(heldout),
+            "--backend",
+            "deterministic",
+            "--index-text-policy",
+            "legacy",
+            "--fusion-policy",
+            "max-v1",
+            "--output",
+            str(output),
+        ]
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 0
+    assert report["schema_version"] == "recall-quality-report/v2"
+    assert report["dataset_role"] == "held-out"
+    assert report["dataset_fingerprint"] == benchmark_recall_quality.opaque_file_fingerprint(
+        heldout
+    )
+    assert report["candidate_id"] == "max-v1"
+    assert report["manifest_hash"] == ""
+    assert report["fusion_config"] is None
 
 
 def test_manifest_gate_delegates_to_strict_experiment_comparator(monkeypatch):
@@ -1946,6 +2528,8 @@ def test_live_calibration_rejects_unpublishable_baseline(mutation):
         "attested_calls": 64,
         "errors": [],
         "observed": ["max-v1", "python", "python"],
+        "algorithm": "weighted-max-v1",
+        "config": None,
     }
     baseline["public_transport_call_counts"] = {
         "memory_recall": 32,

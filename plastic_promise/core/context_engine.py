@@ -14,12 +14,14 @@ import json
 import logging
 import math
 import os
+import sqlite3
 import threading
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from plastic_promise.core.behavior_graph import graph_edge, graph_node, validate_node_type
@@ -35,6 +37,7 @@ from plastic_promise.core.fusion_policy import (
     FusionConfig,
     FusionDecision,
     load_fusion_config,
+    weighted_max_v1,
     weighted_rrf,
 )
 from plastic_promise.core.paths import get_db_path
@@ -43,6 +46,155 @@ from plastic_promise.core.retrieval_planner import RetrievalPlan, plan_retrieval
 logger = logging.getLogger(__name__)
 
 _RUNTIME_GATE_INIT_LOCK = threading.Lock()
+
+
+def _runtime_generation_embedder_identity(
+    embedder: object,
+) -> tuple[str, str, int, str]:
+    """Return the stable identity fields used to bind a generation at runtime.
+
+    Production embedders expose ``model_name`` and ``dim`` while provider
+    revisions are intentionally kept as a private field.  Cached/chunking
+    wrappers delegate those fields, so walk the delegate chain for the
+    revision.  The small fallbacks keep lightweight test doubles usable
+    without weakening the positive dimension/model checks.
+    """
+
+    model_value = getattr(embedder, "model_name", None)
+    model = model_value.strip() if isinstance(model_value, str) else ""
+    if not model:
+        # A few test doubles model only the provider's public ``model`` field.
+        model_value = getattr(embedder, "model", None)
+        model = model_value.strip() if isinstance(model_value, str) else ""
+
+    index_model_value = getattr(embedder, "index_model_name", None)
+    index_model = index_model_value.strip() if isinstance(index_model_value, str) else ""
+    if not model and index_model:
+        # Preserve compatibility with minimal doubles that only expose the
+        # index identity; real embedders always expose ``model_name``.
+        model = index_model
+
+    revision = ""
+    candidate = embedder
+    visited: set[int] = set()
+    while candidate is not None and id(candidate) not in visited:
+        visited.add(id(candidate))
+        revision_value = getattr(candidate, "_model_revision", None)
+        if isinstance(revision_value, str) and revision_value.strip():
+            revision = revision_value.strip()
+            break
+        candidate = getattr(candidate, "_delegate", None)
+    if not revision:
+        revision = os.environ.get("EMBEDDER_MODEL_REVISION", "").strip() or model
+
+    dimension = getattr(embedder, "dim", None)
+    if dimension is None:
+        # ``dimension`` is accepted only as a compatibility alias for tiny
+        # test doubles; production embedders use the ``dim`` property.
+        dimension = getattr(embedder, "dimension", None)
+    if (
+        not model
+        or not revision
+        or isinstance(dimension, bool)
+        or not isinstance(dimension, int)
+        or dimension <= 0
+    ):
+        raise RuntimeError("generation_embedding_identity_invalid")
+    return model, revision, dimension, index_model
+
+
+def _manifest_generation_embedding_identity(manifest: object) -> tuple[str, str, int]:
+    """Read and validate the embedding identity persisted in a manifest."""
+
+    if isinstance(manifest, Mapping):
+
+        def value(name: str, default: object = None) -> object:
+            return manifest.get(name, default)
+    else:
+
+        def value(name: str, default: object = None) -> object:
+            return getattr(manifest, name, default)
+
+    model = value("embedding_model")
+    revision = value("model_revision")
+    dimension = value("embedding_dimension")
+    if (
+        not isinstance(model, str)
+        or not model.strip()
+        or not isinstance(revision, str)
+        or not revision.strip()
+        or isinstance(dimension, bool)
+        or not isinstance(dimension, int)
+        or dimension <= 0
+    ):
+        raise RuntimeError("generation_manifest_embedding_identity_invalid")
+    return model.strip(), revision.strip(), dimension
+
+
+def _assert_generation_embedding_identity(embedder: object, manifest: object) -> None:
+    """Fail closed when the active embedder cannot serve the current index."""
+
+    runtime_model, runtime_revision, runtime_dimension, runtime_index_model = (
+        _runtime_generation_embedder_identity(embedder)
+    )
+    manifest_model, manifest_revision, manifest_dimension = _manifest_generation_embedding_identity(
+        manifest
+    )
+    # Current manifests persist the base model.  Keep accepting a decorated
+    # top-level value for the model comparison so malformed/alternate
+    # manifests get the identity mismatch contract below; source binding still
+    # requires the decorated value in the nested outbox evidence.
+    model_matches = manifest_model in {runtime_model, runtime_index_model}
+    if (
+        not model_matches
+        or manifest_revision != runtime_revision
+        or manifest_dimension != runtime_dimension
+    ):
+        raise RuntimeError("generation_embedding_identity_mismatch")
+
+    manifest_outbox = (
+        manifest.get("index_outbox")
+        if isinstance(manifest, Mapping)
+        else getattr(manifest, "index_outbox", None)
+    )
+    bound_index_identity = (
+        manifest_outbox.get("embedding_index_identity")
+        if isinstance(manifest_outbox, Mapping)
+        else None
+    )
+    if bound_index_identity is not None:
+        if (
+            not isinstance(bound_index_identity, str)
+            or not bound_index_identity.strip()
+            or bound_index_identity.strip() != runtime_index_model
+        ):
+            raise RuntimeError("generation_embedding_index_identity_mismatch")
+    elif runtime_index_model and runtime_index_model != runtime_model:
+        # A decorated runtime identity (endpoint/provider/chunking) cannot be
+        # safely matched to a manifest without source-bound evidence, even if
+        # an alternate producer put the decorated value at the top level.
+        # Require a rebuild with an explicit binding instead of silently
+        # querying vectors from another provider endpoint.
+        raise RuntimeError("generation_embedding_index_identity_missing")
+
+
+def _rerank_audit_status(diagnostics: Mapping[str, Any]) -> str:
+    """Summarize safe reranker diagnostics without overstating cloud execution."""
+
+    provider = str(diagnostics.get("provider") or "none")
+    status = str(diagnostics.get("status") or "not_run")
+    degraded = bool(diagnostics.get("degraded"))
+    if provider == "cloud" and status in {"success", "cache_hit"}:
+        return "cloud_success"
+    if provider == "original":
+        return "fallback_original_order" if degraded else "original_order"
+    if provider == "disabled":
+        return "disabled_original_order"
+    if provider == "none":
+        return "not_run"
+    if status in {"success", "cache_hit"}:
+        return f"{provider}_success"
+    return f"{provider}_{status}"
 
 
 class OrdinaryMemoryConflict(RuntimeError):
@@ -188,6 +340,8 @@ class ContextItem:
     rejection_count: int = 0  # 被拒绝次数 (← worth_failure)
     times_retrieved: int = 0  # 被检索次数 (← access_count)
     decay_status: str = "healthy"  # fresh|healthy|stale|decaying|expired
+    bm25_score: float = 0.0
+    keyword_preserved: bool = False
 
     def to_prompt_line(self) -> str:
         """Render one context item with life-trajectory annotations (P3b)."""
@@ -293,6 +447,62 @@ class ContextPack:
     @property
     def total_items(self) -> int:
         return len(self.core) + len(self.related) + len(self.divergent)
+
+
+def _keyword_preservation_candidates(
+    items: list[ContextItem],
+    *,
+    enabled: bool,
+    threshold: float,
+    limit: int,
+) -> dict[str, ContextItem]:
+    """Select a bounded set of high-confidence keyword hits before reranking."""
+    if not enabled or limit <= 0:
+        return {}
+    return {
+        item.id: item
+        for item in sorted(items, key=lambda candidate: (-candidate.bm25_score, candidate.id))[
+            : min(max(0, int(limit)), 5)
+        ]
+        if item.bm25_score >= float(threshold)
+    }
+
+
+def _keyword_preservation_settings() -> tuple[bool, float, int]:
+    enabled = os.environ.get("PP_BM25_PRESERVATION", "1") == "1"
+    try:
+        threshold = float(os.environ.get("PP_BM25_PRESERVATION_THRESHOLD", "0.72"))
+    except (TypeError, ValueError):
+        threshold = 0.72
+    if not math.isfinite(threshold):
+        threshold = 0.72
+    try:
+        limit = int(os.environ.get("PP_BM25_PRESERVATION_LIMIT", "2"))
+    except (TypeError, ValueError):
+        limit = 2
+    return enabled, min(1.0, max(0.0, threshold)), min(5, max(0, limit))
+
+
+def _restore_keyword_candidates(
+    items: list[ContextItem],
+    candidates: Mapping[str, ContextItem],
+    *,
+    relevance_floor: float,
+) -> tuple[list[ContextItem], int]:
+    """Restore keyword hits removed by reranking/MMR without duplicating survivors."""
+    restored = list(items)
+    retained_ids = {item.id for item in restored}
+    restored_count = 0
+    for memory_id, item in candidates.items():
+        if memory_id in retained_ids:
+            continue
+        item.relevance = max(item.relevance, float(relevance_floor))
+        item.keyword_preserved = True
+        restored.append(item)
+        retained_ids.add(memory_id)
+        restored_count += 1
+    restored.sort(key=lambda item: (-item.relevance, item.id))
+    return restored, restored_count
 
 
 NONCANONICAL_CONTEXT_PREFIXES = (
@@ -537,6 +747,13 @@ class ContextEngine:
         self._domain_hint: str | None = None
         self._embedder: Any = None
         self._ldb: Any = None
+        self._lancedb_generation_path: str = ""
+        self._lancedb_generation_base_path: str = ""
+        self._lancedb_generation_root: str = ""
+        self._lancedb_generation_id: str = ""
+        self._lancedb_generation_manifest: Any = None
+        self._lancedb_live_lag: dict[str, Any] | None = None
+        self._lancedb_generation_error: str = ""
         self._code_index: Any = None
         self._code_index_root: str = ""
         # Canonical snapshots and ordinary writes share one replacement lock.
@@ -554,6 +771,11 @@ class ContextEngine:
         self._sqlite = _SQLiteStorage() if use_sqlite else None
         if self._sqlite:
             self._refresh_canonical_cache_if_changed(force=True)
+            from plastic_promise.core.structured_memory_fusion import (
+                initialize_durable_fusion_runtime,
+            )
+
+            initialize_durable_fusion_runtime(self)
         else:
             self._rebuild_graph_from_memories()
 
@@ -567,7 +789,8 @@ class ContextEngine:
         self._heavy_init_lock = threading.RLock()
         self._runtime_refresh_lock = threading.RLock()
         # Rust engine integration — stateless accelerator for supply()
-        self._rust_healthy: bool | None = None  # None = unchecked, True = healthy, None on failure
+        # None means unchecked; completed probes cache either True or False.
+        self._rust_healthy: bool | None = None
         self._rust_health_checked_at: float = 0.0  # epoch timestamp of last health check
         self._rust_health_ttl: float = 300.0  # cache TTL in seconds (5 minutes)
         self._rust_engine_instance = None  # cached Rust engine instance (reused)
@@ -708,6 +931,122 @@ class ContextEngine:
         with self._runtime_mode_lock():
             return self._ensure_heavy_init_locked()
 
+    def _resolve_generation_lancedb_path(
+        self,
+        database_path: str | None = None,
+        *,
+        embedder: object | None = None,
+        allow_outbox_drift: bool = False,
+    ) -> str:
+        """Resolve the verified base or its generation-bound writable live view."""
+        environment_name = "PLASTIC_LANCEDB_GENERATION_ROOT"
+        if environment_name not in os.environ:
+            raise RuntimeError("lancedb_generation_root_not_configured")
+        generation_root = os.environ[environment_name]
+        if not generation_root.strip():
+            raise RuntimeError("lancedb_generation_root_empty")
+
+        from plastic_promise.core.lancedb_artifact import verify_lancedb_artifact
+        from plastic_promise.core.lancedb_generation import GenerationManager
+
+        with GenerationManager(
+            generation_root,
+            create=False,
+            artifact_verifier=verify_lancedb_artifact,
+        ) as manager:
+            base_selection_identity = ""
+            if allow_outbox_drift:
+                manifest, index_path, base_selection_identity = (
+                    manager.resolve_verified_current_selection()
+                )
+            else:
+                manifest, index_path = manager.resolve_verified_current_generation()
+            if manifest is not None:
+                active_embedder = (
+                    embedder if embedder is not None else getattr(self, "_embedder", None)
+                )
+                if active_embedder is None:
+                    raise RuntimeError("generation_embedding_identity_unavailable")
+                _assert_generation_embedding_identity(active_embedder, manifest)
+            manifest_outbox = (
+                manifest.get("index_outbox")
+                if isinstance(manifest, Mapping)
+                else getattr(manifest, "index_outbox", None)
+            )
+            live_lag = None
+            if manifest is not None and manifest_outbox is not None:
+                from plastic_promise.core.index_outbox_reconciliation import (
+                    assert_index_outbox_base_covered,
+                    assert_index_outbox_fresh,
+                )
+
+                db_target = database_path or os.environ.get("PLASTIC_DB_PATH", "")
+                if not db_target or db_target == ":memory:":
+                    raise RuntimeError("generation_outbox_database_unavailable")
+                db_file = Path(db_target).expanduser().resolve(strict=True)
+                with contextlib.closing(
+                    sqlite3.connect(f"{db_file.as_uri()}?mode=ro", uri=True)
+                ) as connection:
+                    connection.execute("PRAGMA query_only = ON")
+                    # Keep the fingerprint and outbox window on one SQLite
+                    # snapshot; otherwise separate SELECTs can observe
+                    # different commits during a concurrent write.
+                    connection.execute("BEGIN")
+                    try:
+                        if allow_outbox_drift:
+                            assert_index_outbox_base_covered(
+                                connection,
+                                evidence=manifest_outbox,
+                            )
+                            from plastic_promise.core.generation_live_index import (
+                                summarize_generation_live_index_lag,
+                            )
+
+                            live_lag = summarize_generation_live_index_lag(
+                                connection,
+                                manifest,
+                            )
+                        else:
+                            assert_index_outbox_fresh(
+                                connection,
+                                evidence=manifest_outbox,
+                            )
+                    finally:
+                        connection.rollback()
+            resolved_root = os.fspath(manager.root)
+        base_path = os.fspath(index_path)
+        resolved_path = base_path
+        live_root = os.environ.get("PLASTIC_LANCEDB_LIVE_ROOT")
+        if live_root is not None:
+            if not live_root.strip():
+                raise RuntimeError("lancedb_live_root_empty")
+            if manifest is None:
+                raise RuntimeError("lancedb_live_base_manifest_unavailable")
+            from plastic_promise.core.generation_live_index import (
+                resolve_generation_live_index,
+            )
+
+            resolved_path = os.fspath(
+                resolve_generation_live_index(
+                    live_root,
+                    manifest,
+                    base_selection_identity=base_selection_identity,
+                )
+            )
+        self._lancedb_generation_root = resolved_root
+        self._lancedb_generation_base_path = base_path
+        self._lancedb_generation_path = resolved_path
+        generation_id = (
+            manifest.get("generation_id")
+            if isinstance(manifest, Mapping)
+            else getattr(manifest, "generation_id", "")
+        )
+        self._lancedb_generation_id = str(generation_id or "")
+        self._lancedb_generation_manifest = manifest
+        self._lancedb_live_lag = live_lag
+        self._lancedb_generation_error = ""
+        return resolved_path
+
     def _ensure_heavy_init_locked(self):
         """Lazy-initialize heavy components: DomainManager, LanceDB, embedder, principle anchors.
 
@@ -765,90 +1104,138 @@ class ContextEngine:
                     "(set LDB_INIT_ON_HEAVY_INIT=1 to enable during init)"
                 )
             elif self._ldb is None:
+                generation_configured = "PLASTIC_LANCEDB_GENERATION_ROOT" in os.environ
+                live_generation_mode = "PLASTIC_LANCEDB_LIVE_ROOT" in os.environ
+                generation_mode = generation_configured or live_generation_mode
                 try:
                     from plastic_promise.core.lancedb_store import LanceDBStore
 
-                    ldb_path = os.environ.get(
-                        "PLASTIC_LANCEDB_PATH",
-                        os.path.join(
-                            os.path.dirname(db_path or "plastic_memory.db"),
-                            "plastic_memory.lancedb",
-                        ),
+                    runtime_embedder = (
+                        self._embedder
+                        if self._embedder is not None
+                        else get_embedder(fallback_on_error=True)
                     )
-                    self._ldb = LanceDBStore(
-                        ldb_path, self._embedder or get_embedder(fallback_on_error=True)
-                    )
-                    backfill_on_init = os.environ.get("LDB_BACKFILL_ON_INIT", "0") == "1"
-                    rebuild_on_init = os.environ.get("LDB_REBUILD_ON_INIT", "0") == "1"
-                    if backfill_on_init:
-                        self._ldb.backfill(self)
-                    else:
-                        logging.info(
-                            "ContextEngine: LanceDB backfill deferred "
-                            "(set LDB_BACKFILL_ON_INIT=1 to run during init)"
+                    if generation_mode:
+                        ldb_path = self._resolve_generation_lancedb_path(
+                            db_path,
+                            embedder=runtime_embedder,
+                            allow_outbox_drift=live_generation_mode,
                         )
-                    if rebuild_on_init and hasattr(self._ldb, "sync_with_engine"):
-                        try:
-                            sync_result = self._ldb.sync_with_engine(self)
-                            self._lancedb_sync_status = {"success": True, **sync_result}
-                            logging.info(
-                                "ContextEngine: LanceDB sync repaired orphans=%s, missing=%s, skipped=%s",
-                                sync_result.get("orphan_deleted", 0),
-                                sync_result.get("missing_backfilled", 0),
-                                sync_result.get("missing_skipped", 0),
-                            )
-                        except Exception as e:
-                            self._lancedb_sync_status = {"success": False, "error": str(e)}
-                            logging.warning(
-                                "ContextEngine: LanceDB sync degraded; continuing startup: %s",
-                                e,
-                            )
-                    # Ghost-vector detection: if LanceDB has more rows than SQLite,
-                    # there are stale test/pollution vectors — rebuild from SQLite
-                    ldb_count = self._ldb.count_rows()
-                    sqlite_count = len(self._memories)
-                    if ldb_count > sqlite_count:
-                        if rebuild_on_init:
-                            logging.warning(
-                                "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
-                                " - rebuilding to remove %d ghost vectors",
-                                ldb_count,
-                                sqlite_count,
-                                ldb_count - sqlite_count,
-                            )
-                            self._ldb.rebuild_all(self)
-                        else:
-                            logging.warning(
-                                "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
-                                " - rebuild deferred for %d ghost vectors "
-                                "(set LDB_REBUILD_ON_INIT=1 to run during init)",
-                                ldb_count,
-                                sqlite_count,
-                                ldb_count - sqlite_count,
-                            )
-                    validate_index = getattr(self._ldb, "validate_with_engine", None)
-                    if callable(validate_index) and not getattr(
-                        self, "_runtime_sync_requested", False
-                    ):
-                        validation = validate_index(self)
-                        previous_sync = getattr(self, "_lancedb_sync_status", {})
-                        if not isinstance(previous_sync, dict):
-                            previous_sync = {}
+                    else:
+                        ldb_path = os.environ.get(
+                            "PLASTIC_LANCEDB_PATH",
+                            os.path.join(
+                                os.path.dirname(db_path or "plastic_memory.db"),
+                                "plastic_memory.lancedb",
+                            ),
+                        )
+                    if generation_mode and not live_generation_mode:
+                        self._ldb = LanceDBStore(
+                            ldb_path,
+                            runtime_embedder,
+                            read_only=True,
+                        )
+                    else:
+                        self._ldb = LanceDBStore(ldb_path, runtime_embedder)
+                    if live_generation_mode:
                         self._lancedb_sync_status = {
-                            **previous_sync,
-                            "success": bool(validation.get("ready")),
-                            "validation": validation,
+                            "success": True,
+                            "status": "generation_live_index",
+                            "base_generation_id": self._lancedb_generation_id,
+                            **(
+                                {"lag": dict(self._lancedb_live_lag)}
+                                if self._lancedb_live_lag is not None
+                                else {}
+                            ),
                         }
-                        if not validation.get("ready"):
-                            logging.warning(
-                                "ContextEngine: LanceDB identity is not ready; "
-                                "vector search disabled until full synchronization: %s",
-                                validation.get("status", "maintenance_required"),
+                        logging.info(
+                            "ContextEngine: generation-bound LanceDB live index opened writable"
+                        )
+                    elif generation_mode:
+                        self._lancedb_sync_status = {
+                            "success": True,
+                            "status": "generation_verified_read_only",
+                        }
+                        logging.info("ContextEngine: verified LanceDB generation opened read-only")
+                    else:
+                        backfill_on_init = os.environ.get("LDB_BACKFILL_ON_INIT", "0") == "1"
+                        rebuild_on_init = os.environ.get("LDB_REBUILD_ON_INIT", "0") == "1"
+                        if backfill_on_init:
+                            self._ldb.backfill(self)
+                        else:
+                            logging.info(
+                                "ContextEngine: LanceDB backfill deferred "
+                                "(set LDB_BACKFILL_ON_INIT=1 to run during init)"
                             )
-                            self._ldb = None
+                        if rebuild_on_init and hasattr(self._ldb, "sync_with_engine"):
+                            try:
+                                sync_result = self._ldb.sync_with_engine(self)
+                                self._lancedb_sync_status = {"success": True, **sync_result}
+                                logging.info(
+                                    "ContextEngine: LanceDB sync repaired orphans=%s, "
+                                    "missing=%s, skipped=%s",
+                                    sync_result.get("orphan_deleted", 0),
+                                    sync_result.get("missing_backfilled", 0),
+                                    sync_result.get("missing_skipped", 0),
+                                )
+                            except Exception as e:
+                                self._lancedb_sync_status = {"success": False, "error": str(e)}
+                                logging.warning(
+                                    "ContextEngine: LanceDB sync degraded; continuing startup: %s",
+                                    e,
+                                )
+                        # Legacy indexes remain mutable and retain startup repair behavior.
+                        ldb_count = self._ldb.count_rows()
+                        sqlite_count = len(self._memories)
+                        if ldb_count > sqlite_count:
+                            if rebuild_on_init:
+                                logging.warning(
+                                    "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
+                                    " - rebuilding to remove %d ghost vectors",
+                                    ldb_count,
+                                    sqlite_count,
+                                    ldb_count - sqlite_count,
+                                )
+                                self._ldb.rebuild_all(self)
+                            else:
+                                logging.warning(
+                                    "ContextEngine: LanceDB has %d rows but SQLite has %d memories"
+                                    " - rebuild deferred for %d ghost vectors "
+                                    "(set LDB_REBUILD_ON_INIT=1 to run during init)",
+                                    ldb_count,
+                                    sqlite_count,
+                                    ldb_count - sqlite_count,
+                                )
+                        validate_index = getattr(self._ldb, "validate_with_engine", None)
+                        if callable(validate_index) and not getattr(
+                            self, "_runtime_sync_requested", False
+                        ):
+                            validation = validate_index(self)
+                            previous_sync = getattr(self, "_lancedb_sync_status", {})
+                            if not isinstance(previous_sync, dict):
+                                previous_sync = {}
+                            self._lancedb_sync_status = {
+                                **previous_sync,
+                                "success": bool(validation.get("ready")),
+                                "validation": validation,
+                            }
+                            if not validation.get("ready"):
+                                logging.warning(
+                                    "ContextEngine: LanceDB identity is not ready; "
+                                    "vector search disabled until full synchronization: %s",
+                                    validation.get("status", "maintenance_required"),
+                                )
+                                self._ldb = None
                     if self._ldb is not None:
                         logging.info("ContextEngine: LanceDBStore ready")
                 except Exception as e:
+                    if generation_mode:
+                        self._lancedb_generation_path = ""
+                        self._lancedb_generation_base_path = ""
+                        self._lancedb_generation_id = ""
+                        self._lancedb_generation_manifest = None
+                        self._lancedb_live_lag = None
+                        self._lancedb_generation_error = e.__class__.__name__
                     logging.warning(
                         "ContextEngine: LanceDBStore init failed — vector search disabled: %s", e
                     )
@@ -921,7 +1308,28 @@ class ContextEngine:
         create = getattr(self._sqlite, "create_ordinary_if_absent", None)
         if not callable(create):
             raise OrdinaryMemoryConflict("ordinary_create_sqlite_required")
-        return create(memory_id, data)
+        from plastic_promise.core.structured_memory_fusion import (
+            get_durable_fusion_runtime,
+        )
+
+        if get_durable_fusion_runtime(self) is None:
+            return create(memory_id, data)
+
+        def enqueue_derived_receipt(
+            connection: sqlite3.Connection,
+            canonical: Mapping[str, Any],
+        ) -> None:
+            from plastic_promise.core.structured_memory_fusion import (
+                enqueue_canonical_memory_for_fusion_in_transaction,
+            )
+
+            enqueue_canonical_memory_for_fusion_in_transaction(
+                self,
+                connection,
+                canonical,
+            )
+
+        return create(memory_id, data, after_create=enqueue_derived_receipt)
 
     def patch_ordinary_memory(
         self,
@@ -2941,9 +3349,7 @@ class ContextEngine:
             )
 
         policy_python_reason = ""
-        if requested_policy == "max-v1":
-            policy_python_reason = "policy_requires_python:max-v1"
-        elif fusion_config is not None and "fts" in retrieval_plan.fusion_channels:
+        if fusion_config is not None and "fts" in retrieval_plan.fusion_channels:
             policy_python_reason = "rust_capability_missing:fts"
 
         if force_python or not prefer_rust or policy_python_reason:
@@ -2977,6 +3383,7 @@ class ContextEngine:
                     project_policy=project_policy,
                     project_degraded=project_degraded,
                     fusion_config=fusion_config,
+                    fusion_policy=requested_policy,
                 )
                 pack.audit_metadata["retrieval_fusion"] = self._fusion_audit_metadata(
                     decision("rust", "rust_capability_satisfied"),
@@ -3451,6 +3858,101 @@ class ContextEngine:
                 items.extend(ContextEngine._metadata_items(nested))
         return items
 
+    def _expand_linked_memory_items(
+        self,
+        pack: ContextPack,
+        *,
+        project_id: str,
+        project_policy: str,
+        limit: int = 3,
+    ) -> int:
+        """Add one-hop ordinary-memory relations without bypassing project admission."""
+        bounded_limit = max(0, min(int(limit), 5))
+        if bounded_limit == 0:
+            return 0
+        layered_items = [*pack.core, *pack.related, *pack.divergent]
+        items_by_id = {item.id: item for item in layered_items}
+        if not items_by_id:
+            return 0
+        _, graph_edges = self._public_graph_snapshot()
+        relation_floors = {
+            "related_to": CONTEXT_LAYERS["related"]["min_relevance"],
+            "contradicts": max(0.5, CONTEXT_LAYERS["related"]["min_relevance"]),
+            "supersedes": max(0.55, CONTEXT_LAYERS["related"]["min_relevance"]),
+        }
+        candidates: dict[str, tuple[float, str, str]] = {}
+        for edge in graph_edges:
+            relation = str(edge.get("relation") or "")
+            if relation not in relation_floors:
+                continue
+            source_id = str(edge.get("from") or "")
+            target_id = str(edge.get("to") or "")
+            if source_id in items_by_id and target_id not in items_by_id:
+                anchor_item = items_by_id[source_id]
+                linked_id = target_id
+                anchor_id = source_id
+            elif target_id in items_by_id and source_id not in items_by_id:
+                anchor_item = items_by_id[target_id]
+                linked_id = source_id
+                anchor_id = target_id
+            else:
+                continue
+            memory = self._memories.get(linked_id)
+            if not isinstance(memory, dict) or self._is_forgotten_memory(memory):
+                continue
+            edge_weight = max(0.0, min(float(edge.get("weight") or 0.0), 1.0))
+            relevance = max(
+                relation_floors[relation],
+                min(0.69, float(anchor_item.relevance) * edge_weight),
+            )
+            current = candidates.get(linked_id)
+            if current is None or relevance > current[0]:
+                candidates[linked_id] = (relevance, relation, anchor_id)
+
+        expanded: list[ContextItem] = []
+        for linked_id, (relevance, relation, anchor_id) in sorted(
+            candidates.items(), key=lambda item: (-item[1][0], item[0])
+        ):
+            memory = self._memories.get(linked_id, {})
+            item = ContextItem(
+                id=linked_id,
+                content=str(memory.get("content") or "")[:300],
+                relevance=relevance,
+                source=f"memory-graph:{relation}",
+                freshness=self._calc_freshness(linked_id),
+                layer="related",
+                worth_score=self._calc_worth_score_from_memory(memory),
+                adoption_count=int(memory.get("worth_success", 0) or 0),
+                rejection_count=int(memory.get("worth_failure", 0) or 0),
+                times_retrieved=int(memory.get("access_count", 0) or 0),
+                decay_status=self._calc_decay_status(linked_id, memory),
+            )
+            if not self._project_item_allowed(
+                item,
+                "related",
+                project_id=project_id,
+                project_policy=project_policy,
+            ):
+                continue
+            expanded.append(item)
+            pack.per_item_stats.append(
+                {
+                    "id": linked_id,
+                    "final_score": relevance,
+                    "layer": "related",
+                    "source": item.source,
+                    "linked_from": anchor_id,
+                }
+            )
+            if len(expanded) >= bounded_limit:
+                break
+        if not expanded:
+            return 0
+        pack.related.extend(expanded)
+        pack.related.sort(key=lambda item: (-item.relevance, item.id))
+        pack.pipeline_stats["memory_relation_expanded_count"] = len(expanded)
+        return len(expanded)
+
     def _finalize_supply_pack(
         self,
         pack: ContextPack,
@@ -3464,6 +3966,16 @@ class ContextEngine:
         self._refresh_canonical_cache_if_changed()
         pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
         pack.channel_states = dict(getattr(pack, "channel_states", {}) or {})
+        expanded_relation_count = self._expand_linked_memory_items(
+            pack,
+            project_id=project_id,
+            project_policy=project_policy,
+        )
+        if expanded_relation_count:
+            pack.audit_metadata["memory_relation_expansion"] = {
+                "count": expanded_relation_count,
+                "max_hops": 1,
+            }
         for channel in retrieval_plan.channels:
             if channel in pack.channel_states:
                 continue
@@ -4193,8 +4705,24 @@ class ContextEngine:
         Returns:
             ContextPack: 三层上下文包 (core / related / divergent)
         """
+        from plastic_promise.core.retrieval_explain import retrieval_explain_enabled
+
+        capture_stage_timings = debug or retrieval_explain_enabled()
         stage_timings: dict[str, float] = {}
-        supply_started = time.perf_counter() if debug else None
+        supply_started = time.perf_counter() if capture_stage_timings else None
+        rerank_diagnostics: dict[str, Any] = {
+            "provider": "none",
+            "status": "not_run",
+            "degraded": False,
+            "reason": "no_candidates",
+            "attempts": 0,
+            "latency_ms": 0.0,
+            "request_id": "",
+            "usage": {},
+            "candidate_count": 0,
+            "reranked_count": 0,
+            "cache_hit": False,
+        }
 
         def record_stage_timing(name: str, started_at: float | None) -> None:
             if started_at is None:
@@ -4207,7 +4735,7 @@ class ContextEngine:
         self._ensure_heavy_init()
 
         # Phase 0: 原则注入 + 图谱自动注入
-        principle_started = time.perf_counter() if debug else None
+        principle_started = time.perf_counter() if capture_stage_timings else None
         activated = self._activate_principles(task_type, task_description)
         if self.enable_principles:
             self._inject_activated_to_graph(activated, task_type)
@@ -4239,7 +4767,7 @@ class ContextEngine:
 
         # Phase 1: 三路分层检索 — 细→类→粗
         # 细 (graph): 原则关联图谱 — 最精确的信号
-        candidate_retrieval_started = time.perf_counter() if debug else None
+        candidate_retrieval_started = time.perf_counter() if capture_stage_timings else None
         graph_results = self._graph_traversal(task_type)[:candidate_limit]
 
         # 类 (tier): 文本匹配 + L1 工作记忆优先级提升
@@ -4334,6 +4862,9 @@ class ContextEngine:
         )
 
         # Phase 2: explicit versioned fusion, then layer with graph evidence.
+        effective_policy = (
+            fusion_decision.effective_policy if fusion_decision is not None else "legacy-auto"
+        )
         if fusion_config is not None:
             channel_results = {
                 "vector": vector_results,
@@ -4355,6 +4886,27 @@ class ContextEngine:
                 for memory_id, score in fused_scores
                 if memory_id in hydrated
             ]
+        elif effective_policy == "max-v1":
+            vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
+            rankings = {
+                "vector": [(str(row[0]), float(row[1])) for row in vector_results],
+                "bm25": [(str(row[0]), float(row[1])) for row in text_results],
+                "fts": [(str(row[0]), float(row[1])) for row in fts_results],
+            }
+            fused_scores = weighted_max_v1(
+                rankings,
+                vector_weight=vector_weight,
+                has_vector=bool(vector_results),
+            )
+            hydrated: dict[str, tuple[str, str]] = {}
+            for result_set in (vector_results, text_results, fts_results):
+                for row in result_set:
+                    hydrated.setdefault(str(row[0]), (str(row[2]), str(row[3])))
+            fused_results = [
+                (memory_id, score, *hydrated[memory_id])
+                for memory_id, score in fused_scores
+                if memory_id in hydrated
+            ]
         elif vector_results:
             vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
             fused_results = self._hybrid_fuse(
@@ -4364,14 +4916,12 @@ class ContextEngine:
                 fts_results=fts_results,
             )
         else:
-            # No vector available (Ollama down / zero vector) — fuse text + fts
+            # Legacy no-vector fallback remains unchanged.
             fused: dict[str, tuple[float, str, str]] = {}
             for mid, score, content, source in text_results:
                 fused[mid] = (score * 0.8, content, source)
             for mid, score, content, source in fts_results:
-                w = score * 0.8
-                if score >= 0.85:
-                    w = score
+                w = score if score >= 0.85 else score * 0.8
                 if mid in fused:
                     existing_score, existing_content, existing_source = fused[mid]
                     fused[mid] = (max(existing_score, w), existing_content, existing_source)
@@ -4393,7 +4943,7 @@ class ContextEngine:
         record_stage_timing("candidate_retrieval", candidate_retrieval_started)
 
         # P2: Evolve edge weights based on feedback patterns
-        filter_and_layer_started = time.perf_counter() if debug else None
+        filter_and_layer_started = time.perf_counter() if capture_stage_timings else None
         self._apply_edge_feedback()
 
         # Phase 3-5 fused: symbol rules + feedback + ContextItem building (was 3 passes, now 1)
@@ -4606,6 +5156,7 @@ class ContextEngine:
                 rejection_count=int(mem.get("worth_failure", 0)) if mem else 0,
                 times_retrieved=mem.get("access_count", 0) if mem else 0,
                 decay_status=self._calc_decay_status(item_id, mem) if mem else "healthy",
+                bm25_score=float(text_score_map.get(item_id, 0.0) or 0.0),
             )
 
             # Principles are already listed in activated_principles — skip from layers
@@ -4621,18 +5172,43 @@ class ContextEngine:
                     pack.divergent.append(item)
 
         # P3a: MMR diversity + optional rerank, then re-layer
+        keyword_preservation_candidates: dict[str, ContextItem] = {}
+        keyword_preserved_count = 0
         if pack.core or pack.related or pack.divergent:
             all_items = pack.core + pack.related + pack.divergent
+            (
+                preservation_enabled,
+                preservation_threshold,
+                preservation_limit,
+            ) = _keyword_preservation_settings()
+            keyword_preservation_candidates = _keyword_preservation_candidates(
+                all_items,
+                enabled=preservation_enabled,
+                threshold=preservation_threshold,
+                limit=preservation_limit,
+            )
             # Unified reranker (Phase 1.6): multi-provider chain, default ON;
             # disable with PP_RERANK_DISABLED=1.
             from plastic_promise.core.reranker import MultiProviderReranker
 
-            all_items = MultiProviderReranker().rerank(task_description, all_items)
+            reranker = MultiProviderReranker()
+            rerank_started = time.perf_counter() if capture_stage_timings else None
+            all_items = reranker.rerank(task_description, all_items)
+            record_stage_timing("rerank", rerank_started)
+            rerank_diagnostics = reranker.last_diagnostics
             # MMR diversity (Phase 1.4)
+            mmr_started = time.perf_counter() if capture_stage_timings else None
             all_items = self._apply_mmr(all_items, threshold=0.85, penalty=0.70)
+            record_stage_timing("mmr", mmr_started)
             hard_min_score = float(os.environ.get("PP_HARD_MIN_SCORE", str(HARD_MIN_SCORE)))
             if hard_min_score > 0:
                 all_items = [item for item in all_items if item.relevance >= hard_min_score]
+            preservation_floor = max(CONTEXT_LAYERS["divergent"]["min_relevance"], hard_min_score)
+            all_items, keyword_preserved_count = _restore_keyword_candidates(
+                all_items,
+                keyword_preservation_candidates,
+                relevance_floor=preservation_floor,
+            )
             # Re-distribute to layers based on adjusted relevance
             pack.core.clear()
             pack.related.clear()
@@ -4649,9 +5225,11 @@ class ContextEngine:
                         item.layer = "divergent"
                         pack.divergent.append(item)
             # Compute divergent quality
+            divergent_quality_started = time.perf_counter() if capture_stage_timings else None
             if pack.divergent:
                 all_retrieved = pack.core + pack.related + pack.divergent
                 pack.divergent = self._compute_divergent_quality(pack.divergent, all_retrieved)
+            record_stage_timing("divergent_quality", divergent_quality_started)
 
         final_items = pack.core + pack.related + pack.divergent
         if debug:
@@ -4699,6 +5277,8 @@ class ContextEngine:
                 "divergent_count": len(pack.divergent),
                 "canonical_hot_count": len(canonical_hot_hits),
                 "context_gate_evaluated": context_gate_summary["items_evaluated"],
+                "bm25_preservation_candidates": len(keyword_preservation_candidates),
+                "bm25_preserved_count": keyword_preserved_count,
             }
             pack.per_item_stats = []
             for item in final_items:
@@ -4706,6 +5286,7 @@ class ContextEngine:
                 if stats:
                     stats["final_score"] = item.relevance
                     stats["layer"] = item.layer
+                    stats["keyword_preserved"] = item.keyword_preserved
                     pack.per_item_stats.append(stats)
 
         # Phase 6: 审计元数据
@@ -4719,7 +5300,8 @@ class ContextEngine:
             "vector_search": "active" if vector_results else "fallback_text_only",
             "fts_search": "active" if fts_results else "inactive",
             "ldb_rows": str(self._ldb.count_rows()) if self._ldb else "0",
-            "rerank_status": "multi-provider",
+            "rerank_status": _rerank_audit_status(rerank_diagnostics),
+            "rerank": rerank_diagnostics,
             "code_memory": self._code_index.to_audit()
             if self._code_index is not None
             else {"enabled": False},
@@ -4761,7 +5343,7 @@ class ContextEngine:
             project_id=project_id,
             project_policy=project_policy,
         )
-        if debug:
+        if capture_stage_timings:
             record_stage_timing("filter_and_layer", filter_and_layer_started)
             record_stage_timing("total", supply_started)
             finalized_pack.pipeline_stats["stage_timing_ms"] = dict(stage_timings)
@@ -5016,6 +5598,13 @@ class ContextEngine:
         with self._heavy_init_lock:
             self._embedder = None
             self._ldb = None
+            self._lancedb_generation_path = ""
+            self._lancedb_generation_base_path = ""
+            self._lancedb_generation_root = ""
+            self._lancedb_generation_id = ""
+            self._lancedb_generation_manifest = None
+            self._lancedb_live_lag = None
+            self._lancedb_generation_error = ""
             self._principle_anchors = {}
             self._heavy_init_done = False
 
@@ -5048,7 +5637,32 @@ class ContextEngine:
             getattr(self._embedder, "index_model_name", None)
             or getattr(self._embedder, "model_name", "unavailable")
         )
-        if synchronize_index:
+        live_sync = getattr(self, "_lancedb_sync_status", None)
+        live_index_mode = (
+            isinstance(live_sync, dict) and live_sync.get("status") == "generation_live_index"
+        )
+        if synchronize_index and live_index_mode:
+            lag = live_sync.get("lag")
+            lag_state = lag.get("state") if isinstance(lag, dict) else "unavailable"
+            ready = bool(live_sync.get("success")) and lag_state in {"ready", "lagged"}
+            refresh["index_sync"] = {
+                "requested": True,
+                "ready": ready,
+                "status": f"generation_live_index_{lag_state}",
+                "base_generation_id": str(live_sync.get("base_generation_id") or ""),
+                **({"lag": dict(lag)} if isinstance(lag, dict) else {}),
+            }
+            if not ready:
+                with self._heavy_init_lock:
+                    self._ldb = None
+                refresh["lancedb_reinitialized"] = False
+        elif synchronize_index and getattr(self._ldb, "read_only", False) is True:
+            refresh["index_sync"] = {
+                "requested": True,
+                "ready": False,
+                "status": "generation_read_only",
+            }
+        elif synchronize_index:
             if self._ldb is None:
                 refresh["index_sync"] = {
                     "requested": True,
@@ -5109,6 +5723,12 @@ class ContextEngine:
                     with self._heavy_init_lock:
                         self._ldb = None
                     refresh["lancedb_reinitialized"] = False
+        elif self._ldb is not None and getattr(self._ldb, "read_only", False) is True:
+            refresh["index_sync"] = {
+                "requested": False,
+                "ready": True,
+                "status": "generation_verified_read_only",
+            }
         elif self._ldb is not None:
             validate_index = getattr(self._ldb, "validate_with_engine", None)
             if callable(validate_index):
@@ -5122,12 +5742,8 @@ class ContextEngine:
                         "missing_count": len(validation.get("missing_ids") or []),
                         "orphan_count": len(validation.get("orphan_ids") or []),
                         "stale_count": len(validation.get("stale_ids") or []),
-                        "invalid_material_count": len(
-                            validation.get("invalid_material_ids") or []
-                        ),
-                        "text_mismatch_count": len(
-                            validation.get("text_mismatch_ids") or []
-                        ),
+                        "invalid_material_count": len(validation.get("invalid_material_ids") or []),
+                        "text_mismatch_count": len(validation.get("text_mismatch_ids") or []),
                     }
                     if not ready:
                         with self._heavy_init_lock:
@@ -5150,6 +5766,46 @@ class ContextEngine:
     def activate_principles(self, task_type: str, task_description: str) -> list[str]:
         """Public wrapper for _activate_principles."""
         return self._activate_principles(task_type, task_description)
+
+    def generation_live_index_status(self) -> dict[str, Any] | None:
+        """Refresh bounded live-view lag counters from canonical SQLite."""
+
+        sync_status = getattr(self, "_lancedb_sync_status", None)
+        if (
+            not isinstance(sync_status, dict)
+            or sync_status.get("status") != "generation_live_index"
+        ):
+            return dict(sync_status) if isinstance(sync_status, dict) else None
+        manifest = getattr(self, "_lancedb_generation_manifest", None)
+        if manifest is None:
+            return {
+                **sync_status,
+                "lag": {"state": "unavailable", "reason": "base_manifest_unavailable"},
+            }
+        db_path, _lancedb_path = self._rust_backend_paths()
+        if not db_path or db_path == ":memory:":
+            return {
+                **sync_status,
+                "lag": {"state": "unavailable", "reason": "canonical_database_unavailable"},
+            }
+        from plastic_promise.core.generation_live_index import (
+            summarize_generation_live_index_lag,
+        )
+
+        db_file = Path(db_path).expanduser().resolve(strict=True)
+        with contextlib.closing(
+            sqlite3.connect(f"{db_file.as_uri()}?mode=ro", uri=True)
+        ) as connection:
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("BEGIN")
+            try:
+                lag = summarize_generation_live_index_lag(connection, manifest)
+            finally:
+                connection.rollback()
+        refreshed = {**sync_status, "lag": lag}
+        self._lancedb_live_lag = lag
+        self._lancedb_sync_status = refreshed
+        return dict(refreshed)
 
     def text_retrieval(self, task: str, trust_boost: float = 1.0) -> list[tuple]:
         """Public wrapper for _text_retrieval."""
@@ -5233,13 +5889,25 @@ class ContextEngine:
 
         if db_path != ":memory:" and not os.path.isabs(db_path):
             db_path = os.path.abspath(db_path)
-        lancedb_path = getattr(self._ldb, "_path", "") or os.environ.get(
-            "PLASTIC_LANCEDB_PATH",
-            os.path.join(
-                os.path.dirname(db_path or "plastic_memory.db"),
-                "plastic_memory.lancedb",
-            ),
-        )
+        if "PLASTIC_LANCEDB_GENERATION_ROOT" in os.environ:
+            active_store_path = ""
+            if getattr(self._ldb, "read_only", False) is True:
+                active_store_path = str(getattr(self._ldb, "_path", "") or "")
+            lancedb_path = active_store_path or self._lancedb_generation_path
+            if not lancedb_path:
+                try:
+                    lancedb_path = self._resolve_generation_lancedb_path()
+                except Exception as exc:
+                    self._lancedb_generation_error = exc.__class__.__name__
+                    raise RuntimeError("verified LanceDB generation unavailable") from exc
+        else:
+            lancedb_path = getattr(self._ldb, "_path", "") or os.environ.get(
+                "PLASTIC_LANCEDB_PATH",
+                os.path.join(
+                    os.path.dirname(db_path or "plastic_memory.db"),
+                    "plastic_memory.lancedb",
+                ),
+            )
         return db_path, lancedb_path
 
     def _new_rust_engine(self, rust_engine_cls):
@@ -5255,10 +5923,10 @@ class ContextEngine:
         Thread-safe: acquires _rust_lock to protect _rust_engine_instance
         and health state against concurrent MCP/Daemon access.
 
-        On failure: sets _rust_healthy = None (NOT False) to force
-        immediate re-probe on the next supply() call. This avoids the
-        defect where setting healthy=False traps the system in a
-        degraded state until TTL expires.
+        Failed probes are negative-cached for the same bounded TTL. Runtime
+        refreshes call ``reset_rust_health()``, so deployments and generation
+        promotions can still trigger an immediate re-probe without making
+        every degraded recall repeat an expensive deterministic failure.
         """
         with self._rust_lock:
             now = time.time()
@@ -5300,8 +5968,7 @@ class ContextEngine:
                 self._rust_healthy = True
             except Exception as e:
                 logger.warning("Rust engine health check failed: %s", e)
-                # Set to None (not False) — forces immediate re-probe on next supply()
-                self._rust_healthy = None
+                self._rust_healthy = False
                 self._rust_engine_instance = None
 
             self._rust_health_checked_at = now
@@ -5318,6 +5985,16 @@ class ContextEngine:
             self._rust_health_checked_at = 0.0
             self._rust_engine_instance = None
         logger.info("Rust health reset — will re-probe on next supply()")
+
+    @staticmethod
+    def _rust_supports_fusion_policy(fusion_policy: str) -> bool:
+        if fusion_policy != "max-v1":
+            return True
+        try:
+            import context_engine_core
+        except (ImportError, ModuleNotFoundError):
+            return False
+        return callable(getattr(context_engine_core, "weighted_max_v1_fuse", None))
 
     def _convert_rust_pack(self, rust_pack) -> ContextPack:
         """Convert Rust PyO3 ContextPack to Python ContextPack.
@@ -5428,6 +6105,7 @@ class ContextEngine:
         project_policy: str = "balanced",
         project_degraded: bool = False,
         fusion_config: FusionConfig | None = None,
+        fusion_policy: str = "legacy-auto",
     ) -> ContextPack:
         """Rust-accelerated supply path.
 
@@ -5449,9 +6127,15 @@ class ContextEngine:
                 dict(self._memories[mid]) for mid in self._memories if mid in admitted_snapshot_ids
             ]
 
-        from context_engine_core import ContextEngine as RustEngine
+        import context_engine_core
 
-        rust = self._new_rust_engine(RustEngine)
+        if fusion_policy == "max-v1" and not callable(
+            getattr(context_engine_core, "weighted_max_v1_fuse", None)
+        ):
+            raise _RustFusionFallback("rust_capability_missing:max-v1")
+        rust_engine_cls = context_engine_core.ContextEngine
+
+        rust = self._new_rust_engine(rust_engine_cls)
         rust.set_current_time(datetime.datetime.now().isoformat())
 
         # Enrich only admitted rows. Derived vector state never decides admission.
@@ -5495,6 +6179,17 @@ class ContextEngine:
                 separators=(",", ":"),
                 sort_keys=True,
             )
+        elif fusion_policy == "max-v1":
+            fusion_config_json = json.dumps(
+                {
+                    "policy": "max-v1",
+                    "vector_weight": float(os.environ.get("PP_VECTOR_WEIGHT", "0.50")),
+                },
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
         if hasattr(rust, "supply_with_project_context"):
             try:
                 rust_pack = rust.supply_with_project_context(
@@ -5509,7 +6204,7 @@ class ContextEngine:
                     fusion_config_json,
                 )
             except TypeError as exc:
-                if fusion_config is not None:
+                if fusion_config is not None or fusion_policy == "max-v1":
                     raise _RustFusionFallback(
                         "rust_capability_missing:fusion_config_boundary"
                     ) from exc
@@ -5524,7 +6219,7 @@ class ContextEngine:
                     project_degraded,
                 )
         else:
-            if fusion_config is not None:
+            if fusion_config is not None or fusion_policy == "max-v1":
                 raise _RustFusionFallback("rust_capability_missing:fusion_config_boundary")
             rust_pack = rust.supply(
                 task_description,
@@ -6474,31 +7169,137 @@ class ContextEngine:
         if not divergent_items:
             return divergent_items
 
+        unique_items = list({item.id: item for item in all_retrieved}.values())
+        vectors_by_id: dict[str, list[float]] = {}
+        vector_store = getattr(self, "_ldb", None)
+        get_vector = getattr(vector_store, "get_vector", None)
+        try:
+            explicit_availability = getattr(vector_store, "vector_reads_available", None)
+        except Exception:
+            explicit_availability = False
+        vector_store_available = vector_store is not None and callable(get_vector)
+        if explicit_availability is not None:
+            try:
+                vector_store_available = vector_store_available and bool(explicit_availability)
+            except Exception:
+                vector_store_available = False
+
+        def normalize_vector(value: object) -> list[float] | None:
+            if value is None or isinstance(value, (str, bytes, Mapping)):
+                return None
+            if not isinstance(value, Iterable):
+                return None
+            try:
+                vector = [float(component) for component in value]
+            except (TypeError, ValueError):
+                return None
+            if not vector or not all(math.isfinite(component) for component in vector):
+                return None
+            if not any(component != 0.0 for component in vector):
+                return None
+            return vector
+
+        if vector_store_available:
+            try:
+                get_vectors_for_recall = getattr(vector_store, "get_vectors_for_recall", None)
+                if callable(get_vectors_for_recall):
+                    stored_vectors, vector_store_available = get_vectors_for_recall(
+                        retrieved.id for retrieved in unique_items
+                    )
+                elif callable(get_vector):
+                    stored_vectors = {
+                        retrieved.id: get_vector(retrieved.id) for retrieved in unique_items
+                    }
+                else:
+                    stored_vectors = {}
+                    vector_store_available = False
+                if not vector_store_available:
+                    stored_vectors = {}
+                for item_id, raw_vector in stored_vectors.items():
+                    vector = normalize_vector(raw_vector)
+                    if vector is not None:
+                        vectors_by_id[item_id] = vector
+            except Exception:
+                # A degraded index must not turn recall into synchronous cloud I/O.
+                vector_store_available = False
+                vectors_by_id.clear()
+
+        if (
+            vector_store_available
+            and self._embedder is not None
+            and bool(getattr(self._embedder, "supports_native_batch", False))
+        ):
+            embed_batch = getattr(self._embedder, "embed_batch", None)
+            if callable(embed_batch):
+                missing_by_content: dict[str, list[str]] = {}
+                content_by_key: dict[str, str] = {}
+                for retrieved in unique_items:
+                    if retrieved.id in vectors_by_id:
+                        continue
+                    content_key = retrieved.content
+                    missing_by_content.setdefault(content_key, []).append(retrieved.id)
+                    content_by_key.setdefault(content_key, retrieved.content)
+                if missing_by_content:
+                    content_keys = list(missing_by_content)
+                    try:
+                        batch_vectors = embed_batch([content_by_key[key] for key in content_keys])
+                        if len(batch_vectors) != len(content_keys):
+                            raise RuntimeError("embedding_response_count_mismatch")
+                        for content_key, raw_vector in zip(
+                            content_keys,
+                            batch_vectors,
+                            strict=True,
+                        ):
+                            vector = normalize_vector(raw_vector)
+                            if vector is None:
+                                continue
+                            for item_id in missing_by_content[content_key]:
+                                vectors_by_id[item_id] = vector
+                    except Exception:
+                        # Lexical novelty remains deterministic and non-blocking.
+                        pass
+
+        token_sets = {
+            retrieved.id: set(self._tokenize(retrieved.content)) for retrieved in unique_items
+        }
+
+        def lexical_novelty(item: ContextItem) -> float:
+            item_tokens = token_sets.get(item.id, set())
+            max_similarity = 0.0
+            for other in unique_items:
+                if other.id == item.id:
+                    continue
+                other_tokens = token_sets.get(other.id, set())
+                union = item_tokens | other_tokens
+                if union:
+                    similarity = len(item_tokens & other_tokens) / len(union)
+                else:
+                    similarity = float(
+                        item.content.strip().casefold() == other.content.strip().casefold()
+                    )
+                max_similarity = max(max_similarity, similarity)
+            return 1.0 - max_similarity
+
         for item in divergent_items:
             # Confidence: blend worth_score, source quality, relevance
             source_quality = SOURCE_QUALITY_MAP.get(item.source, 0.5)
             confidence = 0.4 * item.worth_score + 0.3 * source_quality + 0.3 * item.relevance
             item.confidence = confidence
 
-            # Novelty: compute via embedder if available, else fallback
-            if self._embedder is not None and len(all_retrieved) > 1:
-                try:
-                    item_vec = self._embedder.embed(item.content)
-                    max_sim = 0.0
-                    for other in all_retrieved:
-                        if other.id == item.id:
-                            continue
-                        other_vec = self._embedder.embed(other.content) if self._embedder else None
-                        if other_vec:
-                            sim = self._cosine_similarity(item_vec, other_vec)
-                            max_sim = max(max_sim, sim)
-                    item.novelty_score = 1.0 - max_sim
-                except Exception:
-                    # Fallback: domain-based heuristic — different source = more novel
-                    item.novelty_score = 0.3 if item.source not in ("graph", "entity-link") else 0.6
+            item_vector = vectors_by_id.get(item.id)
+            comparable_vectors = [
+                vectors_by_id[other.id]
+                for other in unique_items
+                if other.id != item.id and other.id in vectors_by_id
+            ]
+            if item_vector is not None and comparable_vectors:
+                max_similarity = max(
+                    self._cosine_similarity(item_vector, other_vector)
+                    for other_vector in comparable_vectors
+                )
+                item.novelty_score = 1.0 - max_similarity
             else:
-                # No embedder: heuristic — vector-sourced items are more novel
-                item.novelty_score = 0.4 if item.source in ("graph", "text") else 0.6
+                item.novelty_score = lexical_novelty(item)
 
             item.inspiration_score = item.novelty_score * item.confidence
 
@@ -6605,6 +7406,7 @@ class _SQLiteStorage:
 
         if db_path is None:
             db_path = get_db_path()
+        self._db_path = str(db_path)
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
@@ -6716,12 +7518,16 @@ class _SQLiteStorage:
             ")"
         )
         from plastic_promise.core.memory_proposals import ensure_memory_proposal_schema
+        from plastic_promise.core.proposal_promotion import ensure_proposal_automation_schema
         from plastic_promise.core.synthesis import ensure_synthesis_schema
         from plastic_promise.core.traceability import ensure_traceability_schema
+        from plastic_promise.core.workflow_state import ensure_workflow_state_schema
 
         ensure_traceability_schema(self._conn)
         ensure_synthesis_schema(self._conn)
         ensure_memory_proposal_schema(self._conn)
+        ensure_proposal_automation_schema(self._conn)
+        ensure_workflow_state_schema(self._conn)
         # 迁移: memory_version 表 — Rust 引擎用版本号检测 BM25 索引是否需要刷新
         try:
             _ensure_memory_version_schema(self._conn)
@@ -6991,6 +7797,8 @@ class _SQLiteStorage:
         self,
         mid: str,
         data: Mapping[str, Any],
+        *,
+        after_create: Callable[[sqlite3.Connection, Mapping[str, Any]], None] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Create once and compare every persisted field on replay."""
         from plastic_promise.core.synthesis_retrieval import is_governed_synthesis_memory
@@ -7034,6 +7842,8 @@ class _SQLiteStorage:
             if not created and self._canonical_binding(columns, tuple(row)) != expected_binding:
                 raise OrdinaryMemoryConflict("ordinary_memory_already_exists")
             canonical = self._row_to_dict(row)
+            if created and after_create is not None:
+                after_create(self._conn, canonical)
         return canonical, created
 
     def _upsert(self, mid: str, data: dict, *, ordinary_only: bool) -> bool:

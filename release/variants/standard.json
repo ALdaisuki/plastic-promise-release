@@ -114,6 +114,15 @@
       "logs-and-audit-output",
       "backups",
       "deployment-environment-files"
+    ],
+    "engineering_pattern_allowlist": [
+      "docs/engineering-patterns/2026-07-12-ordinary-memory-caller-inventory.md",
+      "docs/engineering-patterns/2026-07-19-memos-openmemory-exemplar-research.md",
+      "docs/engineering-patterns/2026-07-20-dashboard-ux-exemplar-research.md",
+      "docs/engineering-patterns/2026-07-20-structured-chunk-lineage-exemplar-research.md",
+      "docs/engineering-patterns/2026-07-21-mcp-response-projection-exemplar-research.md",
+      "docs/engineering-patterns/2026-07-21-release-v019-publication-exemplar-research.md",
+      "docs/engineering-patterns/2026-07-22-passive-memory-exemplars.md"
     ]
   },
   "release": {
@@ -133,9 +142,15 @@
       "variant-contract",
       "compileall",
       "pytest",
+      "rust-release-import",
       "release-tree-audit",
       "commit-attestation",
-      "tag-attestation"
+      "tag-attestation",
+      "artifact-build",
+      "artifact-metadata",
+      "twine-check",
+      "external-release-evidence",
+      "atomic-push"
     ]
   }
 }

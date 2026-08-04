@@ -29,9 +29,7 @@ def test_context_recommender_scores_with_explainable_reasons():
     recs = recommend_context_items([weak, strong], task_type="architecture")
 
     assert recs[0]["id"] == "mem_strong"
-    assert {"high_relevance", "positive_worth", "project_scope_match"}.issubset(
-        recs[0]["reasons"]
-    )
+    assert {"high_relevance", "positive_worth", "project_scope_match"}.issubset(recs[0]["reasons"])
     assert recs[0]["score"] > recs[1]["score"]
 
 
@@ -141,4 +139,6 @@ def test_memory_recall_payload_includes_context_recommendations(monkeypatch):
     assert isinstance(result[0], TextContent)
     payload = json.loads(result[0].text)
     assert payload["context_recommendations"][0]["id"] == "mem_recall"
-    assert "context_recommender" in payload["audit"]
+    assert payload["diagnostics"]["summary"]["retrieval_mode"] == "mix"
+    assert payload["diagnostics"]["ref"]["kind"] == "call_span"
+    assert "audit" not in payload

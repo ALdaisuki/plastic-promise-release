@@ -241,6 +241,28 @@ async def _smart_remember_handler(ctx, params, atom_results):
                 reason="memory_store_invalid_response",
                 error_prefix="memory_store",
             )
+        if store_data.get("status") == "pending":
+            proposal_ids = store_data.get("proposal_ids")
+            if not isinstance(proposal_ids, list) or not all(
+                isinstance(proposal_id, str) and proposal_id.strip() for proposal_id in proposal_ids
+            ):
+                return _smart_remember_failure(
+                    action="store_failed",
+                    reason="memory_store_invalid_response",
+                    error_prefix="memory_store",
+                    payload=store_data,
+                )
+            proposal_data = dict(store_data)
+            proposal_data["action"] = "proposed"
+            return SkillResult(
+                skill_name="smart-remember",
+                success=True,
+                data=proposal_data,
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
         if store_data.get("stored") is not True:
             reason = str(store_data.get("reason") or "memory_store_failed")
             return _smart_remember_failure(

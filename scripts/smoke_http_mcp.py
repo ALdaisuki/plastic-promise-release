@@ -23,6 +23,12 @@ DEFAULT_HEALTH_URL = "http://127.0.0.1:9020/health"
 DEFAULT_PROJECT_ID = "project:plastic-promise"
 DEFAULT_DB_PATH = "data/db/plastic_memory.db"
 DEFAULT_LANCEDB_PATH = "data/lancedb"
+TEXT_ONLY_VECTOR_REASONS = {
+    "retrieval_embedder_unavailable",
+    "retrieval_embedding_probe_failed",
+    "retrieval_embedding_zero_or_invalid",
+    "retrieval_lancedb_unavailable",
+}
 
 
 class SmokeFailure(RuntimeError):
@@ -41,8 +47,40 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--expected-version", default=None, help="Expected /health version")
     parser.add_argument("--expected-mode", default=None, help="Expected runtime_mode.mode")
+    parser.add_argument(
+        "--expected-tool-count",
+        type=int,
+        default=None,
+        help="Expected tools/list count for the running source revision",
+    )
     parser.add_argument("--project-id", default=DEFAULT_PROJECT_ID)
     parser.add_argument("--project-policy", default="balanced")
+    parser.add_argument(
+        "--retrieval-mode",
+        default="hybrid",
+        choices=["local", "global", "hybrid", "mix", "project", "code", "audit", "principle"],
+    )
+    parser.add_argument(
+        "--allow-text-only",
+        action="store_true",
+        help="Accept an internally consistent degraded_text_only /health response",
+    )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Skip memory_store and validate existing evidence; session/audit metadata and GC preview may still be recorded",
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Existing-memory query required by --read-only",
+    )
+    parser.add_argument(
+        "--expected-memory-id",
+        action="append",
+        default=[],
+        help="Existing memory id that recall/context must expose; repeatable and required by --read-only",
+    )
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--sse-read-timeout", type=float, default=300.0)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
@@ -70,6 +108,22 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON only.",
     )
     return parser
+
+
+def validate_cli_args(args: argparse.Namespace) -> None:
+    expected_ids = [str(memory_id).strip() for memory_id in args.expected_memory_id]
+    args.expected_memory_id = [memory_id for memory_id in expected_ids if memory_id]
+    if args.expected_tool_count is not None and args.expected_tool_count <= 0:
+        raise SmokeFailure("expected-tool-count must be a positive integer")
+    if args.read_only:
+        if not str(args.query or "").strip():
+            raise SmokeFailure("--read-only requires --query")
+        if not args.expected_memory_id:
+            raise SmokeFailure("--read-only requires at least one --expected-memory-id")
+        if args.check_summary_index:
+            raise SmokeFailure("--read-only cannot be combined with --check-summary-index")
+    elif args.query or args.expected_memory_id:
+        raise SmokeFailure("--query and --expected-memory-id require --read-only")
 
 
 def now_marker() -> tuple[str, str]:
@@ -116,20 +170,138 @@ def pipeline_count(pipeline: dict[str, Any], left: str, right: str) -> int:
     return 0
 
 
-def validate_health(health: dict[str, Any], expected_version: str | None = None) -> dict[str, Any]:
+def validate_health(
+    health: dict[str, Any],
+    expected_version: str | None = None,
+    *,
+    allow_text_only: bool = False,
+) -> dict[str, Any]:
     if health.get("status") != "ok":
         raise SmokeFailure(f"health status is not ok: {health!r}")
+    if health.get("identity_valid") is not True:
+        raise SmokeFailure("health response did not validate the process identity")
     if expected_version and health.get("version") != expected_version:
         raise SmokeFailure(
             f"health version mismatch: expected {expected_version}, got {health.get('version')}"
         )
     if not health.get("pid"):
         raise SmokeFailure("health response did not include pid")
+
+    vector_ready = health.get("vector_ready")
+    degraded = health.get("degraded")
+    retrieval_status = health.get("retrieval_status")
+    vector_reason = health.get("vector_reason")
+    health_policy = health.get("health_policy")
+    lancedb_ready = health.get("lancedb_ready")
+    lancedb_required = health.get("lancedb_required")
+    bm25_ready = health.get("bm25_ready")
+    graph_ready = health.get("graph_ready")
+    if not all(
+        isinstance(value, bool)
+        for value in (
+            vector_ready,
+            degraded,
+            lancedb_ready,
+            lancedb_required,
+            bm25_ready,
+            graph_ready,
+        )
+    ):
+        raise SmokeFailure("health response has incomplete vector readiness metadata")
+    if bm25_ready is not True:
+        raise SmokeFailure("health response does not report BM25 ready")
+
+    if vector_ready is True:
+        if (
+            degraded is not False
+            or retrieval_status != "ready"
+            or vector_reason not in (None, "")
+            or health_policy not in {"strict", "text-only"}
+            or (health_policy == "text-only" and not allow_text_only)
+            or (lancedb_required and not lancedb_ready)
+        ):
+            raise SmokeFailure(f"health vector readiness is incoherent: {health!r}")
+    elif not allow_text_only:
+        raise SmokeFailure("health vector readiness is degraded and --allow-text-only was not set")
+    elif (
+        degraded is not True
+        or health_policy != "text-only"
+        or retrieval_status != "degraded_text_only"
+        or vector_reason not in TEXT_ONLY_VECTOR_REASONS
+    ):
+        raise SmokeFailure(f"health text-only readiness is incoherent: {health!r}")
+
     return {
         "status": health.get("status"),
         "version": health.get("version"),
         "pid": health.get("pid"),
         "uptime": health.get("uptime"),
+        "degraded": degraded,
+        "health_policy": health_policy,
+        "retrieval_status": retrieval_status,
+        "vector_ready": vector_ready,
+        "vector_reason": vector_reason,
+        "lancedb_ready": lancedb_ready,
+        "lancedb_required": lancedb_required,
+        "bm25_ready": bm25_ready,
+        "graph_ready": graph_ready,
+    }
+
+
+def validate_tools_list(
+    tools_result: Any,
+    *,
+    expected_count: int | None,
+    required_names: set[str],
+) -> dict[str, Any]:
+    tools = getattr(tools_result, "tools", None)
+    if not isinstance(tools, list):
+        raise SmokeFailure("tools/list did not return a tools array")
+    names = [str(getattr(tool, "name", "") or "") for tool in tools]
+    if not names or any(not name for name in names):
+        raise SmokeFailure("tools/list returned an empty tool name")
+    if len(set(names)) != len(names):
+        raise SmokeFailure("tools/list returned duplicate tool names")
+    if expected_count is not None and len(names) != expected_count:
+        raise SmokeFailure(
+            f"tools/list count mismatch: expected {expected_count}, got {len(names)}"
+        )
+    missing = sorted(required_names - set(names))
+    if missing:
+        raise SmokeFailure(f"tools/list is missing required tools: {missing}")
+    return {
+        "count": len(names),
+        "required_tools": sorted(required_names),
+    }
+
+
+def validate_session_init(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("success") is not True:
+        raise SmokeFailure(f"session-init failed: {payload!r}")
+
+    response_mode = payload.get("response_mode")
+    if response_mode == "compact":
+        compact_valid = (
+            payload.get("schema_version") == "session-init-response-v1"
+            and isinstance(payload.get("stage_session_id"), str)
+            and bool(payload.get("stage_session_id"))
+            and isinstance(payload.get("context_status"), dict)
+            and isinstance(payload.get("chain_state"), dict)
+        )
+        if not compact_valid:
+            raise SmokeFailure(f"session-init compact response is invalid: {payload!r}")
+        warnings = payload.get("warnings")
+    else:
+        if response_mode not in {None, "standard"} or not isinstance(payload.get("data"), dict):
+            raise SmokeFailure(f"session-init response is invalid: {payload!r}")
+        warnings = payload.get("degrade_log")
+
+    return {
+        "success": True,
+        "response_mode": response_mode or "legacy",
+        "degraded": bool(payload.get("degraded", False)),
+        "warning_count": len(warnings or []),
+        "error_count": len(payload.get("errors") or []),
     }
 
 
@@ -230,26 +402,40 @@ def _validate_retrieval_evidence(
 
 
 def validate_recall(
-    recall: dict[str, Any], expected_memory_ids: list[str]
+    recall: dict[str, Any],
+    expected_memory_ids: list[str],
+    *,
+    expect_text_only: bool = False,
 ) -> dict[str, Any]:
     if recall.get("success") is False:
         raise SmokeFailure("memory_recall reported success=false")
     if recall.get("degraded") is True:
         raise SmokeFailure(f"memory_recall degraded: {recall.get('warnings')}")
     audit = recall.get("audit") or {}
+    vector_search = audit.get("vector_search")
+    if expect_text_only and vector_search != "fallback_text_only":
+        raise SmokeFailure(
+            f"memory_recall did not attest fallback_text_only retrieval: {vector_search!r}"
+        )
+    if not expect_text_only and vector_search == "fallback_text_only":
+        raise SmokeFailure("memory_recall used fallback_text_only while /health reported ready")
     evidence = _validate_retrieval_evidence(recall, expected_memory_ids)
     return {
         "success": recall.get("success", True),
         "degraded": recall.get("degraded", False),
         "engine_mode": audit.get("engine_mode"),
         "engine_version": audit.get("engine_version"),
+        "vector_search": vector_search,
         "related_count": len(recall.get("related", [])),
         **evidence,
     }
 
 
 def validate_context(
-    context: dict[str, Any], expected_memory_ids: list[str]
+    context: dict[str, Any],
+    expected_memory_ids: list[str],
+    *,
+    expect_text_only: bool = False,
 ) -> dict[str, Any]:
     project_context = context.get("project_context") or {}
     if context.get("degraded") is True:
@@ -257,12 +443,20 @@ def validate_context(
     if project_context.get("degraded") is True:
         raise SmokeFailure(f"context project degraded: {project_context.get('warnings')}")
     audit = context.get("audit_metadata") or {}
+    vector_search = audit.get("vector_search")
+    if expect_text_only and vector_search != "fallback_text_only":
+        raise SmokeFailure(
+            f"context_supply did not attest fallback_text_only retrieval: {vector_search!r}"
+        )
+    if not expect_text_only and vector_search == "fallback_text_only":
+        raise SmokeFailure("context_supply used fallback_text_only while /health reported ready")
     evidence = _validate_retrieval_evidence(context, expected_memory_ids)
     return {
         "degraded": context.get("degraded", False),
         "project_degraded": project_context.get("degraded", False),
         "engine_mode": audit.get("engine_mode"),
         "engine_version": audit.get("engine_version"),
+        "vector_search": vector_search,
         "related_count": len(context.get("related", [])),
         **evidence,
     }
@@ -327,7 +521,11 @@ def validate_sqlite_summary_rows(
     created = store.get("created")
     if not canonical_memory_id or not submitted_memory_id:
         raise SmokeFailure("SQLite summary-index check received incomplete store identity")
-    if not isinstance(deduplicated, bool) or not isinstance(created, bool) or deduplicated == created:
+    if (
+        not isinstance(deduplicated, bool)
+        or not isinstance(created, bool)
+        or deduplicated == created
+    ):
         raise SmokeFailure("SQLite summary-index check received incoherent store flags")
 
     rows_by_id = {str(row.get("id") or ""): row for row in rows if row.get("id")}
@@ -346,9 +544,7 @@ def validate_sqlite_summary_rows(
         if canonical_memory_id == submitted_memory_id:
             raise SmokeFailure("SQLite deduplicated identity did not map to an older canonical")
         if submitted_memory_id in rows_by_id:
-            raise SmokeFailure(
-                f"SQLite retained discarded submitted memory {submitted_memory_id}"
-            )
+            raise SmokeFailure(f"SQLite retained discarded submitted memory {submitted_memory_id}")
         if canonical_memory_id in marker_memory_ids:
             raise SmokeFailure("SQLite deduplication overwrote canonical provenance")
 
@@ -366,9 +562,7 @@ def validate_sqlite_summary_rows(
         if marker in compact_text or canary in compact_text:
             bad_compact.append(str(row.get("id") or ""))
     if bad_compact:
-        raise SmokeFailure(
-            f"SQLite compact index text contains raw identity for {bad_compact}"
-        )
+        raise SmokeFailure(f"SQLite compact index text contains raw identity for {bad_compact}")
 
     raw_hits = []
     for row in marker_rows:
@@ -382,9 +576,7 @@ def validate_sqlite_summary_rows(
     split_memory_ids = [
         memory_id for memory_id in marker_memory_ids if memory_id != canonical_memory_id
     ]
-    retrieval_memory_ids = list(
-        dict.fromkeys([canonical_memory_id, *marker_memory_ids])
-    )
+    retrieval_memory_ids = list(dict.fromkeys([canonical_memory_id, *marker_memory_ids]))
     return {
         "sqlite_row_count": len(rows),
         "sqlite_memory_ids": [str(row.get("id") or "") for row in rows],
@@ -435,9 +627,7 @@ def validate_lancedb_summary_rows(
     bad_rows = [row.get("memory_id", "") for row in rows if canary in str(row.get("text") or "")]
     if bad_rows:
         raise SmokeFailure(f"LanceDB text contains raw canary for {bad_rows}")
-    marker_rows = [
-        row.get("memory_id", "") for row in rows if marker in str(row.get("text") or "")
-    ]
+    marker_rows = [row.get("memory_id", "") for row in rows if marker in str(row.get("text") or "")]
     if marker_rows:
         raise SmokeFailure(f"LanceDB compact text contains raw identity for {marker_rows}")
     return {
@@ -503,11 +693,141 @@ async def call_tool_json(session: Any, name: str, arguments: dict[str, Any]) -> 
     return parse_mcp_json_content(list(result.content), name)
 
 
+async def run_session_checks(
+    session: Any,
+    args: argparse.Namespace,
+    report: dict[str, Any],
+    marker: str,
+    canary: str,
+) -> dict[str, Any] | None:
+    await session.initialize()
+    expect_text_only = (
+        report.get("checks", {}).get("health", {}).get("retrieval_status") == "degraded_text_only"
+    )
+
+    required_tools = {"runtime_mode", "memory_recall", "context_supply"}
+    required_tools.add("session-init" if args.read_only else "memory_store")
+    tools_result = await session.list_tools()
+    report["checks"]["tools_list"] = validate_tools_list(
+        tools_result,
+        expected_count=args.expected_tool_count,
+        required_names=required_tools,
+    )
+
+    runtime = await call_tool_json(session, "runtime_mode", {"action": "get"})
+    report["checks"]["runtime_mode"] = validate_runtime(runtime, args.expected_mode)
+
+    sqlite_check: dict[str, Any] | None = None
+    if args.read_only:
+        query = str(args.query).strip()
+        retrieval_memory_ids = list(args.expected_memory_id)
+        session_init = await call_tool_json(
+            session,
+            "session-init",
+            {
+                "task_description": query,
+                "task_type": "code_review",
+                "context_mode": "none",
+                "stage_session_id": f"{marker}:session",
+                "flow_line_id": "http-mcp-smoke",
+                "agent_name": "http-mcp-smoke",
+            },
+        )
+        report["checks"]["session-init"] = validate_session_init(session_init)
+    else:
+        query = build_retrieval_query()
+        content = build_smoke_content(marker, canary)
+        store = await call_tool_json(
+            session,
+            "memory_store",
+            {
+                "content": content,
+                "memory_type": "experience",
+                "source": "codex_http_smoke_script",
+                "source_class": "experience",
+                "project_id": args.project_id,
+                "project_policy": args.project_policy,
+                "visibility": "project",
+                "tags": [
+                    "release-smoke:http-mcp",
+                    "release-smoke:summary-index",
+                    f"marker:{marker}",
+                ],
+                "origin_kind": "http_mcp_smoke_script",
+                "origin_uri": args.url,
+                "origin_ref": marker,
+                "metadata_json": {
+                    "marker": marker,
+                    "canary": canary,
+                    "summary_index_expected": bool(args.check_summary_index),
+                },
+            },
+        )
+        store_check = validate_store(store)
+        report["checks"]["memory_store"] = store_check
+        retrieval_memory_ids = [store_check["canonical_memory_id"]]
+        if args.check_summary_index:
+            sqlite_rows = fetch_sqlite_smoke_rows(
+                args.db_path,
+                marker,
+                store_check["canonical_memory_id"],
+                store_check["submitted_memory_id"],
+            )
+            sqlite_check = validate_sqlite_summary_rows(
+                sqlite_rows,
+                marker,
+                canary,
+                store_check,
+            )
+            retrieval_memory_ids = sqlite_check["retrieval_memory_ids"]
+
+    recall = await call_tool_json(
+        session,
+        "memory_recall",
+        {
+            "query": query,
+            "task_type": "code_review",
+            "max_results": 20,
+            "debug": True,
+            "project_id": args.project_id,
+            "project_policy": args.project_policy,
+            "retrieval_mode": args.retrieval_mode,
+            "request_id": f"{marker}:recall",
+        },
+    )
+    report["checks"]["memory_recall"] = validate_recall(
+        recall,
+        retrieval_memory_ids,
+        expect_text_only=expect_text_only,
+    )
+
+    context = await call_tool_json(
+        session,
+        "context_supply",
+        {
+            "task_description": query,
+            "task_type": "code_review",
+            "debug": True,
+            "project_id": args.project_id,
+            "project_policy": args.project_policy,
+            "retrieval_mode": args.retrieval_mode,
+            "request_id": f"{marker}:context",
+        },
+    )
+    report["checks"]["context_supply"] = validate_context(
+        context,
+        retrieval_memory_ids,
+        expect_text_only=expect_text_only,
+    )
+    return sqlite_check
+
+
 async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     import httpx
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
+    validate_cli_args(args)
     marker, canary = now_marker()
     report: dict[str, Any] = {
         "ok": False,
@@ -518,103 +838,27 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "checks": {},
     }
 
+    sqlite_check: dict[str, Any] | None = None
     timeout = httpx.Timeout(args.timeout, read=args.sse_read_timeout)
     async with httpx.AsyncClient(timeout=timeout) as client:
         health_response = await client.get(args.health_url)
         health_response.raise_for_status()
-        health = validate_health(health_response.json(), args.expected_version)
+        health = validate_health(
+            health_response.json(),
+            args.expected_version,
+            allow_text_only=args.allow_text_only,
+        )
         report["checks"]["health"] = health
 
         async with streamable_http_client(args.url, http_client=client) as streams:
             read_stream, write_stream = streams[0], streams[1]
             async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-
-                runtime = await call_tool_json(session, "runtime_mode", {"action": "get"})
-                report["checks"]["runtime_mode"] = validate_runtime(runtime, args.expected_mode)
-
-                content = build_smoke_content(marker, canary)
-                store = await call_tool_json(
+                sqlite_check = await run_session_checks(
                     session,
-                    "memory_store",
-                    {
-                        "content": content,
-                        "memory_type": "experience",
-                        "source": "codex_http_smoke_script",
-                        "source_class": "experience",
-                        "project_id": args.project_id,
-                        "project_policy": args.project_policy,
-                        "visibility": "project",
-                        "tags": [
-                            "release-smoke:http-mcp",
-                            "release-smoke:summary-index",
-                            f"marker:{marker}",
-                        ],
-                        "origin_kind": "http_mcp_smoke_script",
-                        "origin_uri": args.url,
-                        "origin_ref": marker,
-                        "metadata_json": {
-                            "marker": marker,
-                            "canary": canary,
-                            "summary_index_expected": bool(args.check_summary_index),
-                        },
-                    },
-                )
-                store_check = validate_store(store)
-                report["checks"]["memory_store"] = store_check
-
-                sqlite_check: dict[str, Any] | None = None
-                retrieval_memory_ids = [store_check["canonical_memory_id"]]
-                if args.check_summary_index:
-                    sqlite_rows = fetch_sqlite_smoke_rows(
-                        args.db_path,
-                        marker,
-                        store_check["canonical_memory_id"],
-                        store_check["submitted_memory_id"],
-                    )
-                    sqlite_check = validate_sqlite_summary_rows(
-                        sqlite_rows,
-                        marker,
-                        canary,
-                        store_check,
-                    )
-                    retrieval_memory_ids = sqlite_check["retrieval_memory_ids"]
-
-                recall = await call_tool_json(
-                    session,
-                    "memory_recall",
-                    {
-                        "query": build_retrieval_query(),
-                        "task_type": "code_review",
-                        "max_results": 20,
-                        "debug": True,
-                        "project_id": args.project_id,
-                        "project_policy": args.project_policy,
-                        "retrieval_mode": "hybrid",
-                        "request_id": f"{marker}:recall",
-                    },
-                )
-                report["checks"]["memory_recall"] = validate_recall(
-                    recall,
-                    retrieval_memory_ids,
-                )
-
-                context = await call_tool_json(
-                    session,
-                    "context_supply",
-                    {
-                        "task_description": build_retrieval_query(),
-                        "task_type": "code_review",
-                        "debug": True,
-                        "project_id": args.project_id,
-                        "project_policy": args.project_policy,
-                        "retrieval_mode": "hybrid",
-                        "request_id": f"{marker}:context",
-                    },
-                )
-                report["checks"]["context_supply"] = validate_context(
-                    context,
-                    retrieval_memory_ids,
+                    args,
+                    report,
+                    marker,
+                    canary,
                 )
 
     if args.check_summary_index:

@@ -7,7 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Released version: `0.1.19`.
+Released version: `0.1.20`.
+
+## [0.1.20] - 2026-08-04
+
+### Added
+
+- Added a loopback-only hosted inference gateway with governed embedding,
+  server-side reranking, durable idempotent jobs, optional client-local rerank
+  packages, and a bounded process-memory response cache.
+- Added immutable LanceDB generation artifacts, shadow rebuild and quality
+  evidence, exact embedding identity binding, and generation-bound live replay.
+- Added a loopback-only remote configuration control plane with role-separated
+  tokens, write-only provider credentials, immutable revisions, CAS activation,
+  and Dashboard integration.
+- Added project-aware passive-memory orchestration with durable semantic capture,
+  proposal scoring and promotion jobs, structured-memory fusion work, retries,
+  failure reasons, and reconciliation.
+- Added the pinned Matt Pocock engineering workflow with project/session/flow
+  isolation, immutable run generations, bounded execution receipts, explicit
+  user/model authority, and deterministic composite-skill tracking.
+
+### Changed
+
+- Recall no longer performs synchronous embedding fanout. Failed Rust health
+  probes use a bounded negative cache, and Rust now supports the `max-v1`
+  retrieval fusion contract.
+- Cloud provider configuration now binds documented API origins, model identity,
+  native embedding dimensions, sampling controls, structured JSON output, price
+  evidence, and comparable rerank quality evidence.
+- Dashboard status and project selectors now reconcile canonical SQLite scope,
+  passive-memory activity, control revisions, and the active LanceDB generation.
+- Maintenance-derived batches are isolated by project, visibility, configuration
+  revision, job kind, and provider identity; provider calls remain outside SQLite
+  write transactions.
+
+### Fixed
+
+- Made passive hooks and semantic routes fail closed by default, retained stable
+  worker degradation reasons, and prevented pending proposals from becoming
+  canonical memory or LanceDB rows before governed promotion.
+- Hardened inference reservations, leases, fencing, client model identity,
+  cancellation, retention limits, provider freshness, and generation evidence.
+- Restored Dashboard scrolling and cross-port control responses, upgraded legacy
+  configuration revisions, and prevented stale frontend assets from masking the
+  active control contract.
+- Reconciled transient WAL and shadow-build gaps, preserved promoted index
+  identity across runtime changes, and replayed checked index work into the
+  active generation without a full rebuild for every new write.
+
+### Upgrade and rollback
+
+- SQLite remains canonical and LanceDB remains derived and rebuildable. Provider
+  credentials stay outside Git and public API responses.
+- Cloud inference, remote configuration, passive semantic routing/capture,
+  automatic proposal adoption, and structured fusion remain feature-gated.
+  Disabling them preserves canonical rows, durable jobs, revisions, evidence,
+  and audit history.
+- A changed embedding identity requires a complete shadow generation rebuild and
+  verified quality evidence even when the old and new dimensions match.
+- Maintenance activation and LanceDB generation promotion remain separate
+  operator decisions; this release preparation does not enable either one.
+
+### Verification
+
+- Merged source range covers PRs #74 through #85 on development `main`.
+- Release status for `0.1.20` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
 
 ## [0.1.19] - 2026-07-21
 
@@ -497,6 +562,7 @@ Released version: `0.1.19`.
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
+[0.1.20]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.16...v0.1.17

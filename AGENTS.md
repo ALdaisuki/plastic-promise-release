@@ -83,7 +83,7 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | `skill_session_complete` | 标记技能完成，处理标签转换和 worth 更新 |
 | `skill_session_trace` | 追踪技能执行链（完整性检测/违反警告） |
 | `skill_session_audit` | 事后间隙扫描：检测缺失 session 实体，支持自动补录 |
-| `skill_auto_track` | Hook 自动追踪（PreToolUse/PostToolUse），零摩擦 |
+| `skill_auto_track` | 外部客户端 Hook 兼容追踪；记录 scoped lifecycle entity，不推进官方工作流游标 |
 
 ### Phase 1 程序化技能 (3)
 | 工具 | 用途 |
@@ -92,16 +92,23 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 | `smart-remember` | 智能记忆存储 — 自动去重（相似度≥0.85则更新）+ 完整质量管道 |
 | `step-closure` | 六联闭环 — 原则对齐→SCARF→激素→信任→反思(执行者提供lesson/improvement/root_cause/optimization)→CEI，结构化记忆入池 |
 
-### SuperPowers 流水线 (1)
+### 官方工程工作流 (1)
 | 工具 | 用途 |
 |------|------|
-| `sp-stage` | SuperPowers 16 阶段统一入口 — 覆盖 using-superpowers、normal-development、review/audit、bug-hunt、parallel dispatch、writing-skills。链校验自动拒绝跳步，hook 自动追踪 |
+| `sp-stage` | 保留名称的兼容入口；仅接受固定版本 Matt Pocock 工程技能，校验 route、调用权限和相邻阶段 |
 
 > **性能**: 热调用 0.2~0.4s，冷启动 ~3s。`context_supply` 已从 `session-init` / `sp-stage` 原子中移除；`session-init(context_mode="light")` 只做 1-2 条轻量记忆预览，`context_mode="full"` 才显式运行完整 `context_supply`，启动后仍按需显式调用。
-> **并发隔离**: 重型 `memory_recall` / `context_supply` 调用支持 `stage_session_id`、`flow_line_id`、`request_id`。并行 SuperPowers 流程或子 Agent 派发时应传入这些 ID，服务端会派生 `request_scope_id` 用于缓存隔离、审计追踪，并在 `context_supply` 输出中显示。
+> **并发隔离**: 重型 `memory_recall` / `context_supply` 调用支持 `stage_session_id`、`flow_line_id`、`request_id`。并行官方流程或子 Agent 派发时应传入这些 ID，服务端会派生 `request_scope_id` 用于缓存隔离、审计追踪，并在 `context_supply` 输出中显示。
 > **调试热路径**: `rust-full` 下 `memory_recall(debug=true)` 在 Rust 健康且优先时仍走 Rust snapshot 热路径，并返回 Rust `pipeline_stats` / `per_item_stats`；只有 Rust 不可用或异常时才回退 Python。
 > **链约束**: `SKILL_CHAIN_MAP` 定义前置/后继，跳步返回 `chain_violation` + 正确下一步提示。
-> **追踪**: Claude Code hook 与 MCP `sp-stage` 统一进入 `skill_auto_track → skill_session_start/complete`。
+> **固定上游**: `mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d`。旧 SuperPowers 阶段返回 `unknown_stage`。
+> **调用策略**: user-only 技能只能提示或由用户明确调用；model 技能可由 Hook 推荐并通过 `sp-stage(invocation_source="model")` 进入。`invocation_source` 只是调用方声明，MCP 传输层不认证该字段；可信客户端必须先确认真实用户意图，服务端只校验声明与阶段策略是否一致。
+> **执行声明**: `sp-stage` 首次调用只返回 `awaiting_receipt` 和固定 revision/hash 的执行合同，不运行官方 Codex Skill，也不推进游标。实际运行对应 Codex Skill 后，调用方必须再次提交无 secret 的 `execution_receipt`；receipt 是调用方声明，不是 Skill 已运行的密码学证明。服务端校验固定物料、JSON 边界和敏感值，再执行治理适配器并原子持久化 receipt + cursor。
+> **项目隔离**: Hook 与客户端应同时传 `project_id`、`stage_session_id` 和 `flow_line_id`。必须把 Hook 注入的这组 ID 原样传给 `session-init` 和后续 `sp-stage`，不得为同一任务另建 scope。持久 workflow scope 使用项目摘要隔离；同名 session/flow 不会跨项目续接。
+> **复合 Skill**: `/implement` 已内含其测试和审查工作，`/grill-me` 已内含其提问循环；外层 route 不再重复追加 `/tdd`、`/code-review` 或 `/grilling`。复合 receipt 必须在 `evidence.invoked_skills` 声明实际内部调用；服务端以 `composite_receipt` 证据建立确定性、entity-only 子链，不把它伪装成独立 Hook 观测。
+> **分支切换**: 已持久化的父 route 只能在当前阶段与声明分支的相邻阶段对齐时切换到该分支（例如 `idea-to-ship/grill-with-docs -> small-build/implement` 或 `prototype-detour/handoff`）；任意 route 切换仍返回 `route_mismatch`。
+> **有界注入**: canonical memory、临时 proposal 与路由文本的合并结果严格服从总字符预算。可以省略完整可选区块，但不得截断 XML-like 合同；默认预算下路由优先保留 project/session/flow scope 与可执行调用。
+> **Codex Hook 边界**: 当前 Codex 自动 Hook 只有 `UserPromptSubmit`、`Stop`、`SessionEnd`。不要宣称 Codex 会通过 `PreToolUse/PostToolUse` 自动调用 `skill_auto_track`；该工具只保留给明确实现了此生命周期的外部客户端。
 
 ### 域联邦域 (1)
 | 工具 | 用途 |
@@ -153,33 +160,81 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 Codex 工具暴露约定：Codex 可能把 MCP 工具放在 deferred/dynamic metadata 中，初始显式工具列表未出现不代表 MCP 未连接。若 `session-init` / `sp-stage` / `runtime_mode` 等 Plastic Promise MCP 工具未展开，必须先调用 `tool_search` 查询 `Plastic Promise MCP session-init sp-stage defense memory_recall context_supply runtime_mode`；只有 `tool_search` 仍找不到、且配置/健康检查也不可用时，才明确说明 MCP 未加载或未连接并进入本地文件、shell、测试和显式上下文降级。不要因 MCP 缺失而卡死当前工作。
 
 ```
-1. session-init(task_description="<任务描述>", context_mode="light")  → 获取 chain_state + 原则 + SCARF基线 + 信任分 + context_status
-2. sp-stage(stage="brainstorming", task_description="<任务描述>")  → 进入 SuperPowers 流水线
-3. 按 SKILL_CHAIN_MAP 顺序推进后续阶段
+1. 使用 Hook 注入的 project_id/stage_session_id/flow_line_id 调用 session-init(..., context_mode="light")
+   → 获取同一 scope 的 chain_state + 原则 + SCARF基线 + 信任分 + context_status
+2. 读取 Hook 注入的 official flow、full chain、current/next stage 和 [user]/[model] 权限
+3. 仅自动进入 [model] 阶段；[user] 阶段等待用户明确调用
 ```
 
-### 2. SuperPowers 阶段推进
+### 2. 官方阶段推进
 ```
-sp-stage(stage="brainstorming", task_description="...")      → 阶段 1: 需求澄清
-sp-stage(stage="using-git-worktrees", task_description="...") → 阶段 2: 创建 worktree（强制必经）
-sp-stage(stage="writing-plans", task_description="...")       → 阶段 3: 任务拆解
-sp-stage(stage="executing-plans", task_description="...")     → 阶段 4: 执行实施
-sp-stage(stage="test-driven-development", task_description="...") → 阶段 5: TDD
-sp-stage(stage="verification-before-completion", task_description="...") → 阶段 6: 验收
-sp-stage(stage="finishing-a-development-branch", task_description="...") → 阶段 7: 合入
+idea-to-ship:
+  grill-with-docs [user] → to-spec [user] → to-tickets [user]
+  → implement [user, composite]
+
+small-build:
+  grill-with-docs [user] → implement [user, composite]
+
+prototype-detour:
+  grill-with-docs [user] → handoff [user] → prototype [model]
+  → handoff [user] → grill-with-docs [user]
+
+bug-onramp:
+  diagnosing-bugs [model] → tdd [model] → code-review [model]
+
+research-feed:
+  research [model] → grill-with-docs [user] → to-spec [user]
+
+merge-conflict:
+  resolving-merge-conflicts [model] → code-review [model]
+
+standalone:
+  grill-me [user, composite]
+  to-spec [user] → to-tickets [user] → implement [user, composite]
+  to-tickets [user] → implement [user, composite]
+  implement [user, composite]
+  tdd [model] → code-review [model]
+  prototype [model]
+  handoff [user]
+  teach [user]
+  writing-great-skills [user]
+  domain-modeling [model]
+  codebase-design [model]
 ```
-补充入口/分支阶段：
+
+显式 `/skill-name` 会为每个固定版本官方 Skill 选择以该 Skill 为首节点的合法 route；
+自然语言 Skill 短语只有位于句首且表达正向命令时才算显式调用；疑问、否定、状态陈述和引用不生成 user attestation。普通 `code_generation`（以及从 `general` 文本解析出的正向实现命令）进入 `tdd-to-review`；`architecture` / `refactoring` 进入 `codebase-design`；故障、审查、研究、原型和冲突命令进入各自 model route。只读解释、状态句和没有正向后续动作的否定 `general` 输入保留在 `routing`；`Fix ... but do not refactor ...` 这类后置范围约束不会取消前面的正向任务。该任务分类不会把常用名词伪造成 user-only 或 model Skill 调用。
+`implement` 和 `grill-me` 是上游复合 Skill，内部子流程不作为外层 receipt/cursor 的重复阶段。
+本地路由器只承诺上述有界命令语法；歧义自然语言必须 fail closed 到 `routing`。`PP_PASSIVE_SEMANTIC_ROUTING=shadow|on` 可复用结构化切片 JSON Provider 做有界语义分类，但只能增强 model route，不得生成 user-only attestation；超时、无效 JSON、低置信度或 Provider 不可用时必须回退 `routing/ask-matt`。确定性命令永不调用 Provider。
+父 route 只允许切换到其声明分支且必须与当前/下一阶段对齐；其他 route 切换会被拒绝。
+
+调用示例：
 ```
-sp-stage(stage="using-superpowers", task_description="...")  → 元阶段: 技能启动与选择
-sp-stage(stage="subagent-driven-development", task_description="...") → writing-plans 后的子 Agent 实施分支
-sp-stage(stage="requesting-code-review", task_description="...") → Review 链入口
-sp-stage(stage="receiving-code-review", task_description="...") → Review 反馈处理
-sp-stage(stage="audit", task_description="...") → 高风险或显式要求的结构化审计
-sp-stage(stage="systematic-debugging", task_description="...") → Debug 链入口
-sp-stage(stage="dispatching-parallel-agents", task_description="...") → 并行派发辅助阶段
-sp-stage(stage="writing-skills", task_description="...") → 技能编写/验证元阶段
+sp-stage(
+  stage="diagnosing-bugs",
+  route="bug-onramp",
+  invocation_source="model",
+  task_description="..."
+)
+# 返回 execution_status="awaiting_receipt" 和 execution_contract
+
+# 实际运行 /diagnosing-bugs 后，再提交同一 scope：
+sp-stage(
+  stage="diagnosing-bugs",
+  route="bug-onramp",
+  invocation_source="model",
+  task_description="...",
+  execution_receipt={
+    "skill": "diagnosing-bugs",
+    "upstream_revision": "<execution_contract.upstream_revision>",
+    "content_sha256": "<execution_contract.content_sha256>",
+    "status": "completed",
+    "evidence": {"verification": "focused regression passed"}
+  }
+)
 ```
-跳步会被 `sp-stage` handler 自动拒绝并返回正确下一步。
+跳步返回 `chain_violation`；未知旧阶段返回 `unknown_stage`；未知 route 返回 `unknown_route`。同一 `(project_id, stage_session_id, flow_line_id, route, step)` 的相同 receipt 幂等返回 `already_completed`，不同 receipt 返回 `execution_receipt_conflict`。
+同一 MCP 进程内，相同 `(project_id, stage_session_id, flow_line_id)` 的 `sp-stage` 调用会串行覆盖状态读取、治理适配器执行和 receipt/cursor 原子提交；不同 flow lane 不共享该锁。生产边界仍是“同一 SQLite 只运行一个 MCP 写入进程”。该 async lock 不是跨进程租约；进程在治理适配器结束、SQLite 提交前崩溃时，适配器可能重跑，因此适配器必须保持幂等或只读，不得宣称分布式 exactly-once。
 
 ### 3. 每次决策前
 ```
@@ -431,11 +486,15 @@ Daemon 扫描器(5个) → 发现问题
 | `PP_SYNTHESIS_ARTIFACTS` | `off` | `shadow` 只评估不落综合记忆，`on` 才允许创建受治理草稿。 |
 | `PP_SYNTHESIS_RETRIEVAL` | `0` | `1` 也只允许审核证据完整且来源仍有效的 `verified` 综合记忆。 |
 | `PP_MEMORY_PROPOSALS` | `off` | `shadow` 仅返回哈希诊断，`on` 将公开用户事实、偏好和决策送入审核队列。 |
+| `PP_PASSIVE_SEMANTIC_CAPTURE` | `off` | `shadow` 只保存分类结果，`on` 才将规则未命中的用户原文异步批量转为 proposal。 |
+| `PP_MEMORY_PROPOSAL_AUTO_ADOPT` | `off` | `shadow` 持久化 would-promote 结果，`on` 仅在评分、向量证据与既有治理门禁全部通过后原子晋升。 |
 | `PP_MEMORY_INDEX_TEXT_POLICY` | `legacy` | `compact-v2` 是需要固定语料 live gate 验收的实验策略。 |
 
 综合记忆状态机为 `draft -> verified -> stale|contested`；修复 stale/contested 会产生下一修订的 `draft`，必须重新审核。审核必须同时记录 `last_verified_at`、`verified_by_actor`、`verified_by_call_id`，缺失任何一项都不可检索。高影响任务只为最终进入三层上下文的综合记忆优先展开来源证据。
 
-提案审核记录 actor、call ID、审核时间和稳定原因码。`pending`、`rejected`、`expired` 提案不得进入普通记忆检索或 LanceDB。维护顺序固定为：memory lifecycle -> proposal expiry -> synthesis integrity -> synthesis index replay -> audit。
+规则未命中的 Stop 事件只把原始用户文本写入 durable derived-work；Hook 不同步等待云模型。语义批次严格按 project、visibility、配置修订和 Provider identity 分区，可合并或拆分输出，但每条 evidence 必须逐字来自对应用户输入。启用 proposal automation 后，每个来源 turn 通过 `ProposalAutomation` 形成可重建评分证据；eligible score revision 生成幂等晋升任务，失败进入有界 retry/dead 状态，reconcile 补齐崩溃窗口遗漏的任务。
+
+提案审核记录 actor、call ID、审核时间和稳定原因码。自动晋升仍复用唯一的 `evaluate_auto_promotion()` 策略权威，LanceDB 仅提供可重建向量证据，不能授予权限。`pending`、`rejected`、`expired` 提案不得进入普通记忆检索或 LanceDB。维护顺序固定为：memory lifecycle -> passive outbox replay -> semantic jobs -> promotion reconcile/process -> proposal expiry -> synthesis integrity -> memory/synthesis index replay -> audit；所有新增步骤在门禁关闭时保持旧行为。
 
 deterministic benchmark 只验证指标和门禁，不可用于发布质量结论。可发布对比必须使用同一份隔离安装的版本化双语语料、同一真实非 fallback 模型与维度、相同 runtime/warmup/repeat 元数据、完整相同的 split 集，并通过 store -> recall -> context smoke。
 
@@ -445,6 +504,9 @@ deterministic benchmark 只验证指标和门禁，不可用于发布质量结�
 PP_SYNTHESIS_RETRIEVAL=0
 PP_SYNTHESIS_ARTIFACTS=off
 PP_MEMORY_PROPOSALS=off
+PP_PASSIVE_SEMANTIC_ROUTING=off
+PP_PASSIVE_SEMANTIC_CAPTURE=off
+PP_MEMORY_PROPOSAL_AUTO_ADOPT=off
 PP_MEMORY_INDEX_TEXT_POLICY=legacy
 ```
 

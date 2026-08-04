@@ -3,7 +3,7 @@
 本文件是技能追踪 + 自动化上下文注入的规范化测试套件。
 
 覆盖场景:
-  S1: Claude Code 完整 SuperPowers 开发会话
+  S1: Claude Code 固定官方工程工作流会话
   S2: Pi Agent 自治流水线 (Builder → Reviewer)
   S3: 自反馈循环 (跨会话上下文积累)
   S4: Bug 修复流程 (debugging → tdd → verification)
@@ -30,6 +30,14 @@ _TODAY = _NOW.strftime("%Y-%m-%d")
 _T = lambda h, m, s=0: f"{_TODAY}T{h:02d}:{m:02d}:{s:02d}"
 _OLD = lambda hours_ago: (_NOW - datetime.timedelta(hours=hours_ago)).isoformat()
 
+
+@pytest.fixture(autouse=True)
+def _enable_passive_context_for_pipeline_contract(monkeypatch):
+    monkeypatch.setenv("PP_PASSIVE_CONTEXT", "on")
+    monkeypatch.setenv("PP_PASSIVE_MEMORY", "on")
+    monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
+
+
 # ═══════════════════════════════════════════════════════════
 # Mock 工厂
 # ═══════════════════════════════════════════════════════════
@@ -52,8 +60,21 @@ def _make_soul_loop_mock(core_items=None):
     return pack
 
 
-def _make_start_mock(skill_name, domain="reflecting", entity_id=None):
+def _make_start_mock(
+    skill_name,
+    domain="reflecting",
+    entity_id=None,
+    activated_principles=None,
+):
     eid = entity_id or f"skill:{skill_name}:{_T(10, 0)}"
+    principles = (
+        [
+            {"id": 2, "name": "全过程可查可透明"},
+            {"id": 4, "name": "上下文驱动决策"},
+        ]
+        if activated_principles is None
+        else activated_principles
+    )
     return [
         TextContent(
             type="text",
@@ -63,10 +84,7 @@ def _make_start_mock(skill_name, domain="reflecting", entity_id=None):
                     "skill_name": skill_name,
                     "status": "active",
                     "domain": domain,
-                    "activated_principles": [
-                        {"id": 2, "name": "全过程可查可透明"},
-                        {"id": 4, "name": "上下文驱动决策"},
-                    ],
+                    "activated_principles": principles,
                     "related_memories": [],
                     "chain_warning": None,
                 }
@@ -99,14 +117,34 @@ def _make_store_result(mid="mem_test"):
     return [TextContent(type="text", text=json.dumps({"memory_id": mid, "stored": True}))]
 
 
+def _make_context_supply_result(
+    core_items=None,
+    activated_principles=None,
+    *,
+    degraded=False,
+    error=None,
+):
+    payload = {
+        "schema_version": "context-supply-response-v1",
+        "response_mode": "compact",
+        "ephemeral": True,
+        "core": list(core_items or []),
+        "related": [],
+        "divergent": [],
+        "activated_principles": list(activated_principles or []),
+        "degraded": degraded,
+        "diagnostics": {"level": "summary"},
+    }
+    if error:
+        payload["error"] = error
+    return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+
+
 def _bind_public_trace_views(engine):
     """Expose the raw fixture data through ContextEngine's public read APIs."""
 
     def list_graph_nodes(node_type=None):
-        nodes = [
-            {**node, "id": node_id}
-            for node_id, node in engine._graph_nodes.items()
-        ]
+        nodes = [{**node, "id": node_id} for node_id, node in engine._graph_nodes.items()]
         if node_type is None:
             return nodes
         return [node for node in nodes if node.get("type") == node_type]
@@ -123,14 +161,14 @@ def _bind_public_trace_views(engine):
 
 
 # ═══════════════════════════════════════════════════════════
-# S1: Claude Code 完整 SuperPowers 开发会话
+# S1: Claude Code 完整官方工程工作流会话
 # ═══════════════════════════════════════════════════════════
 
 
 class TestS1ClaudeCodeFullSession:
-    """日常开发流程: auto_context_inject → brainstorming → writing-plans → SDD → trace。"""
+    """日常开发流程: auto-inject -> official idea-to-ship -> trace。"""
 
-    def test_full_superpowers_development_session(self):
+    def test_full_official_development_session(self):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
 
@@ -164,21 +202,26 @@ class TestS1ClaudeCodeFullSession:
                     ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        inject_result = asyncio.run(
-                            handle_auto_context_inject(
-                                engine,
-                                {
-                                    "task_description": "为 Plastic Promise 设计用户认证模块",
-                                    "task_type": "architecture",
-                                    "source": "claude_code",
-                                    "scope": "agent:claude",
-                                },
+                        with patch(
+                            "plastic_promise.mcp.tools.context.handle_context_supply",
+                            return_value=_make_context_supply_result(),
+                        ):
+                            inject_result = asyncio.run(
+                                handle_auto_context_inject(
+                                    engine,
+                                    {
+                                        "task_description": "为 Plastic Promise 设计用户认证模块",
+                                        "task_type": "architecture",
+                                        "source": "claude_code",
+                                        "scope": "agent:claude",
+                                    },
+                                )
                             )
-                        )
 
         inject_data = json.loads(inject_result[0].text)
         assert inject_data["skill_name"] == "auto_inject:claude_code"
-        assert inject_data["inject_memory_id"] is not None
+        assert inject_data["inject_memory_id"] is None
+        assert inject_data["ephemeral"] is True
 
         # Manually add auto_inject node to graph (handler created it via register_entity mock)
         ai_eid = inject_data["entity_id"]
@@ -198,12 +241,14 @@ class TestS1ClaudeCodeFullSession:
             "last_accessed": _T(10, 1),
         }
 
-        # ── Phase 2-4: 构建完整的 skill 链 ──
+        # Phase 2-4: build the complete official idea-to-ship chain.
         for skill_name, ts, domain in [
-            ("brainstorming", _T(10, 5), "designing"),
-            ("writing-plans", _T(10, 35), "designing"),
-            ("subagent-driven-development", _T(11, 5), "building"),
-            ("finishing-a-development-branch", _T(12, 0), "governing"),
+            ("grill-with-docs", _T(10, 5), "designing"),
+            ("to-spec", _T(10, 35), "designing"),
+            ("to-tickets", _T(11, 5), "designing"),
+            ("implement", _T(11, 35), "building"),
+            ("tdd", _T(12, 0), "building"),
+            ("code-review", _T(12, 20), "reflecting"),
         ]:
             eid = f"skill:{skill_name}:{ts}"
             engine._graph_nodes[f"skill_session:{eid}"] = {
@@ -224,20 +269,32 @@ class TestS1ClaudeCodeFullSession:
 
         engine._graph_edges = [
             {
-                "from": f"skill_session:skill:brainstorming:{_T(10, 5)}",
-                "to": f"skill_session:skill:writing-plans:{_T(10, 35)}",
+                "from": f"skill_session:skill:grill-with-docs:{_T(10, 5)}",
+                "to": f"skill_session:skill:to-spec:{_T(10, 35)}",
                 "relation": "parent_of",
                 "weight": 0.8,
             },
             {
-                "from": f"skill_session:skill:writing-plans:{_T(10, 35)}",
-                "to": f"skill_session:skill:subagent-driven-development:{_T(11, 5)}",
+                "from": f"skill_session:skill:to-spec:{_T(10, 35)}",
+                "to": f"skill_session:skill:to-tickets:{_T(11, 5)}",
                 "relation": "parent_of",
                 "weight": 0.8,
             },
             {
-                "from": f"skill_session:skill:subagent-driven-development:{_T(11, 5)}",
-                "to": f"skill_session:skill:finishing-a-development-branch:{_T(12, 0)}",
+                "from": f"skill_session:skill:to-tickets:{_T(11, 5)}",
+                "to": f"skill_session:skill:implement:{_T(11, 35)}",
+                "relation": "parent_of",
+                "weight": 0.8,
+            },
+            {
+                "from": f"skill_session:skill:implement:{_T(11, 35)}",
+                "to": f"skill_session:skill:tdd:{_T(12, 0)}",
+                "relation": "parent_of",
+                "weight": 0.8,
+            },
+            {
+                "from": f"skill_session:skill:tdd:{_T(12, 0)}",
+                "to": f"skill_session:skill:code-review:{_T(12, 20)}",
                 "relation": "parent_of",
                 "weight": 0.8,
             },
@@ -257,12 +314,14 @@ class TestS1ClaudeCodeFullSession:
         trace_data = json.loads(trace_result[0].text)
         sessions = trace_data["sessions"]
 
-        # 4 个 SuperPowers skill，不含 auto_inject
+        # Six official stages, excluding auto-inject tracking.
         skill_names = {s["skill_name"] for s in sessions}
-        assert "brainstorming" in skill_names
-        assert "writing-plans" in skill_names
-        assert "subagent-driven-development" in skill_names
-        assert "finishing-a-development-branch" in skill_names
+        assert "grill-with-docs" in skill_names
+        assert "to-spec" in skill_names
+        assert "to-tickets" in skill_names
+        assert "implement" in skill_names
+        assert "tdd" in skill_names
+        assert "code-review" in skill_names
         assert "auto_inject:claude_code" not in skill_names
 
         # 完整合法链
@@ -280,7 +339,7 @@ class TestS1ClaudeCodeFullSession:
             )
         )
         all_data = json.loads(trace_all[0].text)
-        assert len(all_data["sessions"]) == 5  # 4 skills + 1 auto_inject
+        assert len(all_data["sessions"]) == 7  # 6 official stages + 1 auto-inject
 
     def test_claude_startup_sequence(self):
         """CLAUDE.md 规定: auto_context_inject → system → defense。"""
@@ -314,22 +373,27 @@ class TestS1ClaudeCodeFullSession:
                     ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(
-                            handle_auto_context_inject(
-                                engine,
-                                {
-                                    "task_description": "会话启动",
-                                    "source": "claude_code",
-                                    "scope": "agent:claude",
-                                },
+                        with patch(
+                            "plastic_promise.mcp.tools.context.handle_context_supply",
+                            return_value=_make_context_supply_result(),
+                        ):
+                            result = asyncio.run(
+                                handle_auto_context_inject(
+                                    engine,
+                                    {
+                                        "task_description": "会话启动",
+                                        "source": "claude_code",
+                                        "scope": "agent:claude",
+                                    },
+                                )
                             )
-                        )
 
         data = json.loads(result[0].text)
         assert data["entity_id"] is not None
         assert len(data["principles"]) >= 1
         assert data["context_pack"] is not None
-        assert data["inject_memory_id"] is not None
+        assert data["inject_memory_id"] is None
+        assert data["ephemeral"] is True
         assert data.get("errors") is None
 
 
@@ -474,17 +538,30 @@ class TestS3SelfFeedbackLoop:
                     ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(
-                            handle_auto_context_inject(
-                                engine,
-                                {
-                                    "task_description": "修复 OAuth token 刷新竞态条件",
-                                    "task_type": "debugging",
-                                    "source": "claude_code",
-                                    "scope": "agent:claude",
-                                },
+                        with patch(
+                            "plastic_promise.mcp.tools.context.handle_context_supply",
+                            return_value=_make_context_supply_result(
+                                core_items=[
+                                    {
+                                        "id": "mem_first",
+                                        "content": first_record["content"],
+                                        "relevance": 0.88,
+                                        "source": "memory",
+                                    }
+                                ]
+                            ),
+                        ):
+                            result = asyncio.run(
+                                handle_auto_context_inject(
+                                    engine,
+                                    {
+                                        "task_description": "修复 OAuth token 刷新竞态条件",
+                                        "task_type": "debugging",
+                                        "source": "claude_code",
+                                        "scope": "agent:claude",
+                                    },
+                                )
                             )
-                        )
 
         data = json.loads(result[0].text)
         core = data["context_pack"]["core"]
@@ -492,6 +569,9 @@ class TestS3SelfFeedbackLoop:
         assert core[0]["id"] == "mem_first"
         assert "JWT" in core[0]["content"]
         assert core[0]["relevance"] >= 0.85
+        assert data["inject_memory_id"] is None
+        assert data["ephemeral"] is True
+        mock_store.assert_not_called()
 
     def test_multi_round_accumulation(self):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
@@ -548,21 +628,43 @@ class TestS3SelfFeedbackLoop:
                     ) as mock_complete:
                         mock_complete.return_value = _make_complete_mock()
 
-                        result = asyncio.run(
-                            handle_auto_context_inject(
-                                engine,
-                                {
-                                    "task_description": "审查认证模块安全性",
-                                    "task_type": "code_review",
-                                    "source": "claude_code",
-                                },
+                        with patch(
+                            "plastic_promise.mcp.tools.context.handle_context_supply",
+                            return_value=_make_context_supply_result(
+                                core_items=[
+                                    {
+                                        "id": "mem_r2",
+                                        "content": engine._memories["mem_r2"]["content"],
+                                        "relevance": 0.90,
+                                        "source": "memory",
+                                    },
+                                    {
+                                        "id": "mem_r1",
+                                        "content": engine._memories["mem_r1"]["content"],
+                                        "relevance": 0.80,
+                                        "source": "memory",
+                                    },
+                                ]
+                            ),
+                        ):
+                            result = asyncio.run(
+                                handle_auto_context_inject(
+                                    engine,
+                                    {
+                                        "task_description": "审查认证模块安全性",
+                                        "task_type": "code_review",
+                                        "source": "claude_code",
+                                    },
+                                )
                             )
-                        )
 
         data = json.loads(result[0].text)
         core_ids = [c["id"] for c in data["context_pack"]["core"]]
         assert "mem_r2" in core_ids
         assert "mem_r1" in core_ids
+        assert data["inject_memory_id"] is None
+        assert data["ephemeral"] is True
+        mock_store.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -571,7 +673,7 @@ class TestS3SelfFeedbackLoop:
 
 
 class TestS4BugFixWorkflow:
-    """debugging → tdd → verification 完整追踪链。"""
+    """diagnosing-bugs -> tdd -> code-review official on-ramp."""
 
     def test_bugfix_chain_trace(self):
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
@@ -582,10 +684,9 @@ class TestS4BugFixWorkflow:
         engine._memories = {}
 
         chain = [
-            ("systematic-debugging", _T(14, 5), "fixing"),
-            ("test-driven-development", _T(14, 20), "building"),
-            ("verification-before-completion", _T(14, 35), "reflecting"),
-            ("finishing-a-development-branch", _T(15, 0), "governing"),
+            ("diagnosing-bugs", _T(14, 5), "fixing"),
+            ("tdd", _T(14, 20), "building"),
+            ("code-review", _T(14, 35), "reflecting"),
         ]
 
         for skill_name, ts, domain in chain:
@@ -605,23 +706,17 @@ class TestS4BugFixWorkflow:
                 "last_accessed": _T(14, 40),
             }
 
-        # 合法 parent-child 边: debugging → tdd → verification → finishing
+        # Legal parent-child edges: diagnosing-bugs -> tdd -> code-review.
         engine._graph_edges = [
             {
-                "from": f"skill_session:skill:systematic-debugging:{_T(14, 5)}",
-                "to": f"skill_session:skill:test-driven-development:{_T(14, 20)}",
+                "from": f"skill_session:skill:diagnosing-bugs:{_T(14, 5)}",
+                "to": f"skill_session:skill:tdd:{_T(14, 20)}",
                 "relation": "parent_of",
                 "weight": 0.9,
             },
             {
-                "from": f"skill_session:skill:test-driven-development:{_T(14, 20)}",
-                "to": f"skill_session:skill:verification-before-completion:{_T(14, 35)}",
-                "relation": "parent_of",
-                "weight": 0.9,
-            },
-            {
-                "from": f"skill_session:skill:verification-before-completion:{_T(14, 35)}",
-                "to": f"skill_session:skill:finishing-a-development-branch:{_T(15, 0)}",
+                "from": f"skill_session:skill:tdd:{_T(14, 20)}",
+                "to": f"skill_session:skill:code-review:{_T(14, 35)}",
                 "relation": "parent_of",
                 "weight": 0.9,
             },
@@ -640,11 +735,10 @@ class TestS4BugFixWorkflow:
         trace_data = json.loads(trace_result[0].text)
         sessions = trace_data["sessions"]
         names = [s["skill_name"] for s in sessions]
-        assert len(sessions) == 4
-        assert "systematic-debugging" in names
-        assert "test-driven-development" in names
-        assert "verification-before-completion" in names
-        assert "finishing-a-development-branch" in names
+        assert len(sessions) == 3
+        assert "diagnosing-bugs" in names
+        assert "tdd" in names
+        assert "code-review" in names
         assert trace_data["chain_valid"] == True
 
 
@@ -655,22 +749,22 @@ class TestS4BugFixWorkflow:
 
 class TestS5ChainIntegrityAudit:
     def test_detect_chain_broken(self):
-        """brainstorming 完成但无 writing-plans → chain_broken warning。"""
+        """grill-with-docs 完成但无 to-spec → chain_broken warning。"""
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
 
         engine = MagicMock()
-        eid = f"skill:brainstorming:{_T(10, 0)}"
+        eid = f"skill:grill-with-docs:{_T(10, 0)}"
         engine._graph_nodes = {
-            f"skill_session:{eid}": {"type": "skill_session", "name": "brainstorming"},
+            f"skill_session:{eid}": {"type": "skill_session", "name": "grill-with-docs"},
         }
         engine._graph_edges = []
         engine._memories = {
             "mem_b": {
                 "id": "mem_b",
-                "content": "[SKILL START] brainstorming: 设计 API\n[SKILL DONE] outcome: RESTful",
+                "content": "[SKILL START] grill-with-docs: 设计 API\n[SKILL DONE] outcome: RESTful",
                 "memory_type": "experience",
                 "entity_ids": [eid],
-                "tags": ["task:done", "skill:brainstorming"],
+                "tags": ["task:done", "skill:grill-with-docs"],
                 "worth_score": 0.70,
                 "created_at": _T(10, 0),
                 "last_accessed": _T(10, 30),
@@ -691,25 +785,25 @@ class TestS5ChainIntegrityAudit:
         chain_warnings = trace_data.get("chain_warnings", [])
         broken = [w for w in chain_warnings if w["type"] == "chain_broken"]
         assert len(broken) >= 1
-        assert broken[0]["skill_name"] == "brainstorming"
+        assert broken[0]["skill_name"] == "grill-with-docs"
 
     def test_detect_orphan_active(self):
         """skill 启动 45 分钟未 complete → orphan_active gap。"""
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
 
         engine = MagicMock()
-        eid = f"skill:brainstorming:{_OLD(0.75)}"  # 45 minutes ago
+        eid = f"skill:grill-with-docs:{_OLD(0.75)}"  # 45 minutes ago
         engine._graph_nodes = {
-            f"skill_session:{eid}": {"type": "skill_session", "name": "brainstorming"},
+            f"skill_session:{eid}": {"type": "skill_session", "name": "grill-with-docs"},
         }
         engine._graph_edges = []
         engine._memories = {
             "mem_orphan": {
                 "id": "mem_orphan",
-                "content": "[SKILL START] brainstorming: 设计用户系统（被中断）",
+                "content": "[SKILL START] grill-with-docs: 设计用户系统（被中断）",
                 "memory_type": "experience",
                 "entity_ids": [eid],
-                "tags": ["task:active", "skill:brainstorming"],  # 仍是 active!
+                "tags": ["task:active", "skill:grill-with-docs"],  # 仍是 active!
                 "worth_score": 0.65,
                 "created_at": _OLD(0.75),
                 "last_accessed": _OLD(0.75),  # 45 分钟前
@@ -730,10 +824,10 @@ class TestS5ChainIntegrityAudit:
         gaps = trace_data.get("gaps", [])
         orphans = [g for g in gaps if g["type"] == "orphan_active"]
         assert len(orphans) >= 1, f"Expected orphan_active gap, gaps={gaps}"
-        assert orphans[0]["skill_name"] == "brainstorming"
+        assert orphans[0]["skill_name"] == "grill-with-docs"
 
     def test_legal_chain_passes(self):
-        """完整合法链: brainstorming → writing-plans → SDD → finish。"""
+        """Complete official idea-to-ship chain passes trace checks."""
         from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
 
         engine = MagicMock()
@@ -742,10 +836,12 @@ class TestS5ChainIntegrityAudit:
         engine._memories = {}
 
         skills = [
-            ("brainstorming", _T(10, 0)),
-            ("writing-plans", _T(10, 30)),
-            ("subagent-driven-development", _T(11, 0)),
-            ("finishing-a-development-branch", _T(12, 0)),
+            ("grill-with-docs", _T(10, 0)),
+            ("to-spec", _T(10, 30)),
+            ("to-tickets", _T(11, 0)),
+            ("implement", _T(11, 30)),
+            ("tdd", _T(12, 0)),
+            ("code-review", _T(12, 20)),
         ]
 
         for i, (name, ts) in enumerate(skills):
@@ -795,8 +891,8 @@ class TestS5ChainIntegrityAudit:
 
 
 class TestS6GracefulDegradation:
-    def test_pre_task_failure_fallback(self):
-        """pre_task_v2 失败 → principle_activate fallback 生效。"""
+    def test_context_supply_failure_fallback(self):
+        """context_supply 失败 → principle_activate fallback 生效。"""
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
         engine = MagicMock()
@@ -824,27 +920,39 @@ class TestS6GracefulDegradation:
                     with patch(
                         "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_start"
                     ) as mock_start:
-                        mock_start.return_value = _make_start_mock("auto_inject:claude_code")
+                        mock_start.return_value = _make_start_mock(
+                            "auto_inject:claude_code",
+                            activated_principles=[],
+                        )
                         with patch(
                             "plastic_promise.mcp.tools.skill_tracking.handle_skill_session_complete"
                         ) as mock_complete:
                             mock_complete.return_value = _make_complete_mock()
 
-                            result = asyncio.run(
-                                handle_auto_context_inject(
-                                    engine,
-                                    {
-                                        "task_description": "修复 bug",
-                                        "source": "claude_code",
-                                    },
+                            with patch(
+                                "plastic_promise.mcp.tools.context.handle_context_supply",
+                                return_value=_make_context_supply_result(
+                                    degraded=True,
+                                    error="Embedding down",
+                                ),
+                            ):
+                                result = asyncio.run(
+                                    handle_auto_context_inject(
+                                        engine,
+                                        {
+                                            "task_description": "修复 bug",
+                                            "source": "claude_code",
+                                        },
+                                    )
                                 )
-                            )
 
         data = json.loads(result[0].text)
         assert data.get("partial") == True
         names = [p["name"] for p in data.get("principles", [])]
         assert "奥卡姆剃刀" in names
         assert data["entity_id"] is not None
+        assert data["inject_memory_id"] is None
+        assert data["ephemeral"] is True
 
     def test_memory_store_failure_partial(self):
         """memory_store 失败 → context_pack 和 entity 仍返回。"""
@@ -929,16 +1037,16 @@ class TestS7CrossSystemAudit:
                 "last_accessed": _T(i, 1),
             }
 
-        eid = f"skill:brainstorming:{_T(15, 0)}"
+        eid = f"skill:grill-with-docs:{_T(15, 0)}"
         engine._graph_nodes[f"skill_session:{eid}"] = {
             "type": "skill_session",
-            "name": "brainstorming",
+            "name": "grill-with-docs",
         }
         engine._memories["mem_real"] = {
             "id": "mem_real",
-            "content": "[SKILL START] brainstorming: real\n[SKILL DONE] outcome: ok",
+            "content": "[SKILL START] grill-with-docs: real\n[SKILL DONE] outcome: ok",
             "entity_ids": [eid],
-            "tags": ["task:done", "skill:brainstorming"],
+            "tags": ["task:done", "skill:grill-with-docs"],
             "worth_score": 0.72,
             "created_at": _T(15, 0),
             "last_accessed": _T(15, 30),

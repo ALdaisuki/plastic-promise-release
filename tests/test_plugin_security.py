@@ -2,6 +2,21 @@
 
 
 class TestPluginLoaderSecurity:
+    def test_removed_superpowers_hooks_use_default_merge_semantics(self):
+        """Legacy SuperPowers hook names no longer have privileged strategies."""
+        from plastic_promise.extensions.loader import PluginLoader
+
+        loader = PluginLoader()
+
+        assert loader._merge_results(
+            "on_transition_write_execute",
+            [{"first": True}, {"second": True}],
+        ) == {"first": True, "second": True}
+        assert loader._merge_results(
+            "on_after_verify",
+            [{"verified": True}, {"error": "legacy failure"}],
+        ) == {"verified": True, "error": "legacy failure"}
+
     def test_no_rce_via_static_validation(self):
         """Malicious plugin class is never imported or instantiated.
 
@@ -123,8 +138,8 @@ class TestPluginLoaderSecurity:
     def test_plugin_disabled_skipped(self):
         """Disabled plugins (with .disabled marker) are skipped during activation."""
         import tempfile
-        import os
         from pathlib import Path
+
         from plastic_promise.extensions.loader import PluginLoader
         from plastic_promise.extensions.registry import PackInfo
 

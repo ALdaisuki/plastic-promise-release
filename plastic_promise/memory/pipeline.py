@@ -179,6 +179,10 @@ class MemoryPipeline:
                 "vector": None,
                 "tier": None,
                 "domain": domain_hint or "uncategorized",
+                # Keep caller intent separate from the mutable classified domain.
+                # The latter may be auto-assigned, while a valid explicit hint
+                # must remain authoritative through the classification stage.
+                "explicit_domain_hint": domain_hint,
                 "created_at": datetime.datetime.now().isoformat(),
                 "processed_at": None,
                 "skip_embed": skip_embed,
@@ -279,15 +283,30 @@ class MemoryPipeline:
             raise RuntimeError("approved_candidate_extraction_uncertain")
         extracted_item = extracted_items[0]
         extracted_category = str(getattr(extracted_item, "category", "") or "").casefold()
+        metadata = dict(metadata_json or {})
+        classification_confidence = metadata.get("classification_confidence")
+        try:
+            governed_confidence = float(classification_confidence)
+        except (TypeError, ValueError):
+            governed_confidence = 0.0
+        if isinstance(classification_confidence, bool) or not 0.0 <= governed_confidence <= 1.0:
+            governed_confidence = 0.0
+
+        extracted_confidence = float(getattr(extracted_item, "confidence", 0.0) or 0.0)
+        l1_summary = str(getattr(extracted_item, "l1_summary", "") or "")
+        l2_content = str(getattr(extracted_item, "l2_content", "") or normalized_content)
         if extracted_category and extracted_category != normalized_category:
-            raise RuntimeError("approved_candidate_category_mismatch")
+            # The approved proposal taxonomy is narrower than the legacy
+            # extractor taxonomy. Keep the governed category authoritative.
+            l1_summary = f"[{normalized_category}] {normalized_content[:300]}"
+            l2_content = normalized_content
 
         extracted = {
             "category": normalized_category,
             "l0_abstract": str(getattr(extracted_item, "l0_abstract", "") or ""),
-            "l1_summary": str(getattr(extracted_item, "l1_summary", "") or ""),
-            "l2_content": str(getattr(extracted_item, "l2_content", "") or normalized_content),
-            "confidence": float(getattr(extracted_item, "confidence", 0.0) or 0.0),
+            "l1_summary": l1_summary,
+            "l2_content": l2_content,
+            "confidence": max(extracted_confidence, governed_confidence),
             "importance": float(getattr(extracted_item, "importance", 0.7) or 0.7),
         }
         tags = [f"cat:{normalized_category}"]
@@ -324,7 +343,6 @@ class MemoryPipeline:
         if decision == "discard":
             raise RuntimeError("approved_candidate_quality_failed")
 
-        metadata = dict(metadata_json or {})
         metadata.update(
             {
                 "category": normalized_category,
@@ -768,10 +786,20 @@ class MemoryPipeline:
             else:
                 record["tier"] = "L1"
 
-            # 新增: domain 分配
+            # A valid explicit domain hint wins.  ``DomainManager.assign``
+            # validates the domain tag in the project-scoped manager and falls
+            # back to ordinary tag scoring if it is unknown or inactive.
             tags = record.get("tags", [])
+            explicit_domain_hint = str(record.get("explicit_domain_hint") or "").strip()
+            assignment_tags = list(tags)
+            if explicit_domain_hint:
+                assignment_tags.insert(0, f"domain:{explicit_domain_hint}")
             if hasattr(self, "_dm") and self._dm is not None:
-                record["domain"] = self._dm.assign(tags, agent_id=getattr(self, "_owner", ""))
+                record["domain"] = self._dm.assign(
+                    assignment_tags,
+                    agent_id=getattr(self, "_owner", ""),
+                    project_id=record.get("project_id", "project:legacy-global"),
+                )
             else:
                 record["domain"] = "uncategorized"
 
@@ -1193,6 +1221,22 @@ class MemoryPipeline:
                         graph_edges = getattr(engine, "_graph_edges", [])
                         if edge not in graph_edges:
                             graph_edges.append(edge)
+
+                # Structured fusion is derived work only. It receives an already
+                # canonical row and stays feature-gated behind governed synthesis.
+                if engine is not None:
+                    try:
+                        from plastic_promise.core.structured_memory_fusion import (
+                            enqueue_canonical_memory_for_fusion,
+                        )
+
+                        enqueue_canonical_memory_for_fusion(engine, stored.memory_id)
+                    except Exception:
+                        logging.debug(
+                            "Could not queue structured fusion for %s",
+                            stored.memory_id,
+                            exc_info=True,
+                        )
 
                 del self._buffer[mid]
                 migration_outcomes[mid] = {

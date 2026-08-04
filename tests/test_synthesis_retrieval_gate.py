@@ -2683,17 +2683,13 @@ def test_public_getter_and_finalizer_reject_invalid_quality_decision(
             "memory_type": "experience",
             "source": "user",
             "project_id": "project:test",
-            "metadata_json": {
-                "quality": {"status": "current", "decision": decision}
-            },
+            "metadata_json": {"quality": {"status": "current", "decision": decision}},
         }
     )
 
     assert engine.get_memory_dict(memory_id) is None
     assert engine.get_memory(memory_id) is None
-    pack = ContextPack(
-        core=[ContextItem(memory_id, content, 0.99, source="text", layer="core")]
-    )
+    pack = ContextPack(core=[ContextItem(memory_id, content, 0.99, source="text", layer="core")])
     finalized = engine._finalize_supply_pack(
         pack,
         RetrievalPlan(
@@ -3706,13 +3702,10 @@ def test_cache_hit_revalidates_top_level_and_nested_envelope_surfaces(
 
     assert calls["count"] == 1
     assert second["core"] == []
-    assert second["data"]["core"] == []
-    assert second["raw_evidence"] == []
-    assert second["data"]["raw_evidence"] == []
-    assert "cached-s1" not in json.dumps(second["audit"]["raw_evidence"])
-    assert "cached-s1" not in json.dumps(second["data"]["audit"]["raw_evidence"])
-    degradations = second["audit"]["synthesis_retrieval"]["degradations"]
-    assert degradations[0].keys() == {"id", "reason"}
+    assert second["diagnostics"]["summary"]["per_item_count"] == 0
+    assert "data" not in second
+    assert "raw_evidence" not in second
+    assert "audit" not in second
     assert "CACHED-SYNTHESIS-SECRET" not in second_text
 
 

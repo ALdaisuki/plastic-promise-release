@@ -48,7 +48,7 @@
 | **Review (1)** | **review_run(action=prepare\|evaluate\|apply\|full)** |
 | **Commercial Audit (1)** | **commercial_audit_export(project_id, since, until, include_outbox)** |
 | **Market (7)** | **market_list, market_install, market_upgrade, market_remove, market_enable, market_disable, market_status** |
-| **SuperPowers (1)** | **sp-stage(stage, task_description) — 12 阶段统一入口** |
+| **Official Workflow (1)** | **sp-stage(stage, route, invocation_source, task_description) — 固定版本 Matt Pocock 工作流兼容入口** |
 | Compatibility aliases (4) | session_init, smart_remember, step_closure, sp_stage |
 
 ### 运行模式
@@ -63,81 +63,119 @@
 
 运行后可通过 MCP 热更新当前进程模式：`runtime_mode(action="get")` 查看，`runtime_mode(action="set", mode="rust-normal")` 切换。切换后 MCP Server 会刷新 Rust health 与重型初始化状态。
 
-## SuperPowers 流水线
+## 官方 Matt Pocock 工程工作流
 
-`sp-stage` 是 SuperPowers 12 阶段的统一 MCP 入口。Claude Code 用 SuperPowers 插件 + `Skill` 工具，MCP 客户端用 `sp-stage` 工具，统一走同一 `skill_auto_track` 追踪管道。
+`sp-stage` 名称仅为客户端兼容保留。运行时阶段、route 和调用权限来自固定版本
+`mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d`。旧 SuperPowers 阶段不再注册。
 
 ### 工作流
 
 ```
-session-init → chain_state 初始化
-  ↓
-brainstorming → exemplar-research → using-git-worktrees → writing-plans
-                                                             ├→ executing-plans → TDD → verify → finish
-                                                             └→ subagent-driven → TDD → request-review → receive-review → finish
+idea-to-ship:
+  grill-with-docs [user] → to-spec [user] → to-tickets [user]
+  → implement [user, composite]
+
+small-build:
+  grill-with-docs [user] → implement [user, composite]
+
+prototype-detour:
+  grill-with-docs [user] → handoff [user] → prototype [model]
+  → handoff [user] → grill-with-docs [user]
+
+bug-onramp:
+  diagnosing-bugs [model] → tdd [model] → code-review [model]
 ```
 
-辅助: `systematic-debugging`, `dispatching-parallel-agents`
+其他固定 route：`research-feed`、`merge-conflict`、`triage-to-ship`、
+`wayfinder-to-ship`、`architecture-feed`、`domain-modeling`、`codebase-design`、
+`grill-me`、`grilling`、`spec-to-ship`、`tickets-to-ship`、
+`implement-to-review`、`tdd-to-review`、`prototype`、`handoff`、`teach`、
+`writing-great-skills`。
+
+每个官方 Skill 的显式 `/skill-name` 都会选择以该 Skill 为首节点的合法 route；
+自然语言 Skill 短语仅在句首正向命令中生成 user attestation；疑问、否定、状态陈述和引用均不算调用。普通 `code_generation`（包括从 `general` 文本解析出的正向实现命令）进入 `tdd-to-review`；`architecture` / `refactoring` 进入 `codebase-design`；故障、审查、研究、原型和冲突命令进入各自 model route。只读解释、状态句和没有正向后续动作的否定 `general` 输入保留在 `routing`；后置的否定范围约束不会取消已经明确请求的 model Skill。任务分类不会把常用名词误判为显式 user-only 或 model Skill 调用。
+`implement` 和 `grill-me` 是复合 Skill：其内部测试、审查或提问循环不再作为外层 route 的重复阶段。复合 receipt 使用 `evidence.invoked_skills` 声明实际内部调用；服务端据此建立 `composite_receipt` entity-only 子链，和独立 Hook 观测明确区分。
+本地路由只承诺有界命令语法，歧义输入 fail closed 到 `routing`。`PP_PASSIVE_SEMANTIC_ROUTING=shadow|on` 可复用结构化切片 JSON Provider；它只能 shadow 或增强 model route，不得签发 user-only attestation。确定性命令不调用 Provider，超时、无效 JSON、低置信度和 Provider 失败统一回退 `routing/ask-matt`。
 
 ### 阶段总览
 
-| 阶段 | 描述 | 实现文件 |
-|------|------|---------|
-| brainstorming | 需求澄清 + 架构设计 + 方案生成 | brainstorming.py |
-| exemplar-research | 搜索成熟实现 + 三问法分析 + 质量审核 | exemplar_research.py |
-| using-git-worktrees | 创建隔离工作分支 | using_git_worktrees.py |
-| writing-plans | 拆解任务为可执行步骤 | writing_plans.py |
-| executing-plans | 逐步骤实现代码 | executing_plans.py |
-| test-driven-development | 先写测试再写实现 | test_driven_development.py |
-| subagent-driven-development | 派发子 Agent 并行执行 | subagent_driven_development.py |
-| verification-before-completion | 变更验证与端到端测试 | verification_before_completion.py |
-| requesting-code-review | 提交变更请求审查 | requesting_code_review.py |
-| receiving-code-review | 处理审查反馈 | receiving_code_review.py |
-| finishing-a-development-branch | 分支合并前最终验收 | finishing_a_development_branch.py |
-| systematic-debugging | 结构化诊断与修复 | systematic_debugging.py |
-| dispatching-parallel-agents | 并行派发多个子 Agent | dispatching_parallel_agents.py |
+| 调用权限 | 技能 |
+|---------|------|
+| user-only | setup-matt-pocock-skills, ask-matt, grill-with-docs, grill-me, handoff, to-spec, to-tickets, implement, triage, wayfinder, improve-codebase-architecture, teach, writing-great-skills |
+| model | grilling, diagnosing-bugs, tdd, code-review, prototype, research, resolving-merge-conflicts, domain-modeling, codebase-design |
 
 ### 使用方式
 
 ```
-# MCP 客户端 (sp-stage MCP 工具)
-sp-stage(stage="brainstorming", task_description="澄清需求")
-sp-stage(stage="exemplar-research", task_description="搜索成熟工程实现并分析")
-sp-stage(stage="using-git-worktrees", task_description="创建分支")
-sp-stage(stage="writing-plans", task_description="拆解任务")
+sp-stage(
+  stage="diagnosing-bugs",
+  route="bug-onramp",
+  invocation_source="model",
+  task_description="定位 OAuth 刷新回归"
+)
+# 仅返回 awaiting_receipt + execution_contract；不推进阶段。
 
-# Claude Code (SuperPowers 插件)
-/SuperPowers:brainstorming
-/SuperPowers:exemplar-research
+# 实际运行 /diagnosing-bugs 后，再用 execution_contract 中的 revision/hash
+# 和非空、无 secret 的 JSON evidence 提交 execution_receipt。
 ```
+
+Hook 会在 `UserPromptSubmit` 的 `additionalContext` 中注入 official flow、完整主链、
+可选分支、current/next stage 和每个阶段的 `[user]` / `[model]` 权限。
+调用方必须把注入的 `project_id`、`stage_session_id`、`flow_line_id` 原样传给
+`session-init` 和后续 `sp-stage`，同一任务不得另建 scope。canonical memory、临时 proposal
+和路由文本的合并结果严格服从总字符预算；可以省略完整可选区块，但不会返回截断的
+XML-like 合同。scope 值按 XML 文本转义，不能闭合或伪造路由区块；默认预算优先保留
+精确路由 scope 和调用，300 字符 project ID 仍保留 scoped `session-init` fallback。
+user-only 技能只能提示，模型不得自动调用。`invocation_source` 是 caller-supplied
+attestation，不是 MCP 认证身份；客户端必须在提交 `user` 前确认真实用户意图，
+服务端只校验该声明是否符合阶段策略。
 
 每次调用耗时 **0.2~0.4s**（冷启动 ~3s 加载 embedding 模型）。
 
 ### 链约束（跳步自动拒绝）
 
-`SKILL_CHAIN_MAP` 定义前置/后继关系。`sp-stage` handler 在执行前校验 —— 跳步返回 `chain_violation` 并提示正确下一步。worktrees 是强制必经阶段。
+`SKILL_CHAIN_MAP` 与固定 route 共同定义相邻阶段。`sp-stage` 在执行前校验 route、
+调用权限和当前 flow scope；跳步返回 `chain_violation`。
+父 route 可在当前阶段与声明分支的下一阶段对齐时切换到该分支，例如
+`idea-to-ship/grill-with-docs -> small-build/implement` 或
+`idea-to-ship/grill-with-docs -> prototype-detour/handoff`；未声明的 route 切换仍被拒绝。
 
 ```
-# 跳步被拒示例
-sp-stage(stage="executing-plans", ...)  ← 当前在 brainstorming
-→ error: "chain_violation: requires ['sp-writing-plans'], but current='brainstorming'"
-→ "Valid next: ['sp-using-git-worktrees']"
+sp-stage(stage="to-tickets", route="idea-to-ship", invocation_source="user", ...)  # current=grill-with-docs
+→ error="chain_violation", valid_next=["to-spec"]
+
+sp-stage(stage="brainstorming", ...)
+→ error="unknown_stage"
 ```
 
 ### 追踪管道
 
 ```
-Claude: Skill() → PreToolUse hook → mcp_tool: skill_auto_track → skill_session_start
-                                                          ↓
-                  SkillEngine.exec: principle_activate + memory_store (无 context_supply)
-                                                          ↓
-                  PostToolUse hook → skill_session_complete → 更新 _current_stage
-
-MCP:    sp-stage → skill_auto_track → skill_session_start/complete
+UserPromptSubmit → auto_context_inject → official route + authority 注入
+sp-stage(无 receipt) → route/authority/transition validation → 执行合同
+Codex 实际运行官方 Skill
+sp-stage(有效 receipt) → receipt/幂等校验 → SkillEngine 治理适配器 → SQLite cursor/receipt
+Stop → pending proposal（不重复写 canonical memory）
 ```
 
+当显式规则未产生 candidate 且 `PP_PASSIVE_SEMANTIC_CAPTURE=shadow|on` 时，Stop 只提交 project/visibility/config/provider 分区的 durable semantic job，不同步等待云请求。Worker 默认攒够 20 条或达到 30 秒窗口后批量调用结构化切片 Provider；输出允许融合或拆分，但只接受逐字 grounded evidence。`on` 模式下 proposal 通过 `ProposalAutomation` 记录每个来源 turn 的评分证据。
+
+`PP_MEMORY_PROPOSAL_AUTO_ADOPT=shadow|on` 启用 durable promotion job。每个 eligible score revision 幂等入队，worker 批量生成向量证据后仍由 `evaluate_auto_promotion()` 作唯一策略判断；`shadow` 只记录 would-promote，`on` 才调用既有原子晋升器。失败保留稳定 reason、attempt 和 retry/dead 状态，Maintenance reconcile 可补齐事务提交后崩溃造成的 enqueue 缺口。三个门禁默认均为 `off`。
+
+`execution_receipt` 固定绑定 Skill 名、上游 revision、`SKILL.md` SHA256、
+`status="completed"` 和非空 JSON evidence，并拒绝敏感字段名及常见 Key/Token/PEM 值。
+它是 caller-supplied attestation，不是服务端对 Codex Skill 执行的密码学证明。相同 scope/route/step 的同一 receipt
+幂等返回 `already_completed`；物料不同则在治理适配器执行前返回
+`execution_receipt_conflict`。重复阶段名（如 `prototype-detour` 的两次 `handoff`）
+按持久化 `current_step_index` 区分。
+
+同一 MCP 进程内，相同 `project_id + stage_session_id + flow_line_id` 的 `sp-stage`
+调用会串行；receipt 与 cursor 在短 `BEGIN IMMEDIATE` 事务中原子提交，不同 flow lane
+仍可并行。生产只允许一个 MCP 进程写同一 SQLite。进程内 async lock 不是跨进程租约，
+治理适配器也不承诺崩溃窗口中的分布式 exactly-once。
+
 > **注**: 完整 `context_supply` 已从 sp-stage 原子和 session-init 默认启动路径中移除。其 `engine.supply()` 三路检索 + Ollama rerank 耗时 5~60s；`session-init(context_mode="light")` 只做有界轻量预览，实质决策前仍需按需显式调用 `context_supply`。
-> **并发隔离**: 重型 `memory_recall` / `context_supply` 调用支持 `stage_session_id`、`flow_line_id`、`request_id`。并行 SuperPowers 流程或子 Agent 派发时应传入这些 ID，服务端会派生 `request_scope_id` 用于缓存隔离、审计追踪，并在 `context_supply` 输出中显示。
+> **并发隔离**: 重型 `memory_recall` / `context_supply` 调用支持 `stage_session_id`、`flow_line_id`、`request_id`。并行官方流程或子 Agent 派发时应传入这些 ID，服务端会派生 `request_scope_id` 用于缓存隔离、审计追踪，并在 `context_supply` 输出中显示。
 
 ## 记忆质量管道 (方向 A + B)
 
@@ -505,12 +543,12 @@ scan_scheduler_health 发现问题
 
 ## Skill 调用追踪
 
-Skill 调用自动通过 hook (`PreToolUse/PostToolUse` → `mcp_tool: skill_auto_track`) 追踪，**无需手动调用** `skill_session_start/complete`。
+Codex 当前只配置 `UserPromptSubmit`、`Stop` 和 `SessionEnd` 自动 Hook；没有可依赖的 `PreToolUse/PostToolUse` Skill lifecycle Hook。`skill_auto_track` 是外部客户端兼容入口，调用方必须显式提供稳定的 `stage_session_id`，并在并行 lane 中提供 `flow_line_id`；它只记录 scoped lifecycle entity，不得推进官方工作流游标。官方阶段只能由验证通过的 `sp-stage.execution_receipt` 推进。
 会话启动只通过 `session-init` 返回 `context_status` 和可选轻量预览；完整任务上下文不由启动隐式注入。子 Agent 派发时使用 `auto_context_inject` 或手动 `memory_recall + context_supply`。
 
 ## 开发分支完成前验收
 
-finishing-a-development-branch 执行前，**必须**执行三重验收：
+正式分支完成前，**必须**执行三重验收：
 
 ### 1. Skill 链完整性
 
@@ -522,8 +560,8 @@ skill_session_trace(session_scope="branch")
 1. `chain_complete = true` — 所有 skill 形成完整闭环
 2. `gaps` 为空 — 无 orphan_active
 3. `chain_valid = true` — 调用链合法
-4. 链首为 brainstorming / systematic-debugging / requesting-code-review 之一
-5. 链尾为 finishing-a-development-branch 或 receiving-code-review
+4. 链首符合所选官方 route
+5. 交付链尾为 `code-review`，单阶段 route 按其唯一阶段验收
 
 验收不通过时的修复:
 - orphan_active → `skill_session_complete(entity_id, "abandoned: 分支完成时未闭环")`

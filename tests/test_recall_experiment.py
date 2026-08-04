@@ -88,6 +88,7 @@ def _report(weight_index=0, window_index=0, *, mrr=0.8, hit5=0.9, minimum=0.7, p
         "environment": {
             "source_commit": "a" * 40,
             "dirty_fingerprint": "b" * 64,
+            "comparison_environment_fingerprint": "c" * 64,
             "retrieval_configuration": {
                 "query_expansion": True,
                 "index_text_policy": "legacy",
@@ -118,6 +119,7 @@ def _manifest_fields():
     return {
         "source_commit": "a" * 40,
         "dirty_fingerprint": "b" * 64,
+        "comparison_environment_fingerprint": "c" * 64,
         "retrieval_configuration": {
             "query_expansion": True,
             "index_text_policy": "legacy",
@@ -314,6 +316,7 @@ def test_calibration_freeze_hashes_but_never_retrieves_heldout(tmp_path):
     [
         ("source_commit", "c" * 40),
         ("dirty_fingerprint", "d" * 64),
+        ("comparison_environment_fingerprint", "e" * 64),
         ("runtime_route", "rust-http-mcp"),
         ("retrieval_configuration", {"query_expansion": False}),
         ("embedding_configuration", {"model": "other", "dimension": 8}),
@@ -370,6 +373,7 @@ def test_unsupported_candidate_dimension_is_rejected():
     "mutation",
     [
         lambda value: value.update(source_commit="f" * 40),
+        lambda value: value.update(comparison_environment_fingerprint="f" * 64),
         lambda value: value["fusion_config"]["weights"].update(vector=0.7),
         lambda value: value.update(runtime_route="other"),
         lambda value: value.update(manifest_hash="0" * 64),
@@ -379,6 +383,16 @@ def test_manifest_source_config_and_hash_drift_are_rejected(mutation):
     value = copy.deepcopy(_frozen_manifest().to_dict())
     mutation(value)
     with pytest.raises(ValueError):
+        FrozenCandidateManifest.from_dict(value)
+
+
+def test_frozen_manifest_uses_v2_schema_and_rejects_v1():
+    value = _frozen_manifest().to_dict()
+
+    assert value["schema"] == "recall-experiment/v2"
+    value["schema"] = "recall-experiment/v1"
+
+    with pytest.raises(ValueError, match="candidate_manifest_schema_invalid"):
         FrozenCandidateManifest.from_dict(value)
 
 
@@ -394,6 +408,7 @@ def test_manifest_source_config_and_hash_drift_are_rejected(mutation):
         lambda report: report["backend"].update(effective_runtime="python-full"),
         lambda report: report["environment"].update(source_commit="f" * 40),
         lambda report: report["environment"].update(dirty_fingerprint="0" * 64),
+        lambda report: report["environment"].update(comparison_environment_fingerprint="0" * 64),
         lambda report: report["environment"].update(
             dependencies={"lancedb": "0.35.0", "pyarrow": "20.0.0"}
         ),
@@ -472,6 +487,16 @@ def _channel(mrr, hit5):
 
 def _fusion_report(manifest, *, candidate):
     policy = manifest.candidate_id if candidate else "max-v1"
+    fusion_config = (
+        {
+            "k": manifest.fusion_config.k,
+            "channels": list(manifest.fusion_config.channels),
+            "weights": dict(manifest.fusion_config.weights),
+            "windows": dict(manifest.fusion_config.windows),
+        }
+        if candidate
+        else None
+    )
     fused_mrr = 0.82 if candidate else 0.80
     channel_states = {
         name: {
@@ -505,16 +530,7 @@ def _fusion_report(manifest, *, candidate):
         "candidate_dimension": "fusion_policy",
         "candidate_id": policy,
         "manifest_hash": manifest.manifest_hash if candidate else "",
-        "fusion_config": (
-            {
-                "k": manifest.fusion_config.k,
-                "channels": list(manifest.fusion_config.channels),
-                "weights": dict(manifest.fusion_config.weights),
-                "windows": dict(manifest.fusion_config.windows),
-            }
-            if candidate
-            else None
-        ),
+        "fusion_config": fusion_config,
         "publishable_claim": True,
         "corpus": {
             "revision": "2026-07-12-heldout-corpus.1",
@@ -532,8 +548,8 @@ def _fusion_report(manifest, *, candidate):
             "transport": "streamable-http",
             "requested_policy": policy,
             "effective_policy": policy,
-            "requested_runtime": "rust-full",
-            "effective_runtime": "rust-full",
+            "requested_runtime": "python",
+            "effective_runtime": "python",
             "runtime_route": manifest.runtime_route,
             "public_call_counts": {"memory_recall": 6, "context_supply": 6},
             "index_text_policy": "legacy",
@@ -542,6 +558,7 @@ def _fusion_report(manifest, *, candidate):
         "environment": {
             "source_commit": manifest.source_commit,
             "dirty_fingerprint": manifest.dirty_fingerprint,
+            "comparison_environment_fingerprint": (manifest.comparison_environment_fingerprint),
             "retrieval_configuration": dict(manifest.retrieval_configuration),
             "embedding_configuration": dict(manifest.embedding_configuration),
             "dependencies": dict(manifest.dependency_versions),
@@ -564,7 +581,13 @@ def _fusion_report(manifest, *, candidate):
         "fusion_attestation": {
             "attested_calls": 48,
             "errors": [],
-            "observed": [policy, "rust-full", "rust-full"],
+            "observed": [policy, "python", "python"],
+            "algorithm": "weighted-rrf-v1" if candidate else "weighted-max-v1",
+            "config": (
+                {**fusion_config, "config_hash": manifest.fusion_config.config_hash}
+                if fusion_config is not None
+                else None
+            ),
         },
         "metrics": {
             "channels": {
@@ -689,6 +712,7 @@ def test_comparator_rejects_nonfusion_evidence_drift(mutation):
     [
         (("environment", "source_commit"), "f" * 40),
         (("environment", "dirty_fingerprint"), "0" * 64),
+        (("environment", "comparison_environment_fingerprint"), "0" * 64),
         (("environment", "dependencies"), {"lancedb": "0.35.0", "pyarrow": "20.0.0"}),
         (("backend", "runtime_route"), "other"),
         (("candidate_dimension",), "embedding_model"),
@@ -708,6 +732,23 @@ def test_comparator_allows_only_manifest_candidate_dimension(path, value):
         manifest=manifest,
         tolerances={"minimum_primary_delta": 0.01},
     )
+    assert result["comparability"]["passed"] is False
+
+
+def test_comparator_rejects_heldout_comparison_environment_drift_explicitly():
+    manifest = _frozen_manifest()
+    candidate = _fusion_report(manifest, candidate=True)
+    candidate["environment"]["comparison_environment_fingerprint"] = "0" * 64
+
+    result = compare_fusion_reports(
+        _fusion_report(manifest, candidate=False),
+        candidate,
+        manifest=manifest,
+        tolerances={"minimum_primary_delta": 0.01},
+    )
+
+    failed_names = {check["name"] for check in result["failed_checks"]}
+    assert "candidate.environment.comparison_environment_fingerprint" in failed_names
     assert result["comparability"]["passed"] is False
 
 

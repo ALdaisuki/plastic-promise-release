@@ -11,14 +11,16 @@ mcp>=1.0.0,<2.0.0
 # ---- 向量/全文检索 (必须) ----
 # LanceDB = 向量 + BM25 全文 + 标量过滤, 单库搞定混合检索
 lancedb>=0.34.0
-# sentence-transformers 用于本地嵌入 (也可走 openai)
-sentence-transformers>=2.2.0
+# 进程内本地嵌入是显式可选能力：pip install -e ".[local-inference]"
 
 # ---- HTTP / SSE 服务 (可选, 仅在启动 SSE 多 Agent 共享模式时用) ----
 uvicorn[standard]>=0.27.0
 starlette>=0.36.0
 httpx>=0.27.0
 requests>=2.31.0
+
+# ---- N.E.K.O bridge (optional) ----
+# Install with: pip install -e ".[neko]"
 
 # ---- 数据存储 (必须) ----
 # SQLite 由 Python stdlib 提供 (sqlite3). 以下为高级特性:

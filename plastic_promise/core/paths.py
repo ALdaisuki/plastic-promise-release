@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -26,3 +25,10 @@ def default_db_path() -> str:
 def get_db_path() -> str:
     """Return PLASTIC_DB_PATH or the canonical project database path."""
     return os.environ.get("PLASTIC_DB_PATH", default_db_path())
+
+
+def inference_jobs_path_for(db_path: str | Path) -> Path:
+    """Return the isolated inference-job database beside the canonical db directory."""
+    canonical = Path(db_path).expanduser()
+    state_root = canonical.parent.parent if canonical.parent.name == "db" else canonical.parent
+    return state_root / "inference" / "inference_jobs.db"

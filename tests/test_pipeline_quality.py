@@ -5,6 +5,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
+from plastic_promise.core.domain_manager import DomainManager
 from plastic_promise.core.embedder import FallbackEmbedder
 from plastic_promise.memory.pipeline import MemoryPipeline
 from plastic_promise.memory.soul_memory import MemoryRecord, RecMem
@@ -73,6 +74,25 @@ class TestPipelineQuality:
             assert record["extracted"]["confidence"] == 0.9
             # Tags should include cat:preference
             assert any("cat:preference" in tag for tag in record["tags"])
+
+    def test_explicit_active_domain_hint_wins_over_automatic_tag_assignment(self):
+        """A caller-selected active domain must survive pipeline classification."""
+        self.pipeline._dm = DomainManager(db_path=":memory:", project_id="project:alpha")
+        with patch("plastic_promise.smart_extractor.extract_memories", return_value=[]):
+            memory_id = self.pipeline.store_urgent(
+                "Investigate a production crash",
+                custom_tags=["debug", "fix"],
+                domain_hint="building",
+                project_id="project:alpha",
+            )
+
+        record = self.pipeline._buffer[memory_id]
+        assert record["explicit_domain_hint"] == "building"
+        record["stage"] = "tagged"
+
+        assert self.pipeline._process_tagged_to_classified() == 1
+        assert record["domain"] == "building"
+        assert "domain:building" not in record["tags"]
 
     def test_oversized_structure_embedding_is_rejected_without_retry_loop(self):
         class OversizedEmbedder:
@@ -153,9 +173,7 @@ class TestPipelineQuality:
             "hash_schema": "policy-model-text-v2",
             "model_name": "fallback-zero",
             "policy": "summary-v1",
-            "search_text_hash": record["metadata_json"]["memory_index"][
-                "search_text_hash"
-            ],
+            "search_text_hash": record["metadata_json"]["memory_index"]["search_text_hash"],
         }
 
     def test_store_urgent_persists_structure_chunk_manifest(self, monkeypatch):
@@ -198,9 +216,7 @@ class TestPipelineQuality:
 
         assert initial_index_policy(summary_index_enabled=summary_enabled) == expected
 
-    def test_unknown_index_policy_fails_before_extraction_or_buffer_mutation(
-        self, monkeypatch
-    ):
+    def test_unknown_index_policy_fails_before_extraction_or_buffer_mutation(self, monkeypatch):
         monkeypatch.setenv("PP_MEMORY_INDEX_TEXT_POLICY", "compact-latest")
         self.pipeline._buffer["existing"] = {"stage": "raw"}
 
@@ -227,11 +243,7 @@ class TestPipelineQuality:
                 "SQLite 是 canonical truth\n"
                 "Use PP_SYNTHESIS_RETRIEVAL=0 and Ticket-ID_42.\n"
                 "保留 CamelCase/API_v2 标识符。\n"
-                "保留 CamelCase/API_v2 标识符。\n"
-                + "line-a "
-                + "A" * 540
-                + "\nline-b "
-                + "B" * 700
+                "保留 CamelCase/API_v2 标识符。\n" + "line-a " + "A" * 540 + "\nline-b " + "B" * 700
             ),
             "raw_content": "RAW-SECRET-MUST-NOT-APPEAR",
             "l2_content": "L2-SECRET-MUST-NOT-APPEAR",
@@ -284,9 +296,7 @@ class TestPipelineQuality:
         assert all(len(line) <= 400 for line in material.vector_text.splitlines())
 
     @pytest.mark.parametrize("old_policy", ["compact-v2", "future-policy"])
-    def test_pre_v2_materialization_rejects_nonlegacy_persisted_policy(
-        self, old_policy
-    ):
+    def test_pre_v2_materialization_rejects_nonlegacy_persisted_policy(self, old_policy):
         from plastic_promise.core.memory_index import (
             IndexMaterialError,
             resolve_index_material,
@@ -352,26 +362,38 @@ class TestPipelineQuality:
             policy=LEGACY_POLICY,
             model_name="Model-A",
         )
-        assert baseline.vector_text == build_index_material(
-            record,
-            policy=LEGACY_FALLBACK_POLICY,
-            model_name="Model-A",
-        ).vector_text
-        assert baseline.embedding_hash != build_index_material(
-            record,
-            policy=LEGACY_FALLBACK_POLICY,
-            model_name="Model-A",
-        ).embedding_hash
-        assert baseline.embedding_hash != build_index_material(
-            record,
-            policy=LEGACY_POLICY,
-            model_name="Model-B",
-        ).embedding_hash
-        assert baseline.embedding_hash != build_index_material(
-            {"content": "Exact Vector Text!"},
-            policy=LEGACY_POLICY,
-            model_name="Model-A",
-        ).embedding_hash
+        assert (
+            baseline.vector_text
+            == build_index_material(
+                record,
+                policy=LEGACY_FALLBACK_POLICY,
+                model_name="Model-A",
+            ).vector_text
+        )
+        assert (
+            baseline.embedding_hash
+            != build_index_material(
+                record,
+                policy=LEGACY_FALLBACK_POLICY,
+                model_name="Model-A",
+            ).embedding_hash
+        )
+        assert (
+            baseline.embedding_hash
+            != build_index_material(
+                record,
+                policy=LEGACY_POLICY,
+                model_name="Model-B",
+            ).embedding_hash
+        )
+        assert (
+            baseline.embedding_hash
+            != build_index_material(
+                {"content": "Exact Vector Text!"},
+                policy=LEGACY_POLICY,
+                model_name="Model-A",
+            ).embedding_hash
+        )
 
     def test_persisted_material_detects_vector_search_policy_and_model_drift(self):
         from plastic_promise.core.memory_index import (
@@ -398,14 +420,20 @@ class TestPipelineQuality:
             "metadata_json": {"memory_index": index_metadata(material)},
         }
         assert read_persisted_index_material(row, model_name="Model-A") == material
-        assert read_persisted_index_material(
-            {**row, "embedding_text": material.vector_text + "!"},
-            model_name="Model-A",
-        ) is None
-        assert read_persisted_index_material(
-            {**row, "search_text": material.search_text + "!"},
-            model_name="Model-A",
-        ) is None
+        assert (
+            read_persisted_index_material(
+                {**row, "embedding_text": material.vector_text + "!"},
+                model_name="Model-A",
+            )
+            is None
+        )
+        assert (
+            read_persisted_index_material(
+                {**row, "search_text": material.search_text + "!"},
+                model_name="Model-A",
+            )
+            is None
+        )
         assert read_persisted_index_material(row, model_name="Model-B") is None
         changed_policy = {
             **row,
@@ -520,12 +548,8 @@ class TestPipelineQuality:
         pipeline.process_pipeline()
 
         assert embedder.texts == [expected_vector_text]
-        assert persisted_store_kwargs["metadata_json"]["embedding_text"] == (
-            expected_vector_text
-        )
-        assert persisted_store_kwargs["metadata_json"]["search_text"] == (
-            expected_search_text
-        )
+        assert persisted_store_kwargs["metadata_json"]["embedding_text"] == (expected_vector_text)
+        assert persisted_store_kwargs["metadata_json"]["search_text"] == (expected_search_text)
         persist_call = next(
             call
             for call in engine.update_memory_fields.call_args_list
@@ -569,9 +593,7 @@ class TestPipelineQuality:
             "hash_schema": "policy-model-text-v2",
             "model_name": "fallback-zero",
             "policy": "summary-v1",
-            "search_text_hash": record["metadata_json"]["memory_index"][
-                "search_text_hash"
-            ],
+            "search_text_hash": record["metadata_json"]["memory_index"]["search_text_hash"],
         }
         assert record["embedding_text"].startswith("L0: atomic policy content")
 
@@ -661,17 +683,20 @@ class TestPipelineQuality:
         duplicate_id = "ordinary-stale-pipeline-duplicate"
         incoming_id = "incoming-stale-pipeline-duplicate"
         try:
-            assert writer.register_memory(
-                {
-                    "id": duplicate_id,
-                    "content": "canonical duplicate evidence",
-                    "memory_type": "experience",
-                    "source": "test",
-                    "project_id": "project:dedup",
-                    "visibility": "project",
-                    "source_class": "experience",
-                }
-            ) == duplicate_id
+            assert (
+                writer.register_memory(
+                    {
+                        "id": duplicate_id,
+                        "content": "canonical duplicate evidence",
+                        "memory_type": "experience",
+                        "source": "test",
+                        "project_id": "project:dedup",
+                        "visibility": "project",
+                        "source_class": "experience",
+                    }
+                )
+                == duplicate_id
+            )
             assert duplicate_id not in reader._memories
 
             rec_mem = MagicMock(spec=RecMem)
@@ -882,9 +907,12 @@ class TestPipelineQuality:
         assert pipeline._process_embedded_to_migrate() == 1
         assert storage.get(incoming_id) is not None
         assert storage.get(governed_id) == before
-        assert storage._conn.execute(
-            "SELECT * FROM synthesis_artifacts WHERE memory_id = ?", (governed_id,)
-        ).fetchone() == control_before
+        assert (
+            storage._conn.execute(
+                "SELECT * FROM synthesis_artifacts WHERE memory_id = ?", (governed_id,)
+            ).fetchone()
+            == control_before
+        )
         assert governed_id not in updated_ids
         storage._conn.close()
 
@@ -1040,9 +1068,7 @@ class TestPipelineQuality:
         # effective_half_life should be the L3 base (90 days), not the default 3.0
         assert stored.effective_half_life > 3.0
 
-    def test_summary_index_gate_embeds_summary_only_and_lancedb_uses_search_text(
-        self, monkeypatch
-    ):
+    def test_summary_index_gate_embeds_summary_only_and_lancedb_uses_search_text(self, monkeypatch):
         monkeypatch.setenv("PP_MEMORY_SUMMARY_INDEX", "1")
         embedder = self.RecordingEmbedder()
         rec_mem = MagicMock(spec=RecMem)
@@ -1104,7 +1130,9 @@ class TestPipelineQuality:
         assert "PP-12345" not in insert_kwargs["text"]
         stored_metadata = rec_mem._records["stored_summary"].metadata_json
         assert stored_metadata["raw_content"] == "raw source with PP-12345"
-        assert stored_metadata["l2_content"] == "Long SQL-only detail with exact identifier PP-12345."
+        assert (
+            stored_metadata["l2_content"] == "Long SQL-only detail with exact identifier PP-12345."
+        )
 
     def test_summary_index_gate_off_preserves_lancedb_content_text(self, monkeypatch):
         monkeypatch.delenv("PP_MEMORY_SUMMARY_INDEX", raising=False)
@@ -1188,9 +1216,7 @@ class TestPipelineQuality:
         reopened = _SQLiteMemoryStore(db_path)
         reopened_row = reopened.get("summary_row")
         assert reopened_row["search_text"] == "compact index"
-        columns = {
-            column[1] for column in reopened._conn.execute("PRAGMA table_info(memories)")
-        }
+        columns = {column[1] for column in reopened._conn.execute("PRAGMA table_info(memories)")}
         assert "search_text" in columns
         assert len(columns) == len(
             {column[1] for column in store._conn.execute("PRAGMA table_info(memories)")}

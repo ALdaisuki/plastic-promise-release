@@ -1,20 +1,23 @@
 """Tests for Task Queue MCP tools — task_enqueue."""
 
+import asyncio
 import json
 import sqlite3
-import os
-import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
+
 from plastic_promise.core.task_queue_schema import ensure_task_tables
 from plastic_promise.mcp.tools.task_queue import (
-    handle_task_enqueue,
+    _generate_task_id,
+    handle_task_abandon,
     handle_task_claim,
     handle_task_complete,
-    handle_task_verify,
-    handle_task_inbox,
+    handle_task_enqueue,
     handle_task_heartbeat,
-    handle_task_abandon,
-    _generate_task_id,
+    handle_task_inbox,
+    handle_task_verify,
 )
 
 
@@ -63,6 +66,78 @@ def test_task_enqueue_basic(test_db_path, monkeypatch):
     assert text["task_id"].startswith("t_")
     assert text["sse_broadcast"] is False  # No SSE in Phase 1
     assert text["review_required"] is False
+
+
+def test_scanner_enqueue_deduplicates_matching_pending_payload_without_time_window(
+    test_db_path, monkeypatch
+):
+    monkeypatch.setenv("PLASTIC_DB_PATH", test_db_path)
+    engine = type("MockEngine", (), {})()
+    args = {
+        "task_type": "investigate_coupling",
+        "title": "stable coupling finding",
+        "to_agent": "pi_reviewer",
+        "priority": 3,
+        "source_scan": "scan_coupling",
+        "payload": {"type": "tag_cooccurrence_anomaly", "tags": ["a", "b"]},
+    }
+
+    first = json.loads(asyncio.run(handle_task_enqueue(engine, args))[0].text)
+    conn = sqlite3.connect(test_db_path)
+    conn.execute(
+        "UPDATE task_queue SET created_at = datetime('now', '-30 days') WHERE id = ?",
+        (first["task_id"],),
+    )
+    conn.commit()
+    conn.close()
+
+    second = json.loads(asyncio.run(handle_task_enqueue(engine, args))[0].text)
+
+    assert second == {
+        "status": "duplicate",
+        "existing_task_id": first["task_id"],
+        "reason": (
+            "Pending investigate_coupling from scan_coupling already exists for this payload"
+        ),
+    }
+    conn = sqlite3.connect(test_db_path)
+    assert conn.execute("SELECT COUNT(*) FROM task_queue").fetchone()[0] == 1
+    conn.close()
+
+
+def test_scanner_enqueue_dedup_is_atomic_across_connections(test_db_path, monkeypatch):
+    from plastic_promise.mcp.tools import task_queue
+
+    monkeypatch.setenv("PLASTIC_DB_PATH", test_db_path)
+    engine = type("MockEngine", (), {})()
+    args = {
+        "task_type": "investigate_coupling",
+        "title": "concurrent coupling finding",
+        "to_agent": "pi_reviewer",
+        "priority": 3,
+        "source_scan": "scan_coupling",
+        "payload": {"type": "tag_cooccurrence_anomaly", "tags": ["a", "b"]},
+    }
+    original_get_conn = task_queue._get_conn
+    ready = threading.Barrier(2)
+
+    def synchronized_connection():
+        conn = original_get_conn()
+        ready.wait(timeout=5)
+        return conn
+
+    monkeypatch.setattr(task_queue, "_get_conn", synchronized_connection)
+
+    def enqueue():
+        return json.loads(asyncio.run(handle_task_enqueue(engine, args))[0].text)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: enqueue(), range(2)))
+
+    assert sorted(result["status"] for result in results) == ["duplicate", "pending"]
+    conn = sqlite3.connect(test_db_path)
+    assert conn.execute("SELECT COUNT(*) FROM task_queue").fetchone()[0] == 1
+    conn.close()
 
 
 def test_task_enqueue_d_rank_rejected(test_db_path, monkeypatch):

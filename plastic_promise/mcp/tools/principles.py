@@ -161,7 +161,7 @@ async def handle_principle_evaluate(engine: Any, args: dict) -> list[TextContent
     try:
         from plastic_promise.core.constants import CORE_PRINCIPLES
 
-        principle_id = args["principle_id"]
+        principle_id = int(args["principle_id"])
         scenario = args.get("scenario", "")
 
         principle = next((p for p in CORE_PRINCIPLES if p["id"] == principle_id), None)

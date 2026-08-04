@@ -213,7 +213,7 @@ class TestPhase1E2E:
         )
 
         # Handler-produced data should be present
-        assert "context" in result.data
+        assert "context_status" in result.data
         assert "domain_health" in result.data
         assert "system_stats" in result.data
         assert "trust" in result.data
@@ -233,6 +233,42 @@ class TestPhase1E2E:
         assert result.success is True, f"smart-remember failed. Errors: {result.errors}"
         assert result.data["action"] == "stored"
         assert result.data["memory_id"] != ""
+
+    async def test_smart_remember_reports_pending_proposal_as_success(
+        self,
+        skill_engine,
+        monkeypatch,
+    ):
+        async def mock_pending_proposal(_ctx, _args):
+            return _response(
+                {
+                    "stored": False,
+                    "status": "pending",
+                    "proposal_ids": ["proposal_test"],
+                    "categories": ["preference"],
+                }
+            )
+
+        monkeypatch.setattr(
+            "plastic_promise.skills.memory_operations.handle_memory_store",
+            mock_pending_proposal,
+        )
+
+        result = await skill_engine.exec(
+            "smart-remember",
+            params={
+                "content": "I prefer TypeScript.",
+                "memory_type": "preference",
+                "source": "user",
+            },
+            caller="claude",
+        )
+
+        assert result.success is True
+        assert result.data["action"] == "proposed"
+        assert result.data["status"] == "pending"
+        assert result.data["proposal_ids"] == ["proposal_test"]
+        assert "memory_id" not in result.data
 
     async def test_full_workflow(self, skill_engine):
         """Phase 1 pipeline: init -> remember -> verify in memory.

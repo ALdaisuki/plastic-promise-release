@@ -14,12 +14,17 @@
 所有工具共享 ContextEngine 单例，通过依赖注入传递给各工具模块。
 """
 
+import asyncio
+import hashlib
 import json
 import logging
 import math
 import os
 import sys
+import threading
+import weakref
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 # 确保项目根在 path 中
@@ -45,11 +50,13 @@ from plastic_promise import __version__
 from plastic_promise.core.constants import (
     CORE_PRINCIPLES,
 )
+from plastic_promise.core.cost_telemetry import SUPPORTED_COST_CURRENCIES
 from plastic_promise.core.fusion_policy import (
     FusionConfigurationError,
     canonical_fusion_config_hash,
     load_fusion_config,
 )
+from plastic_promise.core.recall_quality_environment import loaded_rust_extension_identity
 from plastic_promise.core.retrieval_planner import plan_retrieval
 from plastic_promise.launcher.default_environment import configure_default_environment
 from plastic_promise.launcher.runtime_mode import RUNTIME_MODE_KEYS
@@ -64,8 +71,9 @@ SERVER_INSTRUCTIONS = (
     "Plastic Promise MCP provides shared memory, principles, context_supply, "
     "memory_recall, defense, runtime_mode, session-init, sp-stage, and "
     "step-closure for Codex. Start tasks with session-init(context_mode='light'), "
-    "then sp-stage(stage='brainstorming'); call memory_recall/context_supply as "
-    "needed. Use debug=true only for diagnostics."
+    "then follow the injected pinned Matt Pocock workflow. Auto-enter only "
+    "model-invoked stages; user-only stages require explicit user invocation. "
+    "Call memory_recall/context_supply as needed. Use debug=true only for diagnostics."
 )
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _SOURCE_ROOT = canonical_source_root(_PROJECT_ROOT)
@@ -73,6 +81,57 @@ _SOURCE_REVISION = resolve_source_revision(_SOURCE_ROOT)
 _engine = None  # 延迟初始化
 _skill_engine = None  # 延迟初始化 — SkillEngine 单例
 _closure_history: deque = deque(maxlen=5)  # 滑动窗口: 最近5次闭环 {scarf, trust, cei}
+_workflow_flow_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+_workflow_flow_locks_guard = threading.Lock()
+
+
+def _workflow_flow_lock(engine: Any, arguments: dict[str, Any]) -> asyncio.Lock:
+    """Return the process-local serialisation lock for one official flow lane."""
+    from plastic_promise.core.workflow_state import compose_flow_scope
+
+    scope_id = compose_flow_scope(
+        arguments.get("stage_session_id") or arguments.get("stage_id"),
+        arguments.get("flow_line_id") or arguments.get("flow_id"),
+        arguments.get("project_id"),
+    )
+    key = f"{id(engine)}:{scope_id}"
+    with _workflow_flow_locks_guard:
+        lock = _workflow_flow_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _workflow_flow_locks[key] = lock
+        return lock
+
+
+def _health_identity_config_key() -> str:
+    """Return a secret-free key for inputs that affect health identity.
+
+    Health probes are cached, but deployment configuration can change while a
+    process remains alive (for example, an embedding endpoint rotation).  A
+    digest of the relevant environment namespaces plus the active engine and
+    embedder objects prevents a prior result from crossing that boundary.
+    """
+
+    prefixes = ("PP_", "EMBEDDER_", "OLLAMA_", "PLASTIC_", "LDB_")
+    environment = sorted(
+        (key, value) for key, value in os.environ.items() if key.startswith(prefixes)
+    )
+    engine = _engine
+    embedder = getattr(engine, "_embedder", None) if engine is not None else None
+    try:
+        embedder_index_identity = getattr(embedder, "index_model_name", None)
+    except Exception:
+        # A provider property failure must invalidate the cache; the probe will
+        # report the actual stable error on the next line.
+        embedder_index_identity = "<unavailable>"
+    payload = {
+        "environment": environment,
+        "engine_id": id(engine) if engine is not None else None,
+        "embedder_id": id(embedder) if embedder is not None else None,
+        "embedder_index_identity": embedder_index_identity,
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
@@ -80,34 +139,68 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
     if _SOURCE_REVISION is None:
         raise RuntimeError("source_revision_unavailable")
     env = environ if environ is not None else os.environ
+    allow_text_only = env.get("PP_HEALTH_ALLOW_TEXT_ONLY", "0") == "1"
     fusion_policy = str(env.get("PP_RETRIEVAL_FUSION_POLICY", "legacy-auto")).strip()
     runtime_engine = engine if engine is not None else get_engine()
     runtime_engine._ensure_heavy_init()
+
+    vector_reason = None
+    embedding_identity = None
     embedder = getattr(runtime_engine, "_embedder", None)
     if embedder is None:
-        raise RuntimeError("retrieval_embedder_unavailable")
-    probe_vector = embedder.embed("plastic promise retrieval health probe")
-    if (
-        not isinstance(probe_vector, list)
-        or not probe_vector
-        or any(
-            not isinstance(value, (int, float)) or not math.isfinite(value)
-            for value in probe_vector
-        )
-        or not any(float(value) != 0.0 for value in probe_vector)
-    ):
-        raise RuntimeError("retrieval_embedding_zero_or_invalid")
+        vector_reason = "retrieval_embedder_unavailable"
+    else:
+        try:
+            probe_vector = embedder.embed("plastic promise retrieval health probe")
+        except Exception:
+            vector_reason = "retrieval_embedding_probe_failed"
+            probe_vector = None
+        if vector_reason is None and (
+            not isinstance(probe_vector, list)
+            or not probe_vector
+            or any(
+                not isinstance(value, (int, float)) or not math.isfinite(value)
+                for value in probe_vector
+            )
+            or not any(float(value) != 0.0 for value in probe_vector)
+        ):
+            vector_reason = "retrieval_embedding_zero_or_invalid"
+        try:
+            embedding_identity = _embedding_process_identity(embedder, env)
+        except RuntimeError:
+            if vector_reason is None:
+                raise
     lancedb = getattr(runtime_engine, "_ldb", None)
-    if env.get("LDB_INIT_ON_HEAVY_INIT", "1") == "1" and lancedb is None:
-        raise RuntimeError("retrieval_lancedb_unavailable")
+    lancedb_required = env.get("LDB_INIT_ON_HEAVY_INIT", "1") == "1"
+    lancedb_ready = lancedb is not None
+    sync_status_reader = getattr(runtime_engine, "generation_live_index_status", None)
+    if callable(sync_status_reader):
+        lancedb_sync = sync_status_reader()
+    else:
+        raw_sync = getattr(runtime_engine, "_lancedb_sync_status", None)
+        lancedb_sync = dict(raw_sync) if isinstance(raw_sync, dict) else None
+    live_lag = lancedb_sync.get("lag") if isinstance(lancedb_sync, dict) else None
+    live_lag_state = live_lag.get("state") if isinstance(live_lag, dict) else None
+    if vector_reason is None and lancedb_required and not lancedb_ready:
+        vector_reason = "retrieval_lancedb_unavailable"
+    if vector_reason is None and live_lag_state in {"blocked", "unknown", "unavailable"}:
+        vector_reason = f"retrieval_lancedb_live_index_{live_lag_state}"
+    vector_ready = vector_reason is None
+    bm25_ready = callable(getattr(runtime_engine, "_text_retrieval", None))
+    if not bm25_ready:
+        raise RuntimeError("retrieval_bm25_unavailable")
+    if not vector_ready and not allow_text_only:
+        raise RuntimeError(vector_reason) from None
+
+    graph_ready = bool(getattr(runtime_engine, "_graph_edges", None))
     has_fts = (
         lancedb is not None
         and env.get("PP_FTS_DISABLED", "") != "1"
         and env.get("PP_FTS_FUSION", "1") == "1"
     )
     retrieval_plan = plan_retrieval(
-        has_vector=True,
-        has_graph=bool(getattr(runtime_engine, "_graph_edges", None)),
+        has_vector=vector_ready,
+        has_graph=graph_ready,
         has_fts=has_fts,
     )
     fusion_config = load_fusion_config(fusion_policy, retrieval_plan, env)
@@ -118,19 +211,30 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
     if force_python or not prefer_rust:
         effective_runtime = "python"
         capability_reason = "runtime_forced:python" if force_python else "runtime_preferred:python"
-    elif fusion_policy == "max-v1":
-        effective_runtime = "python"
-        capability_reason = "policy_requires_python:max-v1"
     elif fusion_config is not None and "fts" in retrieval_plan.fusion_channels:
         effective_runtime = "python"
         capability_reason = "rust_capability_missing:fts"
     else:
         if runtime_engine._check_rust_health() is True:
-            effective_runtime = "rust"
-            capability_reason = "rust_capability_satisfied"
+            supports_policy = getattr(runtime_engine, "_rust_supports_fusion_policy", None)
+            if fusion_policy == "max-v1" and (
+                not callable(supports_policy) or not supports_policy(fusion_policy)
+            ):
+                effective_runtime = "python"
+                capability_reason = "rust_capability_missing:max-v1"
+            else:
+                effective_runtime = "rust"
+                capability_reason = "rust_capability_satisfied"
         else:
             effective_runtime = "python"
             capability_reason = "rust_unavailable_or_failed"
+
+    rust_runtime = None
+    if effective_runtime == "rust":
+        try:
+            rust_runtime = loaded_rust_extension_identity(Path(_SOURCE_ROOT))
+        except (ImportError, OSError, ValueError) as exc:
+            raise RuntimeError("rust_runtime_identity_unavailable") from exc
 
     candidate_id = fusion_policy if fusion_policy.startswith("wrrf-v1:") else ""
     config_payload = None
@@ -145,12 +249,32 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
         if recomputed_hash != fusion_config.config_hash:
             raise FusionConfigurationError("fusion_health_config_hash_mismatch")
         config_payload["config_hash"] = recomputed_hash
+    live_lagged = vector_ready and live_lag_state == "lagged"
     return {
+        "identity_valid": True,
         "version": PLASTIC_PROMISE_VERSION,
         "pid": os.getpid(),
         "source_root": _SOURCE_ROOT,
         "source_revision": _SOURCE_REVISION,
+        "embedding": embedding_identity,
+        "health_policy": "text-only" if allow_text_only else "strict",
+        "degraded": not vector_ready or live_lagged,
+        "retrieval_status": (
+            "ready_index_lagged"
+            if live_lagged
+            else "ready"
+            if vector_ready
+            else "degraded_text_only"
+        ),
+        "vector_ready": vector_ready,
+        "vector_reason": vector_reason,
+        "lancedb_ready": lancedb_ready,
+        "lancedb_required": lancedb_required,
+        "lancedb_sync": lancedb_sync,
+        "bm25_ready": bm25_ready,
+        "graph_ready": graph_ready,
         "fusion_policy": fusion_policy,
+        "rust_runtime": rust_runtime,
         "fusion_attestation": {
             "schema": MCP_FUSION_IDENTITY_SCHEMA,
             "requested_policy": fusion_policy,
@@ -163,6 +287,96 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
             "config": config_payload,
         },
     }
+
+
+def _embedding_process_identity(embedder: object, env: Any) -> dict[str, Any]:
+    """Return bounded provider identity and usage without endpoint or credential data."""
+
+    model = _bounded_identity_value(getattr(embedder, "model_name", ""), "embedding_model")
+    raw_stats = getattr(embedder, "stats", {})
+    stats = raw_stats if isinstance(raw_stats, dict) else {}
+    provider = _bounded_identity_value(
+        stats.get("provider") or env.get("EMBEDDER_PROVIDER", type(embedder).__name__),
+        "embedding_provider",
+    )
+    revision = _bounded_identity_value(
+        stats.get("revision") or env.get("EMBEDDER_MODEL_REVISION", model),
+        "embedding_model_revision",
+    )
+    pricing_revision = str(
+        stats.get("pricing_revision") or env.get("EMBEDDER_PRICING_REVISION", "")
+    ).strip()
+    if pricing_revision:
+        pricing_revision = _bounded_identity_value(
+            pricing_revision,
+            "embedding_pricing_revision",
+        )
+    dimension = getattr(embedder, "dim", 0)
+    if type(dimension) is not int or dimension <= 0:
+        raise RuntimeError("retrieval_embedding_dimension_invalid")
+
+    def nonnegative_integer(name: str) -> int:
+        value = stats.get(name, 0)
+        return value if type(value) is int and value >= 0 else 0
+
+    currency = (
+        str(stats.get("cost_currency") or env.get("EMBEDDER_COST_CURRENCY", "USD")).strip().upper()
+    )
+    if currency not in SUPPORTED_COST_CURRENCIES:
+        raise RuntimeError("embedding_cost_currency_invalid")
+
+    def optional_cost(name: str) -> float | None:
+        value = stats.get(name)
+        if value is None:
+            return None
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise RuntimeError("embedding_cost_invalid")
+        return float(value)
+
+    cost = optional_cost("estimated_cost")
+    legacy_cost_usd = optional_cost("estimated_cost_usd")
+    if cost is None and legacy_cost_usd is not None:
+        if currency != "USD":
+            raise RuntimeError("embedding_cost_currency_mismatch")
+        cost = legacy_cost_usd
+    if currency == "USD":
+        if legacy_cost_usd is not None and legacy_cost_usd != cost:
+            raise RuntimeError("embedding_cost_currency_mismatch")
+        cost_usd = cost
+    else:
+        if legacy_cost_usd is not None:
+            raise RuntimeError("embedding_cost_currency_mismatch")
+        cost_usd = None
+    return {
+        "provider": provider,
+        "model": model,
+        "model_revision": revision,
+        "dimension": dimension,
+        "usage": {
+            "embedding_requests": nonnegative_integer("requests"),
+            "embedding_input_tokens": nonnegative_integer("input_tokens"),
+            "cost": cost,
+            "cost_currency": currency,
+            "cost_usd": cost_usd,
+            "pricing_revision": pricing_revision,
+        },
+    }
+
+
+def _bounded_identity_value(value: object, reason: str) -> str:
+    normalized = str(value or "").strip()
+    if (
+        not normalized
+        or len(normalized) > 256
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+    ):
+        raise RuntimeError(f"{reason}_invalid")
+    return normalized
 
 
 def _dashboard_process_identity(environ=None) -> dict[str, Any]:
@@ -264,17 +478,20 @@ def get_skill_engine():
 
     from plastic_promise.skills.engine import SkillEngine
     from plastic_promise.skills.memory_operations import skill_smart_remember
+    from plastic_promise.skills.official_workflow_stages import SKILL_DEFS as _OFFICIAL_DEFS
     from plastic_promise.skills.session_lifecycle import skill_session_init
-    from plastic_promise.skills.superpowers_stages import SKILL_DEFS as _SP_DEFS
 
     _skill_engine = SkillEngine(get_engine())
     _skill_engine.register(skill_session_init)
     _skill_engine.register(skill_smart_remember)
-    # 批量注册 12 个 SuperPowers 阶段技能
-    for _name, _def in _SP_DEFS.items():
+    # Register the pinned official engineering workflow adapters.
+    for _name, _def in _OFFICIAL_DEFS.items():
         _skill_engine.register(_def)
-    sp_names = ", ".join(_SP_DEFS.keys())
-    logging.info(f"SkillEngine: Phase 1 技能已注册 (session-init, smart-remember, {sp_names})")
+    official_names = ", ".join(_OFFICIAL_DEFS.keys())
+    logging.info(
+        "SkillEngine: official workflow skills registered "
+        f"(session-init, smart-remember, {official_names})"
+    )
     return _skill_engine
 
 
@@ -305,8 +522,8 @@ _CODEX_DISCOVERY_HINTS = {
         "startup; principles; SCARF; trust; chain_state."
     ),
     "sp-stage": (
-        "Plastic Promise MCP; Codex tool_search discovery; SuperPowers; workflow stage; "
-        "brainstorming; TDD; verification; governed chain."
+        "Plastic Promise MCP; Codex tool_search discovery; Matt Pocock skills; "
+        "official workflow stage; diagnosing-bugs; tdd; code-review; governed chain."
     ),
     "memory_recall": (
         "Plastic Promise MCP; Codex tool_search discovery; memory recall; memory_recall; "
@@ -337,7 +554,7 @@ _CODEX_DISCOVERY_HINTS = {
 _REQUEST_SCOPE_PROPERTIES = {
     "stage_session_id": {
         "type": "string",
-        "description": "SuperPowers stage/session scope id for isolating concurrent heavy calls",
+        "description": "Workflow stage/session scope id for isolating concurrent heavy calls",
     },
     "flow_line_id": {
         "type": "string",
@@ -440,6 +657,38 @@ _PROVENANCE_PROPERTIES = {
     },
 }
 
+_GROUND_TRUTH_PROPERTY = {
+    "ground_truth": {
+        "type": "object",
+        "description": "Optional versioned relevance labels; computes hit@k/MRR in trace only",
+        "properties": {
+            "case_id": {"type": "string"},
+            "dataset_revision": {"type": "string", "minLength": 1},
+            "corpus_hash": {"type": "string", "minLength": 1},
+            "relevant_memory_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "minItems": 1,
+                "uniqueItems": True,
+            },
+            "forbidden_memory_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "uniqueItems": True,
+            },
+            "ks": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1, "maximum": 100},
+                "minItems": 1,
+                "uniqueItems": True,
+            },
+        },
+        "required": ["dataset_revision", "corpus_hash", "relevant_memory_ids"],
+        "additionalProperties": False,
+    }
+}
+
+
 _FUSION_POLICY_PROPERTY = {
     "fusion_policy": {
         "type": "string",
@@ -470,6 +719,8 @@ def _with_codex_discovery_hints(tools: list[Tool]) -> list[Tool]:
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """声明所有 MCP 工具"""
+    from plastic_promise.skills.official_workflow_stages import STAGE_ATOMS, STAGE_ROUTE_MAP
+
     tools: list[Tool] = []
 
     # === 记忆域 ===
@@ -501,7 +752,17 @@ async def list_tools() -> list[Tool]:
                         },
                         "debug": {
                             "type": "boolean",
-                            "description": "调试模式: 返回 pipeline_stats 与 per_item_stats (默认 false)",
+                            "description": "兼容开关；等价于 response_mode=debug，诊断默认仅返回有界摘要",
+                        },
+                        "response_mode": {
+                            "type": "string",
+                            "enum": ["standard", "compact", "debug"],
+                            "description": "响应投影：standard=常规、compact=最小上下文、debug=带有界诊断",
+                        },
+                        "diagnostics_level": {
+                            "type": "string",
+                            "enum": ["summary", "full"],
+                            "description": "debug 诊断粒度；full 仍受数量与字段预算限制",
                         },
                         "scope": {
                             "type": "string",
@@ -535,6 +796,7 @@ async def list_tools() -> list[Tool]:
                         },
                         **_PROJECT_CONTEXT_PROPERTIES,
                         **_REQUEST_SCOPE_PROPERTIES,
+                        **_GROUND_TRUTH_PROPERTY,
                     },
                     "required": ["query"],
                     "additionalProperties": False,
@@ -737,7 +999,13 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "principle_id": {"type": "string", "description": "原则 ID"},
+                        "principle_id": {
+                            "oneOf": [
+                                {"type": "integer", "minimum": 1},
+                                {"type": "string", "pattern": "^[0-9]+$"},
+                            ],
+                            "description": "原则 ID（整数或数字字符串）",
+                        },
                         "scenario": {"type": "string", "description": "当前决策场景描述"},
                     },
                     "required": ["principle_id", "scenario"],
@@ -767,10 +1035,21 @@ async def list_tools() -> list[Tool]:
                         **_RETRIEVAL_MODE_PROPERTY,
                         "debug": {
                             "type": "boolean",
-                            "description": "Return audit_metadata, pipeline_stats, and per_item_stats for diagnostics",
+                            "description": "兼容开关；等价于 response_mode=debug，诊断默认仅返回有界摘要",
+                        },
+                        "response_mode": {
+                            "type": "string",
+                            "enum": ["standard", "compact", "debug"],
+                            "description": "响应投影：standard=原 prompt、compact=临时结构包、debug=临时结构包+有界诊断",
+                        },
+                        "diagnostics_level": {
+                            "type": "string",
+                            "enum": ["summary", "full"],
+                            "description": "debug 诊断粒度；full 仍受数量与字段预算限制",
                         },
                         **_PROJECT_CONTEXT_PROPERTIES,
                         **_REQUEST_SCOPE_PROPERTIES,
+                        **_GROUND_TRUTH_PROPERTY,
                     },
                     "required": ["task_description"],
                     "additionalProperties": False,
@@ -822,28 +1101,53 @@ async def list_tools() -> list[Tool]:
             ),
             Tool(
                 name="auto_context_inject",
-                description="统一自动化上下文注入：skill_session_start→SoulLoop.pre_task_v2→memory_store→skill_session_complete。优雅降级，绝不阻塞。",
+                description="Provider-neutral passive memory adapter: before_invoke preloads bounded ephemeral context; after_invoke asynchronously audits explicit user facts into the governed proposal outbox. Injected context is never stored as long-term memory.",
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "event": {
+                            "type": "string",
+                            "enum": ["before_invoke", "after_invoke"],
+                            "description": "Lifecycle event; defaults to before_invoke for compatibility",
+                        },
                         "task_description": {
                             "type": "string",
-                            "description": "当前任务的完整自然语言描述",
+                            "description": "Current task description used for passive context retrieval",
                         },
                         "task_type": {
                             "type": "string",
-                            "description": "任务类型标签 (默认 general)",
+                            "description": "Task type label (default general)",
+                        },
+                        "user_text": {
+                            "type": "string",
+                            "description": "Original user-authored text; after_invoke only reads this field",
+                        },
+                        "assistant_text": {
+                            "type": "string",
+                            "description": "Optional assistant outcome for trace only; never treated as a user fact",
                         },
                         "source": {
                             "type": "string",
-                            "description": "来源: pi_agent|claude_code|manual (默认 manual)",
+                            "description": "Adapter identity such as pi_agent, claude_code, langgraph, or manual",
                         },
+                        "call_id": {"type": "string"},
+                        "parent_call_id": {"type": "string"},
+                        "request_id": {"type": "string"},
+                        "stage_session_id": {"type": "string"},
+                        "flow_line_id": {"type": "string"},
+                        "project_id": {"type": "string"},
+                        "project_policy": {"type": "string"},
+                        "visibility": {
+                            "type": "string",
+                            "enum": ["private", "project", "shared", "global"],
+                        },
+                        "metadata": {"type": "object"},
                         "scope": {
                             "type": "string",
-                            "description": "检索范围: global (默认) 或 domain 限定",
+                            "description": "Deprecated compatibility hint; project fields define isolation",
                         },
                     },
-                    "required": ["task_description"],
+                    "additionalProperties": False,
                 },
             ),
             Tool(
@@ -1474,13 +1778,22 @@ async def list_tools() -> list[Tool]:
             ),
             Tool(
                 name="skill_auto_track",
-                description="Hook 调用的自动 Skill 追踪（PreToolUse/PostToolUse → mcp_tool），零摩擦追踪每次 Skill 调用。",
+                description="兼容外部客户端 Hook 的 Skill 生命周期追踪；仅记录实体，不推进官方工作流游标。",
                 inputSchema={
                     "type": "object",
                     "required": ["phase", "skill_name"],
                     "properties": {
                         "phase": {"type": "string", "description": "'start' | 'complete'"},
                         "skill_name": {"type": "string", "description": "Skill 名称"},
+                        "stage_session_id": {
+                            "type": "string",
+                            "description": "调用方稳定会话 ID；并发会话必须区分。",
+                        },
+                        "flow_line_id": {
+                            "type": "string",
+                            "description": "会话内并行 workflow lane ID。",
+                        },
+                        "project_id": _PROJECT_CONTEXT_PROPERTIES["project_id"],
                     },
                 },
             ),
@@ -1513,6 +1826,11 @@ async def list_tools() -> list[Tool]:
                             "enum": ["none", "light", "full"],
                             "description": "启动上下文模式：none=只提示延迟；light=1-2条轻量记忆预览；full=显式运行完整 context_supply",
                         },
+                        "response_mode": {
+                            "type": "string",
+                            "enum": ["compact", "standard"],
+                            "description": "启动响应投影；默认 compact，standard 按需展开健康与审计结构",
+                        },
                         "context_timeout_s": {
                             "type": "number",
                             "description": "context_mode light/full 的超时秒数上限",
@@ -1531,12 +1849,14 @@ async def list_tools() -> list[Tool]:
                         },
                         "route": {
                             "type": "string",
+                            "enum": sorted(STAGE_ROUTE_MAP),
                             "description": "Default governed route profile for workflow_contract",
                         },
                         "agent_name": {
                             "type": "string",
                             "description": "Agent identity used when allocating a stage_session_id",
                         },
+                        **_PROJECT_CONTEXT_PROPERTIES,
                     },
                     "required": ["task_description"],
                 },
@@ -1762,13 +2082,13 @@ async def list_tools() -> list[Tool]:
                     "properties": {},
                 },
             ),
-            # === SuperPowers 流水线阶段技能 (统一入口) ===
+            # === Pinned Matt Pocock engineering workflow (compatibility entry) ===
             Tool(
                 name="sp-stage",
                 description=(
-                    "Plastic Promise governed workflow stage entry. Validates chain transitions, "
-                    "isolates session and flow state, tracks stage execution, and returns a concise "
-                    "stage summary, required artifacts, and closure reminder."
+                    "Compatibility entry for the pinned Matt Pocock engineering workflows. "
+                    "Validates official route transitions and caller attestation, isolates session "
+                    "and flow state, and returns stage evidence and closure guidance."
                 ),
                 inputSchema={
                     "type": "object",
@@ -1776,26 +2096,19 @@ async def list_tools() -> list[Tool]:
                         "stage": {
                             "type": "string",
                             "description": "Governed workflow stage name",
-                            "enum": [
-                                "using-superpowers",
-                                "audit",
-                                "brainstorming",
-                                "exemplar-research",
-                                "writing-plans",
-                                "executing-plans",
-                                "subagent-driven-development",
-                                "test-driven-development",
-                                "verification-before-completion",
-                                "finishing-a-development-branch",
-                                "requesting-code-review",
-                                "receiving-code-review",
-                                "systematic-debugging",
-                                "using-git-worktrees",
-                                "dispatching-parallel-agents",
-                                "writing-skills",
-                            ],
+                            "enum": list(STAGE_ATOMS),
                         },
                         "task_description": {"type": "string", "description": "当前阶段任务描述"},
+                        "invocation_source": {
+                            "type": "string",
+                            "enum": ["user", "model"],
+                            "default": "model",
+                            "description": (
+                                "Caller-supplied workflow attestation; this value is not authenticated "
+                                "by the MCP transport. User-only stages require explicit user intent "
+                                "at the trusted client boundary."
+                            ),
+                        },
                         "stage_session_id": {
                             "type": "string",
                             "description": "Governed stage-chain scope id returned by session-init",
@@ -1806,12 +2119,40 @@ async def list_tools() -> list[Tool]:
                         },
                         "route": {
                             "type": "string",
-                            "description": "Governed route profile used for chain validation and stage summaries",
+                            "enum": sorted(STAGE_ROUTE_MAP),
+                            "description": "Pinned official route used for chain validation and stage summaries",
                         },
                         "agent_name": {
                             "type": "string",
                             "description": "Agent identity for diagnostics when no stage_session_id is supplied",
                         },
+                        "guidance_level": {
+                            "type": "string",
+                            "enum": ["summary", "full"],
+                            "description": "阶段指导粒度；默认 summary，full 才展开搜索与派发模板",
+                        },
+                        "execution_receipt": {
+                            "type": "object",
+                            "description": (
+                                "Bounded completion attestation submitted only after the pinned "
+                                "Codex Skill has run; evidence must not contain secrets."
+                            ),
+                            "properties": {
+                                "skill": {"type": "string"},
+                                "upstream_revision": {"type": "string"},
+                                "content_sha256": {"type": "string"},
+                                "status": {"type": "string", "enum": ["completed"]},
+                                "evidence": {"type": "object", "minProperties": 1},
+                            },
+                            "required": [
+                                "skill",
+                                "upstream_revision",
+                                "content_sha256",
+                                "status",
+                                "evidence",
+                            ],
+                        },
+                        **_PROJECT_CONTEXT_PROPERTIES,
                     },
                     "required": ["stage", "task_description"],
                 },
@@ -2657,6 +2998,144 @@ def _tool_runtime_event_context(
         }
 
 
+def _project_principles(principles: Any) -> list[Any]:
+    if not isinstance(principles, list):
+        return []
+    projected: list[Any] = []
+    for principle in principles[:8]:
+        if not isinstance(principle, dict):
+            projected.append(principle)
+            continue
+        projected.append(
+            {
+                key: principle.get(key)
+                for key in ("id", "name", "domain")
+                if principle.get(key) not in (None, "")
+            }
+        )
+    return projected
+
+
+def _project_session_init_result(result: Any, response_mode: str) -> dict[str, Any]:
+    data = result.data if isinstance(result.data, dict) else {}
+    if response_mode == "standard":
+        return {
+            "schema_version": "session-init-response-v1",
+            "response_mode": response_mode,
+            "skill": result.skill_name,
+            "success": result.success,
+            "data": data,
+            "degrade_log": result.degrade_log,
+            "errors": result.errors,
+            "audit_trail": result.audit_trail,
+        }
+
+    context_status = data.get("context_status")
+    context_status = dict(context_status) if isinstance(context_status, dict) else {}
+    items = context_status.get("items")
+    if isinstance(items, list):
+        context_status["items"] = [
+            {
+                **{
+                    key: item.get(key)
+                    for key in ("id", "relevance", "source", "worth_score")
+                    if item.get(key) not in (None, "")
+                },
+                "content": str(item.get("content") or "")[:240],
+            }
+            for item in items[:2]
+            if isinstance(item, dict)
+        ]
+    workflow = data.get("workflow_contract")
+    workflow = workflow if isinstance(workflow, dict) else {}
+    chain = data.get("chain_state")
+    chain = chain if isinstance(chain, dict) else {}
+    compact_chain = {
+        key: chain.get(key)
+        for key in (
+            "stage_session_id",
+            "current_stage",
+            "valid_next",
+            "route_id",
+            "flow_line_id",
+            "flow_scope_id",
+            "entry_stage",
+            "valid_root_entrypoints",
+        )
+        if chain.get(key) not in (None, "", [], {})
+    }
+    return {
+        "schema_version": "session-init-response-v1",
+        "response_mode": response_mode,
+        "skill": result.skill_name,
+        "success": result.success,
+        "principles": _project_principles(data.get("principles")),
+        "trust": data.get("trust", {}),
+        "context_status": context_status,
+        "stage_session_id": data.get("stage_session_id", ""),
+        "workflow": {
+            key: workflow.get(key)
+            for key in (
+                "route_id",
+                "flow_line_id",
+                "flow_scope_id",
+                "entry_stage",
+                "entry_authority",
+                "branches",
+            )
+            if workflow.get(key) not in (None, "", {})
+        },
+        "chain_state": compact_chain,
+        "next_call": dict(
+            workflow.get("next_call")
+            or {
+                "tool": "sp-stage",
+                "stage": workflow.get("entry_stage") or "grill-with-docs",
+                "invocation_source": workflow.get("entry_authority") or "user",
+                "auto_invoke": workflow.get("entry_authority") == "model",
+                "stage_session_id": data.get("stage_session_id", ""),
+                "flow_line_id": workflow.get("flow_line_id", ""),
+            }
+        ),
+        "degraded": bool(result.degrade_log or result.errors),
+        "warnings": list(result.degrade_log or []),
+        "errors": list(result.errors or []),
+        "diagnostics": {
+            "level": "summary",
+            "component_health_count": len(data.get("component_health") or {}),
+            "domain_health_available": bool(data.get("domain_health")),
+            "system_stats_available": bool(data.get("system_stats")),
+            "gc_preview_available": bool(data.get("gc_preview")),
+        },
+    }
+
+
+def _project_sp_stage_data(data: dict[str, Any], guidance_level: str) -> dict[str, Any]:
+    projected = dict(data)
+    projected.pop("stage", None)
+    if guidance_level == "full":
+        return projected
+    exemplar = projected.get("exemplar")
+    if isinstance(exemplar, dict):
+        summary = {
+            key: exemplar.get(key)
+            for key in (
+                "problem",
+                "search_query",
+                "search_hints",
+                "gap_signal",
+                "legacy_instructions",
+            )
+            if exemplar.get(key) not in (None, "", [], {})
+        }
+        summary["instructions_available"] = bool(exemplar.get("instructions"))
+        summary["full_guidance_hint"] = (
+            "Set guidance_level=full to expand search and dispatch templates."
+        )
+        projected["exemplar"] = summary
+    return projected
+
+
 def _record_tool_runtime_event(engine: Any, ctx: dict[str, Any], status: str) -> None:
     try:
         from plastic_promise.core.event_protocol import safe_record_runtime_event
@@ -2714,8 +3193,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     _record_tool_runtime_event(engine, runtime_ctx, "pending")
     _record_tool_runtime_event(engine, runtime_ctx, "running")
     span_start_token = bind_call_span_start()
+    workflow_flow_lock = None
+    workflow_flow_lock_acquired = False
 
     try:
+        if name in {"sp-stage", "sp_stage"}:
+            workflow_flow_lock = _workflow_flow_lock(engine, arguments)
+            await workflow_flow_lock.acquire()
+            workflow_flow_lock_acquired = True
+
         # Memory domain
         if name == "memory_recall":
             from plastic_promise.mcp.tools.memory import handle_memory_recall
@@ -2916,23 +3402,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name in ("session-init", "session_init"):
             se = get_skill_engine()
             result = await se.exec("session-init", arguments, caller="claude")
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "skill": result.skill_name,
-                            "success": result.success,
-                            "data": result.data,
-                            "degrade_log": result.degrade_log,
-                            "errors": result.errors,
-                            "audit_trail": result.audit_trail,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                )
-            ]
+            response_mode = str(arguments.get("response_mode") or "compact").strip().casefold()
+            if response_mode not in {"standard", "compact"}:
+                response_mode = "compact"
+            payload = _project_session_init_result(result, response_mode)
+            return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
         elif name in ("smart-remember", "smart_remember"):
             se = get_skill_engine()
             skill_arguments = dict(arguments)
@@ -2960,8 +3434,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 )
             ]
         elif name in ("step-closure", "step_closure"):
-            import asyncio
-
             from plastic_promise.loop.soul_loop import post_task
 
             task_desc = arguments.get("task_description", "")
@@ -3043,15 +3515,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 )
                 if any_content:
                     try:
+                        from plastic_promise.core.memory_proposals import (
+                            trusted_memory_origin,
+                        )
                         from plastic_promise.skills.engine import SkillEngine
                         from plastic_promise.skills.memory_operations import skill_smart_remember
+                        from plastic_promise.skills.official_workflow_stages import (
+                            SKILL_DEFS as _OFFICIAL_DEFS,
+                        )
                         from plastic_promise.skills.session_lifecycle import skill_session_init
-                        from plastic_promise.skills.superpowers_stages import SKILL_DEFS as _SP_DEFS
 
                         sr_engine = SkillEngine(get_engine())
                         sr_engine.register(skill_session_init)
                         sr_engine.register(skill_smart_remember)
-                        for _name, _def in _SP_DEFS.items():
+                        for _name, _def in _OFFICIAL_DEFS.items():
                             sr_engine.register(_def)
 
                         # 组装一条结构化反思记忆
@@ -3070,18 +3547,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         tags = ["closure", "domain:reflecting", f"step:{step_id}"]
 
                         smart_runtime_context = _mutation_runtime_context("memory_update")
-                        sr_result = await sr_engine.exec(
-                            "smart-remember",
-                            {
-                                "content": structured_content,
-                                "memory_type": "reflection",
-                                "source": "step-closure",
-                                "scope": "global",
-                                "tags": tags,
-                                "_runtime_context": smart_runtime_context,
-                            },
-                            caller=_smart_remember_runtime_caller(smart_runtime_context),
-                        )
+                        with trusted_memory_origin("step-closure"):
+                            sr_result = await sr_engine.exec(
+                                "smart-remember",
+                                {
+                                    "content": structured_content,
+                                    "memory_type": "reflection",
+                                    "source": "step-closure",
+                                    "scope": "global",
+                                    "tags": tags,
+                                    "_runtime_context": smart_runtime_context,
+                                },
+                                caller=_smart_remember_runtime_caller(smart_runtime_context),
+                            )
                         if sr_result.success and sr_result.data:
                             smart_memory_id = sr_result.data.get("memory_id", "")
                     except Exception as e:
@@ -3104,21 +3582,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             return await handle_review_run(engine, arguments)
 
-        # === SuperPowers 流水线阶段技能 (统一入口) ===
+        # === Pinned Matt Pocock workflow (public name retained for compatibility) ===
         elif name in ("sp-stage", "sp_stage"):
             stage = arguments.get("stage", "")
             task_desc = arguments.get("task_description", "")
+            invocation_source = str(arguments.get("invocation_source") or "model").casefold()
             stage_session_id = arguments.get("stage_session_id") or arguments.get("stage_id")
             flow_line_id = str(
                 arguments.get("flow_line_id") or arguments.get("flow_id") or ""
             ).strip()
             flow_line_id = flow_line_id or None
             route_id = str(arguments.get("route") or "").strip() or None
+            project_id = str(arguments.get("project_id") or "").strip()
             public_stage_session_id = stage_session_id or "default"
-            flow_scope_id = (
-                f"{public_stage_session_id}::flow:{flow_line_id}"
-                if flow_line_id
-                else public_stage_session_id
+            from plastic_promise.core.workflow_state import compose_flow_scope
+
+            flow_scope_id = compose_flow_scope(
+                public_stage_session_id,
+                flow_line_id,
+                project_id,
             )
             # ── Chain validation: reject invalid non-root stage transitions ──
             from plastic_promise.core.constants import (
@@ -3127,11 +3609,31 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             from plastic_promise.core.constants import (
                 normalize_stage_name,
             )
+            from plastic_promise.core.official_workflow import (
+                COMPOSITE_SKILL_CALLS,
+                OFFICIAL_SKILLS,
+                UPSTREAM_SKILLS_REVISION,
+                declared_branch_transition_step,
+                validate_execution_receipt,
+            )
+            from plastic_promise.core.workflow_state import (
+                commit_workflow_transition,
+                engine_connection,
+                inspect_execution_receipt,
+            )
             from plastic_promise.mcp.tools.skill_tracking import (
                 get_current_stage,
+                get_stage_chain_state,
+                record_attested_composite_skills,
                 set_current_stage,
             )
-            from plastic_promise.skills.superpowers_stages import attach_stage_guidance
+            from plastic_promise.skills.official_workflow_stages import (
+                STAGE_ROUTE_MAP,
+                attach_stage_guidance,
+                build_stage_guidance,
+                resolve_stage_route,
+            )
+            from plastic_promise.skills.tool_routing import invocation_policy
 
             lookup_stage = normalize_stage_name(stage)
             if not lookup_stage or lookup_stage not in _CHAIN_MAP:
@@ -3140,23 +3642,112 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         type="text",
                         text=json.dumps(
                             {
-                                "error": "invalid_stage",
+                                "error": "unknown_stage",
                                 "message": f"Unknown stage: '{stage}'. Valid stages: {sorted(_CHAIN_MAP.keys())}",
                                 "requested_stage": stage,
+                                "available_stages": sorted(_CHAIN_MAP),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            if route_id and route_id not in STAGE_ROUTE_MAP:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "unknown_route",
+                                "message": f"Unknown official route: '{route_id}'.",
+                                "requested_route": route_id,
+                                "available_routes": sorted(STAGE_ROUTE_MAP),
                             },
                             ensure_ascii=False,
                         ),
                     )
                 ]
 
-            current = get_current_stage(flow_scope_id)
+            if invocation_source not in {"user", "model"}:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "invalid_invocation_source",
+                                "message": "invocation_source must be 'user' or 'model'",
+                                "requested_source": invocation_source,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            stage_invocation_policy = invocation_policy(lookup_stage)
+            if stage_invocation_policy == "user" and invocation_source != "user":
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "invocation_not_allowed",
+                                "message": (
+                                    f"Stage '{lookup_stage}' represents a user-only skill and "
+                                    "cannot be selected automatically by the model."
+                                ),
+                                "stage": lookup_stage,
+                                "required_source": "user",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            resolved_route_id = resolve_stage_route(lookup_stage, route_id)
+            route_stages = list(STAGE_ROUTE_MAP[resolved_route_id]["stages"])
+            if lookup_stage not in route_stages:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "stage_not_in_route",
+                                "message": (
+                                    f"Stage '{lookup_stage}' is not part of official route "
+                                    f"'{resolved_route_id}'."
+                                ),
+                                "stage": lookup_stage,
+                                "route": resolved_route_id,
+                                "route_stages": route_stages,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+
+            chain_state = get_stage_chain_state(flow_scope_id, engine=engine)
+            current = get_current_stage(flow_scope_id, engine=engine)
             lookup_current = normalize_stage_name(current)
-            target_chain = _CHAIN_MAP.get(lookup_stage) or _CHAIN_MAP.get(f"sp-{lookup_stage}", {})
-            target_is_root = bool(target_chain) and target_chain.get("predecessors", []) == []
+            route_entry = route_stages[0]
+            current_step_index = int(chain_state.get("current_step_index", -1))
+            persisted_route_id = str(chain_state.get("route_id") or "")
+            branch_transition_step = declared_branch_transition_step(
+                parent_route_id=persisted_route_id,
+                parent_step_index=current_step_index,
+                current_stage=lookup_current,
+                target_route_id=resolved_route_id,
+                target_stage=lookup_stage,
+            )
+            target_is_declared_branch = branch_transition_step is not None
+            persisted_position_is_valid = (
+                persisted_route_id == resolved_route_id
+                and 0 <= current_step_index < len(route_stages)
+                and route_stages[current_step_index] == lookup_current
+            )
+            target_is_current_replay = (
+                persisted_position_is_valid and lookup_stage == lookup_current
+            )
+            scope_has_durable_cursor = bool(persisted_route_id) and current_step_index >= 0
+            target_is_root = lookup_stage == route_entry and not scope_has_durable_cursor
             valid_root_entrypoints = sorted(
-                normalize_stage_name(candidate)
-                for candidate, chain in _CHAIN_MAP.items()
-                if not candidate.startswith("sp-") and chain.get("predecessors", []) == []
+                {profile["stages"][0] for profile in STAGE_ROUTE_MAP.values()}
             )
 
             if not lookup_current and not target_is_root:
@@ -3171,20 +3762,61 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                                     f"Valid root entrypoints: {valid_root_entrypoints}"
                                 ),
                                 "current_stage": None,
-                                "valid_next": valid_root_entrypoints,
+                                "valid_next": [route_entry],
+                                "valid_root_entrypoints": valid_root_entrypoints,
                             },
                             ensure_ascii=False,
                         ),
                     )
                 ]
 
-            # Root stages intentionally start independent chains. This prevents one
-            # Agent's review/debug flow from blocking another Agent's new flow via the
-            # process-wide fallback current_stage.
-            if lookup_current and lookup_current != lookup_stage and not target_is_root:
-                chain = _CHAIN_MAP.get(lookup_current) or _CHAIN_MAP.get(f"sp-{lookup_current}", {})
-                valid_next = chain.get("successors", [])
-                valid_next_normalized = [normalize_stage_name(s) for s in valid_next]
+            # A root starts only an unused scope. Restarting a workflow requires a new
+            # stage_session_id or flow_line_id so historical receipts cannot rewind a
+            # lane that has already advanced.
+            if (
+                persisted_route_id
+                and persisted_route_id != resolved_route_id
+                and not target_is_root
+                and not target_is_declared_branch
+            ):
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "route_mismatch",
+                                "message": (
+                                    f"Workflow scope is bound to route '{persisted_route_id}', "
+                                    f"not '{resolved_route_id}'."
+                                ),
+                                "current_stage": lookup_current or None,
+                                "route": persisted_route_id,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            if (
+                lookup_current
+                and lookup_current != lookup_stage
+                and not target_is_root
+                and not target_is_declared_branch
+            ):
+                if (
+                    persisted_route_id == resolved_route_id
+                    and 0 <= current_step_index < len(route_stages)
+                    and route_stages[current_step_index] == lookup_current
+                ):
+                    valid_next_normalized = route_stages[
+                        current_step_index + 1 : current_step_index + 2
+                    ]
+                elif lookup_current in route_stages:
+                    current_step_index = route_stages.index(lookup_current)
+                    valid_next_normalized = route_stages[
+                        current_step_index + 1 : current_step_index + 2
+                    ]
+                else:
+                    valid_next_normalized = [route_entry]
                 if lookup_stage not in valid_next_normalized:
                     return [
                         TextContent(
@@ -3201,17 +3833,159 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         )
                     ]
             # ── End chain validation ──
+            if target_is_current_replay:
+                target_step_index = current_step_index
+            elif target_is_root:
+                target_step_index = 0
+            elif target_is_declared_branch:
+                target_step_index = int(branch_transition_step)
+            else:
+                target_step_index = current_step_index + 1
+            raw_receipt = arguments.get("execution_receipt")
+            if raw_receipt is None:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "stage": lookup_stage,
+                                "success": True,
+                                "execution_status": "awaiting_receipt",
+                                "receipt_required": True,
+                                "stage_session_id": public_stage_session_id,
+                                "flow_line_id": flow_line_id,
+                                "flow_scope_id": flow_scope_id,
+                                "invocation_source": invocation_source,
+                                "invocation_source_authenticated": False,
+                                "data": {
+                                    "stage_guidance": build_stage_guidance(
+                                        lookup_stage, route_id=resolved_route_id
+                                    ),
+                                    "execution_contract": {
+                                        "instruction": (
+                                            f"Run the Codex Skill '/{lookup_stage}', then call "
+                                            "sp-stage again with execution_receipt."
+                                        ),
+                                        "skill": lookup_stage,
+                                        "upstream_revision": UPSTREAM_SKILLS_REVISION,
+                                        "content_sha256": OFFICIAL_SKILLS[
+                                            lookup_stage
+                                        ].content_sha256,
+                                        **(
+                                            {
+                                                "composite_invoked_skills": {
+                                                    "required": list(
+                                                        COMPOSITE_SKILL_CALLS[lookup_stage][
+                                                            "required"
+                                                        ]
+                                                    ),
+                                                    "optional": list(
+                                                        COMPOSITE_SKILL_CALLS[lookup_stage][
+                                                            "optional"
+                                                        ]
+                                                    ),
+                                                    "receipt_field": "evidence.invoked_skills",
+                                                }
+                                            }
+                                            if lookup_stage in COMPOSITE_SKILL_CALLS
+                                            else {}
+                                        ),
+                                    },
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            receipt, receipt_error = validate_execution_receipt(lookup_stage, raw_receipt)
+            if receipt_error:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "error": "invalid_execution_receipt",
+                                "reason": receipt_error,
+                                "stage": lookup_stage,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            connection = engine_connection(engine)
+            expected_receipt_id = ""
+            if connection is not None:
+                receipt_status, expected_receipt_id = inspect_execution_receipt(
+                    connection,
+                    scope_id=flow_scope_id,
+                    route_id=resolved_route_id,
+                    step_index=target_step_index,
+                    receipt=receipt,
+                )
+                if receipt_status == "conflict":
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "execution_receipt_conflict",
+                                    "reason": "workflow_receipt_conflict",
+                                    "stage": lookup_stage,
+                                    "execution_receipt_id": expected_receipt_id,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+                if receipt_status == "match":
+                    replay_data = attach_stage_guidance(
+                        {}, lookup_stage, route_id=resolved_route_id
+                    )
+                    guidance_level = (
+                        str(arguments.get("guidance_level") or "summary").strip().casefold()
+                    )
+                    if guidance_level not in {"summary", "full"}:
+                        guidance_level = "summary"
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "stage": stage,
+                                    "success": True,
+                                    "stage_session_id": public_stage_session_id,
+                                    "flow_line_id": flow_line_id,
+                                    "flow_scope_id": flow_scope_id,
+                                    "invocation_source": invocation_source,
+                                    "invocation_source_authenticated": False,
+                                    "execution_status": "already_completed",
+                                    "execution_receipt_id": expected_receipt_id,
+                                    "guidance_level": guidance_level,
+                                    "data": _project_sp_stage_data(replay_data, guidance_level),
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
             # ── Stage existence validation: reject unknown/empty stages ──
             se = get_skill_engine()
             skill_name = f"sp-{lookup_stage}"
             stage_params = {
                 "task_description": task_desc,
                 "stage_session_id": flow_scope_id,
+                "invocation_source": invocation_source,
+                "task_type": OFFICIAL_SKILLS[lookup_stage].task_type,
+                "domain_hint": OFFICIAL_SKILLS[lookup_stage].domain,
+                "project_id": project_id,
             }
             if flow_line_id:
                 stage_params["flow_line_id"] = flow_line_id
-            if route_id:
-                stage_params["route"] = route_id
+            stage_params["route"] = resolved_route_id
+            if expected_receipt_id:
+                stage_params["tracking_idempotency_key"] = (
+                    f"{expected_receipt_id}:outer:{lookup_stage}"
+                )
+                stage_params["tracking_basis"] = "execution_receipt"
             result = await se.exec(skill_name, stage_params, caller="trae")
             if not result.success:
                 return [
@@ -3223,17 +3997,107 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         ),
                     )
                 ]
+            receipt_id = ""
+            parent_entity_id = getattr(result, "audit_trail", {}).get("entity_id") or None
+            composite_child_entity_ids: list[str] = []
+            composite = COMPOSITE_SKILL_CALLS.get(lookup_stage)
+            if composite is not None:
+                if not expected_receipt_id:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "composite_tracking_requires_durable_receipt",
+                                    "stage": lookup_stage,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+                if not parent_entity_id:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "composite_parent_tracking_failed",
+                                    "stage": lookup_stage,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+                try:
+                    composite_child_entity_ids = await record_attested_composite_skills(
+                        engine,
+                        parent_entity_id=parent_entity_id or "",
+                        skill_names=list(receipt["evidence"]["invoked_skills"]),
+                        task_description=task_desc,
+                        receipt_id=expected_receipt_id,
+                    )
+                except (KeyError, RuntimeError, json.JSONDecodeError) as exc:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "composite_skill_tracking_failed",
+                                    "reason": str(exc),
+                                    "stage": lookup_stage,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+            if connection is not None:
+                try:
+                    receipt_id = commit_workflow_transition(
+                        connection,
+                        scope_id=flow_scope_id,
+                        route_id=resolved_route_id,
+                        step_index=target_step_index,
+                        receipt=receipt,
+                        current_stage=lookup_stage,
+                        parent_entity_id=parent_entity_id,
+                    )
+                except ValueError as exc:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "error": "execution_receipt_conflict",
+                                    "reason": str(exc),
+                                    "stage": lookup_stage,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
             set_current_stage(
                 lookup_stage,
                 stage_session_id=flow_scope_id,
-                parent_entity_id=getattr(result, "audit_trail", {}).get("entity_id") or None,
+                parent_entity_id=parent_entity_id,
+                engine=None if connection is not None else engine,
+                route_id=resolved_route_id,
+                current_step_index=target_step_index,
             )
             result_data = attach_stage_guidance(
                 result.data if isinstance(result.data, dict) else {},
                 lookup_stage,
                 closed=result.data.get("closed") if isinstance(result.data, dict) else None,
-                route_id=route_id,
+                route_id=resolved_route_id,
             )
+            if composite is not None:
+                result_data["attested_composite_skills"] = list(
+                    receipt["evidence"]["invoked_skills"]
+                )
+                result_data["composite_child_entity_ids"] = composite_child_entity_ids
+            guidance_level = str(arguments.get("guidance_level") or "summary").strip().casefold()
+            if guidance_level not in {"summary", "full"}:
+                guidance_level = "summary"
+            result_data = _project_sp_stage_data(result_data, guidance_level)
             return [
                 TextContent(
                     type="text",
@@ -3244,6 +4108,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                             "stage_session_id": public_stage_session_id,
                             "flow_line_id": flow_line_id,
                             "flow_scope_id": flow_scope_id,
+                            "invocation_source": invocation_source,
+                            "invocation_source_authenticated": False,
+                            "execution_status": "completed",
+                            "execution_receipt_id": receipt_id,
+                            "guidance_level": guidance_level,
                             "data": result_data,
                         },
                         ensure_ascii=False,
@@ -3333,6 +4202,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     text=json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False),
                 )
             ]
+    except asyncio.CancelledError:
+        runtime_status = "error"
+        raise
     except Exception as e:
         runtime_status = "error"
         logging.exception(f"Tool {name} failed")
@@ -3342,6 +4214,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             )
         ]
     finally:
+        if workflow_flow_lock_acquired and workflow_flow_lock is not None:
+            workflow_flow_lock.release()
         _record_tool_runtime_event(engine, runtime_ctx, runtime_status)
         reset_call_span_start(span_start_token)
 
@@ -3578,6 +4452,27 @@ async def run_streamable_http(port: int = 9020):
 
     start_time = _time.time()
 
+    # Service managers poll /health every few seconds.  Identity validation
+    # includes the configured embedding probe, so caching it prevents a cloud
+    # provider call (and its cost) on every liveness request.  Cache failures
+    # too; an unavailable provider must not turn polling into a retry storm.
+    try:
+        configured_health_identity_cache_ttl = float(
+            os.environ.get("PP_HEALTH_IDENTITY_CACHE_SECONDS", "30")
+        )
+        if not math.isfinite(configured_health_identity_cache_ttl):
+            raise ValueError("health_identity_cache_ttl_not_finite")
+        health_identity_cache_ttl = min(max(configured_health_identity_cache_ttl, 1.0), 300.0)
+    except (TypeError, ValueError):
+        health_identity_cache_ttl = 30.0
+    health_identity_cache: dict[str, Any] = {
+        "expires_at": 0.0,
+        "config_key": "",
+        "identity": None,
+        "error": None,
+    }
+    health_identity_cache_lock = threading.Lock()
+
     sse = SseServerTransport("/messages")
     streamable_http = StreamableHTTPSessionManager(app=server)
 
@@ -3675,14 +4570,41 @@ async def run_streamable_http(port: int = 9020):
     async def health(request):
         from starlette.responses import JSONResponse
 
-        try:
-            identity = _server_process_identity()
-        except (FusionConfigurationError, RuntimeError, ValueError) as exc:
+        now = _time.monotonic()
+        config_key = _health_identity_config_key()
+        with health_identity_cache_lock:
+            cache_valid = health_identity_cache["config_key"] == config_key and now < float(
+                health_identity_cache["expires_at"]
+            )
+            if cache_valid:
+                identity = health_identity_cache["identity"]
+                cached_error = health_identity_cache["error"]
+            else:
+                # Keep the lock through the synchronous probe.  This is a
+                # short-lived critical section, and collapses simultaneous
+                # cache misses into one provider call.
+                try:
+                    identity = _server_process_identity()
+                except (FusionConfigurationError, RuntimeError, ValueError) as exc:
+                    cached_error = str(exc)
+                    identity = None
+                else:
+                    cached_error = None
+                health_identity_cache.update(
+                    {
+                        "expires_at": _time.monotonic() + health_identity_cache_ttl,
+                        "config_key": config_key,
+                        "identity": identity,
+                        "error": cached_error,
+                    }
+                )
+
+        if cached_error is not None:
             return JSONResponse(
                 {
                     "status": "error",
                     "identity_valid": False,
-                    "identity_error": str(exc),
+                    "identity_error": cached_error,
                     "uptime": round(_time.time() - start_time, 1),
                     "pid": os.getpid(),
                     "source_root": _SOURCE_ROOT,
@@ -3778,6 +4700,9 @@ async def run_streamable_http(port: int = 9020):
                 {
                     "phase": body.get("phase", "start"),
                     "skill_name": body.get("skill_name", ""),
+                    "stage_session_id": body.get("stage_session_id") or body.get("stage_id"),
+                    "flow_line_id": body.get("flow_line_id") or body.get("flow_id"),
+                    "project_id": body.get("project_id"),
                 },
             )
             data = _json.loads(result[0].text) if result else {}
@@ -3904,6 +4829,21 @@ setInterval(refresh, 5000);
 
     async def shutdown():
         logger.info("Shutting down Plastic Promise Streamable HTTP server...")
+        if _engine is not None:
+            from plastic_promise.core.structured_memory_fusion import (
+                close_structured_fusion_batcher,
+            )
+
+            close_structured_fusion_batcher(_engine, timeout=5.0)
+            from plastic_promise.core.proposal_promotion_jobs import (
+                close_proposal_promotion_runtime,
+            )
+            from plastic_promise.passive_memory.semantic_pipeline import (
+                close_semantic_memory_runtime,
+            )
+
+            close_semantic_memory_runtime(_engine, timeout=5.0)
+            close_proposal_promotion_runtime(_engine, timeout=5.0)
 
     from contextlib import asynccontextmanager
 
@@ -3935,16 +4875,43 @@ setInterval(refresh, 5000);
     def _dashboard_issue_projection() -> list[dict[str, object]]:
         """Expose the existing process-local issue board to Dashboard V2.
 
-        Dashboard V2 remains read-only.  The route labels this as a system
-        projection because IssueManager records do not carry project IDs.
+        The route labels this as a read-only system projection because
+        IssueManager records do not carry project IDs.
         """
         return get_engine().get_issue_manager().list()
+
+    async def _dashboard_proposal_review(
+        proposal_id: str,
+        feedback_type: str,
+        rejection_reason: str,
+        project_id: str,
+    ) -> dict[str, Any]:
+        from plastic_promise.mcp.tools.reflection import handle_feedback_apply
+
+        runtime_context = _mutation_runtime_context("feedback_apply")
+        runtime_context["project_id"] = project_id
+        response = await handle_feedback_apply(
+            get_engine(),
+            {
+                "item_id": proposal_id,
+                "feedback_type": feedback_type,
+                "rejection_reason": rejection_reason,
+            },
+            _runtime_context=runtime_context,
+        )
+        if not response or not isinstance(response[0], TextContent):
+            raise RuntimeError("dashboard_proposal_review_invalid_response")
+        payload = json.loads(response[0].text)
+        if not isinstance(payload, dict):
+            raise RuntimeError("dashboard_proposal_review_invalid_response")
+        return payload
 
     dashboard_v2_routes = create_dashboard_v2_routes(
         dashboard_settings,
         version=PLASTIC_PROMISE_VERSION,
         identity_provider=_dashboard_process_identity,
         issue_provider=_dashboard_issue_projection,
+        proposal_review_provider=_dashboard_proposal_review,
     )
     dashboard_routes = dashboard_v2_routes or [Route("/dashboard", endpoint=dashboard)]
 

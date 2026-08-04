@@ -5,17 +5,19 @@ Usage:
   python scripts/release-sync.py \
     --from HEAD~5..HEAD \
     --version v0.2.0 \
-    --release-repo F:/Agent/plastic-promise-release \
+    --release-repo ../plastic-promise-release \
     --dry-run
 
   python scripts/release-sync.py \
     --from HEAD~5..HEAD \
     --version v0.2.0 \
-    --release-repo F:/Agent/plastic-promise-release \
+    --release-repo ../plastic-promise-release \
     --push
 """
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -28,9 +30,24 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ── Default release repo path ───────────────────────────
-DEFAULT_RELEASE_REPO = Path("F:/Agent/plastic-promise-release")
+DEFAULT_RELEASE_REPO = Path("../plastic-promise-release")
 DEFAULT_EXPECTED_ORIGIN = "https://github.com/ALdaisuki/plastic-promise-release.git"
 DEFAULT_EXPECTED_SOURCE_ORIGIN = "https://github.com/ALdaisuki/plastic-promise.git"
+MAX_VALIDATION_DIAGNOSTIC_CHARS = 12_000
+MAX_RELEASE_EVIDENCE_BYTES = 16_384
+REQUIRED_RELEASE_EVIDENCE_GATES = frozenset(
+    {
+        "diff_check",
+        "high_risk_review",
+        "javascript_syntax",
+        "live_http_smoke",
+        "release_sync_preview",
+        "restart_recovery",
+        "scoped_ruff",
+        "secret_scan",
+        "targeted_tests",
+    }
+)
 
 # ── Four-tier filter rules (per spec §1) ────────────────
 
@@ -50,7 +67,6 @@ INCLUDE: list[str] = [
     "docs/DEVELOPER.md",
     "docs/README.zh-CN.md",
     "docs/architecture/",
-    "docs/engineering-patterns/",
     "docs/TODO List/",
     "data/db/.gitkeep",
     "data/lancedb/.gitkeep",
@@ -194,7 +210,102 @@ def build_argparser() -> argparse.ArgumentParser:
         default=[],
         help="Test path for --validation-profile targeted. Can be provided multiple times.",
     )
+    p.add_argument(
+        "--release-evidence",
+        default=None,
+        help=(
+            "Path to bounded maintainer-attested JSON evidence. Required for the only "
+            "allowed live mode (--push with full validation)."
+        ),
+    )
     return p
+
+
+def validate_publication_options(
+    *,
+    push: bool,
+    dry_run: bool,
+    validation_profile: str,
+    release_evidence: str | None,
+) -> None:
+    """Reject publication modes that bypass the complete release evidence chain."""
+    if dry_run and push:
+        raise ValueError("release_push_dry_run_conflict")
+    if not dry_run and not push:
+        raise ValueError("release_live_requires_push")
+    if push and validation_profile != "full":
+        raise ValueError("release_push_requires_full_validation")
+    if push and not release_evidence:
+        raise ValueError("release_push_requires_external_evidence")
+
+
+def validate_release_evidence(
+    path: Path,
+    *,
+    version: str,
+    source_commit: str,
+    source_range: str,
+    audit_range: str,
+    release_scope_sha256: str,
+) -> str:
+    """Validate bounded external release gates and return the evidence SHA-256."""
+    evidence_path = path.resolve()
+    if path.is_symlink() or not evidence_path.is_file():
+        raise ValueError("release_evidence_not_regular_file")
+    raw = evidence_path.read_bytes()
+    if not raw or len(raw) > MAX_RELEASE_EVIDENCE_BYTES:
+        raise ValueError("release_evidence_size_invalid")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("release_evidence_json_invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("release_evidence_not_object")
+
+    expected_fields = {
+        "schema_version",
+        "release_version",
+        "source_commit",
+        "source_range",
+        "audit_range",
+        "release_scope_sha256",
+        "automated_audit_score",
+        "blocking_findings",
+        "major_findings",
+        "gates",
+    }
+    if set(payload) != expected_fields:
+        raise ValueError("release_evidence_fields_invalid")
+    if payload["schema_version"] != 1:
+        raise ValueError("release_evidence_schema_invalid")
+    if payload["release_version"] != version.lstrip("v"):
+        raise ValueError("release_evidence_version_mismatch")
+    if payload["source_commit"] != source_commit:
+        raise ValueError("release_evidence_source_mismatch")
+    if payload["source_range"] != source_range:
+        raise ValueError("release_evidence_source_range_mismatch")
+    if payload["audit_range"] != audit_range:
+        raise ValueError("release_evidence_audit_range_mismatch")
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", release_scope_sha256) is None
+        or payload["release_scope_sha256"] != release_scope_sha256
+    ):
+        raise ValueError("release_evidence_scope_mismatch")
+
+    score = payload["automated_audit_score"]
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0.60 <= score <= 1:
+        raise ValueError("release_evidence_audit_score_invalid")
+    for field in ("blocking_findings", "major_findings"):
+        value = payload[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value != 0:
+            raise ValueError(f"release_evidence_{field}_invalid")
+
+    gates = payload["gates"]
+    if not isinstance(gates, dict) or set(gates) != REQUIRED_RELEASE_EVIDENCE_GATES:
+        raise ValueError("release_evidence_gates_invalid")
+    if any(value is not True for value in gates.values()):
+        raise ValueError("release_evidence_gate_failed")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def run(
@@ -214,6 +325,38 @@ def run(
         print(result.stderr)
         sys.exit(2)
     return result
+
+
+def _bounded_diagnostic(value: str, *, limit: int = MAX_VALIDATION_DIAGNOSTIC_CHARS) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    head_size = limit // 2
+    tail_size = limit - head_size
+    omitted = len(text) - head_size - tail_size
+    return f"{text[:head_size]}\n[... truncated {omitted} chars ...]\n{text[-tail_size:]}"
+
+
+def _validation_failure(label: str, result: subprocess.CompletedProcess) -> None:
+    stdout = _bounded_diagnostic(result.stdout)
+    stderr = _bounded_diagnostic(result.stderr)
+    print(f"  FAIL: {label}")
+    if stdout:
+        print(f"  stdout:\n{stdout}")
+    if stderr:
+        print(f"  stderr:\n{stderr}")
+
+
+def _validation_environment(release_repo: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    executable_dir = str(Path(sys.executable).resolve().parent)
+    current_path = env.get("PATH", "")
+    env["PATH"] = os.pathsep.join(part for part in (executable_dir, current_path) if part)
+    validation_root = release_repo / ".release-validation"
+    validation_root.mkdir(parents=True, exist_ok=True)
+    env["PLASTIC_DB_PATH"] = str(validation_root / "plastic_memory.db")
+    env["PLASTIC_LANCEDB_PATH"] = str(validation_root / "lancedb")
+    return env
 
 
 def _git_probe(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -297,6 +440,61 @@ def _range_endpoint(revision_range: str) -> str:
     if not right:
         raise ValueError("source_range_invalid")
     return right
+
+
+def canonical_revision_range(source_root: Path, revision_range: str) -> str:
+    """Resolve a revision expression to immutable commit IDs without changing its operator."""
+    value = str(revision_range or "").strip()
+    _range_endpoint(value)
+    operator = "..." if "..." in value else ".." if ".." in value else ""
+    refs = value.split(operator, 1) if operator else [value]
+    resolved: list[str] = []
+    for ref in refs:
+        if not ref:
+            resolved.append("")
+            continue
+        result = _git_probe(["rev-parse", "--verify", f"{ref}^{{commit}}"], source_root)
+        commit = result.stdout.strip().lower()
+        if result.returncode != 0 or re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
+            raise ValueError(f"source_range_invalid:{revision_range}")
+        resolved.append(commit)
+    return operator.join(resolved) if operator else resolved[0]
+
+
+def release_scope_sha256(expected_tree_bytes: dict[str, bytes | None]) -> str:
+    """Bind the reviewed public paths to their exact transformed release bytes."""
+    digest = hashlib.sha256()
+    for filepath in sorted(expected_tree_bytes):
+        content = expected_tree_bytes[filepath]
+        content_digest = "deleted" if content is None else hashlib.sha256(content).hexdigest()
+        digest.update(filepath.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content_digest.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def compute_release_evidence_binding(
+    *,
+    source_range: str,
+    audit_range: str,
+    version: str,
+    source_commit: str,
+) -> tuple[str, str, str]:
+    """Return the canonical ranges and transformed public-scope digest for evidence."""
+    source_range_binding = canonical_revision_range(PROJECT_ROOT, source_range)
+    audit_range_binding = canonical_revision_range(PROJECT_ROOT, audit_range)
+    evidence_files = sorted(
+        set(filter_files(get_changed_files(source_range))[0])
+        | set(filter_files(get_changed_files(audit_range))[0])
+    )
+    scope_digest = release_scope_sha256(
+        {
+            filepath: expected_release_bytes(filepath, version, source_commit)
+            for filepath in evidence_files
+        }
+    )
+    return source_range_binding, audit_range_binding, scope_digest
 
 
 def validate_source_ranges(
@@ -452,10 +650,29 @@ _GIT_NO_INTERACTIVE = {
 }
 
 
+def _engineering_pattern_allowlist() -> frozenset[str]:
+    """Load the exact public research-document scope from the release contract."""
+    path = PROJECT_ROOT / "release" / "variants" / "standard.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        values = payload["content_policy"]["engineering_pattern_allowlist"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError("release_engineering_pattern_allowlist_invalid") from exc
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(not isinstance(item, str) for item in values)
+    ):
+        raise ValueError("release_engineering_pattern_allowlist_invalid")
+    return frozenset(values)
+
+
 def is_included(filepath: str) -> bool:
     """Check if a filepath matches any INCLUDE rule and no EXCLUDE rules."""
     if filepath in INCLUDE_EXCEPTIONS:
         return True
+    if filepath.startswith("docs/engineering-patterns/"):
+        return filepath in _engineering_pattern_allowlist()
 
     # Check explicit dev excludes first
     for pattern in EXCLUDE_DEV:
@@ -552,7 +769,7 @@ def _require_promoted_status(filepath: str, content: str, version: str) -> None:
             raise ValueError(f"goal_release_marker_missing:{version}")
         next_heading = re.search(r"^## ", content[marker_start:], re.MULTILINE)
         section_end = marker_start + next_heading.start() if next_heading else len(content)
-        if "Draft/BLOCK" in content or "Draft/BLOCK" in content[marker_start:section_end]:
+        if "Draft/BLOCK" in content[marker_start:section_end]:
             raise ValueError(f"goal_release_status_not_promoted:{version}")
     elif filepath == "docs/SYSTEM_FULL_CHAIN.md":
         expected = re.compile(rf"^> 版本: {re.escape(version)} \| 日期: \S+$", flags=re.MULTILINE)
@@ -672,7 +889,7 @@ def apply_transform(
         section_end = marker_start + next_heading.start() if next_heading else len(content)
         section = content[marker_start:section_end]
         section, status_count = re.subn(
-            r"^- Verification status is \*\*Draft/BLOCK\*\*\..*$",
+            r"^- Verification status is \*\*Draft/BLOCK\*\*\.[^\n]*(?:\n  [^\n]*)*",
             (
                 f"- Release verification for `{new_ver}` is **audited and approved**. "
                 "Final whole-repository verification and mandatory high-risk review completed "
@@ -780,7 +997,7 @@ def apply_to_release(
     dry_run: bool = False,
     source_commit: str | None = None,
 ) -> list[str]:
-    """Copy included files from dev to release repo. Apply transforms. Return list of copied paths."""
+    """Copy changed release files and return only paths that differ from the destination."""
     copied: list[str] = []
 
     for filepath in included_files:
@@ -800,15 +1017,16 @@ def apply_to_release(
 
         transformed = apply_transform(filepath, version, PROJECT_ROOT, source_commit)
         content = transformed if transformed is not None else source_bytes
+        expected_bytes = content if isinstance(content, bytes) else content.encode("utf-8")
+
+        if dst.is_file() and dst.read_bytes() == expected_bytes:
+            continue
 
         if dry_run:
             copied.append(filepath)
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            if isinstance(content, bytes):
-                dst.write_bytes(content)
-            else:
-                dst.write_text(content, encoding="utf-8")
+            dst.write_bytes(expected_bytes)
             copied.append(filepath)
 
     return copied
@@ -820,6 +1038,7 @@ def validate_release(
     targeted_tests: list[str] | None = None,
 ) -> bool:
     """Run compileall and pytest in the release repo. Return True if both pass."""
+    validation_env = _validation_environment(release_repo)
     print("  Validating standard release variant...")
     variant_validation = subprocess.run(
         [
@@ -832,15 +1051,23 @@ def validate_release(
         cwd=release_repo,
         capture_output=True,
         text=True,
+        env=validation_env,
     )
     if variant_validation.returncode != 0:
-        print(f"  FAIL: release variant\n{variant_validation.stderr}")
+        _validation_failure("release variant", variant_validation)
         return False
     print("  release variant: OK")
 
     if profile == "none":
         print("  validation: SKIP (--validation-profile none)")
         return True
+
+    if profile == "full" and shutil.which("cargo") is None:
+        print("  FAIL: cargo is required for full release validation")
+        return False
+    if profile == "full" and shutil.which("maturin") is None:
+        print("  FAIL: maturin is required for full release validation")
+        return False
 
     print("  Running compileall...")
     result = subprocess.run(
@@ -854,9 +1081,10 @@ def validate_release(
         ],
         capture_output=True,
         text=True,
+        env=validation_env,
     )
     if result.returncode != 0:
-        print(f"  FAIL: compileall\n{result.stderr}")
+        _validation_failure("compileall", result)
         return False
     print("  compileall: OK")
 
@@ -879,13 +1107,92 @@ def validate_release(
         cwd=release_repo,
         capture_output=True,
         text=True,
+        env=validation_env,
     )
     if result.returncode != 0:
-        print(f"  FAIL: pytest\n{result.stderr}")
+        _validation_failure("pytest", result)
         return False
     print("  pytest: OK")
 
     return True
+
+
+def validate_release_artifact_scope(dist_dir: Path, version: str) -> list[Path]:
+    """Bind the publication directory to one wheel and one sdist for this release."""
+    try:
+        from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
+        from packaging.version import InvalidVersion, Version
+    except ImportError as exc:
+        raise ValueError("release_artifact_metadata_dependency_missing") from exc
+
+    try:
+        expected_version = Version(version.lstrip("v"))
+    except InvalidVersion as exc:
+        raise ValueError("release_artifact_version_invalid") from exc
+
+    entries = sorted(dist_dir.iterdir(), key=lambda path: path.name)
+    files = [path for path in entries if path.is_file()]
+    wheels = [path for path in files if path.name.endswith(".whl")]
+    sdists = [path for path in files if path.name.endswith(".tar.gz")]
+    if len(entries) != 2 or len(files) != 2 or len(wheels) != 1 or len(sdists) != 1:
+        raise ValueError("release_artifact_scope_mismatch")
+
+    wheel = wheels[0]
+    sdist = sdists[0]
+    try:
+        wheel_name, wheel_version, _build, _tags = parse_wheel_filename(wheel.name)
+        sdist_name, sdist_version = parse_sdist_filename(sdist.name)
+    except (InvalidVersion, ValueError) as exc:
+        raise ValueError("release_artifact_metadata_invalid") from exc
+    if (
+        canonicalize_name(wheel_name) != "plastic-promise"
+        or canonicalize_name(sdist_name) != "plastic-promise"
+        or wheel_version != expected_version
+        or sdist_version != expected_version
+    ):
+        raise ValueError("release_artifact_identity_mismatch")
+    return [wheel, sdist]
+
+
+def build_release_artifacts(release_repo: Path, version: str) -> list[Path]:
+    """Build and inspect the exact artifacts that the publication action will upload."""
+    dist_dir = release_repo / "dist"
+    if dist_dir.is_symlink():
+        raise ValueError("release_artifact_directory_symlink")
+    if dist_dir.exists():
+        shutil.rmtree(dist_dir)
+    dist_dir.mkdir(parents=True)
+
+    built = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "build",
+            "--wheel",
+            "--sdist",
+            "--outdir",
+            str(dist_dir),
+            str(release_repo),
+        ],
+        cwd=release_repo,
+        capture_output=True,
+        text=True,
+    )
+    if built.returncode != 0:
+        _validation_failure("artifact build", built)
+        raise ValueError("release_artifact_build_failed")
+
+    artifacts = validate_release_artifact_scope(dist_dir, version)
+    checked = subprocess.run(
+        [sys.executable, "-m", "twine", "check", *(str(path) for path in artifacts)],
+        cwd=release_repo,
+        capture_output=True,
+        text=True,
+    )
+    if checked.returncode != 0:
+        _validation_failure("twine check", checked)
+        raise ValueError("release_artifact_twine_check_failed")
+    return artifacts
 
 
 def _cleanup_runtime(release_repo: Path) -> None:
@@ -895,6 +1202,7 @@ def _cleanup_runtime(release_repo: Path) -> None:
         ".pytest_cache",
         "__pycache__",
         ".ruff_cache",
+        ".release-validation",
         "*.pyc",
         "plastic_memory.db",
         "plastic_memory.db-shm",
@@ -1009,7 +1317,7 @@ def stage_release_paths(
     allowed = sorted(set(filepaths))
     if not allowed:
         raise ValueError("release_stage_scope_empty")
-    run(["git", "add", "-A", "--", *allowed], cwd=release_repo)
+    run(["git", "add", "-f", "-A", "--", *allowed], cwd=release_repo)
     return _validate_staged_release_paths(
         release_repo,
         allowed,
@@ -1292,8 +1600,15 @@ def push_attested_release(
 def main() -> None:
     parser = build_argparser()
     args = parser.parse_args()
-    if args.dry_run and args.push:
-        parser.error("--push cannot be combined with --dry-run")
+    try:
+        validate_publication_options(
+            push=args.push,
+            dry_run=args.dry_run,
+            validation_profile=args.validation_profile,
+            release_evidence=args.release_evidence,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     release_repo = Path(args.release_repo).resolve()
 
     if not release_repo.exists():
@@ -1330,6 +1645,26 @@ def main() -> None:
             print(f"ERROR: Release preflight failed: {exc}")
             sys.exit(1)
         source_commit = str(source_preflight["head"])
+        source_range_binding, audit_range_binding, release_scope_digest = (
+            compute_release_evidence_binding(
+                source_range=args.from_range,
+                audit_range=audit_range,
+                version=args.version,
+                source_commit=source_commit,
+            )
+        )
+        try:
+            evidence_sha256 = validate_release_evidence(
+                Path(args.release_evidence),
+                version=args.version,
+                source_commit=source_commit,
+                source_range=source_range_binding,
+                audit_range=audit_range_binding,
+                release_scope_sha256=release_scope_digest,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"ERROR: External release evidence failed: {exc}")
+            sys.exit(1)
         print(
             "  Source: clean "
             f"{source_preflight['branch']} at {source_preflight['origin']} "
@@ -1339,6 +1674,12 @@ def main() -> None:
             "  Preflight: clean "
             f"{preflight['branch']} at {preflight['origin']} "
             f"(HEAD=origin/{preflight['branch']}={preflight['head']}; tag absent locally/remotely)"
+        )
+        print(f"  External evidence: verified sha256={evidence_sha256}")
+        print(
+            "  Evidence binding: "
+            f"source_range={source_range_binding}; audit_range={audit_range_binding}; "
+            f"release_scope_sha256={release_scope_digest}"
         )
     else:
         try:
@@ -1353,6 +1694,20 @@ def main() -> None:
         print(
             "  [DRY] Source provenance is not enforced; preview uses current worktree bytes. "
             f"Resolved ranges: {preview_ranges}"
+        )
+        preview_source_commit = preview_ranges[args.from_range]
+        source_range_binding, audit_range_binding, release_scope_digest = (
+            compute_release_evidence_binding(
+                source_range=args.from_range,
+                audit_range=audit_range,
+                version=args.version,
+                source_commit=preview_source_commit,
+            )
+        )
+        print(
+            "  [DRY] Evidence binding: "
+            f"source_range={source_range_binding}; audit_range={audit_range_binding}; "
+            f"release_scope_sha256={release_scope_digest}"
         )
 
     # 1. Get changed files
@@ -1533,6 +1888,14 @@ def main() -> None:
         print(f"  Tag target: {release_commit} (tag object {tag_object_oid})")
 
         if args.push:
+            try:
+                artifacts = build_release_artifacts(release_repo, args.version)
+            except ValueError as exc:
+                print(f"ERROR: Release artifact validation failed: {exc}")
+                sys.exit(1)
+            print("  Publication artifacts verified:")
+            for artifact in artifacts:
+                print(f"    {artifact.name}")
             try:
                 push_attested_release(
                     release_repo,

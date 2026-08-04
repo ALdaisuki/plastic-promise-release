@@ -10,7 +10,8 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 - **Purpose**: Help AI agents act with memory, principles, verification, and traceable autonomy.
 - **Primary users**: Claude Code, MCP clients, agent teams, and maintainers operating local governance workflows.
 - **Current tool surface**: 58 MCP tools declared in `plastic_promise/mcp/server.py`, including compatibility aliases.
-- **Primary storage**: SQLite WAL for structured state and LanceDB for vector/text retrieval.
+- **Primary storage**: SQLite WAL is the canonical truth source; LanceDB is a
+  rebuildable derived vector/text retrieval index.
 - **Acceleration path**: optional Rust `context-engine-core`; Python remains the canonical write/full fallback pipeline and applies a final recall-noise guard to Rust results. In `rust-full`, normal recall and `memory_recall(debug=true)` stay on the Rust snapshot hot path while Rust is healthy.
 
 ## 2. Architecture Diagrams
@@ -31,12 +32,12 @@ Plastic Promise is a local-first MCP runtime for AI agent memory, context supply
 | MCP Server | `plastic_promise/mcp/` | Tool schemas, tool routing, stdio/SSE entrypoints, health endpoints, dashboard, prompts, and resources. |
 | Context Engine | `plastic_promise/core/context_engine.py` | Builds task context from vector, text, symbolic, graph, principle, worth, and decay signals. |
 | Memory Pipeline | `plastic_promise/memory/`, `plastic_promise/memory/pipeline.py` | Extracts, classifies, deduplicates, scores, embeds, persists, reinforces, merges, and decays memories. |
-| Storage Layer | SQLite + `plastic_promise/core/lancedb_store.py` | Persists records, tasks, trust, graph metadata, and vector/search indexes. |
+| Storage Layer | SQLite + `plastic_promise/core/lancedb_store.py` + `plastic_promise/core/generation_live_index.py` | Persists canonical records, tasks, trust, and graph metadata in SQLite. LanceDB generations and their generation-bound live views provide derived vector/search indexes. |
 | Trust and Defense | `plastic_promise/defense/`, `plastic_promise/core/step_auditor.py` | Applies hard boundaries, trust tiers, audit reports, and pre-action checks. |
 | Governance Runtime | `plastic_promise/core/tool_manifest.py`, `plastic_promise/core/event_protocol.py`, `plastic_promise/core/mgp_shadow.py`, `plastic_promise/core/context_recommender.py` | Adds explainable tool manifests, unified runtime events, MGP shadow semantics, and recommendation metadata without replacing SQLite truth sources. |
-| Skills | `plastic_promise/skills/`, `plastic_promise/loop/` | Implements session lifecycle, smart remembering, step closure, and SuperPowers stage integration. |
+| Skills | `plastic_promise/skills/`, `plastic_promise/core/workflow_state.py`, `plastic_promise/loop/` | Implements session lifecycle, smart remembering, step closure, and immutable generations of the pinned Matt Pocock workflow adapter. |
 | Hunter Guild | `plastic_promise/mcp/tools/task_queue.py`, `plastic_promise/core/task_*` | Coordinates task enqueue, claim, heartbeat, completion, verification, and penalties. |
-| Maintenance Daemon | `daemons/maintenance_daemon.py`, `plastic_promise/cron/` | Runs lifecycle scans, scheduler health checks, memory decay scans, trust scans, and quality scans. The script bootstraps the project root for direct execution. |
+| Maintenance Daemon | `daemons/maintenance_daemon.py`, `plastic_promise/cron/` | Runs lifecycle scans, scheduler health checks, memory decay scans, trust scans, quality scans, and bounded passive semantic/promotion job processing. The script bootstraps the project root for direct execution. |
 | Launcher | `scripts/init_and_start.py`, `plastic_promise/launcher/` | Starts MCP server, daemon, watchdog, environment checks, and bootstrap checks. Child services inherit runtime-mode environment and receive the project root at the front of `PYTHONPATH`. |
 | Extensions | `plastic_promise/extensions/`, `plugins/` | Loads validated optional packs and external capability adapters. |
 | Rust Core | `rust/context-engine-core/` | Optional context-engine acceleration path. Snapshot ingestion filters audit telemetry before BM25/FTS/vector indexing, while Python still guards the native result boundary. |
@@ -67,12 +68,40 @@ MCP Server (stdio or SSE)
     +--> task_enqueue / task_claim --------> Hunter Guild tables
     |
     +--> session-init / step-closure ------> Skill Engine + Memory Pipeline
+    |
+    +--> sp-stage(no receipt) -------------> Pinned Skill execution contract
+    |        Agent runs the named Codex Skill
+    +--> sp-stage(execution receipt) ------> Receipt validation
+             -> governance adapter
+             -> deterministic outer/composite-child lifecycle entities
+             -> atomic SQLite receipt + workflow cursor commit
+
+UserPromptSubmit Hook
+    |
+    +--> deterministic route/authority gate
+    +--> optional bounded cloud JSON classification for model-authority routes
+    +--> active workflow instance resolution
+             -> unfinished generation resumes
+             -> completed generation remains immutable history
+             -> explicit new root creates a new generation
+
+Stop Hook
+    |
+    +--> explicit rule candidate ----------> canonical proposal transaction
+    +--> rule miss ------------------------> durable semantic classification job
+             -> Hook returns before cloud inference
+             -> isolated worker batch
+             -> grounded pending proposal
 
 Maintenance Daemon
     |
     +--> direct script bootstrap inserts project root for imports
     +--> scans SQLite state, task queues, trust, memory decay, scheduler health
     +--> creates or updates tasks through the same governed lifecycle
+    +--> replays passive proposal outbox, processes semantic jobs, reconciles
+         eligible promotion work, processes promotion jobs, then expires proposals
+    +--> replays checked post-watermark index outbox jobs into the active
+         generation-bound live view; never mutates the verified generation
 ```
 
 ## 6. Memory and Context Data Flow
@@ -85,7 +114,9 @@ memory_store(content)
   -> duplicate detection
   -> QualityGate scoring
   -> Weibull decay initialization
-  -> SQLite + LanceDB write
+  -> SQLite canonical write + durable checked index outbox
+  -> generation runtime: Maintenance replays only jobs newer than the
+     reconciled generation watermark into its private live view
 
 context_supply(task)
   -> request_scope_id from stage_session_id + flow_line_id + request_id
@@ -99,9 +130,43 @@ context_supply(task)
   -> core, related, divergent context package
 ```
 
-Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flow_line_id`, and `request_id`. The MCP handlers derive `request_scope_id`, attach it to audit metadata, render it in `context_supply` output, and use it to keep overlapping SuperPowers stages, sub-agent dispatches, and recall cache entries isolated.
+Heavy `memory_recall` and `context_supply` calls accept `stage_session_id`, `flow_line_id`, and `request_id`. The MCP handlers derive `request_scope_id`, attach it to audit metadata, render it in `context_supply` output, and use it to keep overlapping official workflow stages, sub-agent dispatches, and recall cache entries isolated.
+
+The `UserPromptSubmit` Hook emits one bounded advisory workflow block. Every non-empty fallback keeps the exact project, session, flow, and route identifiers in one `WorkflowScope` value object. Scope values are XML-text escaped before rendering, so an identifier cannot close or forge the envelope. The fallback prioritizes scoped `session-init` and executable `sp-stage` calls over optional route detail, preserves a 300-character project ID under the default route budget, and never emits a partial XML-like contract. User-only Skills require a positive command at the start of the prompt. Questions, negations, status statements, and mentions do not become user attestations. A single `GeneralTaskIntent` parser selects positive command clauses from otherwise untyped Hook text before assigning a reachable model route. Read-only explanations, status statements, and negated clauses without a later positive action stay on `routing`; trailing negative scope constraints do not erase earlier affirmative work.
+
+This local parser is intentionally a bounded, fail-closed grammar rather than a claim to understand arbitrary natural language. An optional structured-JSON provider may run in shadow or enrich model-route classification, but provider output remains untrusted, cannot mint user-only attestations, and degrades to `routing/ask-matt` on timeout, invalid JSON, low confidence, or provider failure. Deterministic commands never wait for that provider.
+
+Official workflow state separates the client conversation lane from immutable run generations. A completed generation remains queryable history but cannot control a later task. An unfinished active generation resumes when no different root is selected; an explicit accepted root supersedes it and allocates a new generation-specific flow line. Route candidates remain advisory until the deterministic authority gate accepts them.
+
+Passive semantic capture is also fail closed and asynchronous. A Stop Hook rule miss creates a durable job and returns without waiting for cloud inference. Batches are partitioned by project, visibility, configuration revision, and provider identity. Worker output must be strict grounded JSON derived only from original user-authored text; it may merge or split facts without crossing a partition. Eligible proposals enqueue separate durable promotion work. Lease tokens and fencing generations protect completion, stable reason codes record retry/dead outcomes, and reconciliation recreates missing eligible work without changing promotion policy. `evaluate_auto_promotion()` remains the sole policy authority. Dashboard V2 projects only project-scoped job metadata and aggregate status; payloads, results, user text, and foreign-project jobs never enter the passive-memory response.
+
+`sp-stage` does not execute a Codex Skill. A first call returns a contract pinned to the upstream revision and `SKILL.md` hash. After the client runs that Skill, a second call supplies a non-secret caller attestation. The governance adapter records receipt-scoped deterministic lifecycle entities before `official_workflow_receipts` and `official_workflow_state` are committed together in a short SQLite transaction. Composite receipts declare their actual child calls in `evidence.invoked_skills`; those child entities are marked `composite_receipt`, not presented as independent Hook observations. Deterministic IDs make post-adapter retries entity-idempotent, while the single-writer production rule remains the transaction boundary.
 
 Context recommendation metadata is advisory. It explains why already-eligible memories, tools, or principles were ranked, but it does not reintroduce hard-excluded context or override project policy.
+
+### Generation-bound derived index
+
+A verified LanceDB generation is immutable and remains the reproducible base
+artifact. An operator may bootstrap a private live root from that exact
+generation only when its manifest contains reconciled outbox evidence and the
+receipt still verifies against canonical SQLite. The live manifest binds the
+base generation ID, manifest digest, outbox watermark, embedding identity, and
+the retained one-time activation ID selected by `current`. Promotion and
+rollback first create `selections/<activation-id> -> ../generations/<id>` with
+exclusive-create semantics, fsync it, and then atomically replace `current` with
+a link to that selection. Selection links are never deleted or reused. Runtime
+startup rejects missing evidence, legacy direct pointers, mismatched bindings,
+unsafe paths, or an old live root after promotion or rollback, including an
+A -> B -> A cycle.
+
+Python and Rust retrieval resolve the same live index. Maintenance can mutate
+only this copy and selects checked `memory_index` and `synthesis_index` jobs with
+`rowid` greater than the bound watermark. Runtime refresh does not run a full
+index synchronization over the live view. Health, control-plane status, and the
+Dashboard expose bounded lag counts; blocked, unknown, or unavailable lag
+degrades vector readiness instead of claiming the derived index is current.
+SQLite remains authoritative throughout, and replacing or deleting a live root
+is a separate operator-authorized action.
 
 ## 7. Trust and Error Handling
 
@@ -118,9 +183,12 @@ Context recommendation metadata is advisory. It explains why already-eligible me
 | State | Storage | Notes |
 |---|---|---|
 | Memories | SQLite + LanceDB | Structured metadata plus vector/text search. |
+| Derived retrieval index | Verified LanceDB generation + generation-bound live view | The generation is immutable. The live copy is bound to its manifest and receives only checked post-watermark outbox replay. |
 | Trust scores | SQLite | Persisted in `trust_scores` and history tables. |
 | Task queue | SQLite | Hunter Guild lifecycle tables. |
 | Runtime events | SQLite `runtime_events` | Unified pending/running/completed/error events for tool calls, task transitions, and MGP shadow evaluations. |
+| Official workflow instances, cursor, and receipts | SQLite `official_workflow_instances`, `official_workflow_state`, `official_workflow_receipts` | Immutable run generations plus project/session/flow-isolated cursors and validated caller attestations; receipts and cursor changes commit atomically per route step. |
+| Passive semantic and promotion work | SQLite derived-work jobs + memory proposal tables | Durable partitioned jobs, leases, retry/dead reasons, proposal observations, and reconciliation state. Pending proposals are not canonical memory. |
 | Runtime logs | `var/log/` | Local runtime output; not part of public docs. |
 | Runtime PIDs/heartbeats | `var/run/` | Used by launcher and daemon. |
 | Service import path | child-process `PYTHONPATH` + daemon `sys.path` bootstrap | Keeps launcher-managed and direct daemon starts aligned with source checkout imports. |
@@ -149,15 +217,17 @@ Context recommendation metadata is advisory. It explains why already-eligible me
 | Context supply | Active | Python remains full fallback and write-side authority; heavy calls carry request-scope metadata for concurrent flow isolation. |
 | Rust context core | Experimental | Optional acceleration path; `rust-full` keeps normal and debug recall on Rust snapshot while Rust is healthy, with audit-telemetry filtering at snapshot ingestion and Python conversion. |
 | Hunter Guild | Experimental | Lifecycle tools exist; scanner policy and SNR are evolving. |
-| Skills and SuperPowers | Active | Programmatic tools and stage entrypoint exposed. |
+| Skills and official workflow | Active | Pinned routes, generation-isolated Hook injection, deterministic invocation authority, optional model-route classification, and the compatibility stage entrypoint are exposed. |
+| Passive semantic proposal pipeline | Experimental, off by default | Rule misses can enqueue isolated cloud JSON classification and governed promotion work; Dashboard V2 reports bounded project-scoped queue/retry/dead state without payloads; all gates fail closed and SQLite remains canonical. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |
 | Release pipeline | Active | Release sync and PyPI publishing are configured. |
 
 ## 11. Scalability Notes
 
 - SQLite WAL is sufficient for local agent teams with many readers and a small number of writers.
-- LanceDB keeps vector indexes disk-backed and suitable for larger memory pools than in-memory search.
+- LanceDB keeps vector indexes disk-backed and suitable for larger memory pools than in-memory search. Immutable generations provide reproducible rebuild points; generation-bound live views absorb checked incremental work without rewriting the base artifact.
 - The daemon performs lifecycle detection without LLM calls; LLM cost belongs to agent reasoning, extraction fallback, or configured external providers.
+- Optional semantic classification workers batch cloud calls outside SQLite write transactions. Partition keys prevent unrelated projects, visibility scopes, configurations, or providers from sharing one request.
 - The launcher owns subprocess environment normalization. It prepends the project root to `PYTHONPATH`, while the daemon script also self-bootstraps `_project_root` for direct starts.
 - Context quality depends on explicit degraded-mode labeling when optional services are unavailable.
 

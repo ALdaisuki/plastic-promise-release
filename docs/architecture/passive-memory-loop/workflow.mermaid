@@ -1,0 +1,41 @@
+sequenceDiagram
+    autonumber
+    participant A as Agent/LLM Adapter
+    participant H as PassiveMemoryHook
+    participant G as Governance
+    participant C as ContextEngine
+    participant M as SQLite Canonical Memory
+    participant Q as Async Write Queue
+    participant O as Outbox/LanceDB
+    participant T as Trace/Metrics
+
+    A->>H: before_invoke(event)
+    H->>G: project + trust + context gate
+    G-->>H: allow / skip / degraded
+    alt allowed
+        H->>C: context_supply(compact, request_scope)
+        C->>C: vector + BM25 + FTS + graph + RRF
+        C-->>H: compact context + memory ids
+        H->>T: preload span + hit metadata
+        H-->>A: bounded context slot injection
+    else denied or degraded
+        H->>T: degradation event
+        H-->>A: minimum safe context
+    end
+
+    A->>A: LLM + tools + workflow execution
+    A->>H: after_invoke(event, outcome)
+    H->>Q: enqueue candidate extraction
+    H-->>A: immediate acknowledgement
+
+    Q->>G: classify source + proposal policy
+    Q->>M: smart-remember / memory_store transaction
+    M->>M: dedupe + tags + entity links + conflict candidates
+    M->>T: call span + lineage + relation metrics
+    M->>O: store_outbox(action, version, embedding hash)
+    O->>O: vector + BM25/FTS derived index update
+    O->>T: outbox lag + index outcome
+
+    A->>H: step-closure(lesson, improvement, root_cause, optimization)
+    H->>M: high-confidence reflection memory
+    H->>T: closure + adoption feedback

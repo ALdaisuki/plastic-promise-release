@@ -28,6 +28,13 @@ desktop.ini
 
 # Project
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
 *.db
 *.db-shm
 *.db-wal

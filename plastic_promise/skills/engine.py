@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import importlib
 import json
 import os
@@ -124,11 +125,11 @@ class AtomRegistry:
         ),
         # === Governance Injection (Plastic Promise native) ===
         "step_closure_light": (
-            "plastic_promise.skills.superpowers_stages",
+            "plastic_promise.skills.official_workflow_stages",
             "_governance_step_closure_light",
         ),
         "step_closure_full": (
-            "plastic_promise.skills.superpowers_stages",
+            "plastic_promise.skills.official_workflow_stages",
             "_governance_step_closure_full",
         ),
     }
@@ -186,7 +187,7 @@ class SkillEngine:
 
     def enforce_workflow_mode(self, action: str) -> bool:
         """If workflow_mode is strict, block code-modifying actions
-        until session-init + brainstorming have run.
+        until session-init has established the official workflow contract.
 
         Returns True if action is allowed, False if blocked.
         """
@@ -195,16 +196,23 @@ class SkillEngine:
         # Read-only and planning actions are always allowed
         if action in (
             "session-init",
-            "brainstorming",
-            "exemplar-research",
+            "ask-matt",
+            "grill-with-docs",
+            "to-spec",
+            "to-tickets",
+            "diagnosing-bugs",
+            "research",
+            "prototype",
+            "domain-modeling",
+            "codebase-design",
             "read",
             "search",
             "market_list",
             "market_status",
         ):
             return True
-        # Code-modifying actions require session-init + brainstorming
-        required = {"session-init", "brainstorming"}
+        # Code-modifying actions require an initialized governed session.
+        required = {"session-init"}
         if not required.issubset(self._completed_stages):
             missing = required - self._completed_stages
             raise WorkflowViolation(f"workflow_mode=strict: {missing} required before '{action}'")
@@ -308,7 +316,7 @@ class SkillEngine:
     def resolve(self, name: str) -> str:
         """Return the full prompt for a skill by name.
 
-        Used by Agents to query SuperPowers specifications.
+        Used by Agents to query registered official workflow guidance.
         Returns empty string if skill not found.
         """
         skill = self._registry.get(name)
@@ -414,9 +422,9 @@ class SkillEngine:
                 get_parent_entity_id,
             )
 
-            hook_entity_id = get_current_entity_id(stage_session_id)
+            hook_entity_id = get_current_entity_id(stage_session_id, engine=self._ctx)
             if not parent_entity_id:
-                parent_entity_id = get_parent_entity_id(stage_session_id)
+                parent_entity_id = get_parent_entity_id(stage_session_id, engine=self._ctx)
         except Exception:
             pass
 
@@ -435,6 +443,10 @@ class SkillEngine:
                         start_args["stage_session_id"] = stage_session_id
                     if parent_entity_id:
                         start_args["parent_entity_id"] = parent_entity_id
+                    if params.get("tracking_idempotency_key"):
+                        start_args["tracking_idempotency_key"] = params["tracking_idempotency_key"]
+                    if params.get("tracking_basis"):
+                        start_args["tracking_basis"] = params["tracking_basis"]
                     if not track_start_memory:
                         start_args["record_memory"] = False
                     start_result = await self._call_lifecycle(
@@ -444,6 +456,9 @@ class SkillEngine:
                             start_args,
                         ),
                     )
+                    start_error = _structured_error(start_result)
+                    if start_error:
+                        raise RuntimeError(start_error)
                     start_data = json.loads(start_result[0].text)
                     entity_id = start_data.get("entity_id", "")
                 except json.JSONDecodeError as e:
@@ -468,7 +483,7 @@ class SkillEngine:
                 # Check for abort-level failures from concurrent execution
                 for err in errors:
                     if "abort --" in err:
-                        if entity_id and track_start_memory:
+                        if entity_id and not hook_entity_id:
                             try:
                                 complete_handler = self._atoms.get("skill_session_complete")
                                 if complete_handler:
@@ -503,7 +518,13 @@ class SkillEngine:
                         )
             else:
                 atom_results, degrade_log, errors, should_abort = await self._exec_atoms_serial(
-                    skill_def, params, atom_results, degrade_log, errors, entity_id
+                    skill_def,
+                    params,
+                    atom_results,
+                    degrade_log,
+                    errors,
+                    entity_id,
+                    owns_entity=not bool(hook_entity_id),
                 )
                 if should_abort:
                     return SkillResult(
@@ -529,11 +550,11 @@ class SkillEngine:
             )
 
             # 6. skill_session_complete — skip if hook will handle it
-            if not hook_entity_id and track_start_memory:
+            if not hook_entity_id:
                 complete_handler = self._atoms.get("skill_session_complete")
                 if complete_handler and entity_id:
                     try:
-                        await self._call_lifecycle(
+                        complete_result = await self._call_lifecycle(
                             skill_def,
                             complete_handler(
                                 self._ctx,
@@ -543,6 +564,26 @@ class SkillEngine:
                                 },
                             ),
                         )
+                        completion_error = _structured_error(complete_result)
+                        if completion_error:
+                            errors.append(f"skill_session_complete: {completion_error}")
+                            return SkillResult(
+                                skill_name=skill_name,
+                                success=False,
+                                data={},
+                                atom_results={
+                                    key: _text_or_str(value) for key, value in atom_results.items()
+                                },
+                                degrade_log=degrade_log,
+                                audit_trail={
+                                    "entity_id": entity_id,
+                                    "tracking_degraded": True,
+                                    "tracking_persistence": "memory"
+                                    if track_start_memory
+                                    else "entity_only",
+                                },
+                                errors=errors,
+                            )
                     except Exception as e:
                         degrade_log.append(f"skill_session_complete: {e}")
 
@@ -556,10 +597,28 @@ class SkillEngine:
             result.errors = result.errors or errors
             return result
 
+        except asyncio.CancelledError:
+            if entity_id and not hook_entity_id:
+                complete_handler = self._atoms.get("skill_session_complete")
+                if complete_handler:
+                    with contextlib.suppress(BaseException):
+                        await asyncio.shield(
+                            self._call_lifecycle(
+                                skill_def,
+                                complete_handler(
+                                    self._ctx,
+                                    {
+                                        "entity_id": entity_id,
+                                        "outcome": "abandoned: execution cancelled",
+                                    },
+                                ),
+                            )
+                        )
+            raise
         except Exception as e:
             # Handler-level failure -- still attempt session close
             errors.append(f"handler: {e}")
-            if entity_id and not hook_entity_id and track_start_memory:
+            if entity_id and not hook_entity_id:
                 try:
                     complete_handler = self._atoms.get("skill_session_complete")
                     if complete_handler:
@@ -599,6 +658,8 @@ class SkillEngine:
         degrade_log: list,
         errors: list,
         entity_id: str,
+        *,
+        owns_entity: bool,
     ) -> tuple:
         """Execute atoms serially with degradation handling. Returns (atom_results, degrade_log, errors, should_abort)."""
         fallback_executed: set[str] = set()
@@ -618,6 +679,9 @@ class SkillEngine:
 
             try:
                 result = await self._call_atom(skill_def, atom_handler, atom_params)
+                semantic_error = _structured_error(result)
+                if semantic_error:
+                    raise RuntimeError(semantic_error)
                 atom_results[atom_name] = result
             except TimeoutError:
                 error_text = f"timed out after {self._atom_timeout(skill_def)}s"
@@ -630,7 +694,7 @@ class SkillEngine:
                     continue
                 errors.append(f"{atom_name}: {error_text}")
                 degrade_log.append(f"{atom_name}: abort -- {error_text}")
-                if entity_id:
+                if entity_id and owns_entity:
                     try:
                         complete_handler = self._atoms.get("skill_session_complete")
                         if complete_handler:
@@ -675,7 +739,7 @@ class SkillEngine:
                 else:
                     errors.append(f"{atom_name}: {e}")
                     degrade_log.append(f"{atom_name}: abort -- {e}")
-                    if entity_id and skill_def.track_start_memory:
+                    if entity_id and owns_entity:
                         try:
                             complete_handler = self._atoms.get("skill_session_complete")
                             if complete_handler:
@@ -714,6 +778,9 @@ class SkillEngine:
             atom_params = self._build_atom_params(atom_name, params)
             try:
                 result = await self._call_atom(skill_def, atom_handler, atom_params)
+                semantic_error = _structured_error(result)
+                if semantic_error:
+                    raise RuntimeError(semantic_error)
                 return atom_name, result, None
             except TimeoutError:
                 return atom_name, None, f"timed out after {self._atom_timeout(skill_def)}s"
@@ -750,3 +817,20 @@ def _text_or_str(result: list) -> str:
     if result and hasattr(result[0], "text"):
         return result[0].text
     return str(result)
+
+
+def _structured_error(result: Any) -> str:
+    """Return an MCP handler's semantic error instead of treating JSON as success."""
+    if not result or not hasattr(result[0], "text"):
+        return ""
+    try:
+        payload = json.loads(result[0].text)
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    if payload.get("error"):
+        return str(payload["error"])
+    if payload.get("updated") is False:
+        return str(payload.get("reason") or "structured_operation_failed")
+    return ""

@@ -21,7 +21,7 @@ while true; do
     pi --print "\
 你是 $ROLE，域 $DOMAIN。你是 Plastic Promise 多 Agent 团队的代码审查员 (domain=reflecting)。
 
-SuperPowers 阶段: requesting-code-review。
+官方工作流阶段: code-review。
 
 执行审查协议 (详见 .pi/team-protocol-reviewer.md):
 

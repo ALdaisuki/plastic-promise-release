@@ -84,6 +84,30 @@ fn weighted_rrf_fuse_py(
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
+#[pyfunction(name = "weighted_max_v1_fuse", signature = (rankings, vector_weight=0.5, has_vector=true))]
+fn weighted_max_v1_fuse_py(
+    rankings: HashMap<String, Vec<(String, f64)>>,
+    vector_weight: f64,
+    has_vector: bool,
+) -> PyResult<Vec<(String, f64)>> {
+    let channel_results = ["vector", "bm25", "fts"]
+        .into_iter()
+        .map(|channel| {
+            (
+                channel.to_string(),
+                rankings.get(channel).cloned().unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if rankings.len() != channel_results.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "invalid_rankings:channel_mismatch",
+        ));
+    }
+    retrieval::fusion::weighted_max_v1_fuse(&channel_results, vector_weight, has_vector)
+        .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
 #[pyfunction(name = "structure_chunk_projection", signature = (text, target_chars, hard_chars=None, max_chunks=None))]
 fn structure_chunk_projection_py(
     py: Python<'_>,
@@ -125,6 +149,9 @@ fn structure_chunk_projection_py(
 /// - ContextItem: 上下文条目
 #[pymodule]
 fn context_engine_core(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("__source_sha256__", env!("PP_RUST_SOURCE_SHA256"))?;
+
     // Core engine & data
     m.add_class::<context_engine::ContextEngine>()?;
     m.add_class::<context_engine::ContextPack>()?;
@@ -141,6 +168,7 @@ fn context_engine_core(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<source_tracker::SourceTracker>()?;
     m.add_class::<association_feedback::AssociationFeedback>()?;
     m.add_function(wrap_pyfunction!(weighted_rrf_fuse_py, m)?)?;
+    m.add_function(wrap_pyfunction!(weighted_max_v1_fuse_py, m)?)?;
     m.add_function(wrap_pyfunction!(structure_chunk_projection_py, m)?)?;
 
     Ok(())

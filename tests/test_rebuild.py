@@ -53,6 +53,18 @@ class TestRebuild:
         after = dm._count_audit_log()
         assert after > before
 
+    def test_rebuild_auto_names_non_predefined_active_clusters(self):
+        dm = DomainManager(db_path=":memory:", project_id="project:alpha")
+        memories = [
+            {"id": f"m{index}", "tags": ["vector-policy", "fusion-batching"]} for index in range(5)
+        ]
+
+        dm.rebuild_from_memories(memories_source=memories)
+
+        emergent = [name for name in dm.domains if name.startswith("emergent:")]
+        assert len(emergent) == 1
+        assert dm.domains[emergent[0]].tags == {"vector-policy", "fusion-batching"}
+
     def test_rebuild_prunes_stale_domain_rows(self, tmp_path):
         """重建后旧 domains 行不应在新 DomainManager 实例中复活。"""
         db_path = tmp_path / "domains.db"

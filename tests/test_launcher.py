@@ -8,7 +8,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+import traceback
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import tomllib
@@ -61,6 +62,11 @@ def test_daemon_once_parser_requires_supported_mcp_url_and_json_contract():
         validate_daemon_once_arguments({"once": True, "json": False})["error"]
         == "daemon_once_arguments_invalid"
     )
+    assert parse_daemon_args(["--preflight", "--json"]).preflight is True
+    with pytest.raises(SystemExit):
+        parse_daemon_args(["--preflight"])
+    with pytest.raises(SystemExit):
+        parse_daemon_args(["--preflight", "--once", "--json"])
 
 
 def test_daemon_parser_rejects_foreign_source_identity():
@@ -131,6 +137,7 @@ async def test_daemon_once_reuses_registry_once_and_skips_warmup_and_forever_loo
     )
     daemon_pid = tmp_path / "daemon.pid"
     daemon_pid.write_text("12345", encoding="utf-8")
+    monkeypatch.setenv("PP_MAINTENANCE_ENABLED", "1")
 
     exit_code = await maintenance_daemon.daemon_main(
         ["--once", "--mcp-url", "http://127.0.0.1:9020/mcp", "--json"]
@@ -141,6 +148,197 @@ async def test_daemon_once_reuses_registry_once_and_skips_warmup_and_forever_loo
     assert registry.run_due_count == 1
     assert daemon_pid.read_text(encoding="utf-8") == "12345"
     assert not (tmp_path / "daemon.heartbeat").exists()
+
+
+@pytest.mark.parametrize("argv", ([], ["--once", "--json"]))
+@pytest.mark.asyncio
+async def test_daemon_fails_closed_before_engine_pid_or_warmup_when_disabled(
+    monkeypatch, tmp_path, capsys, argv
+):
+    from daemons import maintenance_daemon
+
+    calls = []
+
+    def unexpected(name):
+        def fail(*_args, **_kwargs):
+            calls.append(name)
+            raise AssertionError(f"unexpected {name}")
+
+        return fail
+
+    monkeypatch.delenv("PP_MAINTENANCE_ENABLED", raising=False)
+    monkeypatch.setattr(maintenance_daemon, "_maintenance_engine", unexpected("engine"))
+    monkeypatch.setattr(maintenance_daemon.os, "makedirs", unexpected("makedirs"))
+    monkeypatch.setattr(maintenance_daemon, "_run_dir", str(tmp_path))
+    monkeypatch.setattr(maintenance_daemon, "_pid_path", str(tmp_path / "daemon.pid"))
+
+    exit_code = await maintenance_daemon.daemon_main(argv)
+
+    assert exit_code == 3
+    assert calls == []
+    assert not (tmp_path / "daemon.pid").exists()
+    assert "maintenance_disabled" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_daemon_preflight_is_read_only_and_does_not_require_enablement(
+    monkeypatch, tmp_path, capsys
+):
+    from daemons import maintenance_daemon
+    from plastic_promise.core.context_engine import _SQLiteStorage
+    from plastic_promise.core.memory_proposals import ensure_memory_proposal_schema
+    from plastic_promise.core.synthesis import ensure_synthesis_schema
+    from plastic_promise.core.task_queue_schema import ensure_task_tables
+    from plastic_promise.core.traceability import ensure_traceability_schema
+
+    db_path = tmp_path / "preflight.sqlite"
+    storage = _SQLiteStorage(str(db_path))
+    conn = storage._conn
+    ensure_memory_proposal_schema(conn)
+    ensure_synthesis_schema(conn)
+    ensure_task_tables(conn)
+    ensure_traceability_schema(conn)
+    conn.execute(
+        "INSERT INTO task_queue "
+        "(id, task_type, title, to_agent, status, source_scan, payload, created_at) "
+        "VALUES ('old-finding', 'investigate_coupling', 'old', 'pi_reviewer', "
+        "'pending', 'scan_coupling', ?, datetime('now', '-10 days'))",
+        (json.dumps({"kind": "stable", "payload_hash": "deadbeef"}),),
+    )
+    conn.commit()
+    storage._conn.close()
+    before = db_path.read_bytes()
+    before_names = sorted(path.name for path in tmp_path.iterdir())
+
+    monkeypatch.delenv("PP_MAINTENANCE_ENABLED", raising=False)
+    monkeypatch.setattr(maintenance_daemon, "DB_PATH", str(db_path))
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "MANAGED_ENV_PATH",
+        str(tmp_path / "missing-managed.env"),
+    )
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "_maintenance_engine",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight constructed engine")),
+    )
+
+    exit_code = await maintenance_daemon.daemon_main(["--preflight", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code in {0, 2}
+    assert payload["schema"] == "maintenance-preflight/v1"
+    assert payload["mode"] == "read-only"
+    assert payload["task_queue"]["pending_total"] == 1
+    assert payload["task_queue"]["by_type"] == {"investigate_coupling": 1}
+    assert payload["outbox"]["pending_total"] == 0
+    assert db_path.read_bytes() == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == before_names
+
+
+@pytest.mark.asyncio
+async def test_daemon_preflight_reports_ready_when_state_and_managed_environment_are_clean(
+    monkeypatch, tmp_path, capsys
+):
+    from daemons import maintenance_daemon
+    from plastic_promise.core.context_engine import _SQLiteStorage
+    from plastic_promise.core.memory_proposals import ensure_memory_proposal_schema
+    from plastic_promise.core.synthesis import ensure_synthesis_schema
+    from plastic_promise.core.task_queue_schema import ensure_task_tables
+    from plastic_promise.core.traceability import ensure_traceability_schema
+
+    db_path = tmp_path / "ready.sqlite"
+    storage = _SQLiteStorage(str(db_path))
+    conn = storage._conn
+    ensure_memory_proposal_schema(conn)
+    ensure_synthesis_schema(conn)
+    ensure_task_tables(conn)
+    ensure_traceability_schema(conn)
+    conn.commit()
+    storage._conn.close()
+
+    managed_env = tmp_path / "managed.env"
+    managed_env.write_text(
+        "# Managed by Plastic Promise control plane. Do not edit.\n"
+        "# revision=test-ready-revision\n"
+        "EMBEDDER_MODEL=text-embedding-v4\n"
+        "EMBEDDER_MODEL_REVISION=text-embedding-v4\n"
+        "EMBEDDER_PROVIDER=openai-compatible\n"
+        "PP_EMBEDDING_DIM=1024\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EMBEDDER_MODEL", "text-embedding-v4")
+    monkeypatch.setenv("EMBEDDER_MODEL_REVISION", "text-embedding-v4")
+    monkeypatch.setenv("EMBEDDER_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("PP_EMBEDDING_DIM", "1024")
+    monkeypatch.delenv("PP_MAINTENANCE_ENABLED", raising=False)
+    monkeypatch.setattr(maintenance_daemon, "DB_PATH", str(db_path))
+    monkeypatch.setattr(maintenance_daemon, "MANAGED_ENV_PATH", str(managed_env))
+
+    exit_code = await maintenance_daemon.daemon_main(["--preflight", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ready"] is True
+    assert payload["ok"] is True
+    assert payload["blockers"] == []
+    assert payload["configuration"]["loaded_into_process"] is True
+    assert payload["expected_writes"] == {
+        "decay_recalculations": 0,
+        "memory_transitions": 0,
+        "outbox_replays": 0,
+        "proposal_expirations": 0,
+        "synthesis_invalidations": 0,
+        "task_enqueues": 0,
+    }
+
+
+def test_maintenance_preflight_projects_decay_before_lifecycle(tmp_path):
+    from plastic_promise.core.context_engine import _SQLiteStorage
+    from plastic_promise.core.maintenance_preflight import _lifecycle_report
+
+    db_path = tmp_path / "decay-projection.sqlite"
+    created_at = (datetime.now() - timedelta(days=40)).isoformat()
+    storage = _SQLiteStorage(str(db_path))
+    storage.create_ordinary_if_absent(
+        "stale-after-decay",
+        {
+            "id": "stale-after-decay",
+            "content": "canonical stale memory",
+            "memory_type": "experience",
+            "project_id": "project:maintenance-preflight",
+            "tier": "L1",
+            "tags": ["status:current"],
+            "metadata_json": {},
+            "worth_success": 0,
+            "worth_failure": 0,
+            "access_count": 0,
+            "created_at": created_at,
+            "last_accessed": created_at,
+            "decay_multiplier": 1.0,
+            "effective_half_life": 3.0,
+            "embedding_hash": "sha256:stale-after-decay",
+            "embedding_text": "canonical stale memory",
+            "search_text": "canonical stale memory",
+        },
+    )
+    storage._conn.row_factory = sqlite3.Row
+
+    report = _lifecycle_report(
+        storage._conn,
+        {"PP_PERIODIC_MAINTENANCE": "1"},
+    )
+
+    assert report == {
+        "periodic_decay_enabled": True,
+        "decay_evaluated": 1,
+        "decay_recalculation_candidates": 1,
+        "stale_transition_candidates": 1,
+        "duplicate_transition_candidates": 0,
+    }
+    assert storage.get("stale-after-decay")["decay_multiplier"] == 1.0
+    assert storage.get("stale-after-decay")["tags"] == ["status:current"]
+    storage._conn.close()
 
 
 @pytest.fixture(autouse=True)
@@ -786,14 +984,24 @@ def _mcp_health_payload(tmp_path, *, pid=321, revision="a" * 40):
         "pid": pid,
         "source_root": str(tmp_path),
         "source_revision": revision,
+        "identity_valid": True,
+        "health_policy": "strict",
+        "degraded": False,
+        "retrieval_status": "ready",
+        "vector_ready": True,
+        "vector_reason": None,
+        "lancedb_ready": True,
+        "lancedb_required": True,
+        "bm25_ready": True,
+        "graph_ready": True,
         "fusion_policy": "max-v1",
         "fusion_attestation": {
             "schema": MCP_FUSION_IDENTITY_SCHEMA,
             "requested_policy": "max-v1",
             "effective_policy": "max-v1",
             "requested_runtime": "rust",
-            "effective_runtime": "python",
-            "capability_reason": "policy_requires_python:max-v1",
+            "effective_runtime": "rust",
+            "capability_reason": "rust_capability_satisfied",
             "candidate_id": "",
             "config_hash": "",
             "config": None,
@@ -803,6 +1011,16 @@ def _mcp_health_payload(tmp_path, *, pid=321, revision="a" * 40):
 
 class _HealthyRuntimeEngine:
     class Embedder:
+        model_name = "hosted-embedding-model"
+        dim = 2
+        stats = {
+            "provider": "openai-compatible",
+            "revision": "hosted-embedding-model-r1",
+            "requests": 3,
+            "input_tokens": 17,
+            "estimated_cost_usd": 0.0017,
+        }
+
         def embed(self, _text):
             return [0.5, 0.5]
 
@@ -816,8 +1034,20 @@ class _HealthyRuntimeEngine:
     def _ensure_heavy_init(self):
         return None
 
+    def _text_retrieval(self, _query):
+        return []
+
     def _check_rust_health(self):
         return True
+
+    def _rust_supports_fusion_policy(self, _policy):
+        return True
+
+
+class _FailingEmbedderRuntimeEngine(_HealthyRuntimeEngine):
+    class Embedder:
+        def embed(self, _text):
+            raise ConnectionError("secret-provider-url")
 
 
 def test_mcp_health_identity_rejects_foreign_200_and_pid(tmp_path):
@@ -854,9 +1084,59 @@ def test_mcp_health_identity_rejects_foreign_200_and_pid(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("overrides", "expected_reason"),
+    [
+        ({"identity_valid": False}, "health_identity_invalid"),
+        ({"vector_ready": False}, "health_retrieval_readiness_mismatch"),
+        ({"degraded": True}, "health_retrieval_readiness_mismatch"),
+        ({"bm25_ready": False}, "health_bm25_not_ready"),
+        ({"graph_ready": "yes"}, "health_retrieval_readiness_invalid"),
+    ],
+)
+def test_mcp_health_identity_rejects_incoherent_retrieval_readiness(
+    tmp_path, overrides, expected_reason
+):
+    from plastic_promise.launcher.service_manager import validate_mcp_health_identity
+
+    payload = _mcp_health_payload(tmp_path)
+    payload.update(overrides)
+
+    valid, reason = validate_mcp_health_identity(
+        payload,
+        expected_pid=321,
+        expected_source_root=tmp_path,
+        expected_source_revision="a" * 40,
+    )
+
+    assert (valid, reason) == (False, expected_reason)
+
+
+def test_mcp_health_identity_accepts_coherent_text_only_readiness(tmp_path):
+    from plastic_promise.launcher.service_manager import validate_mcp_health_identity
+
+    payload = _mcp_health_payload(tmp_path)
+    payload.update(
+        {
+            "health_policy": "text-only",
+            "degraded": True,
+            "retrieval_status": "degraded_text_only",
+            "vector_ready": False,
+            "vector_reason": "retrieval_embedding_zero_or_invalid",
+        }
+    )
+
+    assert validate_mcp_health_identity(
+        payload,
+        expected_pid=321,
+        expected_source_root=tmp_path,
+        expected_source_revision="a" * 40,
+    ) == (True, "ok")
+
+
+@pytest.mark.parametrize(
     ("requested_runtime", "effective_runtime", "capability_reason", "expected_reason"),
     [
-        ("rust", "rust", "rust_capability_satisfied", "health_fusion_capability_mismatch"),
+        ("rust", "python", "policy_requires_python:max-v1", "health_fusion_capability_mismatch"),
         ("rust", "python", "arbitrary_reason", "health_fusion_capability_mismatch"),
         ("rust", "python", None, "health_fusion_runtime_invalid"),
     ],
@@ -952,6 +1232,7 @@ def test_server_health_identity_exposes_checkout_and_fusion(monkeypatch):
     monkeypatch.setenv("PP_RETRIEVAL_RRF_K", "2")
     monkeypatch.setenv("PP_RETRIEVAL_RRF_WEIGHTS_JSON", json.dumps(config["weights"]))
     monkeypatch.setenv("PP_RETRIEVAL_RRF_WINDOWS_JSON", json.dumps(config["windows"]))
+    monkeypatch.setenv("EMBEDDER_PRICING_REVISION", "provider-price-2026-07")
 
     identity = server._server_process_identity(engine=_HealthyRuntimeEngine())
 
@@ -964,6 +1245,103 @@ def test_server_health_identity_exposes_checkout_and_fusion(monkeypatch):
     assert identity["fusion_attestation"]["config"]["config_hash"] == config_hash
     assert identity["fusion_attestation"]["effective_policy"] == candidate
     assert identity["fusion_attestation"]["effective_runtime"] == "python"
+    assert identity["embedding"] == {
+        "provider": "openai-compatible",
+        "model": "hosted-embedding-model",
+        "model_revision": "hosted-embedding-model-r1",
+        "dimension": 2,
+        "usage": {
+            "embedding_requests": 3,
+            "embedding_input_tokens": 17,
+            "cost": 0.0017,
+            "cost_currency": "USD",
+            "cost_usd": 0.0017,
+            "pricing_revision": "provider-price-2026-07",
+        },
+    }
+    assert "api_key" not in json.dumps(identity).casefold()
+    assert "base_url" not in json.dumps(identity).casefold()
+
+
+def test_server_health_reports_live_index_lag_without_disabling_vectors():
+    from plastic_promise.mcp import server
+
+    engine = _HealthyRuntimeEngine()
+    engine.generation_live_index_status = lambda: {
+        "success": True,
+        "status": "generation_live_index",
+        "base_generation_id": "generation-a",
+        "lag": {
+            "state": "lagged",
+            "active_job_count": 2,
+            "completed_job_count": 5,
+            "blocked_job_count": 0,
+        },
+    }
+
+    identity = server._server_process_identity(
+        engine=engine,
+        environ={
+            "PP_RETRIEVAL_FUSION_POLICY": "legacy-auto",
+            "LDB_INIT_ON_HEAVY_INIT": "1",
+            "PP_FORCE_PYTHON_SUPPLY": "1",
+        },
+    )
+
+    assert identity["vector_ready"] is True
+    assert identity["degraded"] is True
+    assert identity["retrieval_status"] == "ready_index_lagged"
+    assert identity["lancedb_sync"]["lag"]["active_job_count"] == 2
+
+
+def test_server_health_fails_closed_when_live_index_has_blocked_jobs():
+    from plastic_promise.mcp import server
+
+    engine = _HealthyRuntimeEngine()
+    engine.generation_live_index_status = lambda: {
+        "success": True,
+        "status": "generation_live_index",
+        "base_generation_id": "generation-a",
+        "lag": {"state": "blocked", "blocked_job_count": 1},
+    }
+
+    with pytest.raises(RuntimeError, match="retrieval_lancedb_live_index_blocked"):
+        server._server_process_identity(
+            engine=engine,
+            environ={
+                "PP_RETRIEVAL_FUSION_POLICY": "legacy-auto",
+                "LDB_INIT_ON_HEAVY_INIT": "1",
+                "PP_FORCE_PYTHON_SUPPLY": "1",
+            },
+        )
+
+
+def test_server_health_identity_preserves_cny_cost_currency(monkeypatch):
+    from plastic_promise.mcp import server
+
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "1")
+    engine = _HealthyRuntimeEngine()
+    engine._embedder.stats = {
+        "provider": "openai-compatible",
+        "revision": "hosted-embedding-model-r1",
+        "requests": 3,
+        "input_tokens": 17,
+        "estimated_cost": 0.00000051,
+        "cost_currency": "CNY",
+        "estimated_cost_usd": None,
+        "pricing_revision": "syuan-pricing-2026-07-24",
+    }
+
+    identity = server._server_process_identity(engine=engine)
+
+    assert identity["embedding"]["usage"] == {
+        "embedding_requests": 3,
+        "embedding_input_tokens": 17,
+        "cost": 0.00000051,
+        "cost_currency": "CNY",
+        "cost_usd": None,
+        "pricing_revision": "syuan-pricing-2026-07-24",
+    }
 
 
 def test_server_health_identity_rejects_missing_wrrf_config_and_revision(monkeypatch):
@@ -1000,13 +1378,119 @@ def test_server_health_identity_rejects_unrunnable_retrieval_capability(engine, 
         )
 
 
-@pytest.mark.parametrize(
-    ("policy", "effective_runtime"),
-    [("legacy-auto", "rust"), ("max-v1", "python")],
-)
-def test_server_health_identity_keeps_builtin_policies_healthy(policy, effective_runtime):
+def test_server_health_identity_normalizes_embedding_probe_failures():
     from plastic_promise.mcp import server
 
+    with pytest.raises(RuntimeError, match="^retrieval_embedding_probe_failed$") as caught:
+        server._server_process_identity(
+            engine=_FailingEmbedderRuntimeEngine(),
+            environ={
+                "PP_RETRIEVAL_FUSION_POLICY": "legacy-auto",
+                "LDB_INIT_ON_HEAVY_INIT": "1",
+            },
+        )
+
+    assert "secret-provider-url" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert "secret-provider-url" not in "".join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize(
+    ("engine", "reason", "lancedb_ready"),
+    [
+        (
+            _HealthyRuntimeEngine(vector=[0.0, 0.0]),
+            "retrieval_embedding_zero_or_invalid",
+            True,
+        ),
+        (
+            _FailingEmbedderRuntimeEngine(),
+            "retrieval_embedding_probe_failed",
+            True,
+        ),
+        (
+            _HealthyRuntimeEngine(ldb=False),
+            "retrieval_lancedb_unavailable",
+            False,
+        ),
+    ],
+)
+def test_server_health_identity_explicitly_allows_text_only_degradation(
+    engine, reason, lancedb_ready
+):
+    from plastic_promise.mcp import server
+
+    identity = server._server_process_identity(
+        engine=engine,
+        environ={
+            "PP_RETRIEVAL_FUSION_POLICY": "legacy-auto",
+            "LDB_INIT_ON_HEAVY_INIT": "1",
+            "PP_HEALTH_ALLOW_TEXT_ONLY": "1",
+            "PP_FORCE_PYTHON_SUPPLY": "1",
+        },
+    )
+
+    assert identity["identity_valid"] is True
+    assert identity["health_policy"] == "text-only"
+    assert identity["degraded"] is True
+    assert identity["retrieval_status"] == "degraded_text_only"
+    assert identity["vector_ready"] is False
+    assert identity["vector_reason"] == reason
+    assert identity["lancedb_ready"] is lancedb_ready
+    assert identity["bm25_ready"] is True
+    assert identity["graph_ready"] is True
+    if reason == "retrieval_embedding_probe_failed":
+        assert identity["embedding"] is None
+
+
+@pytest.mark.parametrize("flag", ["", "0", "true", "yes", "TRUE"])
+def test_server_health_identity_text_only_flag_is_exact(flag):
+    from plastic_promise.mcp import server
+
+    with pytest.raises(RuntimeError, match="retrieval_embedding_zero_or_invalid"):
+        server._server_process_identity(
+            engine=_HealthyRuntimeEngine(vector=[0.0, 0.0]),
+            environ={
+                "PP_RETRIEVAL_FUSION_POLICY": "legacy-auto",
+                "LDB_INIT_ON_HEAVY_INIT": "1",
+                "PP_HEALTH_ALLOW_TEXT_ONLY": flag,
+            },
+        )
+
+
+def test_server_health_identity_never_allows_text_only_without_bm25():
+    from plastic_promise.mcp import server
+
+    engine = _HealthyRuntimeEngine(vector=[0.0, 0.0])
+    engine._text_retrieval = None
+
+    with pytest.raises(RuntimeError, match="retrieval_bm25_unavailable"):
+        server._server_process_identity(
+            engine=engine,
+            environ={
+                "PP_RETRIEVAL_FUSION_POLICY": "legacy-auto",
+                "LDB_INIT_ON_HEAVY_INIT": "1",
+                "PP_HEALTH_ALLOW_TEXT_ONLY": "1",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("policy", "effective_runtime"),
+    [("legacy-auto", "rust"), ("max-v1", "rust")],
+)
+def test_server_health_identity_keeps_builtin_policies_healthy(
+    policy, effective_runtime, monkeypatch
+):
+    from plastic_promise.mcp import server
+
+    rust_identity = {
+        "module": "context_engine_core",
+        "version": "0.1.0",
+        "binary_sha256": "a" * 64,
+        "source_sha256": "b" * 64,
+    }
+    monkeypatch.setattr(server, "loaded_rust_extension_identity", lambda _root: rust_identity)
     identity = server._server_process_identity(
         engine=_HealthyRuntimeEngine(),
         environ={
@@ -1019,7 +1503,54 @@ def test_server_health_identity_keeps_builtin_policies_healthy(policy, effective
     assert identity["fusion_policy"] == policy
     assert identity["fusion_attestation"]["effective_policy"] == policy
     assert identity["fusion_attestation"]["effective_runtime"] == effective_runtime
+    assert identity["rust_runtime"] == (rust_identity if effective_runtime == "rust" else None)
     assert identity["fusion_attestation"]["config"] is None
+    assert identity["identity_valid"] is True
+    assert identity["health_policy"] == "strict"
+    assert identity["degraded"] is False
+    assert identity["retrieval_status"] == "ready"
+    assert identity["vector_ready"] is True
+    assert identity["vector_reason"] is None
+    assert identity["lancedb_ready"] is True
+    assert identity["bm25_ready"] is True
+    assert identity["graph_ready"] is True
+
+
+def test_server_health_identity_reports_old_extension_max_v1_fallback(monkeypatch):
+    from plastic_promise.mcp import server
+
+    engine = _HealthyRuntimeEngine()
+    engine._rust_supports_fusion_policy = lambda _policy: False
+    identity = server._server_process_identity(
+        engine=engine,
+        environ={
+            "PP_RETRIEVAL_FUSION_POLICY": "max-v1",
+            "PP_PREFER_RUST_SUPPLY": "1",
+            "PP_FORCE_PYTHON_SUPPLY": "0",
+        },
+    )
+
+    assert identity["fusion_attestation"]["effective_runtime"] == "python"
+    assert identity["fusion_attestation"]["capability_reason"] == "rust_capability_missing:max-v1"
+    assert identity["rust_runtime"] is None
+
+
+def test_server_health_identity_rejects_unattested_rust_runtime(monkeypatch):
+    from plastic_promise.mcp import server
+
+    def unavailable(_root):
+        raise ValueError("build identity missing")
+
+    monkeypatch.setattr(server, "loaded_rust_extension_identity", unavailable)
+    with pytest.raises(RuntimeError, match="^rust_runtime_identity_unavailable$"):
+        server._server_process_identity(
+            engine=_HealthyRuntimeEngine(),
+            environ={
+                "PP_RETRIEVAL_FUSION_POLICY": "legacy-auto",
+                "PP_PREFER_RUST_SUPPLY": "1",
+                "PP_FORCE_PYTHON_SUPPLY": "0",
+            },
+        )
 
 
 def test_maintenance_health_binds_runtime_pid_and_replay_owner(monkeypatch, tmp_path):
@@ -1249,6 +1780,23 @@ def test_packaged_lancedb_dependency_excludes_known_native_fts_bug():
 
     assert "lancedb>=0.34.0" in dependencies
     assert "lancedb>=0.34.0" in requirements
+
+
+def test_server_cloud_profile_does_not_install_local_model_runtime():
+    with open("pyproject.toml", encoding="utf-8") as project_file:
+        data = tomllib.loads(project_file.read())
+    dependencies = set(data["project"]["dependencies"])
+    optional = data["project"]["optional-dependencies"]
+    with open("requirements.txt", encoding="utf-8") as requirements_file:
+        requirements = {
+            line.strip()
+            for line in requirements_file
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+    assert not any(item.startswith("sentence-transformers") for item in dependencies)
+    assert not any(item.startswith("sentence-transformers") for item in requirements)
+    assert optional["local-inference"] == ["sentence-transformers>=2.2.0"]
 
 
 def test_top_level_module_accepts_streamable_http_and_legacy_sse_flags():

@@ -2,7 +2,7 @@
 
 > Release-facing overview. This document describes the system shape and operating principles without exposing private planning artifacts.
 >
-> 版本: 0.1.19 | 日期: 2026-07-21
+> 版本: 0.1.20 | 日期: 2026-08-04
 
 ## 1. What this system is
 
@@ -137,17 +137,22 @@ Live `release-sync.py` is fail-closed: the release repository must be clean, on
 `main`, bound to the expected `origin`, and missing the current version tag both
 locally and remotely. After validation it stages only the computed release
 paths and rejects all other staged, unstaged, or untracked changes. Run a
-dry-run first. The first and only live invocation must include `--push`; the
-same process commits, creates the annotated tag, revalidates pinned object IDs
-and remote state, then atomically pushes `main` and the exact tag. A live run
-without `--push` leaves local release state that blocks a clean retry. Never
-replace this attested path with a manual push or `git push --tags`.
+dry-run first. The first and only live invocation must include `--push`; a live
+invocation without it is rejected. The push path requires full validation plus
+a bounded maintainer-attested `--release-evidence` JSON object bound to the
+exact version and source HEAD. The evidence records the audit score, zero
+blocking/major findings, high-risk review, secret scan, static checks, live HTTP,
+restart recovery, and preview gates without accepting free-form or secret
+fields. The same process commits, creates the annotated tag, revalidates pinned
+object IDs and remote state, then atomically pushes `main` and the exact tag.
+Never replace this attested path with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.19 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.20 --release-repo ../plastic-promise-release \
   --expected-source-branch main --validation-profile full --dry-run
-# Repeat with the same bound origin arguments and --push only after all gates pass.
+# Repeat with the same bound origin arguments, --push, and
+# --release-evidence <path-to-release-evidence.json> only after all gates pass.
 ```
 
 ## 8. Public release boundary

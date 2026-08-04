@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
 from plastic_promise.core.chunking import build_chunk_manifest, chunk_manifest_hash
+from plastic_promise.core.memory_proposals import (
+    MemoryProposalStore,
+    ProposalCandidate,
+    ensure_memory_proposal_schema,
+)
+from plastic_promise.core.proposal_promotion import ensure_proposal_automation_schema
 from plastic_promise.mcp.dashboard_v2.config import (
     DashboardAccessError,
     DashboardConfigurationError,
@@ -160,6 +167,7 @@ def _database() -> sqlite3.Connection:
         );
         """
     )
+    ensure_memory_proposal_schema(conn)
 
     memories = [
         ("mem-a-1", "A first", "experience", "project:a", "project", "2026-07-19T01:00:00Z"),
@@ -331,6 +339,212 @@ def repository():
     conn.close()
 
 
+def _seed_passive_dashboard_data(repository: DashboardRepository) -> dict[str, str]:
+    conn = repository.connection
+    store = MemoryProposalStore(conn)
+    rows = store.create_many(
+        [
+            ProposalCandidate(
+                content="The project uses TypeScript",
+                category="fact",
+                project_id="project:a",
+                visibility="project",
+                origin_role="user",
+                origin_turn_hash="sha256:proposal-a-fact",
+            ),
+            ProposalCandidate(
+                content="Prefer compact dashboard responses",
+                category="preference",
+                project_id="project:a",
+                visibility="project",
+                origin_role="user",
+                origin_turn_hash="sha256:proposal-a-preference",
+            ),
+            ProposalCandidate(
+                content="B_FOREIGN_PROPOSAL_SECRET",
+                category="decision",
+                project_id="project:b",
+                visibility="project",
+                origin_role="user",
+                origin_turn_hash="sha256:proposal-b-decision",
+            ),
+        ],
+        now="2026-07-22T00:00:00Z",
+    )
+    by_content = {row["content"]: row for row in rows}
+    adopted = by_content["Prefer compact dashboard responses"]
+    store.adopt_prepared(
+        adopted["proposal_id"],
+        "mem-a-1",
+        actor="codex",
+        call_id="call-review-a",
+        now="2026-07-22T00:30:00Z",
+    )
+    pending = by_content["The project uses TypeScript"]
+    conn.execute(
+        "UPDATE memory_proposals SET metadata_json = ? WHERE proposal_id = ?",
+        (json.dumps({"api_key": "PROPOSAL_METADATA_SECRET", "safe": 1}), pending["proposal_id"]),
+    )
+
+    passive_events = [
+        (
+            "evt-passive-inject",
+            "passive_context_injected",
+            "completed",
+            "project:a",
+            {"mode": "on", "memory_count": 3, "injection_chars": 420},
+            "2026-07-22T01:00:00Z",
+        ),
+        (
+            "evt-passive-after",
+            "passive_memory_after_invoke",
+            "completed",
+            "project:a",
+            {"mode": "on", "status": "queued", "candidate_count": 2},
+            "2026-07-22T01:01:00Z",
+        ),
+        (
+            "evt-passive-created",
+            "passive_memory_proposals_created",
+            "completed",
+            "project:a",
+            {"proposal_count": 2, "outbox_id": "outbox-passive-a"},
+            "2026-07-22T01:02:00Z",
+        ),
+        (
+            "evt-passive-foreign",
+            "passive_context_injected",
+            "completed",
+            "project:b",
+            {"injection_chars": 999, "secret": "FOREIGN_EVENT_SECRET"},
+            "2026-07-22T01:03:00Z",
+        ),
+    ]
+    for event_id, event_name, status, project_id, metadata, created_at in passive_events:
+        conn.execute(
+            """
+            INSERT INTO runtime_events (
+                event_id,event_kind,event_name,status,request_scope_id,project_id,
+                actor,metadata_json,created_at
+            ) VALUES (?, 'agent', ?, ?, ?, ?, 'codex', ?, ?)
+            """,
+            (
+                event_id,
+                event_name,
+                status,
+                f"scope:{event_id}",
+                project_id,
+                json.dumps(metadata),
+                created_at,
+            ),
+        )
+
+    for outbox_id, project_id, status, created_at in (
+        ("outbox-passive-a", "project:a", "pending", "2026-07-22T01:01:30Z"),
+        ("outbox-passive-b", "project:b", "failed", "2026-07-22T01:04:00Z"),
+    ):
+        conn.execute(
+            """
+            INSERT INTO store_outbox (
+                outbox_id,tool_name,project_id,call_id,status,payload_json,
+                metadata_json,created_at,updated_at,next_attempt_at
+            ) VALUES (?, 'passive_memory_proposal', ?, ?, ?, '{}', '{}', ?, ?, ?)
+            """,
+            (
+                outbox_id,
+                project_id,
+                f"call:{outbox_id}",
+                status,
+                created_at,
+                created_at,
+                created_at,
+            ),
+        )
+
+    quality_rows = [
+        (
+            "quality-a-1",
+            "project:a",
+            {
+                "live_recall_quality_v1": {
+                    "case_id": "case-a-1",
+                    "dataset_revision": "fixture-v1",
+                    "runtime_mode": "normal",
+                    "ranked_count": 5,
+                    "relevant_rank": 2,
+                    "hit_at": {"1": False, "5": True},
+                    "mrr": 0.5,
+                    "forbidden_hit": False,
+                    "evidence_status": "ground_truth_complete",
+                }
+            },
+            "2026-07-22T02:00:00Z",
+            "2026-07-22T02:00:00.100Z",
+        ),
+        (
+            "quality-a-2",
+            "project:a",
+            {
+                "live_recall_quality_v1": {
+                    "case_id": "case-a-2",
+                    "dataset_revision": "fixture-v1",
+                    "runtime_mode": "normal",
+                    "ranked_count": 4,
+                    "relevant_rank": 1,
+                    "hit_at": {"1": True, "5": True},
+                    "mrr": 1.0,
+                    "forbidden_hit": True,
+                    "evidence_status": "ground_truth_complete",
+                }
+            },
+            "2026-07-22T02:01:00Z",
+            "2026-07-22T02:01:00.250Z",
+        ),
+        (
+            "quality-b",
+            "project:b",
+            {
+                "live_recall_quality_v1": {
+                    "case_id": "FOREIGN_QUALITY_SECRET",
+                    "dataset_revision": "fixture-v1",
+                    "runtime_mode": "normal",
+                    "ranked_count": 1,
+                    "relevant_rank": None,
+                    "hit_at": {"1": False, "5": False},
+                    "mrr": 0.0,
+                    "forbidden_hit": False,
+                    "evidence_status": "ground_truth_complete",
+                }
+            },
+            "2026-07-22T02:02:00Z",
+            "2026-07-22T02:02:00.300Z",
+        ),
+    ]
+    for call_id, project_id, metadata, started_at, ended_at in quality_rows:
+        conn.execute(
+            """
+            INSERT INTO call_spans (
+                call_id,request_scope_id,project_id,tool_name,status,degraded,
+                metadata_json,started_at,ended_at
+            ) VALUES (?, ?, ?, 'context_supply', 'success', 0, ?, ?, ?)
+            """,
+            (
+                call_id,
+                f"scope:{call_id}",
+                project_id,
+                json.dumps(metadata),
+                started_at,
+                ended_at,
+            ),
+        )
+    conn.commit()
+    return {
+        "pending": pending["proposal_id"],
+        "adopted": adopted["proposal_id"],
+        "foreign": by_content["B_FOREIGN_PROPOSAL_SECRET"]["proposal_id"],
+    }
+
+
 @pytest.mark.parametrize("value", [None, "", "0", "true", "yes", "2", 1])
 def test_dashboard_feature_gates_require_exact_string_one(value):
     env = {"PP_DASHBOARD_PROJECT_ID": "project:a"}
@@ -341,6 +555,7 @@ def test_dashboard_feature_gates_require_exact_string_one(value):
 
     assert settings.enabled is False
     assert settings.explain_enabled is False
+    assert settings.review_actions_enabled is False
 
 
 def test_retrieval_explain_gate_requires_dashboard_and_exact_string_one():
@@ -357,6 +572,22 @@ def test_retrieval_explain_gate_requires_dashboard_and_exact_string_one():
     assert disabled.explain_enabled is False
     assert enabled.explain_enabled is True
     assert inexact.explain_enabled is False
+
+
+def test_dashboard_review_actions_require_dashboard_and_exact_string_one():
+    base = {"PP_DASHBOARD_PROJECT_ID": "project:a"}
+
+    disabled = DashboardSettings.from_env({**base, "PP_DASHBOARD_REVIEW_ACTIONS": "1"})
+    enabled = DashboardSettings.from_env(
+        {**base, "PP_DASHBOARD_V2": "1", "PP_DASHBOARD_REVIEW_ACTIONS": "1"}
+    )
+    inexact = DashboardSettings.from_env(
+        {**base, "PP_DASHBOARD_V2": "1", "PP_DASHBOARD_REVIEW_ACTIONS": "true"}
+    )
+
+    assert disabled.review_actions_enabled is False
+    assert enabled.review_actions_enabled is True
+    assert inexact.review_actions_enabled is False
 
 
 def test_dashboard_settings_reject_invalid_or_unimplemented_auth_when_enabled():
@@ -408,6 +639,281 @@ def test_local_scope_fails_closed_for_bind_client_project_and_missing_authority(
     with pytest.raises(DashboardAccessError) as unavailable:
         resolve_local_scope(missing, client_host="127.0.0.1")
     assert unavailable.value.status_code == 503
+
+
+def test_local_scope_accepts_only_server_discovered_selected_project():
+    settings = DashboardSettings.from_env(
+        {"PP_DASHBOARD_V2": "1", "PP_DASHBOARD_PROJECT_ID": "project:a"}
+    )
+
+    selected = resolve_local_scope(
+        settings,
+        client_host="127.0.0.1",
+        requested_project_id="project:b",
+        allowed_project_ids=("project:a", "project:b"),
+    )
+
+    assert selected.project_id == "project:b"
+
+    with pytest.raises(DashboardAccessError) as denied:
+        resolve_local_scope(
+            settings,
+            client_host="127.0.0.1",
+            requested_project_id="project:c",
+            allowed_project_ids=("project:a", "project:b"),
+        )
+    assert denied.value.code == "dashboard_scope_denied"
+
+
+def test_passive_memory_overview_aggregates_scoped_trace_queue_and_quality(repository):
+    _seed_passive_dashboard_data(repository)
+
+    payload = repository.passive_memory_overview(limit=2)
+
+    assert payload["summary"]["context"] == {
+        "total": 1,
+        "injected": 1,
+        "shadowed": 0,
+        "skipped": 0,
+        "average_injection_chars": 420.0,
+        "average_memory_count": 3.0,
+        "sample_size": 1,
+    }
+    assert payload["summary"]["capture"]["total"] == 1
+    assert payload["summary"]["capture"]["proposal_created_events"] == 1
+    assert payload["summary"]["capture"]["sample_status_counts"] == {"queued": 1}
+    assert payload["summary"]["proposals"] == {
+        "total": 2,
+        "status_counts": {"adopted": 1, "pending": 1},
+    }
+    assert payload["summary"]["outbox"]["status_counts"] == {"pending": 1}
+    assert payload["summary"]["outbox"]["oldest_active_age_seconds"] is not None
+    assert payload["summary"]["quality"] == {
+        "case_count": 2,
+        "hit_at": {"1": 0.5, "5": 1.0},
+        "mrr": 0.75,
+        "forbidden_hit_rate": 0.5,
+        "sample_limit": 500,
+    }
+    assert payload["summary"]["derived_work"]["available"] is False
+    assert payload["summary"]["derived_work"]["reason"] == "table_unavailable"
+    assert payload["derived_jobs"] == []
+    assert [row["event_id"] for row in payload["events"]] == [
+        "evt-passive-created",
+        "evt-passive-after",
+    ]
+    assert [row["call_id"] for row in payload["quality_cases"]] == [
+        "quality-a-2",
+        "quality-a-1",
+    ]
+    rendered = json.dumps(payload)
+    assert "FOREIGN_EVENT_SECRET" not in rendered
+    assert "FOREIGN_QUALITY_SECRET" not in rendered
+    assert "B_FOREIGN_PROPOSAL_SECRET" not in rendered
+
+
+def test_passive_memory_overview_projects_scoped_semantic_and_promotion_jobs(repository):
+    _seed_passive_dashboard_data(repository)
+    now = datetime.now(timezone.utc)
+    repository.connection.executescript(
+        """
+        CREATE TABLE derived_work_jobs (
+            job_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            job_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL,
+            max_attempts INTEGER NOT NULL,
+            failure_code TEXT,
+            provider_identity TEXT NOT NULL,
+            config_revision TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            not_before_at TEXT NOT NULL
+        );
+        """
+    )
+    rows = [
+        (
+            "semantic-pending-a",
+            "project:a",
+            "passive_semantic",
+            "pending",
+            0,
+            4,
+            None,
+            "provider:semantic-v1",
+            "semantic-config-v1",
+            "turn-a-1",
+            now.isoformat(),
+            now.isoformat(),
+            now.isoformat(),
+        ),
+        (
+            "semantic-retry-a",
+            "project:a",
+            "passive_semantic",
+            "retry_wait",
+            1,
+            4,
+            "semantic_output_invalid",
+            "provider:semantic-v1",
+            "semantic-config-v1",
+            "turn-a-2",
+            now.isoformat(),
+            now.isoformat(),
+            now.isoformat(),
+        ),
+        (
+            "promotion-dead-a",
+            "project:a",
+            "proposal_promotion",
+            "dead",
+            4,
+            4,
+            "promotion_provider_failed",
+            "provider:promotion-v1",
+            "promotion-config-v1",
+            "proposal-a-1",
+            now.isoformat(),
+            now.isoformat(),
+            now.isoformat(),
+        ),
+        (
+            "promotion-completed-a",
+            "project:a",
+            "proposal_promotion",
+            "completed",
+            1,
+            4,
+            None,
+            "provider:promotion-v1",
+            "promotion-config-v1",
+            "proposal-a-2",
+            now.isoformat(),
+            now.isoformat(),
+            now.isoformat(),
+        ),
+        (
+            "FOREIGN_JOB_SECRET",
+            "project:b",
+            "passive_semantic",
+            "dead",
+            4,
+            4,
+            "FOREIGN_FAILURE_SECRET",
+            "FOREIGN_PROVIDER_SECRET",
+            "foreign-config",
+            "FOREIGN_SUBJECT_SECRET",
+            now.isoformat(),
+            now.isoformat(),
+            now.isoformat(),
+        ),
+    ]
+    repository.connection.executemany(
+        "INSERT INTO derived_work_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+
+    payload = repository.passive_memory_overview(limit=10)
+    derived = payload["summary"]["derived_work"]
+
+    assert derived["available"] is True
+    assert derived["total"] == 4
+    assert derived["active_count"] == 2
+    assert derived["retry_count"] == 1
+    assert derived["dead_count"] == 1
+    assert derived["job_kinds"]["passive_semantic"] == {
+        "total": 2,
+        "status_counts": {"pending": 1, "retry_wait": 1},
+        "active_count": 2,
+        "retry_count": 1,
+        "dead_count": 0,
+        "oldest_active_age_seconds": pytest.approx(0.0, abs=2.0),
+        "failure_codes": {"semantic_output_invalid": 1},
+    }
+    assert derived["job_kinds"]["proposal_promotion"]["status_counts"] == {
+        "completed": 1,
+        "dead": 1,
+    }
+    assert derived["job_kinds"]["proposal_promotion"]["failure_codes"] == {
+        "promotion_provider_failed": 1
+    }
+    assert {row["job_id"] for row in payload["derived_jobs"]} == {
+        "semantic-pending-a",
+        "semantic-retry-a",
+        "promotion-dead-a",
+        "promotion-completed-a",
+    }
+    assert all("payload" not in row and "result" not in row for row in payload["derived_jobs"])
+    rendered = json.dumps(payload)
+    for secret in (
+        "FOREIGN_JOB_SECRET",
+        "FOREIGN_FAILURE_SECRET",
+        "FOREIGN_PROVIDER_SECRET",
+        "FOREIGN_SUBJECT_SECRET",
+    ):
+        assert secret not in rendered
+
+
+def test_memory_proposals_are_project_scoped_filterable_and_redacted(repository):
+    proposal_ids = _seed_passive_dashboard_data(repository)
+
+    pending = repository.list_memory_proposals(
+        limit=10,
+        status="pending",
+        category="fact",
+    )
+    adopted = repository.get_memory_proposal(proposal_ids["adopted"])
+
+    assert pending["page"]["total"] == 1
+    assert [row["proposal_id"] for row in pending["data"]] == [proposal_ids["pending"]]
+    assert pending["data"][0]["metadata"] == {"api_key": "[REDACTED]", "safe": 1}
+    assert pending["data"][0]["score_available"] is False
+    assert adopted is not None
+    assert adopted["status"] == "adopted"
+    assert adopted["promoted_memory_id"] == "mem-a-1"
+    assert repository.get_memory_proposal(proposal_ids["foreign"]) is None
+    assert "B_FOREIGN_PROPOSAL_SECRET" not in json.dumps(pending)
+
+    with pytest.raises(ValueError, match="proposal_status_invalid"):
+        repository.list_memory_proposals(status="foreign")
+    with pytest.raises(ValueError, match="proposal_category_invalid"):
+        repository.list_memory_proposals(category="foreign")
+
+
+def test_memory_proposals_include_automation_score_when_projection_exists(repository):
+    proposal_ids = _seed_passive_dashboard_data(repository)
+    conn = repository.connection
+    ensure_proposal_automation_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO memory_proposal_scores (
+            proposal_id, project_id, observation_count, distinct_session_count,
+            distinct_turn_count, exposure_count, distinct_call_count,
+            quality_score, principle_score,
+            memory_similarity, query_similarity, conflict_count, composite_score,
+            eligible, blocked_reason, score_revision, updated_at
+        ) VALUES (?, 'project:a', 2, 2, 2, 1, 1, 0.9, 0.8, 0.7, 0.6, 0,
+                  0.88, 1, '', 9, '2026-07-22T03:00:00Z')
+        """,
+        (proposal_ids["pending"],),
+    )
+
+    row = repository.list_memory_proposals(status="pending")["data"][0]
+    detail = repository.get_memory_proposal(proposal_ids["pending"])
+
+    assert row["score_available"] is True
+    assert row["composite_score"] == 0.88
+    assert row["eligible"] is True
+    assert row["observation_count"] == 2
+    assert row["distinct_session_count"] == 2
+    assert row["distinct_turn_count"] == 2
+    assert row["exposure_count"] == 1
+    assert row["distinct_call_count"] == 1
+    assert detail is not None
+    assert detail["score_revision"] == 9
 
 
 def test_request_pagination_applies_project_scope_before_limit_and_count(repository):
@@ -516,9 +1022,7 @@ def test_request_metadata_reprojects_stored_explain_snapshots(repository):
 
     detail = repository.get_request("call-a-1")
     listed = next(
-        row
-        for row in repository.list_requests(limit=10)["data"]
-        if row["call_id"] == "call-a-1"
+        row for row in repository.list_requests(limit=10)["data"] if row["call_id"] == "call-a-1"
     )
 
     for result in (detail, listed):
@@ -543,9 +1047,7 @@ def test_lineage_requires_anchor_and_both_ends_to_be_visible(repository):
     assert visible["summary"]["relations"] == {"derived_from": 1}
 
     global_visible = repository.get_lineage("mem-global")
-    assert [row["relation"] for row in global_visible["data"]] == [
-        "ordinary_source_forgotten"
-    ]
+    assert [row["relation"] for row in global_visible["data"]] == ["ordinary_source_forgotten"]
     assert global_visible["data"][0]["evidence_scope"] == "legacy_global"
     assert global_visible["summary"]["legacy_global_edges"] == 1
     assert repository.get_lineage("mem-b-secret") is None
@@ -940,3 +1442,43 @@ def test_overview_counts_only_effective_scope(repository):
     assert overview["degradation_count"] == 1
     assert overview["outbox_count"] == 1
     assert overview["pending_outbox_count"] == 1
+    assert overview["derived_work_queue_depth"] == 0
+    assert overview["derived_work_leased_count"] == 0
+    assert overview["derived_work_retry_count"] == 0
+    assert overview["derived_work_dead_count"] == 0
+    assert overview["derived_work_oldest_age_seconds"] is None
+
+
+def test_overview_projects_durable_derived_work_queue_status(repository):
+    now = datetime.now(timezone.utc)
+    repository.connection.executescript(
+        """
+        CREATE TABLE derived_work_jobs (
+            job_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    rows = [
+        ("pending-a", "project:a", "pending", now.isoformat()),
+        ("retry-a", "project:a", "retry_wait", now.isoformat()),
+        ("leased-a", "project:a", "leased", now.isoformat()),
+        ("dead-a", "project:a", "dead", now.isoformat()),
+        ("pending-b", "project:b", "pending", now.isoformat()),
+    ]
+    repository.connection.executemany(
+        "INSERT INTO derived_work_jobs VALUES (?, ?, ?, ?)",
+        rows,
+    )
+
+    overview = repository.overview()
+
+    assert overview["derived_work_queue_depth"] == 2
+    assert overview["derived_work_pending_count"] == 1
+    assert overview["derived_work_retry_count"] == 1
+    assert overview["derived_work_leased_count"] == 1
+    assert overview["derived_work_dead_count"] == 1
+    assert overview["derived_work_oldest_queued_at"] is not None
+    assert overview["derived_work_oldest_age_seconds"] is not None

@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import stat
 from collections.abc import Iterable, Mapping
 
 import lancedb
@@ -84,9 +85,16 @@ class LanceDBStore:
     Table is created on first access if it doesn't exist.
     """
 
-    def __init__(self, db_path: str, embedder: Embedder) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        embedder: Embedder,
+        *,
+        read_only: bool = False,
+    ) -> None:
         self._path = db_path
         self._embedder = embedder
+        self._read_only = bool(read_only)
         self._vectors_disabled = getattr(embedder, "model_name", "") == "fallback-zero"
         if self._vectors_disabled:
             logger.warning("LanceDBStore: FallbackEmbedder detected — vector operations disabled")
@@ -100,6 +108,26 @@ class LanceDBStore:
 
     def _init_db(self) -> None:
         """Open or create LanceDB database and table."""
+        if self._read_only:
+            try:
+                path_entry = os.lstat(self._path)
+            except OSError as exc:
+                raise RuntimeError("lancedb_read_only_path_unavailable") from exc
+            if not stat.S_ISDIR(path_entry.st_mode):
+                raise RuntimeError("lancedb_read_only_path_unavailable")
+            self._db = lancedb.connect(self._path)
+            try:
+                self._table = self._db.open_table(TABLE_NAME)
+            except Exception as exc:
+                raise RuntimeError("lancedb_read_only_table_unavailable") from exc
+            self._fts_ready = self._existing_fts_ready()
+            logger.info(
+                "LanceDB: opened read-only table '%s' (%d rows)",
+                TABLE_NAME,
+                self._table.count_rows(),
+            )
+            return
+
         os.makedirs(self._path, exist_ok=True)
         self._db = lancedb.connect(self._path)
         try:
@@ -114,12 +142,51 @@ class LanceDBStore:
             logger.info("LanceDB: created table '%s'", TABLE_NAME)
         self._ensure_fts()
 
+    def _existing_fts_ready(self) -> bool:
+        """Report an existing FTS index without creating or replacing one."""
+        if self._table is None:
+            return False
+        try:
+            indices = self._table.list_indices()
+        except Exception:
+            return False
+        for index in indices:
+            columns = getattr(index, "columns", ())
+            if isinstance(columns, str):
+                columns = (columns,)
+            if getattr(index, "name", "") == "text_idx" or "text" in {
+                str(column) for column in columns or ()
+            }:
+                return True
+        return False
+
+    @property
+    def read_only(self) -> bool:
+        """Whether this store is restricted to derived-index reads."""
+        # A few repair and failure-propagation paths construct lightweight
+        # test doubles with ``object.__new__``. Treat a missing flag as the
+        # historical writable default instead of masking the real backend
+        # failure with an AttributeError.
+        return bool(getattr(self, "_read_only", False))
+
+    @property
+    def vector_reads_available(self) -> bool:
+        """Whether vectors are readable without using a degraded scan path."""
+        if getattr(self, "_vectors_disabled", False) or getattr(self, "_table", None) is None:
+            return False
+        return self._vector_scan_allowed()
+
+    def _require_writable(self) -> None:
+        if self.read_only:
+            raise RuntimeError("lancedb_read_only")
+
     def _ensure_fts(self) -> None:
         """Create FTS index on 'text' column if not already present.
 
         Uses a fast check via table schema introspection to avoid
         attempting to recreate an existing FTS index on every init.
         """
+        self._require_writable()
         try:
             # Fast check: try to list indices; if FTS exists, skip creation
             try:
@@ -378,6 +445,41 @@ class LanceDBStore:
                     vectors[memory_id] = list(vector)
         return vectors
 
+    def get_vectors_for_recall(
+        self, memory_ids: Iterable[str]
+    ) -> tuple[dict[str, list[float]], bool]:
+        """Return vectors plus a fail-closed read-status signal for recall."""
+        table = self._table
+        if table is None or not self.vector_reads_available:
+            return {}, False
+
+        requested_ids = list(dict.fromkeys(str(memory_id) for memory_id in memory_ids))
+        vectors: dict[str, list[float]] = {}
+        for offset in range(0, len(requested_ids), _BULK_VECTOR_CHUNK_SIZE):
+            batch = requested_ids[offset : offset + _BULK_VECTOR_CHUNK_SIZE]
+            if not batch:
+                continue
+            quoted_ids = ", ".join(
+                f"'{memory_id.replace(chr(39), chr(39) * 2)}'" for memory_id in batch
+            )
+            try:
+                rows = (
+                    table.search()
+                    .where(f"memory_id IN ({quoted_ids})", prefilter=True)
+                    .select(["memory_id", "vector"])
+                    .limit(len(batch))
+                    .to_list()
+                )
+            except Exception as exc:
+                logger.warning("LanceDB recall vector lookup degraded: %s", exc)
+                return {}, False
+            for row in rows:
+                memory_id = str(row.get("memory_id", ""))
+                vector = row.get("vector")
+                if memory_id in batch and vector:
+                    vectors[memory_id] = list(vector)
+        return vectors, True
+
     def check_duplicate(
         self,
         vector: list[float],
@@ -431,6 +533,8 @@ class LanceDBStore:
         max_fragments: int | None = None,
     ) -> dict[str, object]:
         """Compact a small fragment backlog without risking a large hot-path rewrite."""
+
+        self._require_writable()
 
         threshold = threshold or _positive_int_env(
             "LDB_AUTO_COMPACT_FRAGMENT_THRESHOLD",
@@ -540,6 +644,7 @@ class LanceDBStore:
         scope: str = "global",
     ) -> None:
         """Insert a vector row. No-op if memory_id already exists."""
+        self._require_writable()
         if self._vectors_disabled:
             logger.debug("LanceDBStore.insert(%s): vectors disabled, skipping write", memory_id)
             return
@@ -560,6 +665,7 @@ class LanceDBStore:
         compact: bool = True,
     ) -> None:
         """Insert a vector row and propagate backend failures to repair workers."""
+        self._require_writable()
         if self._vectors_disabled:
             raise RuntimeError("lancedb_vectors_disabled")
         if self._table is None:
@@ -600,6 +706,7 @@ class LanceDBStore:
         compact: bool = True,
     ) -> None:
         """Replace one vector row and propagate failures to repair workers."""
+        self._require_writable()
         if self._vectors_disabled:
             raise RuntimeError("lancedb_vectors_disabled")
         if self._table is None:
@@ -655,11 +762,13 @@ class LanceDBStore:
         scope: str = "global",
     ) -> None:
         """Update or insert a vector row (upsert)."""
+        self._require_writable()
         self.delete(memory_id)
         self.insert(memory_id, vector, text, tier, category, scope)
 
     def delete(self, memory_id: str) -> None:
         """Delete a vector row by memory_id."""
+        self._require_writable()
         try:
             self.delete_checked(memory_id)
         except Exception as e:
@@ -667,6 +776,7 @@ class LanceDBStore:
 
     def delete_checked(self, memory_id: str) -> None:
         """Delete a vector row and propagate backend failures to repair workers."""
+        self._require_writable()
         if self._table is None:
             raise RuntimeError("lancedb_table_unavailable")
         escaped_memory_id = str(memory_id).replace("'", "''")
@@ -696,6 +806,7 @@ class LanceDBStore:
 
     def sync_with_engine(self, engine: object) -> dict:
         """Repair ID-level drift between SQLite memories and LanceDB rows."""
+        self._require_writable()
         self._reset_index_diagnostics()
         memories = self._canonical_engine_memories(engine)
         if memories is None:
@@ -812,9 +923,7 @@ class LanceDBStore:
         # A synchronization pass can touch hundreds of rows.  Compact once at
         # the end instead of inspecting/optimizing the table after every add.
         self.optimize_if_fragmented()
-        orphan_ids = sorted(
-            set(orphan_ids) | (set(late_orphan_ids) - final_invalid_material_ids)
-        )
+        orphan_ids = sorted(set(orphan_ids) | (set(late_orphan_ids) - final_invalid_material_ids))
 
         result = {
             "orphan_deleted": orphan_deleted,
@@ -841,6 +950,7 @@ class LanceDBStore:
         After clearing, the table is empty but still exists with its schema
         and FTS index intact.
         """
+        self._require_writable()
         try:
             return self.clear_all_checked()
         except Exception as e:
@@ -849,6 +959,7 @@ class LanceDBStore:
 
     def clear_all_checked(self) -> int:
         """Delete every vector row and propagate backend failures to repair workers."""
+        self._require_writable()
         if self._table is None:
             raise RuntimeError("lancedb_table_unavailable")
         count = self._table.count_rows()
@@ -873,6 +984,7 @@ class LanceDBStore:
         Returns:
             Number of memories re-indexed.
         """
+        self._require_writable()
         import os as _os
 
         self._reset_index_diagnostics()
@@ -912,6 +1024,7 @@ class LanceDBStore:
             logger.warning("LanceDB rebuild: engine._memories is empty — nothing to rebuild")
             return 0
 
+        batch_vectors = self._rebuild_batch_vectors(memories)
         rebuilt = 0
 
         for mid, mem_data in memories.items():
@@ -924,7 +1037,15 @@ class LanceDBStore:
                 break
 
             try:
-                if not self._insert_engine_memory(engine, mid, mem_data, compact=False):
+                precomputed = batch_vectors.get(mid)
+                if not self._insert_engine_memory(
+                    engine,
+                    mid,
+                    mem_data,
+                    compact=False,
+                    precomputed_vector=precomputed[1] if precomputed else None,
+                    precomputed_vector_text=precomputed[0] if precomputed else None,
+                ):
                     continue
                 rebuilt += 1
             except Exception as e:
@@ -934,6 +1055,59 @@ class LanceDBStore:
         self.optimize_if_fragmented()
         return rebuilt
 
+    def _rebuild_batch_vectors(
+        self,
+        memories: Mapping[str, Mapping[str, object]],
+    ) -> dict[str, tuple[str, list[float]]]:
+        """Precompute vectors in provider batches when the embedder supports it.
+
+        The normal insert path remains authoritative for material and canonical
+        rechecks. A vector is reused only when the exact persisted vector text
+        is still present at insert time; unresolved or failed batches fall back
+        to the existing per-memory path.
+        """
+
+        if not getattr(self._embedder, "supports_native_batch", False):
+            return {}
+        model_name = self._embedding_model_name()
+        candidates: list[tuple[str, str]] = []
+        for memory_id, memory in memories.items():
+            material = read_persisted_index_material(memory, model_name=model_name)
+            if material is None or not material.vector_text.strip():
+                continue
+            candidates.append((memory_id, material.vector_text))
+        if not candidates:
+            return {}
+
+        batch_size = _positive_int_env("EMBEDDER_BATCH_SIZE", 32)
+        vectors: dict[str, tuple[str, list[float]]] = {}
+        for start in range(0, len(candidates), batch_size):
+            batch = candidates[start : start + batch_size]
+            texts = [text for _, text in batch]
+            try:
+                batch_vectors = self._embedder.embed_batch(texts)
+                if len(batch_vectors) != len(batch):
+                    raise RuntimeError("embedding_response_count_mismatch")
+            except Exception as exc:
+                logger.warning(
+                    "LanceDB rebuild: native embedding batch failed for %d memories: %s",
+                    len(batch),
+                    exc,
+                )
+                continue
+            vectors.update(
+                {
+                    memory_id: (text, vector)
+                    for (memory_id, text), vector in zip(batch, batch_vectors, strict=True)
+                }
+            )
+        logger.info(
+            "LanceDB rebuild: precomputed %d/%d vectors using native batches",
+            len(vectors),
+            len(candidates),
+        )
+        return vectors
+
     def _insert_engine_memory(
         self,
         engine: object,
@@ -942,7 +1116,10 @@ class LanceDBStore:
         *,
         replace_existing: bool = False,
         compact: bool = True,
+        precomputed_vector: list[float] | None = None,
+        precomputed_vector_text: str | None = None,
     ) -> bool:
+        self._require_writable()
         if not self._memory_is_index_eligible(engine, mid, mem_data):
             return False
 
@@ -1017,7 +1194,10 @@ class LanceDBStore:
                         failed=True,
                     )
                     return False
-            vector = self._embedder.embed(material.vector_text)
+            if precomputed_vector is not None and precomputed_vector_text == material.vector_text:
+                vector = precomputed_vector
+            else:
+                vector = self._embedder.embed(material.vector_text)
             if migrating_model:
                 canonical = self._canonical_index_memory(engine, mid)
                 if canonical is not None and not self._memory_is_index_eligible(
@@ -1086,6 +1266,7 @@ class LanceDBStore:
             return False
 
     def _delete_repair_row(self, memory_id: str) -> bool:
+        self._require_writable()
         try:
             self.delete_checked(memory_id)
         except Exception as exc:
@@ -1450,6 +1631,7 @@ class LanceDBStore:
         Returns:
             Number of memories backfilled.
         """
+        self._require_writable()
         import os as _os
 
         self._reset_index_diagnostics()

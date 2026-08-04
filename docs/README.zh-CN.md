@@ -22,7 +22,7 @@ Plastic Promise 面向需要长期上下文、明确治理规则和可审计任�
 | 上下文检索不稳定 | 用 `context_supply` 生成核心、关联、发散三层上下文包。 |
 | 自动化需要防线 | 在共享状态变更前执行原则、审计、信任和防线检查。 |
 | 多 Agent 工作难验收 | 通过 Hunter Guild 的认领、心跳、完成、验收状态机追踪任务。 |
-| 工作流只停留在提示词里 | 将启动、记忆、闭环、审查和 SuperPowers 阶段暴露为 MCP 工具。 |
+| 工作流只停留在提示词里 | 自动注入固定版本 Matt Pocock 工作流、调用权限和 MCP 衔接。 |
 
 ## 快速开始
 
@@ -38,6 +38,13 @@ pip install plastic-promise
 git clone https://github.com/ALdaisuki/plastic-promise-release.git
 cd plastic-promise-release
 pip install -e ".[dev]"
+```
+
+基础安装和 `dev` extra 不包含进程内本地模型运行时，云服务器可保持轻量。
+只有明确需要 `sentence-transformers` 本地 Embedding Provider 时才安装：
+
+```bash
+pip install -e ".[dev,local-inference]"
 ```
 
 可选 Rust 加速器：
@@ -168,7 +175,9 @@ http://127.0.0.1:9020/sse
 http://127.0.0.1:9020/dashboard
 ```
 
-Dashboard V2 是仅限本机回环地址、按项目隔离、只读且有界的运维界面，包含总览、
+Dashboard V2 是仅限本机回环地址、按项目隔离、只读且有界的运维界面。本机运维者可从
+服务器 SQLite 活动中发现并选择项目，但每次请求仍只绑定一个项目；该选择器不是远程
+多租户鉴权边界。界面包含总览、
 记忆、请求、综合记忆、记忆谱系、检索解释、运行操作、信任问题和配置。记忆详情会
 显示 `structure-v1` 结构化切片的标题路径、块类型、父记忆、source span、内容哈希和
 截断状态；谱系页显示类型化节点、有向关系以及来源/目标切片锚点。
@@ -185,7 +194,7 @@ Dashboard V2 是仅限本机回环地址、按项目隔离、只读且有界的�
 | 审计与防线 | `audit_pre_check`、`audit_run`、`defense` 在写操作和风险动作前提供检查；`defense(action="evaluate_tool")` 可解释工具语义决策。 |
 | 信任分驱动自治 | 信任分越高，自主权越大；信任分下降时需要更多显式确认。 |
 | Hunter Guild 委托系统 | 通过 `task_enqueue -> task_claim -> task_complete -> task_verify` 管理多 Agent 协作。 |
-| Skills / 治理工作流 | `session-init`、`smart-remember`、`step-closure` 和精简的 16 阶段 `sp-stage` 把工作流变成可追踪工具。 |
+| Skills / 治理工作流 | `session-init`、`smart-remember`、`step-closure` 和官方工作流兼容入口 `sp-stage` 把调用链变成可追踪工具。 |
 | Maintenance Daemon | 执行扫描、恢复、GC、任务生命周期维护和调度健康检查。 |
 | P1 治理运行时 | 工具清单图、`runtime_events`、`mgp_shadow_bridge`、Context Recommender 为审计和推荐提供可解释元数据。 |
 | 插件与市场 | 通过 pack 元数据加载知识、工作流、能力和适配器扩展。 |
@@ -203,9 +212,9 @@ python scripts/benchmark_chunking_shadow.py --source tests/fixtures/recall_quali
 
 当前 `plastic_promise/mcp/server.py` 暴露 58 个 MCP 工具，包含 `session_init` / `sp_stage` 等兼容别名。`mgp_shadow_bridge` 是 MGP 兼容语义桥；P1 阶段只做 off/shadow/inject 模式管理与审计映射，不直接改写长期记忆。
 
-`sp-stage` 保留 16 阶段流程，但对客户端只返回当前阶段与路由、必需产物和闭环提醒；服务端会校验每次转换，并在链违规时返回有效后继。Agent 不再需要加载或复述事无巨细的 SuperPowers 技能说明；会话/flow 隔离、审查、审计、信任检查和可追溯性仍由运行时执行。
+`sp-stage` 仅为已有客户端保留名称；可注册阶段和 route 只来自固定版本 `mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d`。`UserPromptSubmit` Hook 会自动注入官方 flow、完整主链、声明分支、当前/下一阶段、`[user]`/`[model]` 调用权限，以及必须由 `session-init` 和后续 `sp-stage` 原样复用的 project/session/flow ID。canonical memory、临时 proposal 与 route 共用一个严格总字符预算：可以省略完整可选区块，但不会输出截断的 XML-like 合同，默认预算优先保留带 scope 的 route 调用。每个显式 `/skill-name` 都会选择以对应官方 Skill 为首节点的合法 route；自然语言 Skill 短语只有在句首表达正向命令时才生成 user attestation，疑问、否定、状态陈述和引用仍按任务类型路由。`implement` 与 `grill-me` 是复合 Skill，其内部测试/审查或提问循环不会重复成为外层游标阶段；复合 receipt 必须通过 `evidence.invoked_skills` 声明实际内部调用，服务端据此创建 `tracking_basis=composite_receipt` 的确定性 entity-only 子链，而不会伪装成独立 Hook 观测。`small-build` 与 `prototype-detour` 都共享父链 `grill-with-docs` 分支点；未声明的 route 切换仍会被拒绝。无 `execution_receipt` 的首次调用只返回固定 revision/hash 的执行合同，不运行 Codex Skill、不推进游标；客户端实际运行对应 Skill 后，再提交包含 Skill 名、上游 revision、`SKILL.md` SHA256、completed 状态和无 secret JSON evidence 的 caller attestation，服务端不能以密码学方式证明客户端已运行 Skill。治理适配器成功后，receipt 与 cursor 按 project/session/flow scope 在 SQLite 中原子提交；receipt-scoped 确定性 tracking ID 保证提交窗口崩溃后的重试不会重复生成实体。相同 receipt 重放是幂等的，同一 scope/route step 的不同物料会被拒绝。`skill_auto_track` 仅是外部客户端显式兼容入口，不能推进官方游标；Codex 当前不存在自动 `PreToolUse`/`PostToolUse` Skill 追踪。生产只允许一个 MCP 写入进程连接同一 SQLite；进程内锁不是分布式 exactly-once 租约。
 
-重型 `memory_recall` / `context_supply` 调用可携带 `stage_session_id`、`flow_line_id` 和 `request_id`。系统会派生 `request_scope_id`，写入审计元数据并显示在 `context_supply` 输出中，同时用它隔离重叠 SuperPowers 阶段或多 Agent 流程中的召回缓存。
+重型 `memory_recall` / `context_supply` 调用可携带 `stage_session_id`、`flow_line_id` 和 `request_id`。系统会派生 `request_scope_id`，写入审计元数据并显示在 `context_supply` 输出中，同时用它隔离重叠官方工作流阶段或多 Agent 流程中的召回缓存。
 
 `runtime_events` 会记录工具调用和 Hunter Guild 任务流转的 `pending`、`running`、`completed`、`error` 状态，并携带 request scope、trust tier、defense decision 和 audit trace，方便回放与审计。
 
@@ -241,10 +250,10 @@ python scripts/smoke_restart_recovery.py --artifact-dir .artifacts/recovery-smok
 
 `maintenance-heartbeat/v1` 将心跳绑定到 daemon PID；旧心跳仅保留 mtime 兼容。索引重放继续读取既有合法 `memory-index/v2` upsert，但所有新 upsert/delete 都写为带 action、project、memory version、material revision 和 expected embedding hash 的 `memory-index/v3`。
 
-升级到 `0.1.19` 时，应先保持治理综合记忆、提案、Dashboard 和检索解释开关为默认值，同时重启 MCP Server 和 Maintenance Daemon，避免不同版本的写入进程混用事务约定。公开 MCP 工具和参数没有删除；已有 SQLite 记忆继续作为权威数据，LanceDB 可由持久化校验任务修复。LanceDB 最低版本仍为 `0.34.0`，固定在更早版本的环境必须先升级依赖。重启后按需启用 `PP_DASHBOARD_V2=1` 与 `PP_RETRIEVAL_EXPLAIN=1`，再执行：
+升级到 `0.1.20` 时，应先保持治理综合记忆、提案、Dashboard、检索解释、云推理、被动语义捕获与自动晋升开关为默认值，同时重启所有已启用的写入服务，避免不同版本的进程混用事务和派生工作约定。公开 MCP 工具和参数没有删除；已有 SQLite 记忆继续作为权威数据，LanceDB 可由持久化校验任务修复。LanceDB 最低版本仍为 `0.34.0`，固定在更早版本的环境必须先升级依赖。重启后按需逐项启用功能，再执行：
 
 ```bash
-python scripts/smoke_http_mcp.py --expected-version 0.1.19 --expected-mode rust-full
+python scripts/smoke_http_mcp.py --expected-version 0.1.20 --expected-mode rust-full
 ```
 
 回滚时关闭四个开关即可，不要删除 SQLite 中的控制、来源、提案、lineage 或审计记录：
@@ -385,6 +394,199 @@ LanceDB 始终是可重建派生索引。
 
 默认数据存储在本地。外部 Agent、托管 embedding、托管 reranker 或 LLM 集成只有在配置后才会发生网络调用。可选服务不可用时，系统应明确标注降级状态，而不是静默假装完整路径成功。
 
+### 云 embedding、重排与切片分析
+
+云 Provider 默认关闭。评审完成前保持 `EMBEDDER_PROVIDER=ollama`、
+`PP_RERANK_PROVIDERS=ollama,cosine` 和
+`PP_MEMORY_CHUNK_ENRICHMENT=off`。托管调用统一经过 OpenAI-compatible
+传输层，具备输入/输出大小限制、重试、deadline、熔断、响应校验、内容
+hash 缓存和脱敏诊断。API Key 只能放在权限为 `600` 的环境文件或交互式
+密钥存储中，不能提交、写进命令行或日志。
+
+远程配置中的 `embedding.cost_per_million_tokens`、`cost_currency` 和
+`pricing_revision` 是一组必须同时填写的费用证据，当前支持 `USD` 与 `CNY`。价格变化
+不会改变向量内容，因此不参与 embedding/index identity；但正式 generation 的质量门
+仍要求非空单价、币种和可追溯的价格版本。Dashboard 推荐模板故意保留空值，操作员必须
+按模型广场的当前价格填写，不能用零值冒充未知价格。
+
+云优先服务器配置不安装、不启动 Ollama。只有在 Key 完成轮换并
+通过受保护的服务器环境文件配置后，才启用托管 embedding、托管 rerank 和托管结构化
+分析。本地 loopback Provider 传输只保留为后续部署的兼容代码，不作为云优先配置的
+健康或验收条件。
+
+必须配置 API 根地址，不能把文档站当 API。`https://wiki.syuan.org/` 会被
+主动拒绝；应从服务商文档获得真正的 `/v1` API 根地址，再配置
+`EMBEDDER_BASE_URL`、`PP_RERANK_BASE_URL` 或 `PP_INFERENCE_BASE_URL`。
+地址可用不代表认证和模型权限可用，运行时只报告 provider、model、revision、
+dimension、有限 usage 和安全 reason，不会把失败伪装成成功。
+
+部分固定原生维度的 OpenAI-compatible embedding API 会拒绝可选的
+`dimensions` 请求字段。只有在独立验证原生输出与 `PP_EMBEDDING_DIM` 完全一致后，
+才可设置 `EMBEDDER_SEND_DIMENSIONS=0`；响应维度仍会严格校验，且 native 请求模式
+会写入派生索引身份。
+
+把凭据写入服务器环境文件前，先用合成数据探测候选 Provider：
+
+```bash
+python scripts/smoke_cloud_providers.py
+```
+
+该 smoke 只通过隐藏提示读取 Key，不输出凭据、向量或原文。`--keys-from-stdin`
+仅用于受保护的交互管道；脚本刻意不接受命令行 Key 参数或环境变量 Key。
+
+后端输入契约与 Provider 解耦。前端只提交规范化的 `id`、`text`、`base_score`，
+`embedding` 可以省略；后端仅对缺失项批量调用当前配置的云或本地 embedder。
+前端提供的向量只有在维度、有限非零值、完整 embedding 身份和原文 SHA-256
+全部匹配时，才允许在本次请求中复用。这只是结构和声明校验，并不能以密码学方式
+证明该向量真的由所声明的模型生成；因此它不会获得正式 LanceDB 写入权限，正式
+索引物料仍由后端生成。Provider、模型、base URL、path 和 Key 都属于后端配置，
+输入 DTO 会拒绝这些字段。
+
+结构化 JSON 分析对 OpenAI-compatible 云端和 loopback-only Ollama 使用同一份
+Mapping 输入。本地传输不需要 Key，不读取系统代理、拒绝重定向，并受总超时和
+响应大小限制。DeepSeek 官方默认使用 `https://api.deepseek.com` 与
+`deepseek-v4-flash`；后端为确定性 JSON 分析显式关闭 thinking，业务 schema 仍在
+本地严格校验。
+
+同步 rerank 作为无状态请求本身不会造成多设备冲突，危险发生在旧结果覆盖新状态。
+后端结果会绑定 project、query、candidate set、embedding 物料、Provider policy 和
+scoring 的版本哈希，客户端必须拒绝 stale 结果。`project_id` 必须由鉴权后的 gateway
+派生，不能信任前端字段。后端可在调用 Provider 前生成纯请求绑定；若改为异步任务，
+应持久化唯一 `(project_id, idempotency_key)`：同一 input hash 返回已有任务，不同
+input hash 返回冲突。多 worker 仍需原子 claim、lease 和 CAS 完成；进程内缓存不能
+冒充 durable job queue。异步包装只负责避免阻塞事件循环，不能代替持久幂等。云与
+Ollama 回退链分别使用
+`PP_RERANK_CLOUD_MODEL` 和 `PP_RERANK_OLLAMA_MODEL`。
+
+前端可以发起 rerank，但不能提交权威最终排序或 Provider 凭据；只有当前 project 与
+candidate-set version 仍匹配时，前端才应用返回结果。否则即使不破坏状态，也可能因
+重复请求产生重复云费用。
+
+后续若在前端设备运行本地模型，创建请求必须选择不可变模型身份（建议包含 revision 或
+digest），后端会把它同时绑定到幂等请求 hash 与 `client-local-rerank/v2` 数据包。数据包
+包含精确 query、候选文本、base score、原文 hash 和向量 hash，但不包含向量、Provider
+配置或凭据。执行器配置的模型身份必须与数据包完全一致，否则在调用模型前拒绝任务；
+同一幂等键更换模型也返回冲突。前端返回值只携带 package hash、已绑定的模型身份和候选分数。后端仅在鉴权
+project、当前 request ID、query、`top_k`、candidate-set version/hash、embedding 身份和
+维度都与服务端状态一致时接收；该结果只在本次请求内有效，不能写入 LanceDB。异步或
+多设备 gateway 必须把权威 package 保存到按 project 隔离的 durable job，并用 CAS 完成
+状态保证第一个合法结果胜出。不得根据客户端回传重建 package；无状态方案必须改用
+服务端签名或 HMAC。该身份绑定解决并发一致性，不冒充远程模型证明；客户端结果仍然只在
+当前请求内有效且非权威。核心纯校验器本身不冒充这些持久并发保证。
+
+这里新增的是后端核心边界，不是未鉴权公网接口。现有 MCP/Dashboard Starlette
+进程继续只监听 loopback；未来公网 API 必须由独立的鉴权、项目隔离 gateway 提供，
+不能直接暴露完整 MCP 路由面。在该 gateway 完成前，这些前端 DTO 是核心集成契约，
+并不是浏览器可直接调用的 API。
+
+切片语义富化也是显式 opt-in。`PP_MEMORY_CHUNKING=structure-v1` 下先使用
+`PP_MEMORY_CHUNK_ENRICHMENT=shadow`，它只运行有界队列而不改变正式向量；
+通过 shadow 证据评审后，才在离线窗口设置 `on` 并重建派生索引。后续写入和
+修复必须保持相同的 Provider/model/prompt/schema 身份；查询 embedding 永远
+不会调用富化模型。
+
+### 远程配置控制面
+
+服务器状态和云配置由独立的无界面控制 API 提供，只监听 `127.0.0.1:9040`；Mac
+通过 `LocalForward 19040 127.0.0.1:9040` 访问。9040 不得进入公网安全组、UFW
+放行规则或公共反向代理，也不挂载到 MCP 9020 或推理网关 9030。控制面使用
+`viewer < operator < secret-admin` 分级 Token；Provider Key 只能写入或清除，
+任何 safe config、revision、审计或浏览器存储都不返回明文。
+
+Dashboard V2 是唯一的运维前端：记忆、检索和运行证据继续来自 9020，服务器状态、
+desired config、修订和审计由浏览器经 19040 直接调用 9040。控制 Token 只保留在
+浏览器内存，不经过 MCP。产品前端只能使用更窄的 inference gateway 合同，不能
+获得控制面 Token。
+
+普通变更使用 `GET safe config/ETag -> validate -> immutable stage -> If-Match
+CAS activate -> 主机运维重启与 smoke`。所有 POST 都需要 JSON 和当前
+`If-Match`；只有 `stage` 与 `activate` 还需要按操作稳定的 `Idempotency-Key`，
+同一物料重试时复用，物料变化后更换。`activate` 只原子选择权限为 `0600` 的
+`managed.env` 并返回
+`restart_required=true`，不会调用 sudo、systemctl、Provider 或 LanceDB rebuild。
+ETag 是随机的 256-bit 不透明 CAS Token，不由环境内容或 Provider Key 派生；只有
+Embedding 身份变化时才接受 generation evidence，其他激活请求携带 evidence 会被拒绝。
+数据库和 generation 路径、监听地址、控制面认证、systemd/Maintenance 策略、
+gateway 身份与 Provider host allowlist 仍是 bootstrap-only。每个 revision 会私下
+绑定进程可见的 bootstrap EnvironmentFile 指纹；激活和崩溃恢复发现漂移即拒绝，
+该 secret-dependent 指纹不会通过 API 或对象表示返回。
+
+Embedding 精确运行索引身份变化（包括 structure-v1 切片预算）必须先完成 Provider smoke、shadow rebuild、reconciliation、
+固定中英文质量门和 `verify-candidate`。候选验证成功后仍保持 inactive；主机运维
+随后停止 MCP/推理 worker、激活 revision 记录 desired generation、在相同
+`managed.env` 下 promote 完整匹配的 generation，再重启并执行 health/retrieval
+smoke。`/status` 同时显示 desired 与 current 的 generation ID 和完整 manifest
+SHA-256；两者任一不一致都表示尚未完成切换。完整 API、systemd、SSH 隧道和验收
+说明见 [Remote Configuration Control Plane](remote-control-plane.md)。
+
+### 不可变 LanceDB generation
+
+SQLite 是唯一真相源，LanceDB 是可重建投影。更换云模型必须从 SQLite
+Backup API 快照构建 inactive shadow generation，不能复制运行中的数据库
+WAL，也不能原地覆盖 current index。构建会记录源指纹、embedding 身份、质量
+证据以及 index-outbox watermark/digest。评审 watermark 后，必须对同一个
+SQLite 数据库显式执行 reconciliation，才能 promote：
+
+```bash
+python scripts/rebuild_lancedb.py \
+  --generation-root data/lancedb-generations \
+  --generation-id candidate-<utc> \
+  --source-db data/db/plastic_memory.db \
+  --quality-report path/to/publishable-quality-report.json \
+  --candidate-manifest path/to/frozen-candidate-manifest.json
+
+python scripts/manage_lancedb_generations.py \
+  --root data/lancedb-generations reconcile candidate-<utc> \
+  --db data/db/plastic_memory.db
+python scripts/manage_lancedb_generations.py \
+  --root data/lancedb-generations verify-candidate candidate-<utc> \
+  --db data/db/plastic_memory.db \
+  --embedding-index-identity '<与 staged revision 完全一致的索引身份>'
+
+# 停止服务并激活匹配 revision 后，加载其 managed EnvironmentFile 再 promote。
+python scripts/manage_lancedb_generations.py \
+  --root data/lancedb-generations promote candidate-<utc> \
+  --db data/db/plastic_memory.db
+```
+
+`reconcile` 会写 SQLite：只把快照覆盖的索引任务标记为 done 并保存 receipt。
+出现更新任务、processing 任务、缺少不可变 outbox 列、WAL 变化或 receipt/数据库
+不匹配时必须 fail closed。`verify-candidate` 会重新核验 artifact、质量报告、
+SQLite freshness、embedding 身份和 staged runtime environment，但不会移动
+`current`。生产顺序固定为 `verify-candidate -> stop -> activate desired state ->
+promote -> restart/smoke`。`promote` 与 `rollback` 要求 generation 已验证且
+已 reconciliation，并加载目标 MCP 的 EnvironmentFile；运行时以只读方式打开
+所选索引，除非显式配置了与 generation 绑定的可写 live view。
+
+需要让新的 checked `memory_index` / `synthesis_index` outbox 任务实时进入派生索引时，
+从已验证的 current generation 创建私有 live root。current manifest 必须包含已完成
+reconciliation 且能在数据库中验证 receipt 的 outbox 证据。先创建私有父目录，目标路径
+本身必须不存在：
+
+```bash
+python scripts/manage_generation_live_index.py \
+  --live-root data/lancedb-live/generation-<utc> \
+  bootstrap --generation-root data/lancedb-generations
+python scripts/manage_generation_live_index.py \
+  --live-root data/lancedb-live/generation-<utc> \
+  verify --generation-root data/lancedb-generations
+```
+
+重启 MCP 前，在 bootstrap EnvironmentFile 中同时设置
+`PLASTIC_LANCEDB_GENERATION_ROOT` 和 `PLASTIC_LANCEDB_LIVE_ROOT`。Python 与 Rust
+读取同一个 live index；runtime refresh 只报告有界 outbox lag，不再对 live view
+执行全量 `sync_with_engine()`。Maintenance 只允许把 watermark 之后通过检查的 outbox
+任务增量回放到副本，immutable generation 保持不变。每次 promotion 或 rollback 都会
+创建并永久保留一个一次性的 `selections/<activation-id>` 链接，再原子切换 `current`；
+live binding 包含该 activation ID，因此 A -> B -> A 回滚也不会让旧 A live root 重新
+生效。selection 链接不得删除或复用，每次激活都必须创建新的 live root；清理旧 live
+root 是需要单独授权的运维操作。旧式 `current -> generations/<id>` 仍可只读解析，但在
+显式 promotion 或 rollback 创建 activation link 前不能作为 live view 的基线。
+
+无参数的旧版
+`rebuild_lancedb.py` 和 `smoke_http_mcp.py` 都可能写入索引、smoke 记忆或
+outbox；除非明确要这些副作用，否则不要对生产数据库运行。
+
 ### 多 Agent 可追踪协作
 
 Hunter Guild 把任务发布、认领、心跳、完成、验收变成可追踪状态机，避免多 Agent 工作变成不可审计的提示词堆叠。
@@ -398,6 +600,7 @@ Hunter Guild 把任务发布、认领、心跳、完成、验收变成可追踪�
 | 一键启动 | `python scripts/init_and_start.py` |
 | 启动模式 | `light`、`normal`、`rust-normal`、`full`、`rust-full`，非交互默认 `rust-full` |
 | 守护进程 | `daemons/maintenance_daemon.py` |
+| 远程配置 | 独立回环 `127.0.0.1:9040`；Mac SSH forward `19040`；只写 desired state，重启和 generation promote 由主机运维执行 |
 | 默认 embedding | Ollama `mxbai-embed-large`，长文本切块池化，可降级 fallback embedder |
 | 默认 embedding 超时 | `EMBEDDER_TIMEOUT=30`，可用环境变量覆盖 |
 | 可选切片富化 | 默认关闭；本地 Ollama `qwen3:8b`、严格来源校验、SQLite 缓存；先离线重建启用 `on`，服务期间保持 `on` |
@@ -457,22 +660,30 @@ pytest
 ruff check plastic_promise/
 ```
 
+仅在开发或测试进程内本地 Embedding Provider 时使用
+`pip install -e ".[dev,local-inference]"`；云服务开发和服务器部署保持 `dev` Profile。
+
 发行版 live sync 会先确认发行仓库工作树干净、位于 `main`、`origin` 与预期一致，
 且当前版本 tag 在本地和远端均不存在。校验完成后只暂存计算得到的发行路径；任何
 额外 staged、unstaged 或 untracked 路径都会阻止发行。先执行 dry-run；第一次且唯一
-一次 live 调用必须带 `--push`。该进程会创建 commit 与 annotated tag，重新校验固定的
-commit/tag 对象和远端状态，再原子推送 `main` 与精确 tag。不要先执行不带 `--push`
-的 live 调用，否则遗留的本地 commit/tag 会导致下一次预检失败；也不要改用手工 push
-或 `git push --tags` 绕过发行证明。
+一次 live 调用必须带 `--push`；不带 `--push` 的 live 调用会被拒绝。push 路径还必须使用
+`--validation-profile full`，并提供绑定精确版本与源码 HEAD 的有界
+`--release-evidence` JSON。该无自由文本、无秘密字段的维护者证明必须确认：自动审计分数
+至少为 `0.60`、blocking/major 均为零，且高风险审查、秘密扫描、限定范围 Ruff、JavaScript 语法、
+live HTTP、重启恢复、diff check 与 release-sync preview 全部通过。该进程会创建 commit
+与 annotated tag，重新校验固定的 commit/tag 对象和远端状态，再原子推送 `main` 与
+精确 tag。不要执行不带 `--push` 的 live 调用，也不要改用手工 push 或
+`git push --tags` 绕过发行证明。
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.19 --release-repo F:/Agent/plastic-promise-release \
+  --version v0.1.20 --release-repo ../plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \
   --validation-profile full --dry-run
-# dry-run 和全部发行门禁通过后，以相同参数改用 --push 执行一次 live 发布。
+# 全部门禁通过后，以相同参数改用 --push，并添加：
+#   --release-evidence <path-to-release-evidence.json>
 ```
 
 贡献约定：

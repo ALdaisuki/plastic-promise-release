@@ -159,6 +159,65 @@ async def test_governed_cycle_persists_parent_and_ordered_children_after_reopen(
 
 
 @pytest.mark.asyncio
+async def test_governed_cycle_durably_marks_worker_runtime_failures_as_degraded(
+    monkeypatch, tmp_path
+):
+    from daemons import maintenance_daemon
+    from plastic_promise.core.traceability import TraceabilityStore
+
+    engine = _trace_engine(tmp_path / "traceability.sqlite")
+    monkeypatch.setattr(maintenance_daemon, "scan_memory_decay", lambda _engine: {"processed": 1})
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "expire_pending_memory_proposals",
+        lambda _engine: {
+            "expired": 0,
+            "semantic_jobs": {
+                "skipped": "semantic_memory_runtime_unavailable",
+                "failure_code": "semantic_memory_runtime_init_failed",
+                "processed_batches": 0,
+            },
+            "promotion_jobs": {
+                "skipped": "proposal_promotion_runtime_unavailable",
+                "failure_code": "proposal_promotion_runtime_init_failed",
+                "processed_batches": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "scan_synthesis_integrity", lambda _engine: {"stale": 0}
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "replay_memory_index_jobs", lambda _engine: {"succeeded": 1}
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "replay_synthesis_index_jobs", lambda _engine: {"succeeded": 1}
+    )
+    monkeypatch.setattr(maintenance_daemon, "run_audit", lambda: {"score": 1.0})
+
+    result = await maintenance_daemon.run_governed_maintenance_cycle(engine)
+    engine._sqlite._conn.close()
+    store = TraceabilityStore(engine.trace_db)
+    root, children = store.get_cycle_span_tree(result["cycle_call_id"])
+    store.close()
+
+    by_stage = {span["stage"]: span for span in children}
+    expected_codes = [
+        "proposal_promotion_runtime_init_failed",
+        "semantic_memory_runtime_init_failed",
+    ]
+    assert result["status"] == "partial"
+    assert result["degradations"] == {"proposal_expiry": expected_codes}
+    assert root["status"] == "partial"
+    assert root["degraded"] is True
+    assert root["metadata"]["degraded_count"] == 1
+    assert root["metadata"]["degradation_codes"] == {"proposal_expiry": expected_codes}
+    assert by_stage["proposal_expiry"]["status"] == "degraded"
+    assert by_stage["proposal_expiry"]["degraded"] is True
+    assert by_stage["proposal_expiry"]["metadata"]["failure_codes"] == expected_codes
+
+
+@pytest.mark.asyncio
 async def test_governed_cycle_marks_parent_partial_and_continues_after_middle_failure(
     monkeypatch, tmp_path
 ):

@@ -46,9 +46,7 @@ def test_memory_hash_fails_closed_without_canonical_embedding(tmp_path, memory_i
         _memory_hash(db_path, memory_id)
 
 
-def test_recovery_source_calls_persist_two_distinct_ids_without_ollama(
-    tmp_path, monkeypatch
-):
+def test_recovery_source_calls_persist_two_distinct_ids_without_ollama(tmp_path, monkeypatch):
     from plastic_promise.core.context_engine import ContextEngine
     from plastic_promise.core.embedder import reset_embedder
     from plastic_promise.mcp.tools.memory import handle_memory_store
@@ -96,9 +94,7 @@ def test_recovery_source_ids_fail_closed_when_dedup_collapses_sources():
         ([128], "recovery_source_cleanliness_unavailable"),
     ],
 )
-def test_recovery_smoke_requires_clean_tracked_source(
-    monkeypatch, tmp_path, returncodes, error
-):
+def test_recovery_smoke_requires_clean_tracked_source(monkeypatch, tmp_path, returncodes, error):
     from scripts import smoke_restart_recovery
 
     pending = list(returncodes)
@@ -163,6 +159,16 @@ def complete_recovery_smoke_v1(*, run_nonce="run-a", port=9101):
             "pid": pid,
             "source_root": source_root,
             "source_revision": source_revision,
+            "identity_valid": True,
+            "health_policy": "strict",
+            "degraded": False,
+            "retrieval_status": "ready",
+            "vector_ready": True,
+            "vector_reason": None,
+            "lancedb_ready": True,
+            "lancedb_required": True,
+            "bm25_ready": True,
+            "graph_ready": True,
             "fusion_policy": "max-v1",
             "fusion_attestation": {
                 "schema": MCP_FUSION_IDENTITY_SCHEMA,

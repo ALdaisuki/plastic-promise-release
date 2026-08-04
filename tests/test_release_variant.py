@@ -43,6 +43,15 @@ def test_standard_release_variant_is_a_distribution_contract():
         "local-all-in-one",
         "split-async",
     }
+    assert payload["content_policy"]["engineering_pattern_allowlist"]
+    assert {
+        "rust-release-import",
+        "artifact-build",
+        "artifact-metadata",
+        "twine-check",
+        "external-release-evidence",
+        "atomic-push",
+    } <= set(payload["release"]["required_gates"])
 
 
 def test_release_variant_rejects_secret_values(tmp_path):
@@ -88,9 +97,9 @@ def test_release_variant_rejects_unknown_fields(tmp_path):
 def test_release_variant_requires_server_only_canonical_state_for_split_async(tmp_path):
     validator = _load_validator()
     payload = _standard_payload()
-    payload["deployment"]["profiles"]["split-async"][
-        "canonical_state_location"
-    ] = "client-and-server"
+    payload["deployment"]["profiles"]["split-async"]["canonical_state_location"] = (
+        "client-and-server"
+    )
     path = _write_variant(tmp_path, payload)
 
     with pytest.raises(validator.ReleaseVariantError, match="split_profile_invalid"):
@@ -100,9 +109,7 @@ def test_release_variant_requires_server_only_canonical_state_for_split_async(tm
 def test_release_variant_requires_all_in_one_state_to_remain_local(tmp_path):
     validator = _load_validator()
     payload = _standard_payload()
-    payload["deployment"]["profiles"]["local-all-in-one"][
-        "async_worker_location"
-    ] = "server"
+    payload["deployment"]["profiles"]["local-all-in-one"]["async_worker_location"] = "server"
     path = _write_variant(tmp_path, payload)
 
     with pytest.raises(validator.ReleaseVariantError, match="local_profile_invalid"):

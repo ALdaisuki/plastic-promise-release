@@ -28,6 +28,7 @@ from plastic_promise.mcp.tools import memory as memory_tools
 from plastic_promise.mcp.tools.memory import handle_memory_store
 from plastic_promise.mcp.tools.reflection import handle_feedback_apply
 from plastic_promise.memory.pipeline import MemoryPipeline, PreparedMemory
+from plastic_promise.skills import memory_operations
 
 UTC = timezone.utc
 
@@ -172,15 +173,11 @@ def _proposal_for_engine(engine, *, turn_hash="sha256:proposal-turn", content=No
 def _legacy_pipeline():
     pipeline = Mock()
     pipeline.store_urgent.return_value = "fuzzy_legacy"
-    pipeline.process_pipeline.return_value = {
-        "pipeline": {"embedded\u2192migrated": 1}
-    }
+    pipeline.process_pipeline.return_value = {"pipeline": {"embedded\u2192migrated": 1}}
     return pipeline
 
 
-def test_memory_store_returns_canonical_id_after_pipeline_dedup(
-    proposal_engine, monkeypatch
-):
+def test_memory_store_returns_canonical_id_after_pipeline_dedup(proposal_engine, monkeypatch):
     from plastic_promise.mcp import server as mcp_server
 
     monkeypatch.setenv("PP_MEMORY_PROPOSALS", "off")
@@ -248,15 +245,11 @@ def test_memory_store_returns_canonical_id_after_pipeline_dedup(
             "timestamp": notifications[0]["timestamp"],
         }
     ]
-    assert any(
-        edge["from"] == "fuzzy_canonical" for edge in proposal_engine._graph_edges
-    )
+    assert any(edge["from"] == "fuzzy_canonical" for edge in proposal_engine._graph_edges)
     assert all(edge["from"] != "fuzzy_submitted" for edge in proposal_engine._graph_edges)
 
 
-def test_memory_store_does_not_borrow_another_migration_outcome(
-    proposal_engine, monkeypatch
-):
+def test_memory_store_does_not_borrow_another_migration_outcome(proposal_engine, monkeypatch):
     monkeypatch.setenv("PP_MEMORY_PROPOSALS", "off")
     pipeline = _legacy_pipeline()
     pipeline.store_urgent.return_value = "fuzzy_missing"
@@ -279,14 +272,98 @@ def test_memory_store_does_not_borrow_another_migration_outcome(
     assert "durable migration" in payload["warnings"][-1]
 
 
+def test_memory_store_organizes_every_new_memory_from_one_submission(proposal_engine, monkeypatch):
+    from plastic_promise.core import memory_relations
+
+    monkeypatch.setenv("PP_MEMORY_PROPOSALS", "off")
+    for memory_id, content in (
+        ("fuzzy_primary", "Use TypeScript for the API project."),
+        ("fuzzy_secondary", "Do not use TypeScript for the API project."),
+    ):
+        proposal_engine.register_memory(
+            {
+                "id": memory_id,
+                "content": content,
+                "memory_type": "experience",
+                "source": "user",
+                "scope": "global",
+                "project_id": "project:plastic-promise",
+                "visibility": "project",
+                "source_class": "user_fact",
+                "domain": "building",
+                "entity_ids": [],
+            }
+        )
+
+    pipeline = _legacy_pipeline()
+    pipeline.store_urgent.return_value = "fuzzy_primary"
+    pipeline._buffer = {
+        "fuzzy_primary": {"created_by_call_id": "call-public-store"},
+        "fuzzy_secondary": {"created_by_call_id": "call-public-store"},
+        "fuzzy_other": {"created_by_call_id": "call-other"},
+    }
+    pipeline.process_pipeline.return_value = {
+        "pipeline": {"embedded→migrated": 2},
+        "migration_outcomes": {
+            "fuzzy_primary": {
+                "status": "stored",
+                "canonical_memory_id": "fuzzy_primary",
+            },
+            "fuzzy_secondary": {
+                "status": "stored",
+                "canonical_memory_id": "fuzzy_secondary",
+            },
+            "fuzzy_other": {
+                "status": "stored",
+                "canonical_memory_id": "fuzzy_other",
+            },
+        },
+    }
+    monkeypatch.setattr(memory_tools, "_get_fuzzy_buffer", lambda _engine: pipeline)
+    organized = []
+
+    def capture_organization(_engine, memory_id, *, call_id):
+        organized.append((memory_id, call_id))
+        relation = (
+            [{"memory_id": "fuzzy_primary", "relation": "contradicts", "score": 0.8}]
+            if memory_id == "fuzzy_secondary"
+            else []
+        )
+        return {
+            "status": "completed",
+            "relation_count": len(relation),
+            "conflict_count": len(relation),
+            "relations": relation,
+            "topic_tags": [f"topic:{memory_id}"],
+        }
+
+    monkeypatch.setattr(memory_relations, "organize_memory_relations", capture_organization)
+
+    payload = _payload(asyncio.run(handle_memory_store(proposal_engine, _public_args())))
+
+    assert organized == [
+        ("fuzzy_primary", "call-public-store"),
+        ("fuzzy_secondary", "call-public-store"),
+    ]
+    organization = payload["knowledge_organization"]
+    assert organization["memory_count"] == 2
+    assert organization["memory_ids"] == ["fuzzy_primary", "fuzzy_secondary"]
+    assert organization["conflict_count"] == 1
+    assert organization["relations"] == [
+        {
+            "source_memory_id": "fuzzy_secondary",
+            "memory_id": "fuzzy_primary",
+            "relation": "contradicts",
+            "score": 0.8,
+        }
+    ]
+
+
 def test_schema_is_idempotent_and_constrained(conn):
     ensure_memory_proposal_schema(conn)
     ensure_memory_proposal_schema(conn)
 
-    columns = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(memory_proposals)").fetchall()
-    }
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_proposals)").fetchall()}
 
     assert {
         "proposal_id",
@@ -387,9 +464,14 @@ def test_legacy_unconstrained_schema_is_atomically_rebuilt_and_invalid_adoption_
             "WHERE proposal_id = 'proposal_legacy_pending'"
         )
     conn.rollback()
-    assert "between 1 and 500" in conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_proposals'"
-    ).fetchone()[0].lower()
+    assert (
+        "between 1 and 500"
+        in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_proposals'"
+        )
+        .fetchone()[0]
+        .lower()
+    )
     conn.close()
 
 
@@ -420,7 +502,7 @@ def test_adopt_prepared_revalidates_tampered_existing_adopted_row(store, candida
 
 
 def test_schema_rejects_raw_policy_bypass(store, candidate):
-    proposal, = store.create_many([candidate])
+    (proposal,) = store.create_many([candidate])
 
     with pytest.raises(sqlite3.IntegrityError):
         store.conn.execute(
@@ -460,11 +542,34 @@ def test_proposal_mode_defaults_off_and_rejects_unknown(monkeypatch):
         "github_pat_abcdefghijklmnopqrstuvwxyz1234567890",
         "AKIAABCDEFGHIJKLMNOP",
         "password = CorrectHorseBatteryStaple",
+        "API_KEY=synthetic-provider-credential",
+        "access_token: synthetic-access-credential",
+        "服务器密码是 CorrectHorseBatteryStaple",
+        "数据库密码：DbSecret-2026",
+        "访问密钥为 key_material_123456",
+        "Qzrm&)4816kappa这个密码试试",
+        "Qzrm&)4816kappa.",
+        "i-example-instance\n203.0.113.42\nQzrm&)4816kappa",
+        "Qzrm-4816-kappa is the password to try",
         "postgresql://admin:secret@db.internal/app",
     ],
 )
 def test_common_secret_shapes_are_detected(content):
     assert contains_secret(content)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "这是关于如何更换服务器密码的说明",
+        "memory-checkpoint-20260722T145307Z",
+        "codex/remote-config-control-plane",
+        "commit 9366965e65897590471dc8155d28aecef4b832856d9f19f7aab27f516e0f57c4\n"
+        "path /srv/plastic-promise/state/db/plastic_memory.db",
+    ],
+)
+def test_secret_heuristics_preserve_normal_operational_text(content):
+    assert not contains_secret(content)
 
 
 def test_configured_secret_regex_is_detected(monkeypatch):
@@ -477,47 +582,40 @@ def test_configured_secret_regex_is_detected(monkeypatch):
     assert not contains_secret("This ordinary preference is safe to retain")
 
 
-def test_candidate_accepts_normalized_nonempty_and_500_but_rejects_outside_bounds(
-    store, candidate
-):
+def test_candidate_accepts_normalized_nonempty_and_500_but_rejects_outside_bounds(store, candidate):
     now = datetime(2026, 7, 10, tzinfo=UTC)
 
-    assert store.create_many([replace(candidate, content="x")], now=now)[0][
-        "status"
-    ] == "pending"
-    assert store.create_many(
-        [
-            replace(
-                candidate,
-                content="x" * 500,
-                origin_turn_hash="sha256:turn-two",
-            )
-        ],
-        now=now,
-    )[0]["status"] == "pending"
+    assert store.create_many([replace(candidate, content="x")], now=now)[0]["status"] == "pending"
+    assert (
+        store.create_many(
+            [
+                replace(
+                    candidate,
+                    content="x" * 500,
+                    origin_turn_hash="sha256:turn-two",
+                )
+            ],
+            now=now,
+        )[0]["status"]
+        == "pending"
+    )
 
     with pytest.raises(ProposalPolicyError, match="empty_content"):
-        store.create_many(
-            [replace(candidate, content="  ", origin_turn_hash="sha256:empty")]
-        )
+        store.create_many([replace(candidate, content="  ", origin_turn_hash="sha256:empty")])
     with pytest.raises(ProposalPolicyError, match="content_too_long"):
-        store.create_many(
-            [replace(candidate, content="x" * 501, origin_turn_hash="sha256:long")]
-        )
+        store.create_many([replace(candidate, content="x" * 501, origin_turn_hash="sha256:long")])
 
 
 def test_create_many_normalizes_and_deduplicates_fingerprint(store, candidate):
-    first, = store.create_many([candidate])
-    replay, = store.create_many(
+    (first,) = store.create_many([candidate])
+    (replay,) = store.create_many(
         [replace(candidate, content="  The user prefers concise   technical explanations.  ")]
     )
 
     assert replay["proposal_id"] == first["proposal_id"]
     assert replay["content_hash"] == first["content_hash"]
     assert replay["content"] == "The user prefers concise technical explanations."
-    assert store.conn.execute(
-        "SELECT COUNT(*) FROM memory_proposals"
-    ).fetchone()[0] == 1
+    assert store.conn.execute("SELECT COUNT(*) FROM memory_proposals").fetchone()[0] == 1
 
 
 def test_create_many_deduplicates_batch_and_caps_at_five(store, candidate):
@@ -547,20 +645,14 @@ def test_invalid_later_candidate_leaves_no_partial_batch(store, candidate):
     with pytest.raises(ProposalPolicyError, match="user_origin_required"):
         store.create_many([candidate, invalid])
 
-    assert store.conn.execute(
-        "SELECT COUNT(*) FROM memory_proposals"
-    ).fetchone()[0] == 0
+    assert store.conn.execute("SELECT COUNT(*) FROM memory_proposals").fetchone()[0] == 0
 
 
 def test_secret_is_rejected_before_plaintext_persistence(store, candidate):
     with pytest.raises(ProposalPolicyError, match="secret_detected"):
-        store.create_many(
-            [replace(candidate, content="ghp_abcdefghijklmnopqrstuvwxyz123456")]
-        )
+        store.create_many([replace(candidate, content="ghp_abcdefghijklmnopqrstuvwxyz123456")])
 
-    assert store.conn.execute(
-        "SELECT COUNT(*) FROM memory_proposals"
-    ).fetchone()[0] == 0
+    assert store.conn.execute("SELECT COUNT(*) FROM memory_proposals").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize(
@@ -573,15 +665,11 @@ def test_secret_is_rejected_before_plaintext_persistence(store, candidate):
         ({"audit_note": "x" * 5000}, "metadata_too_large"),
     ],
 )
-def test_metadata_cannot_bypass_plaintext_or_secret_policy(
-    store, candidate, metadata, reason
-):
+def test_metadata_cannot_bypass_plaintext_or_secret_policy(store, candidate, metadata, reason):
     with pytest.raises(ProposalPolicyError, match=reason):
         store.create_many([replace(candidate, metadata=metadata)])
 
-    assert store.conn.execute(
-        "SELECT COUNT(*) FROM memory_proposals"
-    ).fetchone()[0] == 0
+    assert store.conn.execute("SELECT COUNT(*) FROM memory_proposals").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize(
@@ -602,7 +690,7 @@ def test_candidate_policy_fails_closed(store, candidate, changes, reason):
 
 def test_expiry_redacts_plaintext_but_retains_hash(store, candidate):
     created_at = datetime(2026, 7, 1, 12, 30, tzinfo=UTC)
-    proposal, = store.create_many([candidate], now=created_at)
+    (proposal,) = store.create_many([candidate], now=created_at)
 
     assert proposal["created_at"].endswith("Z")
     assert proposal["expires_at"].endswith("Z")
@@ -617,7 +705,7 @@ def test_expiry_redacts_plaintext_but_retains_hash(store, candidate):
 
 
 def test_reject_requires_actor_call_and_is_idempotent(store, candidate):
-    proposal, = store.create_many([candidate])
+    (proposal,) = store.create_many([candidate])
 
     with pytest.raises(ProposalPolicyError, match="review_actor_required"):
         store.reject(proposal["proposal_id"], actor="", call_id="call_review")
@@ -669,7 +757,7 @@ def test_reject_persists_only_bounded_reason_codes(store, candidate, unsafe_reas
 
 
 def test_adopt_prepared_requires_evidence_and_is_idempotent(store, candidate):
-    proposal, = store.create_many([candidate])
+    (proposal,) = store.create_many([candidate])
 
     with pytest.raises(ProposalPolicyError, match="review_actor_required"):
         store.adopt_prepared(
@@ -707,7 +795,7 @@ def test_adopt_prepared_requires_evidence_and_is_idempotent(store, candidate):
 
 
 def test_adopt_prepared_participates_in_existing_transaction(conn, store, candidate):
-    proposal, = store.create_many([candidate])
+    (proposal,) = store.create_many([candidate])
     conn.execute("CREATE TABLE promotion_probe (memory_id TEXT PRIMARY KEY)")
 
     with pytest.raises(RuntimeError, match="rollback promotion"), conn:
@@ -726,7 +814,7 @@ def test_adopt_prepared_participates_in_existing_transaction(conn, store, candid
 
 def test_expired_pending_proposal_cannot_be_adopted_and_is_redacted(store, candidate):
     created_at = datetime(2026, 7, 1, tzinfo=UTC)
-    proposal, = store.create_many([candidate], now=created_at)
+    (proposal,) = store.create_many([candidate], now=created_at)
 
     with pytest.raises(ProposalPolicyError, match="proposal_expired"):
         store.adopt_prepared(
@@ -780,10 +868,28 @@ def test_classifier_extracts_atomic_user_candidates_without_transcript():
     "extracted",
     [
         [],
-        [SimpleNamespace(category="entity", source_segment="A durable entity value.", confidence=0.9)],
-        [SimpleNamespace(category="fact", source_segment="A durable but uncertain fact.", confidence=0.49)],
-        [SimpleNamespace(category="fact", source_segment="A non-finite confidence fact.", confidence=float("nan"))],
-        [SimpleNamespace(category="fact", source_segment="Assistant: inferred durable fact.", confidence=0.9)],
+        [
+            SimpleNamespace(
+                category="entity", source_segment="A durable entity value.", confidence=0.9
+            )
+        ],
+        [
+            SimpleNamespace(
+                category="fact", source_segment="A durable but uncertain fact.", confidence=0.49
+            )
+        ],
+        [
+            SimpleNamespace(
+                category="fact",
+                source_segment="A non-finite confidence fact.",
+                confidence=float("nan"),
+            )
+        ],
+        [
+            SimpleNamespace(
+                category="fact", source_segment="Assistant: inferred durable fact.", confidence=0.9
+            )
+        ],
         [
             SimpleNamespace(
                 category="fact",
@@ -818,9 +924,7 @@ def test_classifier_secret_scan_precedes_extractor():
     assert calls == []
 
 
-def test_off_keeps_legacy_write_without_proposal_classification(
-    proposal_engine, monkeypatch
-):
+def test_off_keeps_legacy_write_without_proposal_classification(proposal_engine, monkeypatch):
     monkeypatch.setenv("PP_MEMORY_PROPOSALS", "off")
     pipeline = _legacy_pipeline()
     monkeypatch.setattr(memory_tools, "_get_fuzzy_buffer", lambda _engine: pipeline)
@@ -835,14 +939,13 @@ def test_off_keeps_legacy_write_without_proposal_classification(
     assert payload["stored"] is True
     assert "proposal_shadow" not in payload
     pipeline.store_urgent.assert_called_once()
-    assert proposal_engine._sqlite._conn.execute(
-        "SELECT COUNT(*) FROM memory_proposals"
-    ).fetchone()[0] == 0
+    assert (
+        proposal_engine._sqlite._conn.execute("SELECT COUNT(*) FROM memory_proposals").fetchone()[0]
+        == 0
+    )
 
 
-def test_shadow_keeps_legacy_write_and_emits_hash_only_diagnostic(
-    proposal_engine, monkeypatch
-):
+def test_shadow_keeps_legacy_write_and_emits_hash_only_diagnostic(proposal_engine, monkeypatch):
     monkeypatch.setenv("PP_MEMORY_PROPOSALS", "shadow")
     monkeypatch.setattr(
         "plastic_promise.smart_extractor.extract_memories",
@@ -855,16 +958,18 @@ def test_shadow_keeps_legacy_write_and_emits_hash_only_diagnostic(
 
     assert payload["stored"] is True
     shadow = payload["proposal_shadow"]
-    assert shadow["content_hash"] == "sha256:" + hashlib.sha256(
-        _public_args()["content"].encode("utf-8")
-    ).hexdigest()
+    assert (
+        shadow["content_hash"]
+        == "sha256:" + hashlib.sha256(_public_args()["content"].encode("utf-8")).hexdigest()
+    )
     assert shadow["would_propose"] is True
     assert "content" not in shadow
     assert _public_args()["content"] not in json.dumps(shadow)
     pipeline.store_urgent.assert_called_once()
-    assert proposal_engine._sqlite._conn.execute(
-        "SELECT COUNT(*) FROM memory_proposals"
-    ).fetchone()[0] == 0
+    assert (
+        proposal_engine._sqlite._conn.execute("SELECT COUNT(*) FROM memory_proposals").fetchone()[0]
+        == 0
+    )
 
 
 def test_on_routes_public_user_fact_before_pipeline_and_ignores_commit_mode(
@@ -891,16 +996,53 @@ def test_on_routes_public_user_fact_before_pipeline_and_ignores_commit_mode(
     assert payload["status"] == "pending"
     assert len(payload["proposal_ids"]) == 1
     pipeline.store_urgent.assert_not_called()
-    row = MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        payload["proposal_ids"][0]
-    )
+    row = MemoryProposalStore(proposal_engine._sqlite._conn).get(payload["proposal_ids"][0])
     assert row["origin_role"] == "user"
     assert row["content"] == _public_args()["content"]
 
 
-def test_public_call_cannot_spoof_internal_origin_with_schema_fields(
-    proposal_engine, monkeypatch
+def test_smart_remember_returns_success_when_user_memory_is_pending_review(
+    proposal_engine,
+    monkeypatch,
 ):
+    monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
+    monkeypatch.setattr(
+        "plastic_promise.smart_extractor.extract_memories",
+        lambda content, **_kwargs: _extracted_preference(content),
+    )
+
+    async def no_duplicate_recall(_engine, _args):
+        return [
+            SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "core": [],
+                        "related": [],
+                        "divergent": [],
+                        "project_id": "project:plastic-promise",
+                    }
+                )
+            )
+        ]
+
+    monkeypatch.setattr(memory_operations, "handle_memory_recall", no_duplicate_recall)
+
+    result = asyncio.run(
+        memory_operations._smart_remember_handler(
+            proposal_engine,
+            _public_args(),
+            {},
+        )
+    )
+
+    assert result.success is True
+    assert result.data["action"] == "proposed"
+    assert result.data["status"] == "pending"
+    assert len(result.data["proposal_ids"]) == 1
+    assert proposal_engine._sqlite._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
+def test_public_call_cannot_spoof_internal_origin_with_schema_fields(proposal_engine, monkeypatch):
     monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
     monkeypatch.setattr(
         "plastic_promise.smart_extractor.extract_memories",
@@ -971,9 +1113,7 @@ def test_public_route_names_cannot_create_trusted_memory_origin(
     pipeline.store_urgent.assert_not_called()
 
 
-def test_trusted_runtime_route_preserves_internal_experience_path(
-    proposal_engine, monkeypatch
-):
+def test_trusted_runtime_route_preserves_internal_experience_path(proposal_engine, monkeypatch):
     monkeypatch.setenv("PP_MEMORY_PROPOSALS", "on")
     pipeline = _legacy_pipeline()
     monkeypatch.setattr(memory_tools, "_get_fuzzy_buffer", lambda _engine: pipeline)
@@ -995,9 +1135,10 @@ def test_trusted_runtime_route_preserves_internal_experience_path(
 
     assert payload["stored"] is True
     pipeline.store_urgent.assert_called_once()
-    assert proposal_engine._sqlite._conn.execute(
-        "SELECT COUNT(*) FROM memory_proposals"
-    ).fetchone()[0] == 0
+    assert (
+        proposal_engine._sqlite._conn.execute("SELECT COUNT(*) FROM memory_proposals").fetchone()[0]
+        == 0
+    )
 
 
 @pytest.mark.parametrize(
@@ -1044,9 +1185,10 @@ def test_on_policy_failure_never_reaches_pipeline_or_generic_outbox(
     assert payload["reason"] == reason
     pipeline.store_urgent.assert_not_called()
     outbox.assert_not_called()
-    assert proposal_engine._sqlite._conn.execute(
-        "SELECT COUNT(*) FROM store_outbox"
-    ).fetchone()[0] == 0
+    assert (
+        proposal_engine._sqlite._conn.execute("SELECT COUNT(*) FROM store_outbox").fetchone()[0]
+        == 0
+    )
 
 
 def test_pipeline_rejects_unapproved_protected_user_content_before_extraction(
@@ -1101,6 +1243,45 @@ def test_prepare_approved_candidate_is_pure_and_immutable(monkeypatch):
         prepared.content = "mutated"
 
 
+def test_prepare_approved_candidate_uses_governed_proposal_category(monkeypatch):
+    content = "The project boundary remains the batching boundary."
+    monkeypatch.setattr(
+        "plastic_promise.smart_extractor.extract_memories",
+        lambda value, **_kwargs: [
+            SimpleNamespace(
+                category="entity",
+                source_segment=value,
+                l0_abstract=value,
+                l1_summary=f"[entity] {value}",
+                l2_content=value,
+                confidence=0.1,
+                importance=0.55,
+            )
+        ],
+    )
+    pipeline = MemoryPipeline(
+        rec_mem=Mock(),
+        embedder=SimpleNamespace(
+            model_name="test-embedder",
+            embed=lambda _text: [0.25] * 1024,
+        ),
+        lancedb=Mock(),
+    )
+
+    prepared = pipeline.prepare_approved_candidate(
+        content,
+        category="fact",
+        source="user",
+        source_class="user_fact",
+        metadata_json={"classification_confidence": 0.97},
+    )
+
+    assert prepared.category == "fact"
+    assert prepared.tags == ("cat:fact",)
+    assert prepared.metadata["l1_summary"].startswith("[fact]")
+    assert prepared.metadata["gate_score"] >= 0.5
+
+
 def test_promotion_failure_rolls_back_memory_proposal_lineage_and_version(
     proposal_engine, monkeypatch
 ):
@@ -1127,15 +1308,21 @@ def test_promotion_failure_rolls_back_memory_proposal_lineage_and_version(
             call_id="call-review",
         )
 
-    assert conn.execute(
-        "SELECT 1 FROM memories WHERE origin_ref = ?",
-        (proposal["proposal_id"],),
-    ).fetchone() is None
+    assert (
+        conn.execute(
+            "SELECT 1 FROM memories WHERE origin_ref = ?",
+            (proposal["proposal_id"],),
+        ).fetchone()
+        is None
+    )
     assert MemoryProposalStore(conn).get(proposal["proposal_id"])["status"] == "pending"
-    assert conn.execute(
-        "SELECT 1 FROM memory_lineage WHERE parent_memory_id = ?",
-        (proposal["proposal_id"],),
-    ).fetchone() is None
+    assert (
+        conn.execute(
+            "SELECT 1 FROM memory_lineage WHERE parent_memory_id = ?",
+            (proposal["proposal_id"],),
+        ).fetchone()
+        is None
+    )
     assert _version(conn) == before_version
 
 
@@ -1166,34 +1353,45 @@ def test_promotion_index_job_failure_rolls_back_adoption_and_canonical_memory(
         )
 
     assert MemoryProposalStore(conn).get(proposal["proposal_id"])["status"] == "pending"
-    assert conn.execute(
-        "SELECT 1 FROM memories WHERE origin_ref = ?",
-        (proposal["proposal_id"],),
-    ).fetchone() is None
-    assert conn.execute(
-        "SELECT 1 FROM memory_lineage WHERE parent_memory_id = ?",
-        (proposal["proposal_id"],),
-    ).fetchone() is None
-    assert conn.execute(
-        "SELECT 1 FROM store_outbox WHERE tool_name = 'memory_index'"
-    ).fetchone() is None
-    assert _version(conn) == before_version
-    db_path = next(
-        row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main"
+    assert (
+        conn.execute(
+            "SELECT 1 FROM memories WHERE origin_ref = ?",
+            (proposal["proposal_id"],),
+        ).fetchone()
+        is None
     )
+    assert (
+        conn.execute(
+            "SELECT 1 FROM memory_lineage WHERE parent_memory_id = ?",
+            (proposal["proposal_id"],),
+        ).fetchone()
+        is None
+    )
+    assert (
+        conn.execute("SELECT 1 FROM store_outbox WHERE tool_name = 'memory_index'").fetchone()
+        is None
+    )
+    assert _version(conn) == before_version
+    db_path = next(row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main")
     reopened = sqlite3.connect(db_path)
     try:
         assert reopened.execute(
             "SELECT status FROM memory_proposals WHERE proposal_id = ?",
             (proposal["proposal_id"],),
         ).fetchone() == ("pending",)
-        assert reopened.execute(
-            "SELECT 1 FROM memories WHERE origin_ref = ?",
-            (proposal["proposal_id"],),
-        ).fetchone() is None
-        assert reopened.execute(
-            "SELECT 1 FROM store_outbox WHERE tool_name = 'memory_index'"
-        ).fetchone() is None
+        assert (
+            reopened.execute(
+                "SELECT 1 FROM memories WHERE origin_ref = ?",
+                (proposal["proposal_id"],),
+            ).fetchone()
+            is None
+        )
+        assert (
+            reopened.execute(
+                "SELECT 1 FROM store_outbox WHERE tool_name = 'memory_index'"
+            ).fetchone()
+            is None
+        )
     finally:
         reopened.close()
 
@@ -1221,25 +1419,34 @@ def test_promotion_retry_is_idempotent_deterministic_and_enqueues_after_commit(
         call_id="call-replay",
     )
 
-    expected_id = "proposal_mem_" + hashlib.sha256(
-        proposal["proposal_id"].encode("utf-8")
-    ).hexdigest()[:20]
+    expected_id = (
+        "proposal_mem_" + hashlib.sha256(proposal["proposal_id"].encode("utf-8")).hexdigest()[:20]
+    )
     assert first.memory_id == second.memory_id == expected_id
     assert first.status == second.status == "adopted"
-    assert conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE origin_ref = ?",
-        (proposal["proposal_id"],),
-    ).fetchone()[0] == 1
-    assert conn.execute(
-        "SELECT COUNT(*) FROM memory_lineage "
-        "WHERE memory_id = ? AND parent_memory_id = ? "
-        "AND relation = 'promoted_from_proposal'",
-        (expected_id, proposal["proposal_id"]),
-    ).fetchone()[0] == 1
-    assert conn.execute(
-        "SELECT COUNT(*) FROM store_outbox "
-        "WHERE tool_name = 'memory_index' AND status = 'pending'",
-    ).fetchone()[0] == 1
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE origin_ref = ?",
+            (proposal["proposal_id"],),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM memory_lineage "
+            "WHERE memory_id = ? AND parent_memory_id = ? "
+            "AND relation = 'promoted_from_proposal'",
+            (expected_id, proposal["proposal_id"]),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM store_outbox "
+            "WHERE tool_name = 'memory_index' AND status = 'pending'",
+        ).fetchone()[0]
+        == 1
+    )
     job_payload = json.loads(
         conn.execute(
             "SELECT payload_json FROM store_outbox WHERE tool_name = 'memory_index'"
@@ -1313,27 +1520,32 @@ def test_promotion_exact_dedup_reuses_existing_canonical_id_and_replay(
     )
 
     assert first.memory_id == replay.memory_id == "existing-memory"
-    assert conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE project_id = ? AND content = ? "
-        "AND origin_hash = ?",
-        ("project:plastic-promise", content, turn_hash),
-    ).fetchone()[0] == 1
-    assert conn.execute(
-        "SELECT COUNT(*) FROM memory_lineage "
-        "WHERE memory_id = 'existing-memory' AND parent_memory_id = ? "
-        "AND relation = 'promoted_from_proposal'",
-        (proposal["proposal_id"],),
-    ).fetchone()[0] == 1
-    assert MemoryProposalStore(conn).get(proposal["proposal_id"])[
-        "promoted_memory_id"
-    ] == "existing-memory"
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE project_id = ? AND content = ? "
+            "AND origin_hash = ?",
+            ("project:plastic-promise", content, turn_hash),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM memory_lineage "
+            "WHERE memory_id = 'existing-memory' AND parent_memory_id = ? "
+            "AND relation = 'promoted_from_proposal'",
+            (proposal["proposal_id"],),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        MemoryProposalStore(conn).get(proposal["proposal_id"])["promoted_memory_id"]
+        == "existing-memory"
+    )
     assert _version(conn) == before_version + 1
     pipeline.prepare_approved_candidate.assert_called_once()
 
 
-def test_promotion_preparation_failure_leaves_proposal_pending(
-    proposal_engine, monkeypatch
-):
+def test_promotion_preparation_failure_leaves_proposal_pending(proposal_engine, monkeypatch):
     proposal = _proposal_for_engine(proposal_engine)
     pipeline = Mock()
     pipeline.prepare_approved_candidate.side_effect = RuntimeError("embedding failed")
@@ -1349,10 +1561,13 @@ def test_promotion_preparation_failure_leaves_proposal_pending(
 
     conn = proposal_engine._sqlite._conn
     assert MemoryProposalStore(conn).get(proposal["proposal_id"])["status"] == "pending"
-    assert conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE origin_ref = ?",
-        (proposal["proposal_id"],),
-    ).fetchone()[0] == 0
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE origin_ref = ?",
+            (proposal["proposal_id"],),
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_feedback_apply_promotes_rejects_and_refuses_ignored_proposals(
@@ -1421,12 +1636,8 @@ def test_feedback_apply_promotes_rejects_and_refuses_ignored_proposals(
     assert adopted_payload["memory_id"].startswith("proposal_mem_")
     assert rejected_payload["updated"] is True
     assert rejected_payload["status"] == "rejected"
-    adopted_row = MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        adopted["proposal_id"]
-    )
-    rejected_row = MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        rejected["proposal_id"]
-    )
+    adopted_row = MemoryProposalStore(proposal_engine._sqlite._conn).get(adopted["proposal_id"])
+    rejected_row = MemoryProposalStore(proposal_engine._sqlite._conn).get(rejected["proposal_id"])
     assert adopted_row["approval_actor"] == "runtime-reviewer"
     assert adopted_row["approval_call_id"] == "call:runtime-adopt"
     assert rejected_row["approval_actor"] == "runtime-reviewer"
@@ -1471,9 +1682,10 @@ def test_feedback_proposal_public_reviewer_fields_cannot_authorize(
 
     assert payload["updated"] is False
     assert payload["reason"] == "feedback_runtime_authorization_required"
-    assert MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        proposal["proposal_id"]
-    )["status"] == "pending"
+    assert (
+        MemoryProposalStore(proposal_engine._sqlite._conn).get(proposal["proposal_id"])["status"]
+        == "pending"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1508,9 +1720,10 @@ def test_feedback_proposal_requires_trust_and_allow_decision(
 
     assert payload["updated"] is False
     assert payload["reason"] == "feedback_runtime_authorization_denied"
-    assert MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        proposal["proposal_id"]
-    )["status"] == "pending"
+    assert (
+        MemoryProposalStore(proposal_engine._sqlite._conn).get(proposal["proposal_id"])["status"]
+        == "pending"
+    )
 
 
 def test_feedback_proposal_rejects_unconfigured_mcp_runtime_actor(proposal_engine):
@@ -1534,9 +1747,10 @@ def test_feedback_proposal_rejects_unconfigured_mcp_runtime_actor(proposal_engin
 
     assert payload["updated"] is False
     assert payload["reason"] == "feedback_runtime_authorization_required"
-    assert MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        proposal["proposal_id"]
-    )["status"] == "pending"
+    assert (
+        MemoryProposalStore(proposal_engine._sqlite._conn).get(proposal["proposal_id"])["status"]
+        == "pending"
+    )
 
 
 def test_feedback_proposal_binds_runtime_project(proposal_engine):
@@ -1561,9 +1775,10 @@ def test_feedback_proposal_binds_runtime_project(proposal_engine):
 
     assert payload["updated"] is False
     assert payload["reason"] == "feedback_project_mismatch"
-    assert MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        proposal["proposal_id"]
-    )["status"] == "pending"
+    assert (
+        MemoryProposalStore(proposal_engine._sqlite._conn).get(proposal["proposal_id"])["status"]
+        == "pending"
+    )
 
 
 def test_feedback_runtime_actor_ignores_untrusted_client_info(monkeypatch):
@@ -1572,9 +1787,7 @@ def test_feedback_runtime_actor_ignores_untrusted_client_info(monkeypatch):
     forged_client = SimpleNamespace(
         request_context=SimpleNamespace(
             session=SimpleNamespace(
-                client_params=SimpleNamespace(
-                    clientInfo=SimpleNamespace(name="codex-desktop")
-                )
+                client_params=SimpleNamespace(clientInfo=SimpleNamespace(name="codex-desktop"))
             )
         )
     )
@@ -1638,9 +1851,7 @@ def test_feedback_server_dispatch_uses_private_runtime_authority(
     )
 
     assert payload["updated"] is True
-    row = MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        proposal["proposal_id"]
-    )
+    row = MemoryProposalStore(proposal_engine._sqlite._conn).get(proposal["proposal_id"])
     assert row["approval_actor"] == "codex"
     assert row["approval_call_id"]
     assert row["approval_call_id"] != "call:forged"
@@ -1687,9 +1898,7 @@ def test_feedback_rejection_never_persists_or_echoes_secret_task_context(
         )
     )
 
-    row = MemoryProposalStore(proposal_engine._sqlite._conn).get(
-        proposal["proposal_id"]
-    )
+    row = MemoryProposalStore(proposal_engine._sqlite._conn).get(proposal["proposal_id"])
     assert payload["updated"] is True
     assert secret not in json.dumps(payload, ensure_ascii=False)
     assert row["rejection_reason"] == "reviewer_rejected"
@@ -1706,8 +1915,7 @@ def test_pending_but_expired_proposal_cannot_be_promoted_before_daemon(
     proposal = _proposal_for_engine(proposal_engine)
     conn = proposal_engine._sqlite._conn
     conn.execute(
-        "UPDATE memory_proposals SET expires_at = '2000-01-01T00:00:00Z' "
-        "WHERE proposal_id = ?",
+        "UPDATE memory_proposals SET expires_at = '2000-01-01T00:00:00Z' WHERE proposal_id = ?",
         (proposal["proposal_id"],),
     )
     conn.commit()
@@ -1733,8 +1941,7 @@ def test_expire_memory_proposals_bridge_redacts_bounded_batch(proposal_engine):
     proposal = _proposal_for_engine(proposal_engine)
     conn = proposal_engine._sqlite._conn
     conn.execute(
-        "UPDATE memory_proposals SET expires_at = '2000-01-01T00:00:00Z' "
-        "WHERE proposal_id = ?",
+        "UPDATE memory_proposals SET expires_at = '2000-01-01T00:00:00Z' WHERE proposal_id = ?",
         (proposal["proposal_id"],),
     )
     conn.commit()

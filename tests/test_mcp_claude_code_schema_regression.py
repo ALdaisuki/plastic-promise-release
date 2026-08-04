@@ -25,6 +25,10 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
             "domain_hint": "governing",
             "project_id": "project:test-app",
         },
+        "principle_evaluate": {
+            "principle_id": 1,
+            "scenario": "Return duplicated diagnostics in every compact response",
+        },
         "memory_recall": {
             "query": "Git 仓库治理 .gitignore 黑名单 测试文件 清理",
             "task_type": "debugging",
@@ -75,6 +79,31 @@ def test_claude_code_payloads_validate_against_exposed_schemas():
 
     for tool_name, payload in payloads.items():
         _validate(tool_name, payload)
+
+
+def test_principle_evaluate_accepts_numeric_string_for_compatibility():
+    from plastic_promise.mcp.tools.principles import handle_principle_evaluate
+
+    _validate(
+        "principle_evaluate",
+        {
+            "principle_id": "1",
+            "scenario": "Return duplicated diagnostics in every compact response",
+        },
+    )
+    result = asyncio.run(
+        handle_principle_evaluate(
+            SimpleNamespace(),
+            {
+                "principle_id": "1",
+                "scenario": "Return duplicated diagnostics in every compact response",
+            },
+        )
+    )
+
+    payload = json.loads(result[0].text)
+    assert payload["principle_id"] == 1
+    assert "error" not in payload
 
 
 def test_handler_read_optional_fields_are_declared():
@@ -198,9 +227,18 @@ def test_handler_read_optional_fields_are_declared():
     assert set(context_graph["enum"]) == {"node_info", "traverse", "full_graph", "neighbors"}
 
     session_props = set(tools["session-init"].inputSchema["properties"])
-    assert {"context_mode", "context_timeout_s", "scope", "route", "flow_line_id"}.issubset(
-        session_props
-    )
+    assert {
+        "context_mode",
+        "context_timeout_s",
+        "scope",
+        "route",
+        "flow_line_id",
+        "project_id",
+        "project_policy",
+    }.issubset(session_props)
+    session_route = tools["session-init"].inputSchema["properties"]["route"]
+    assert "idea-to-ship" in session_route["enum"]
+    assert "bug-onramp" in session_route["enum"]
 
 
 def test_context_supply_debug_returns_structured_metadata(monkeypatch):
@@ -265,10 +303,13 @@ def test_context_supply_debug_returns_structured_metadata(monkeypatch):
     assert engine.kwargs["debug"] is True
     assert engine.kwargs["retrieval_mode"] == "mix"
     assert engine.kwargs["fusion_policy"] == "max-v1"
-    assert data["pipeline_stats"]["canonical_hot_count"] == 1
-    assert data["per_item_stats"][0]["gate_decision"] == "core"
-    assert data["audit_metadata"]["canonical_hot"]["enabled"] is True
-    assert data["prompt"]
+    assert data["response_mode"] == "debug"
+    assert data["diagnostics"]["summary"]["pipeline_keys"] == ["canonical_hot_count"]
+    assert data["diagnostics"]["summary"]["per_item_count"] == 1
+    assert "pipeline_stats" not in data
+    assert "per_item_stats" not in data
+    assert "audit_metadata" not in data
+    assert "prompt" not in data
 
 
 def test_context_supply_debug_tolerates_pack_without_audit_metadata(monkeypatch):
@@ -319,9 +360,11 @@ def test_context_supply_debug_tolerates_pack_without_audit_metadata(monkeypatch)
     )
 
     data = json.loads(result[0].text)
-    assert data["audit_metadata"]["trace"]["call_id"]
+    assert data["trace"]["call_id"]
     assert data["trace"]["request_scope_id"]
-    assert data["prompt"] == "minimal prompt"
+    assert data["diagnostics"]["summary"]["per_item_count"] == 0
+    assert "audit_metadata" not in data
+    assert "prompt" not in data
 
 
 def test_public_tool_descriptions_do_not_expose_mojibake_markers():
@@ -378,24 +421,68 @@ def test_smart_remember_schema_exposes_project_authority():
         assert properties["project_policy"]["enum"] == ["strict", "balanced", "open"]
 
 
+def test_skill_auto_track_schema_exposes_optional_flow_scope_fields():
+    schema = _tools_by_name()["skill_auto_track"].inputSchema
+    properties = schema["properties"]
+
+    assert schema["required"] == ["phase", "skill_name"]
+    assert properties["stage_session_id"]["type"] == "string"
+    assert properties["flow_line_id"]["type"] == "string"
+    assert properties["project_id"]["type"] == "string"
+
+
 def test_sp_stage_schema_keeps_programmatic_stage_surface():
     tools = _tools_by_name()
-    enum_values = set(tools["sp-stage"].inputSchema["properties"]["stage"]["enum"])
+    schema = tools["sp-stage"].inputSchema
+    enum_values = set(schema["properties"]["stage"]["enum"])
 
-    assert {"using-superpowers", "writing-skills"}.issubset(enum_values)
+    assert {
+        "setup-matt-pocock-skills",
+        "ask-matt",
+        "grill-with-docs",
+        "to-spec",
+        "to-tickets",
+        "implement",
+        "tdd",
+        "code-review",
+        "diagnosing-bugs",
+    }.issubset(enum_values)
+    assert {
+        "using-superpowers",
+        "brainstorming",
+        "writing-plans",
+        "engineering-tdd",
+    }.isdisjoint(enum_values)
+    assert schema["properties"]["invocation_source"]["enum"] == ["user", "model"]
+    receipt = schema["properties"]["execution_receipt"]
+    assert receipt["type"] == "object"
+    assert set(receipt["required"]) == {
+        "skill",
+        "upstream_revision",
+        "content_sha256",
+        "status",
+        "evidence",
+    }
+    assert "idea-to-ship" in schema["properties"]["route"]["enum"]
+    assert "bug-onramp" in schema["properties"]["route"]["enum"]
+    assert schema["properties"]["project_id"]["type"] == "string"
+    assert schema["properties"]["project_policy"]["enum"] == ["strict", "balanced", "open"]
 
 
 def test_sp_stage_description_is_concise_and_programmatic():
     tool = _tools_by_name()["sp-stage"]
     description = tool.description or ""
+    invocation_description = tool.inputSchema["properties"]["invocation_source"]["description"]
 
     assert "chain" in description.lower()
-    assert "required artifacts" in description.lower()
-    assert "closure reminder" in description.lower()
-    assert "official" not in description.lower()
+    assert "official" in description.lower()
+    assert "caller attestation" in description.lower()
+    assert "stage evidence" in description.lower()
+    assert "caller-supplied" in invocation_description.lower()
+    assert "not authenticated" in invocation_description.lower()
     assert "SKILL" not in description
     schema_text = json.dumps(tool.inputSchema, ensure_ascii=False)
-    assert "official" not in schema_text.lower()
+    assert "official" in schema_text.lower()
     assert "SKILL" not in schema_text
     assert len(description) < 500
 
@@ -404,7 +491,7 @@ def test_codex_deferred_tool_discovery_keywords_are_exposed():
     tools = _tools_by_name()
     expected_keywords = {
         "session-init": ["Plastic Promise MCP", "Codex", "tool_search", "bootstrap"],
-        "sp-stage": ["Plastic Promise MCP", "Codex", "tool_search", "SuperPowers"],
+        "sp-stage": ["Plastic Promise MCP", "Codex", "tool_search", "Matt Pocock"],
         "memory_recall": ["Plastic Promise MCP", "Codex", "tool_search", "memory recall"],
         "context_supply": ["Plastic Promise MCP", "Codex", "tool_search", "context supply"],
         "defense": ["Plastic Promise MCP", "Codex", "tool_search", "trust"],
@@ -416,7 +503,7 @@ def test_codex_deferred_tool_discovery_keywords_are_exposed():
             "commercial audit export",
         ],
         "session_init": ["Plastic Promise MCP", "Codex", "tool_search", "bootstrap"],
-        "sp_stage": ["Plastic Promise MCP", "Codex", "tool_search", "SuperPowers"],
+        "sp_stage": ["Plastic Promise MCP", "Codex", "tool_search", "Matt Pocock"],
         "step_closure": ["Plastic Promise MCP", "Codex", "tool_search", "step closure"],
     }
 

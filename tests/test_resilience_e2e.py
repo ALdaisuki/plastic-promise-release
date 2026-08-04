@@ -44,17 +44,15 @@ class TestResilienceE2E:
         assert pack is not None
 
         # stats() via domain tool should return error, not crash
-        from plastic_promise.mcp.tools.domain import handle_domain
         import asyncio
+
+        from plastic_promise.mcp.tools.domain import handle_domain
 
         result = asyncio.run(handle_domain(e, {"action": "stats"}))
         assert len(result) > 0
         text = result[0].text.lower()
         assert (
-            "deferred" in text
-            or "not available" in text
-            or "error" in text
-            or "building" in text
+            "deferred" in text or "not available" in text or "error" in text or "building" in text
         )
 
         e._dm = old_dm
@@ -62,11 +60,12 @@ class TestResilienceE2E:
 
     def test_schema_version_write(self):
         from plastic_promise.core.context_engine import ContextEngine
+        from plastic_promise.core.domain_manager import DomainManager
 
         e = ContextEngine()
         e.ensure_heavy_init()
         row = e._dm._conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
-        assert row[0] == 2
+        assert row[0] == DomainManager.SCHEMA_VERSION
 
     def test_fuzzy_visible_in_stats(self):
         from plastic_promise.core.context_engine import ContextEngine

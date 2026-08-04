@@ -10,21 +10,21 @@ upstream:
   license: MIT
 
 hooks:
-  on_before_exemplar_research:
+  on_before_research:
     method: mcp
     command: codebase-memory-mcp
     tool: search_graph
     timeout: 10
     description: Search codebase for existing implementation patterns
 
-  on_transition_write_execute:
+  on_before_implement:
     method: mcp
     command: codebase-memory-mcp
     tool: trace_path
     timeout: 30
     description: Trace downstream consumers before modifying code
 
-  on_after_verify:
+  on_before_code_review:
     method: mcp
     command: codebase-memory-mcp
     tool: query_graph

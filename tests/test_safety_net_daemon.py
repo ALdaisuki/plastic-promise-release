@@ -176,6 +176,107 @@ class TestSafetyNetImports:
         assert row["content"] == ""
         conn.close()
 
+    def test_proposal_expiry_advances_enabled_derived_work_in_order(self, monkeypatch):
+        import plastic_promise.passive_memory as passive_memory
+        from daemons import maintenance_daemon
+        from plastic_promise.core import memory_proposals, proposal_promotion_jobs
+        from plastic_promise.passive_memory import semantic_pipeline
+
+        calls = []
+
+        monkeypatch.setattr(
+            passive_memory,
+            "replay_passive_memory_proposals",
+            lambda _engine: calls.append("passive_replay") or {"scheduled": 1},
+        )
+        monkeypatch.setattr(
+            semantic_pipeline,
+            "process_semantic_memory_jobs",
+            lambda _engine, **_kwargs: calls.append("semantic") or {"processed_batches": 1},
+        )
+        monkeypatch.setattr(
+            proposal_promotion_jobs,
+            "reconcile_proposal_promotion_jobs",
+            lambda _engine, **_kwargs: calls.append("promotion_reconcile") or {"created": 1},
+        )
+        monkeypatch.setattr(
+            proposal_promotion_jobs,
+            "process_proposal_promotion_jobs",
+            lambda _engine, **_kwargs: (
+                calls.append("promotion_process") or {"processed_batches": 1}
+            ),
+        )
+        monkeypatch.setattr(
+            memory_proposals,
+            "expire_memory_proposals",
+            lambda _engine: calls.append("expiry") or {"expired": 0, "limit": 100},
+        )
+
+        result = maintenance_daemon.expire_pending_memory_proposals(object())
+
+        assert calls == [
+            "passive_replay",
+            "semantic",
+            "promotion_reconcile",
+            "promotion_process",
+            "expiry",
+        ]
+        assert result == {
+            "expired": 0,
+            "limit": 100,
+            "passive_replay": {"scheduled": 1},
+            "semantic_jobs": {"processed_batches": 1},
+            "promotion_reconcile": {"created": 1},
+            "promotion_jobs": {"processed_batches": 1},
+        }
+
+    def test_proposal_expiry_preserves_derived_worker_unavailable_status(self, monkeypatch):
+        import plastic_promise.passive_memory as passive_memory
+        from daemons import maintenance_daemon
+        from plastic_promise.core import memory_proposals, proposal_promotion_jobs
+        from plastic_promise.passive_memory import semantic_pipeline
+
+        monkeypatch.setattr(
+            passive_memory,
+            "replay_passive_memory_proposals",
+            lambda _engine: {"skipped": "passive_memory_disabled"},
+        )
+        monkeypatch.setattr(
+            semantic_pipeline,
+            "process_semantic_memory_jobs",
+            lambda _engine, **_kwargs: {
+                "skipped": "semantic_memory_runtime_unavailable",
+                "failure_code": "semantic_memory_runtime_init_failed",
+                "processed_batches": 0,
+            },
+        )
+        monkeypatch.setattr(
+            proposal_promotion_jobs,
+            "reconcile_proposal_promotion_jobs",
+            lambda _engine, **_kwargs: {"reason": "auto_promotion_disabled"},
+        )
+        monkeypatch.setattr(
+            proposal_promotion_jobs,
+            "process_proposal_promotion_jobs",
+            lambda _engine, **_kwargs: {
+                "skipped": "proposal_promotion_runtime_unavailable",
+                "failure_code": "proposal_promotion_runtime_init_failed",
+                "processed_batches": 0,
+            },
+        )
+        monkeypatch.setattr(
+            memory_proposals,
+            "expire_memory_proposals",
+            lambda _engine: {"expired": 0, "limit": 100},
+        )
+
+        result = maintenance_daemon.expire_pending_memory_proposals(object())
+
+        assert "passive_replay" not in result
+        assert result["semantic_jobs"]["failure_code"] == "semantic_memory_runtime_init_failed"
+        assert "promotion_reconcile" not in result
+        assert result["promotion_jobs"]["failure_code"] == "proposal_promotion_runtime_init_failed"
+
     def test_dispatch_map_coverage(self):
         """_DISPATCH_MAP should cover all 4 agent types."""
         from daemons.maintenance_daemon import _DISPATCH_MAP
@@ -225,6 +326,7 @@ async def test_category_stuck_uses_runtime_authority_and_counts_committed_result
             return None
 
     contexts = []
+
     async def reclassify(_engine, arguments, *, _runtime_context=None):
         contexts.append((arguments, _runtime_context))
         if arguments["memory_id"] == "memory-3":

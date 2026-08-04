@@ -563,17 +563,30 @@ impl ContextEngine {
         let mut stage_timing_ms: HashMap<String, String> = HashMap::new();
         let input_memory_count = memories.len();
         let hard_min_score = env_weight("PP_HARD_MIN_SCORE", 0.20);
-        let fusion_config = fusion_config_json
-            .as_deref()
-            .map(|payload| {
-                serde_json::from_str::<crate::retrieval::fusion::WrrfConfig>(payload)
-                    .map_err(|error| {
-                        pyo3::exceptions::PyValueError::new_err(format!(
-                            "fusion_config_invalid:{error}"
-                        ))
-                    })
-            })
-            .transpose()?;
+        let mut fusion_config: Option<crate::retrieval::fusion::WrrfConfig> = None;
+        let mut max_v1_config: Option<crate::retrieval::fusion::MaxV1Config> = None;
+        if let Some(payload) = fusion_config_json.as_deref() {
+            let value: serde_json::Value = serde_json::from_str(payload).map_err(|error| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "fusion_config_invalid:{error}"
+                ))
+            })?;
+            if value.get("policy").and_then(serde_json::Value::as_str) == Some("max-v1") {
+                let config = serde_json::from_value(value).map_err(|error| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "fusion_config_invalid:{error}"
+                    ))
+                })?;
+                max_v1_config = Some(config);
+            } else {
+                let config = serde_json::from_value(value).map_err(|error| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "fusion_config_invalid:{error}"
+                    ))
+                })?;
+                fusion_config = Some(config);
+            }
+        }
 
         // ============================================================
         // Phase 0: 原则注入 (P0 任务)
@@ -828,8 +841,17 @@ impl ContextEngine {
 
         // BM25: CJK-aware Okapi BM25 index shared with Python fallback semantics.
         let bm25_hits: Vec<(String, f64)> = self.bm25_index.borrow().search(&task_description, candidate_pool_size);
+        let fts_hits: Vec<(String, f64)> =
+            <crate::storage::lancedb_impl::LanceDbStore as crate::storage::FtsIndex>::search(
+                &ldb_store,
+                &task_description,
+                candidate_pool_size,
+                &filter,
+            )
+            .unwrap_or_default();
         let vector_hit_count = vector_hits.len();
         let bm25_hit_count = bm25_hits.len();
+        let fts_hit_count = fts_hits.len();
 
         let channel_windows = fusion_config
             .as_ref()
@@ -838,18 +860,26 @@ impl ContextEngine {
                 HashMap::from([
                     ("vector".into(), candidate_pool_size),
                     ("bm25".into(), candidate_pool_size),
+                    ("fts".into(), candidate_pool_size),
                 ])
             });
         let planned_channels = fusion_config
             .as_ref()
             .map(|config| config.channels.clone())
-            .unwrap_or_else(|| vec!["vector".into(), "bm25".into()]);
+            .unwrap_or_else(|| {
+                if max_v1_config.is_some() {
+                    vec!["vector".into(), "bm25".into(), "fts".into()]
+                } else {
+                    vec!["vector".into(), "bm25".into()]
+                }
+            });
         let mut channel_rankings = HashMap::new();
         let mut channel_states = HashMap::new();
         for channel in &planned_channels {
             let (rows, count) = match channel.as_str() {
                 "vector" => (&vector_hits, vector_hit_count),
                 "bm25" => (&bm25_hits, bm25_hit_count),
+                "fts" => (&fts_hits, fts_hit_count),
                 _ => {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
                         "rust_capability_missing:{channel}"
@@ -889,6 +919,31 @@ impl ContextEngine {
                 "windows": config.windows,
             });
             (fused, audit.to_string())
+        } else if let Some(config) = max_v1_config.as_ref() {
+            if config.policy != "max-v1" {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "fusion_policy_invalid",
+                ));
+            }
+            let has_vector = task_vector.iter().any(|value| *value != 0.0)
+                && !vector_hits.is_empty();
+            let fused = crate::retrieval::fusion::weighted_max_v1_fuse(
+                &[
+                    ("vector".into(), vector_hits.clone()),
+                    ("bm25".into(), bm25_hits.clone()),
+                    ("fts".into(), fts_hits.clone()),
+                ],
+                config.vector_weight,
+                has_vector,
+            )
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            let audit = serde_json::json!({
+                "algorithm": "weighted-max-v1",
+                "effective_runtime": "rust",
+                "vector_weight": config.vector_weight,
+                "channels": ["vector", "bm25", "fts"],
+            });
+            (fused, audit.to_string())
         } else {
             let fused_raw = crate::retrieval::fusion::rrf_fuse(&[
                 vector_hits.clone(),
@@ -911,6 +966,7 @@ impl ContextEngine {
             (fused, audit.to_string())
         };
 
+        let fused_scores: HashMap<String, f64> = fused.iter().cloned().collect();
         let scored_for_mmr: Vec<(String, f64, String)> = fused.into_iter()
             .map(|(id, score)| {
                 let content = item_lookup
@@ -1187,6 +1243,9 @@ impl ContextEngine {
             let mem = memory_index.get(item_id);
             let mut row = HashMap::new();
             row.insert("id".into(), item_id.clone());
+            if let Some(fused_score) = fused_scores.get(item_id) {
+                row.insert("fused_score".into(), format!("{:.12}", fused_score));
+            }
             row.insert("initial_score".into(), format!("{:.4}", score));
             row.insert("worth".into(), format!("{:.3}", worth));
             row.insert("source".into(), source.clone());

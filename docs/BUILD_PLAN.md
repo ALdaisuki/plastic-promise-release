@@ -7,7 +7,7 @@
 >
 > 此文档保留用于历史参考和方法论回顾。
 
-> 遵循 SuperPowers 方法论: writing-plans → executing-plans → subagent-driven + TDD → code-review → verification → finishing-branch
+> 当前工程流程以 `CLAUDE.md` 中固定版本的 Matt Pocock 官方工作流为准；本历史计划不再定义可执行调用链。
 
 ## 执行策略
 

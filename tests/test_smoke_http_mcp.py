@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,26 @@ def load_smoke_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def healthy_health_payload(**overrides):
+    payload = {
+        "status": "ok",
+        "identity_valid": True,
+        "version": "0.1.19",
+        "pid": 123,
+        "degraded": False,
+        "health_policy": "strict",
+        "retrieval_status": "ready",
+        "vector_ready": True,
+        "vector_reason": None,
+        "lancedb_ready": True,
+        "lancedb_required": True,
+        "bm25_ready": True,
+        "graph_ready": True,
+    }
+    payload.update(overrides)
+    return payload
 
 
 def test_pipeline_count_accepts_arrow_variants():
@@ -53,6 +74,316 @@ def test_leaf_error_unwraps_nested_exception_groups():
     nested = NestedError(NestedError(cause))
 
     assert smoke._leaf_error(nested) is cause
+
+
+def test_validate_health_requires_explicit_vector_readiness_by_default():
+    smoke = load_smoke_module()
+
+    with pytest.raises(smoke.SmokeFailure, match="vector readiness"):
+        smoke.validate_health(
+            {
+                "status": "ok",
+                "identity_valid": True,
+                "version": "0.1.19",
+                "pid": 123,
+            }
+        )
+
+    result = smoke.validate_health(healthy_health_payload(), expected_version="0.1.19")
+
+    assert result["retrieval_status"] == "ready"
+    assert result["vector_ready"] is True
+    assert result["degraded"] is False
+
+
+def test_validate_health_accepts_only_explicit_coherent_text_only_degradation():
+    smoke = load_smoke_module()
+    payload = healthy_health_payload(
+        degraded=True,
+        health_policy="text-only",
+        retrieval_status="degraded_text_only",
+        vector_ready=False,
+        vector_reason="retrieval_embedding_zero_or_invalid",
+    )
+
+    with pytest.raises(smoke.SmokeFailure, match="vector readiness"):
+        smoke.validate_health(payload)
+
+    result = smoke.validate_health(payload, allow_text_only=True)
+
+    assert result["retrieval_status"] == "degraded_text_only"
+    assert result["vector_ready"] is False
+    assert result["vector_reason"] == "retrieval_embedding_zero_or_invalid"
+
+
+def test_validate_health_requires_opt_in_for_text_only_policy_even_when_vector_ready():
+    smoke = load_smoke_module()
+    payload = healthy_health_payload(health_policy="text-only")
+
+    with pytest.raises(smoke.SmokeFailure, match="vector readiness"):
+        smoke.validate_health(payload)
+
+    assert smoke.validate_health(payload, allow_text_only=True)["vector_ready"] is True
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"degraded": False},
+        {"retrieval_status": "ready"},
+        {"vector_reason": ""},
+        {"vector_reason": "provider secret at https://example.invalid"},
+        {"bm25_ready": False},
+        {"lancedb_ready": "yes"},
+        {"graph_ready": "yes"},
+    ],
+)
+def test_validate_health_rejects_incoherent_text_only_payload(overrides):
+    smoke = load_smoke_module()
+    payload = healthy_health_payload(
+        degraded=True,
+        health_policy="text-only",
+        retrieval_status="degraded_text_only",
+        vector_ready=False,
+        vector_reason="retrieval_embedding_zero_or_invalid",
+    )
+    payload.update(overrides)
+
+    with pytest.raises(smoke.SmokeFailure):
+        smoke.validate_health(payload, allow_text_only=True)
+
+
+def test_validate_cli_args_requires_safe_read_only_inputs():
+    smoke = load_smoke_module()
+    parser = smoke.build_argparser()
+    valid = parser.parse_args(
+        [
+            "--read-only",
+            "--query",
+            "migrated release memory",
+            "--expected-memory-id",
+            "m1",
+            "--allow-text-only",
+        ]
+    )
+
+    smoke.validate_cli_args(valid)
+
+    conflicting = parser.parse_args(
+        [
+            "--read-only",
+            "--query",
+            "migrated release memory",
+            "--expected-memory-id",
+            "m1",
+            "--check-summary-index",
+        ]
+    )
+    with pytest.raises(smoke.SmokeFailure, match="summary-index"):
+        smoke.validate_cli_args(conflicting)
+
+    missing_identity = parser.parse_args(["--read-only", "--query", "migrated release memory"])
+    with pytest.raises(smoke.SmokeFailure, match="expected-memory-id"):
+        smoke.validate_cli_args(missing_identity)
+
+
+def test_validate_session_init_accepts_compact_v1_response():
+    smoke = load_smoke_module()
+    payload = {
+        "schema_version": "session-init-response-v1",
+        "response_mode": "compact",
+        "success": True,
+        "stage_session_id": "smoke-session",
+        "context_status": {"status": "deferred", "mode": "none"},
+        "chain_state": {"entry_stage": "grill-with-docs"},
+        "degraded": True,
+        "warnings": ["scarf_reflect: timed out"],
+        "errors": [],
+    }
+
+    result = smoke.validate_session_init(payload)
+
+    assert result == {
+        "success": True,
+        "response_mode": "compact",
+        "degraded": True,
+        "warning_count": 1,
+        "error_count": 0,
+    }
+
+
+def test_validate_session_init_rejects_incomplete_compact_response():
+    smoke = load_smoke_module()
+
+    with pytest.raises(smoke.SmokeFailure, match="compact response is invalid"):
+        smoke.validate_session_init(
+            {
+                "schema_version": "session-init-response-v1",
+                "response_mode": "compact",
+                "success": True,
+                "stage_session_id": "smoke-session",
+                "context_status": {"status": "deferred"},
+                "errors": [],
+            }
+        )
+
+
+def test_read_only_session_checks_never_call_memory_store():
+    smoke = load_smoke_module()
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        async def initialize(self):
+            return None
+
+        async def list_tools(self):
+            names = [
+                "runtime_mode",
+                "session-init",
+                "memory_recall",
+                "context_supply",
+            ]
+            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in names])
+
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            payloads = {
+                "runtime_mode": {"mode": "normal"},
+                "session-init": {"success": True, "data": {"stage_session_id": "smoke"}},
+                "memory_recall": {
+                    "core": [{"id": "m1", "content": "migrated release memory"}],
+                    "related": [],
+                    "divergent": [],
+                    "audit": {"vector_search": "fallback_text_only"},
+                },
+                "context_supply": {
+                    "core": [{"id": "m1", "content": "migrated release memory"}],
+                    "related": [],
+                    "divergent": [],
+                    "project_context": {"degraded": False},
+                    "audit_metadata": {"vector_search": "fallback_text_only"},
+                },
+            }
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=json.dumps(payloads[name]))]
+            )
+
+    args = smoke.build_argparser().parse_args(
+        [
+            "--read-only",
+            "--query",
+            "migrated release memory",
+            "--expected-memory-id",
+            "m1",
+            "--expected-tool-count",
+            "4",
+            "--allow-text-only",
+        ]
+    )
+    smoke.validate_cli_args(args)
+    session = FakeSession()
+    report = {"checks": {"health": {"retrieval_status": "degraded_text_only"}}}
+
+    sqlite_check = asyncio.run(
+        smoke.run_session_checks(session, args, report, "smoke-marker", "unused-canary")
+    )
+
+    assert sqlite_check is None
+    assert [name for name, _arguments in session.calls] == [
+        "runtime_mode",
+        "session-init",
+        "memory_recall",
+        "context_supply",
+    ]
+    assert "memory_store" not in report["checks"]
+    assert report["checks"]["tools_list"]["count"] == 4
+    assert report["checks"]["memory_recall"]["observed_memory_ids"] == ["m1"]
+    assert report["checks"]["memory_recall"]["vector_search"] == "fallback_text_only"
+
+
+def test_default_session_checks_preserve_memory_store_release_smoke():
+    smoke = load_smoke_module()
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        async def initialize(self):
+            return None
+
+        async def list_tools(self):
+            names = ["runtime_mode", "memory_store", "memory_recall", "context_supply"]
+            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in names])
+
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            payloads = {
+                "runtime_mode": {"mode": "normal"},
+                "memory_store": {
+                    "stored": True,
+                    "memory_id": "m1",
+                    "submitted_memory_id": "m1",
+                    "deduplicated": False,
+                    "created": True,
+                    "pipeline": {"embedded->migrated": 1},
+                },
+                "memory_recall": {
+                    "core": [{"id": "m1", "content": "release smoke memory"}],
+                    "related": [],
+                    "divergent": [],
+                    "audit": {"vector_search": "lancedb"},
+                },
+                "context_supply": {
+                    "core": [{"id": "m1", "content": "release smoke memory"}],
+                    "related": [],
+                    "divergent": [],
+                    "project_context": {"degraded": False},
+                    "audit_metadata": {"vector_search": "lancedb"},
+                },
+            }
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=json.dumps(payloads[name]))]
+            )
+
+    args = smoke.build_argparser().parse_args(["--expected-tool-count", "4"])
+    smoke.validate_cli_args(args)
+    session = FakeSession()
+    report = {"checks": {"health": {"retrieval_status": "ready"}}}
+
+    sqlite_check = asyncio.run(
+        smoke.run_session_checks(session, args, report, "smoke-marker", "unused-canary")
+    )
+
+    assert sqlite_check is None
+    assert [name for name, _arguments in session.calls] == [
+        "runtime_mode",
+        "memory_store",
+        "memory_recall",
+        "context_supply",
+    ]
+    assert "session-init" not in report["checks"]
+    assert report["checks"]["memory_store"]["created"] is True
+
+
+@pytest.mark.parametrize("validator_name", ["validate_recall", "validate_context"])
+def test_text_only_retrieval_validators_require_runtime_attestation(validator_name):
+    smoke = load_smoke_module()
+    validator = getattr(smoke, validator_name)
+    payload = {
+        "core": [{"id": "m1", "content": "migrated release memory"}],
+        "related": [],
+        "divergent": [],
+    }
+    if validator_name == "validate_context":
+        payload["project_context"] = {"degraded": False}
+        payload["audit_metadata"] = {"vector_search": "lancedb"}
+    else:
+        payload["audit"] = {"vector_search": "lancedb"}
+
+    with pytest.raises(smoke.SmokeFailure, match="fallback_text_only"):
+        validator(payload, ["m1"], expect_text_only=True)
 
 
 def test_parse_mcp_json_content_rejects_malformed_json():
@@ -159,7 +490,7 @@ def test_retrieval_validators_require_every_persisted_memory_as_evidence(validat
             {
                 "id": "m2",
                 "content": "stable compact index evidence",
-            }
+            },
         ],
         "related": [],
         "divergent": [],
@@ -312,9 +643,7 @@ def test_validate_sqlite_summary_rows_accepts_fully_deduplicated_submission():
         "migrated": 0,
     }
 
-    result = smoke.validate_sqlite_summary_rows(
-        rows, "marker-three", "RAW_ONLY_CANARY", store
-    )
+    result = smoke.validate_sqlite_summary_rows(rows, "marker-three", "RAW_ONLY_CANARY", store)
 
     assert result["sqlite_marker_memory_ids"] == []
     assert result["retrieval_memory_ids"] == ["canonical-old"]
@@ -358,9 +687,7 @@ def test_validate_lancedb_summary_rows_requires_all_ids_and_no_canary():
         {"memory_id": "m2", "text": "other compact summary"},
     ]
 
-    result = smoke.validate_lancedb_summary_rows(
-        rows, ["m1", "m2"], "marker-one", canary
-    )
+    result = smoke.validate_lancedb_summary_rows(rows, ["m1", "m2"], "marker-one", canary)
 
     assert result["lancedb_memory_ids"] == ["m1", "m2"]
 

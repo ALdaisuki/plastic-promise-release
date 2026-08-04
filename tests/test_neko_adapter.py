@@ -1,21 +1,27 @@
-"""Tests for N.E.K.O adapter ZMQ layer."""
+"""Tests for the optional N.E.K.O adapter ZMQ layer."""
+
+import asyncio
+import contextlib
+import time
 
 import pytest
-import zmq
-import time
-import threading
-import orjson
 
-from plastic_promise.core.neko_adapter import NekoAdapter
+orjson = pytest.importorskip("orjson", reason="install the optional neko extra")
+zmq = pytest.importorskip("zmq", reason="install the optional neko extra")
+neko_adapter = pytest.importorskip(
+    "plastic_promise.core.neko_adapter",
+    reason="install the optional neko extra",
+)
+NekoAdapter = neko_adapter.NekoAdapter
 
 
 def test_zmq_connect_and_receive_message():
     """Adapter SUB socket receives messages from a test PUB socket."""
-    TEST_PUB_PORT = 48990  # Use a non-conflicting port for testing
+    test_pub_port = 48990  # Use a non-conflicting port for testing
 
     adapter = NekoAdapter(
         bus_url="ws://127.0.0.1:48999",
-        zmq_pub_port=TEST_PUB_PORT,
+        zmq_pub_port=test_pub_port,
         zmq_analyze_port=48991,
         session_id="test",
     )
@@ -26,7 +32,7 @@ def test_zmq_connect_and_receive_message():
     # Create a test publisher
     ctx = zmq.Context()
     pub = ctx.socket(zmq.PUB)
-    pub.bind(f"tcp://127.0.0.1:{TEST_PUB_PORT}")
+    pub.bind(f"tcp://127.0.0.1:{test_pub_port}")
 
     # ZMQ PUB needs time for subscribers to connect (slow joiner)
     time.sleep(0.5)
@@ -162,15 +168,13 @@ def test_translate_unknown_event():
 
 def test_ws_task_to_zmq_analyze_request():
     """WS task → ZMQ analyze_request with ack handling."""
-    import asyncio
-
-    TEST_ANALYZE_PORT = 48992
+    test_analyze_port = 48992
 
     async def run_test():
         adapter = NekoAdapter(
             bus_url="ws://127.0.0.1:48999",
             zmq_pub_port=48990,
-            zmq_analyze_port=TEST_ANALYZE_PORT,
+            zmq_analyze_port=test_analyze_port,
             session_id="test",
         )
 
@@ -180,7 +184,7 @@ def test_ws_task_to_zmq_analyze_request():
         # Create a test PULL socket to receive the analyze_request
         ctx = zmq.Context()
         pull = ctx.socket(zmq.PULL)
-        pull.bind(f"tcp://127.0.0.1:{TEST_ANALYZE_PORT}")
+        pull.bind(f"tcp://127.0.0.1:{test_analyze_port}")
         pull.setsockopt(zmq.RCVTIMEO, 2000)
 
         # Simulate an incoming WS task from Pi
@@ -270,11 +274,10 @@ def test_error_handling_invalid_zmq_message():
 
 def test_wsslot_reconnect_backoff():
     """WSSlot maintainer uses exponential backoff."""
-    import asyncio
-    from plastic_promise.core.neko_adapter import WSSlot
+    wsslot_cls = neko_adapter.WSSlot
 
     async def run_test():
-        slot = WSSlot(
+        slot = wsslot_cls(
             name="test-slot",
             url="ws://127.0.0.1:49999",
             lanlan_name="test",
@@ -283,10 +286,8 @@ def test_wsslot_reconnect_backoff():
         maintainer_task = asyncio.create_task(slot.maintain())
         await asyncio.sleep(3)
         maintainer_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await maintainer_task
-        except asyncio.CancelledError:
-            pass
 
         assert True
 

@@ -102,6 +102,23 @@ def test_audit_rollover_is_narrowly_allowed_at_fresh_install_trust():
     assert evaluate_tool_decision(forget, TRUST_INITIAL)["decision"] == "ask"
 
 
+def test_geo_publication_request_requires_explicit_external_publish_semantics():
+    from plastic_promise.core.tool_manifest import (
+        evaluate_tool_decision,
+        manifest_for_tool,
+    )
+
+    publication = manifest_for_tool("geo_publication_request")
+
+    assert publication.domain == "publication"
+    assert publication.risk_level == "high"
+    assert publication.trust_requirement == 0.50
+    assert publication.side_effects == ("external_publish",)
+    assert publication.evidence_required == ("audit_artifact", "publication_grant")
+    assert evaluate_tool_decision(publication, 0.50)["decision"] == "allow"
+    assert evaluate_tool_decision(publication, 0.49)["decision"] == "ask"
+
+
 def test_public_memory_maintenance_tools_require_mutation_authority():
     from plastic_promise.core.tool_manifest import manifest_for_tool
 

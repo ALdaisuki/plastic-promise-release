@@ -1,4 +1,4 @@
-"""Fail-closed local semantic enrichment for canonical structure-aware chunks.
+"""Fail-closed semantic enrichment for canonical structure-aware chunks.
 
 The generated metadata is derived index material only. It never changes canonical source
 content or source spans. Active enrichment is serialized into an embedding plan so the exact
@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 
 
 DEFAULT_MODEL = "qwen3:8b"
+DEFAULT_CLOUD_MODEL = "deepseek-v4-flash"
+DEFAULT_CLOUD_BASE_URL = "https://api.deepseek.com"
 DEFAULT_PROMPT_VERSION = "semantic-chunk-enrichment-v1"
 SCHEMA_VERSION = "semantic-chunk-enrichment-schema-v1"
 ENRICHMENT_IDENTITY = "semantic-v1"
@@ -42,7 +45,11 @@ SYSTEM_PROMPT = (
     "Extract compact retrieval metadata from the exact source fragment. Do not infer facts. "
     "The summary must be copied verbatim as one contiguous source span. Every keyword, entity, "
     "and evidence span must be copied verbatim from source_fragment. Copy required_identifiers "
-    "exactly and in the same order. Return only the requested JSON object."
+    "exactly and in the same order. Return only a valid json object using exactly this example "
+    'field structure: {"summary":"<verbatim contiguous span>",'
+    '"keywords":["<verbatim keyword>"],"entities":["<verbatim entity>"],'
+    '"identifiers":["<required identifier>"],"evidence":["<verbatim span>"]}. '
+    "Replace the angle-bracket placeholders with grounded values; never copy placeholder text."
 )
 
 _EXPECTED_FIELDS = {"summary", "keywords", "entities", "identifiers", "evidence"}
@@ -92,7 +99,7 @@ _SCHEMA_HASH = hashlib.sha256(
 
 @dataclass(frozen=True)
 class SemanticChunkMetadata:
-    """Validated metadata returned by the local analysis model."""
+    """Validated metadata returned by an analysis model."""
 
     summary: str
     keywords: tuple[str, ...]
@@ -136,14 +143,62 @@ class SemanticChunkEnricher:
         self,
         *,
         host: str | None = None,
+        provider: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        path: str | None = None,
         model: str | None = None,
+        model_revision: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        json_mode: bool | None = None,
         model_digest: str | None = None,
         mode: str | None = None,
         cache_path: str | Path | None = None,
         prompt_version: str = DEFAULT_PROMPT_VERSION,
+        inference_client: object | None = None,
     ) -> None:
+        requested_provider = (
+            (provider or os.getenv("PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER", "ollama"))
+            .strip()
+            .casefold()
+        )
+        if requested_provider in {"cloud", "deepseek", "openai"}:
+            requested_provider = "openai-compatible"
+        if requested_provider not in {"ollama", "openai-compatible"}:
+            raise ValueError("semantic_enrichment_provider_invalid")
+        self._provider = requested_provider
         self._host = _normalize_ollama_host(host or os.getenv("OLLAMA_HOST"))
-        self._model = model or os.getenv("PP_MEMORY_CHUNK_ENRICHMENT_MODEL", DEFAULT_MODEL)
+        default_model = (
+            os.getenv("PP_INFERENCE_MODEL", DEFAULT_CLOUD_MODEL)
+            if self._provider == "openai-compatible"
+            else DEFAULT_MODEL
+        )
+        self._model = model or os.getenv("PP_MEMORY_CHUNK_ENRICHMENT_MODEL", default_model)
+        self._model_revision = (
+            model_revision or os.getenv("PP_MEMORY_CHUNK_ENRICHMENT_MODEL_REVISION", self._model)
+        ).strip()
+        if not self._model_revision:
+            raise ValueError("semantic_enrichment_model_revision_invalid")
+        self._inference_client = inference_client
+        component_key = os.getenv("PP_MEMORY_CHUNK_ENRICHMENT_API_KEY", "").strip()
+        self._cloud_api_key = api_key if api_key is not None else (component_key or None)
+        self._cloud_base_url = (
+            base_url
+            if base_url is not None
+            else os.getenv(
+                "PP_MEMORY_CHUNK_ENRICHMENT_BASE_URL",
+                os.getenv("PP_INFERENCE_BASE_URL", DEFAULT_CLOUD_BASE_URL),
+            )
+        ).strip()
+        self._cloud_path = (
+            path
+            if path is not None
+            else os.getenv(
+                "PP_MEMORY_CHUNK_ENRICHMENT_PATH",
+                os.getenv("PP_INFERENCE_PATH", "/chat/completions"),
+            )
+        ).strip()
         self._mode = (mode or os.getenv("PP_MEMORY_CHUNK_ENRICHMENT", "off")).strip().lower()
         if self._mode not in {"off", "shadow", "on"}:
             logging.warning("Unknown PP_MEMORY_CHUNK_ENRICHMENT=%r; using off", self._mode)
@@ -159,6 +214,27 @@ class SemanticChunkEnricher:
         if explicit_model_digest and not self._model_digest:
             raise ValueError("semantic_enrichment_model_digest_invalid")
         self._timeout = _float_env("PP_MEMORY_CHUNK_ENRICHMENT_TIMEOUT", 45.0, minimum=0.1)
+        self._temperature = _bounded_float_setting(
+            temperature,
+            env_name="PP_MEMORY_CHUNK_ENRICHMENT_TEMPERATURE",
+            default=0.0,
+            minimum=0.0,
+            maximum=2.0,
+        )
+        self._top_p = _bounded_float_setting(
+            top_p,
+            env_name="PP_MEMORY_CHUNK_ENRICHMENT_TOP_P",
+            default=1.0,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        self._json_mode = _boolean_setting(
+            json_mode,
+            env_name="PP_MEMORY_CHUNK_ENRICHMENT_JSON_MODE",
+            default=True,
+        )
+        if self._temperature != 1.0 and self._top_p != 1.0:
+            raise ValueError("semantic_enrichment_sampling_parameters_conflict")
         self._num_predict = _int_env("PP_MEMORY_CHUNK_ENRICHMENT_NUM_PREDICT", 768, minimum=128)
         self._max_output_chars = _int_env(
             "PP_MEMORY_CHUNK_ENRICHMENT_MAX_OUTPUT_CHARS", 8192, minimum=512
@@ -187,6 +263,10 @@ class SemanticChunkEnricher:
         return self._model
 
     @property
+    def provider(self) -> str:
+        return self._provider
+
+    @property
     def model_digest(self) -> str:
         if self._model_digest:
             return self._model_digest
@@ -207,6 +287,8 @@ class SemanticChunkEnricher:
 
     @property
     def model_identity(self) -> str:
+        if self._provider == "openai-compatible":
+            return f"openai-compatible:{self._model}@{self._model_revision}"
         digest = self.model_digest
         if not digest:
             raise RuntimeError("semantic_enrichment_model_digest_unavailable")
@@ -219,9 +301,18 @@ class SemanticChunkEnricher:
         digest = self.model_digest
         if not digest:
             raise RuntimeError("semantic_enrichment_model_digest_unavailable")
+        endpoint_identity = ""
+        if self._provider == "openai-compatible":
+            endpoint_hash = _sha256_text(f"{self._cloud_base_url}\0{self._cloud_path}")
+            endpoint_identity = f"|enrichment_endpoint_sha256={endpoint_hash}"
         return (
             f"enrichment={ENRICHMENT_IDENTITY}"
+            f"|enrichment_provider={self._provider}"
             f"|enrichment_model={self._model}@{digest}"
+            f"{endpoint_identity}"
+            f"|enrichment_temperature={self._temperature:g}"
+            f"|enrichment_top_p={self._top_p:g}"
+            f"|enrichment_json_mode={int(self._json_mode)}"
             f"|enrichment_prompt_hash={self._prompt_hash}"
             f"|enrichment_schema_hash={self._schema_hash}"
         )
@@ -242,7 +333,9 @@ class SemanticChunkEnricher:
         original = tuple(material.text for material in materials)
         diagnostics: dict[str, object] = {
             "mode": self._mode,
+            "provider": self._provider,
             "model": self._model,
+            "model_revision": self._model_revision,
             "model_digest": self._model_digest or "unresolved",
             "prompt_hash": self._prompt_hash,
             "schema_hash": self._schema_hash,
@@ -346,6 +439,9 @@ class SemanticChunkEnricher:
         worker = self._worker
         if wait and worker is not None and worker.is_alive():
             worker.join(timeout=max(timeout, 0.0))
+        close = getattr(self._inference_client, "close", None)
+        if callable(close):
+            close()
 
     def _enqueue(self, cache_key: str, material: ChunkMaterial, source_fragment: str) -> bool:
         if self._closed:
@@ -422,6 +518,27 @@ class SemanticChunkEnricher:
         self, material: ChunkMaterial, source_fragment: str
     ) -> _EnrichmentAttempt:
         identifiers = extract_identifiers(source_fragment)
+        user_payload = {
+            "heading_path": list(material.heading_path),
+            "kind": material.kind,
+            "source_fragment": source_fragment,
+            "required_identifiers": list(identifiers),
+        }
+        if self._provider == "openai-compatible":
+            try:
+                raw_metadata = self._cloud_inference_client().complete_json(
+                    system_prompt=SYSTEM_PROMPT,
+                    user_payload=user_payload,
+                    max_tokens=self._num_predict,
+                )
+            except Exception:
+                # Provider errors may contain credentials or source content;
+                # expose only a stable reason code.
+                logging.debug("Cloud semantic chunk request failed")
+                return _EnrichmentAttempt(error="request_failed")
+            metadata, error = validate_metadata(raw_metadata, source_fragment)
+            return _EnrichmentAttempt(metadata=metadata, error=error)
+
         payload = {
             "model": self._model,
             "messages": [
@@ -429,12 +546,7 @@ class SemanticChunkEnricher:
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {
-                            "heading_path": list(material.heading_path),
-                            "kind": material.kind,
-                            "source_fragment": source_fragment,
-                            "required_identifiers": list(identifiers),
-                        },
+                        user_payload,
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ),
@@ -442,9 +554,14 @@ class SemanticChunkEnricher:
             ],
             "stream": False,
             "think": False,
-            "format": _OUTPUT_SCHEMA,
-            "options": {"temperature": 0, "num_predict": self._num_predict},
+            "options": {
+                "temperature": self._temperature,
+                "top_p": self._top_p,
+                "num_predict": self._num_predict,
+            },
         }
+        if self._json_mode:
+            payload["format"] = _OUTPUT_SCHEMA
         try:
             response = requests.post(f"{self._host}/api/chat", json=payload, timeout=self._timeout)
             response.raise_for_status()
@@ -467,7 +584,12 @@ class SemanticChunkEnricher:
             "source": source_fragment,
             "heading_path": list(material.heading_path),
             "kind": material.kind,
+            "provider": self._provider,
             "model": self._model,
+            "model_revision": self._model_revision,
+            "temperature": self._temperature,
+            "top_p": self._top_p,
+            "json_mode": self._json_mode,
             "model_digest": self.model_digest or "unresolved",
             "prompt_hash": self._prompt_hash,
             "schema_hash": self._schema_hash,
@@ -477,6 +599,22 @@ class SemanticChunkEnricher:
         )
 
     def _resolve_model_digest(self) -> str:
+        if self._provider == "openai-compatible":
+            fingerprint = json.dumps(
+                {
+                    "provider": self._provider,
+                    "base_url": self._cloud_base_url,
+                    "path": self._cloud_path,
+                    "model": self._model,
+                    "revision": self._model_revision,
+                    "temperature": self._temperature,
+                    "top_p": self._top_p,
+                    "json_mode": self._json_mode,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return f"sha256:{_sha256_text(fingerprint)}"
         try:
             response = requests.get(f"{self._host}/api/tags", timeout=min(self._timeout, 5.0))
             response.raise_for_status()
@@ -491,6 +629,24 @@ class SemanticChunkEnricher:
         except Exception:
             logging.debug("Could not resolve Ollama model digest", exc_info=True)
         return ""
+
+    def _cloud_inference_client(self):
+        if self._inference_client is not None:
+            return self._inference_client
+        from plastic_promise.core.inference_provider import OpenAICompatibleJSONProvider
+
+        self._inference_client = OpenAICompatibleJSONProvider(
+            api_key=self._cloud_api_key,
+            base_url=self._cloud_base_url,
+            model=self._model,
+            model_revision=self._model_revision,
+            path=self._cloud_path,
+            temperature=self._temperature,
+            top_p=self._top_p,
+            json_mode=self._json_mode,
+            max_output_chars=self._max_output_chars,
+        )
+        return self._inference_client
 
     def _ensure_cache(self) -> None:
         if self._cache_ready:
@@ -893,6 +1049,43 @@ def _float_env(name: str, default: float, minimum: float) -> float:
         return max(float(os.getenv(name, str(default))), minimum)
     except (TypeError, ValueError):
         return max(default, minimum)
+
+
+def _bounded_float_setting(
+    explicit: float | None,
+    *,
+    env_name: str,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    raw: object = explicit if explicit is not None else os.getenv(env_name, str(default))
+    if isinstance(raw, bool):
+        raise ValueError(f"{env_name.lower()}_invalid")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{env_name.lower()}_invalid") from None
+    if not math.isfinite(value) or not minimum <= value <= maximum:
+        raise ValueError(f"{env_name.lower()}_invalid")
+    return value
+
+
+def _boolean_setting(
+    explicit: bool | None,
+    *,
+    env_name: str,
+    default: bool,
+) -> bool:
+    raw: object = explicit if explicit is not None else os.getenv(env_name, "1" if default else "0")
+    if isinstance(raw, bool):
+        return raw
+    value = str(raw).strip().casefold()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{env_name.lower()}_invalid")
 
 
 def _increment_error(diagnostics: dict[str, object], error: str) -> None:

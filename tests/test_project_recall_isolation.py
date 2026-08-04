@@ -118,8 +118,7 @@ def test_memory_recall_filters_core_and_related_by_project_visibility():
         "same-related",
         "global-related",
     ]
-    assert "data" in payload
-    assert [item["id"] for item in payload["data"]["core"]] == ["same-core", "global-core"]
+    assert "data" not in payload
     assert payload["activated_principles"] == ["Context Driven"]
     assert payload["total_items"] == 14
 
@@ -181,7 +180,7 @@ def test_unknown_project_degrades_visibly_and_restricts_core_related_to_global(m
     assert payload["trace"]["project_id"] == "project:unknown"
 
 
-def test_recall_envelope_trace_preserves_backward_compatible_top_level_fields():
+def test_recall_envelope_trace_uses_single_top_level_projection():
     payload = _recall_payload(
         {
             "query": "diff review",
@@ -199,10 +198,8 @@ def test_recall_envelope_trace_preserves_backward_compatible_top_level_fields():
         "request_scope_id": "stage:codex:test::flow:normal-development::req:req:trace",
         "project_id": "project:app",
     }
-    assert payload["data"]["trace"] == payload["trace"]
-    assert payload["core"] == payload["data"]["core"]
-    assert payload["related"] == payload["data"]["related"]
-    assert payload["divergent"] == payload["data"]["divergent"]
+    assert "data" not in payload
+    assert payload["diagnostics"]["summary"]["trace"]["call_id"] == "call_fixed"
 
 
 def test_review_prepare_requires_project_id():
@@ -350,9 +347,7 @@ def _leaky_project_engine():
             "private_debug": "PRIVATE-PROJECT-SECRET",
         }
         pack.gap_signal = {
-            "evidence": [
-                {"id": "private-project-item", "content": "PRIVATE-PROJECT-SECRET"}
-            ],
+            "evidence": [{"id": "private-project-item", "content": "PRIVATE-PROJECT-SECRET"}],
             "recommendations": ["PRIVATE-PROJECT-SECRET", "safe"],
         }
         return pack
@@ -380,12 +375,11 @@ def test_memory_recall_scrubs_private_project_from_first_and_cached_response():
     assert "PRIVATE-PROJECT-SECRET" not in first_text
     assert "PRIVATE-PROJECT-SECRET" not in second_text
     assert [item["id"] for item in first["core"]] == ["visible-project-item"]
-    assert first["core"] == first["data"]["core"]
-    assert second["core"] == second["data"]["core"]
-    assert [row["id"] for row in first["per_item_stats"]] == ["visible-project-item"]
-    assert [row["id"] for row in second["data"]["per_item_stats"]] == [
-        "visible-project-item"
-    ]
+    assert [item["id"] for item in second["core"]] == ["visible-project-item"]
+    assert first["diagnostics"]["summary"]["per_item_count"] == 1
+    assert second["diagnostics"]["summary"]["per_item_count"] == 1
+    assert "data" not in first
+    assert "data" not in second
 
 
 def test_context_supply_debug_scrubs_private_project_from_all_surfaces(monkeypatch):
@@ -405,6 +399,7 @@ def test_context_supply_debug_scrubs_private_project_from_all_surfaces(monkeypat
                 "project_policy": "strict",
                 "request_id": "project-exposure-context",
                 "debug": True,
+                "diagnostics_level": "full",
             },
         )
     )
@@ -413,8 +408,11 @@ def test_context_supply_debug_scrubs_private_project_from_all_surfaces(monkeypat
 
     assert "PRIVATE-PROJECT-SECRET" not in text
     assert [item["id"] for item in payload["core"]] == ["visible-project-item"]
-    assert [row["id"] for row in payload["per_item_stats"]] == ["visible-project-item"]
-    assert payload["audit_metadata"]["raw_evidence"][0]["id"] == "visible-project-item"
+    assert payload["diagnostics"]["summary"]["per_item_count"] == 1
+    assert [row["id"] for row in payload["diagnostics"]["details"]["per_item_stats"]] == [
+        "visible-project-item"
+    ]
+    assert "audit_metadata" not in payload
 
 
 def _stale_sqlite_project_engine(tmp_path, monkeypatch):
@@ -496,9 +494,9 @@ def test_cross_process_project_change_scrubs_first_cache_and_context_supply(
     assert "CROSS-PROCESS-PROJECT-SECRET" not in first_text
     assert "CROSS-PROCESS-PROJECT-SECRET" not in second_text
     assert second["core"] == []
-    assert second["data"]["core"] == []
-    assert second["raw_evidence"] == []
-    assert second["data"]["raw_evidence"] == []
+    assert second["diagnostics"]["summary"]["per_item_count"] == 0
+    assert "data" not in second
+    assert "raw_evidence" not in second
 
     context_text = asyncio.run(
         handle_context_supply(
@@ -514,3 +512,4 @@ def test_cross_process_project_change_scrubs_first_cache_and_context_supply(
     )[0].text
 
     assert "CROSS-PROCESS-PROJECT-SECRET" not in context_text
+    assert json.loads(context_text)["core"] == []
