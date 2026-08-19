@@ -115,11 +115,11 @@ descriptor and its policy digest bind `collaboration_surface_digest`; the OCI
 inspector then derives `application_inventory_digest` from the selected image's
 final root filesystem and records both values in the image/SBOM/provenance-
 bound evidence receipt. Neither digest is presented as a separate OCI label.
-The server inventory must equal the closed current collaboration allowlist:
-`__init__.py`, `acceptance_receipt.py`, `context_projection.py`, `contracts.py`,
-`event_log.py`, `lease_contract.py`, `lease_adapters.py`, `passive_bridge.py`,
-and `policy_binding.py`. Merely containing those files is insufficient, and
-an extra module fails closed.
+The server inventory must equal the closed current collaboration allowlist
+published by `endpoint_role_contract(PP_SERVER_BACKEND)`. The container
+compiler consumes that same manifest instead of maintaining a second module
+list. Merely containing a subset is insufficient, and an extra module fails
+closed.
 The SBOM attestation must carry a valid SPDX 2.2/2.3 document predicate with a
 file inventory whose collaboration namespace exactly matches the final rootfs.
 The same comparison covers the complete observed `plastic_promise` namespace:
@@ -318,8 +318,8 @@ target, source revision, package version, base-image digest, plan and
 recipe-policy digests, `collaboration_surface_digest`,
 `application_inventory_digest`, OCI layout/image digest, label digest, and
 SBOM/provenance digests. The inventory is computed only after applying the OCI
-layers and ordinary/opaque whiteouts. Verification requires the exact
-eight-file collaboration surface in server, rejects any collaboration package
+layers and ordinary/opaque whiteouts. Verification requires the exact,
+role-contract-bound collaboration surface in server, rejects any collaboration package
 path in edge or compute, and rejects every observed Python package path outside
 the selected role allowlist. Server cannot carry the compute-node or
 release-builder packages; compute cannot carry MCP, SQLite/memory/knowledge,

@@ -27,6 +27,7 @@ from plastic_promise.deployment import (
     ContainerArtifactCompiler,
     ContainerArtifactError,
 )
+from plastic_promise.endpoint_roles import endpoint_role_contract
 
 
 def _digest(label: str) -> str:
@@ -182,11 +183,7 @@ def test_server_recipe_requires_compute_provider_source_pruning(tmp_path: Path):
 
 def test_compiler_binds_exact_collaboration_surface_matrix_into_policy():
     plan = ContainerArtifactCompiler().prepare(_request())
-    server_modules = (
-        "plastic_promise.collaboration",
-        "plastic_promise.collaboration.contracts",
-        "plastic_promise.collaboration.event_log",
-    )
+    server_modules = endpoint_role_contract(PP_SERVER_BACKEND).collaboration_modules
     expected_by_role = {
         PP_LOCAL_EDGE: ((), "absent"),
         PP_SERVER_BACKEND: (server_modules, "source-only-unwired"),
@@ -358,10 +355,9 @@ def test_artifact_evidence_receipt_round_trips_and_binds_surface_and_inventory()
 
     assert CONTAINER_ARTIFACT_EVIDENCE_SCHEMA_VERSION == "plastic-promise-container-evidence/v2"
     assert payload["schema_version"] == CONTAINER_ARTIFACT_EVIDENCE_SCHEMA_VERSION
-    assert artifact.collaboration_surface.source_paths == (
-        "plastic_promise/collaboration/__init__.py",
-        "plastic_promise/collaboration/contracts.py",
-        "plastic_promise/collaboration/event_log.py",
+    assert (
+        artifact.collaboration_surface.source_paths
+        == endpoint_role_contract(PP_SERVER_BACKEND).collaboration_source_paths
     )
     assert payload["collaboration_surface_digest"] == artifact.collaboration_surface_digest
     assert payload["application_inventory_digest"] == _digest(f"inventory:{artifact.artifact_id}")
@@ -450,9 +446,7 @@ def _copy_recipe_tree(destination: Path) -> None:
         "deploy/local-inference-node/compose.cpu.yaml",
         "deploy/local-inference-node/compose.cuda.yaml",
         "deploy/local-inference-node/compose.yaml",
-        "plastic_promise/collaboration/__init__.py",
-        "plastic_promise/collaboration/contracts.py",
-        "plastic_promise/collaboration/event_log.py",
+        *endpoint_role_contract(PP_SERVER_BACKEND).collaboration_source_paths,
     ):
         target = destination / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -46,6 +46,10 @@ _COLLABORATION_FOUNDATION = (
         "plastic_promise/collaboration/acceptance_receipt.py",
     ),
     (
+        "plastic_promise.collaboration.activity_update",
+        "plastic_promise/collaboration/activity_update.py",
+    ),
+    (
         "plastic_promise.collaboration.awareness",
         "plastic_promise/collaboration/awareness.py",
     ),
@@ -64,6 +68,34 @@ _COLLABORATION_FOUNDATION = (
     (
         "plastic_promise.collaboration.contracts",
         "plastic_promise/collaboration/contracts.py",
+    ),
+    (
+        "plastic_promise.collaboration.coordination_plan",
+        "plastic_promise/collaboration/coordination_plan.py",
+    ),
+    (
+        "plastic_promise.collaboration.coordinator_supervisor",
+        "plastic_promise/collaboration/coordinator_supervisor.py",
+    ),
+    (
+        "plastic_promise.collaboration.durable_acceptance_store",
+        "plastic_promise/collaboration/durable_acceptance_store.py",
+    ),
+    (
+        "plastic_promise.collaboration.durable_activity_store",
+        "plastic_promise/collaboration/durable_activity_store.py",
+    ),
+    (
+        "plastic_promise.collaboration.durable_coordination_plan_store",
+        "plastic_promise/collaboration/durable_coordination_plan_store.py",
+    ),
+    (
+        "plastic_promise.collaboration.durable_coordinator_store",
+        "plastic_promise/collaboration/durable_coordinator_store.py",
+    ),
+    (
+        "plastic_promise.collaboration.durable_role_store",
+        "plastic_promise/collaboration/durable_role_store.py",
     ),
     (
         "plastic_promise.collaboration.durable_runtime",
@@ -92,6 +124,10 @@ _COLLABORATION_FOUNDATION = (
     (
         "plastic_promise.collaboration.policy_binding",
         "plastic_promise/collaboration/policy_binding.py",
+    ),
+    (
+        "plastic_promise.collaboration.role_assignment",
+        "plastic_promise/collaboration/role_assignment.py",
     ),
     (
         "plastic_promise.collaboration.runtime_binding",

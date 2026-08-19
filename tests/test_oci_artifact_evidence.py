@@ -18,15 +18,14 @@ from plastic_promise.deployment import (
     ArtifactRequest,
     ContainerArtifactCompiler,
 )
+from plastic_promise.endpoint_roles import PP_SERVER_BACKEND, endpoint_role_contract
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 VERIFY_SCRIPT = REPOSITORY_ROOT / "scripts" / "verify_oci_artifact_evidence.py"
 SOURCE_REVISION = "a" * 40
 CATALOG_DIGEST = "sha256:" + ("b" * 64)
-COLLABORATION_FILES = (
-    "app/plastic_promise/collaboration/__init__.py",
-    "app/plastic_promise/collaboration/contracts.py",
-    "app/plastic_promise/collaboration/event_log.py",
+COLLABORATION_FILES = tuple(
+    f"app/{path}" for path in endpoint_role_contract(PP_SERVER_BACKEND).collaboration_source_paths
 )
 
 

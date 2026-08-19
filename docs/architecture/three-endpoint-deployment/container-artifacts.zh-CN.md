@@ -95,10 +95,9 @@ endpoint variant、endpoint-contract revision、精确 role-authority matrix、�
 recipe-policy digest。descriptor 及其 policy digest 绑定 `collaboration_surface_digest`；OCI
 inspector 再从所选 image 的 final rootfs 派生 `application_inventory_digest`，并把两个值记录在
 与 image/SBOM/provenance 绑定的 evidence receipt 中。二者都不是独立 OCI label。server
-inventory 必须精确等于当前封闭 collaboration allowlist：`__init__.py`、
-`acceptance_receipt.py`、`context_projection.py`、`contracts.py`、`event_log.py`、
-`lease_contract.py`、`lease_adapters.py`、`passive_bridge.py` 与 `policy_binding.py`。
-仅包含这些文件仍不够，出现额外 module 会 fail closed。SBOM attestation 必须携带有效的 SPDX 2.2/2.3 document predicate，且其
+inventory 必须精确等于 `endpoint_role_contract(PP_SERVER_BACKEND)` 发布的当前封闭
+collaboration allowlist。container compiler 直接消费同一份 manifest，不再维护第二套
+module 清单。仅包含其中一部分仍不够，出现额外 module 会 fail closed。SBOM attestation 必须携带有效的 SPDX 2.2/2.3 document predicate，且其
 file inventory 中的 collaboration namespace 必须与 final rootfs 精确一致。compute
 同一比较也覆盖实际出现的完整 `plastic_promise` namespace：每个已安装 source path
 必须属于所选角色 allowlist，每个 required import 地基必须存在，SPDX package view 必须与
@@ -265,7 +264,7 @@ final-rootfs application inventory，以及 fake-executor inspection receipt。�
 version、base-image digest、plan 与 recipe-policy digest、
 `collaboration_surface_digest`、`application_inventory_digest`、OCI layout/image digest、
 label digest 以及 SBOM/provenance digest。inventory 只在应用 OCI layer、普通 whiteout 与
-opaque whiteout 后计算。验证要求 server 精确包含八个 collaboration allowlist file，拒绝
+opaque whiteout 后计算。验证要求 server 精确包含 role contract 绑定的 collaboration allowlist，拒绝
 edge 或 compute 中的任意 collaboration package path，并拒绝所选 role allowlist 外的任何
 Python package path。server 不得携带 compute-node 或 release-builder package；compute
 不得携带 MCP、SQLite/memory/knowledge/collaboration/deployment/Maintenance/

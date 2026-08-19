@@ -77,19 +77,13 @@ _ALLOWED_DOCKERFILE_OPCODES = frozenset(
 _ALLOWED_COMPUTE_RUN_MOUNT = "--mount=type=cache,target=/root/.cache/pip,sharing=locked"
 
 _BASE_IMAGE_CATALOG_PATH = "deploy/oci-base-images.json"
-_COLLABORATION_FOUNDATION = (
-    (
-        "plastic_promise.collaboration",
-        "plastic_promise/collaboration/__init__.py",
-    ),
-    (
-        "plastic_promise.collaboration.contracts",
-        "plastic_promise/collaboration/contracts.py",
-    ),
-    (
-        "plastic_promise.collaboration.event_log",
-        "plastic_promise/collaboration/event_log.py",
-    ),
+_SERVER_ROLE_CONTRACT = endpoint_role_contract(PP_SERVER_BACKEND)
+_COLLABORATION_FOUNDATION = tuple(
+    zip(
+        _SERVER_ROLE_CONTRACT.collaboration_modules,
+        _SERVER_ROLE_CONTRACT.collaboration_source_paths,
+        strict=True,
+    )
 )
 _COLLABORATION_MODULES = tuple(module for module, _ in _COLLABORATION_FOUNDATION)
 _COLLABORATION_SOURCE_PATHS = tuple(path for _, path in _COLLABORATION_FOUNDATION)
@@ -101,7 +95,7 @@ _SERVER_RECIPE_AUTHORITY_LABEL = (
 _COMPUTE_PACKAGE_MANIFEST = compute_package_manifest()
 _COMPUTE_CAPABILITY_CONTRACTS = _COMPUTE_PACKAGE_MANIFEST.capability_contracts
 _COMPUTE_CAPABILITY_LABEL = _COMPUTE_PACKAGE_MANIFEST.capability_label
-_SERVER_SOURCE_EXCLUSIONS = endpoint_role_contract(PP_SERVER_BACKEND).source_exclusions
+_SERVER_SOURCE_EXCLUSIONS = _SERVER_ROLE_CONTRACT.source_exclusions
 _SERVER_SOURCE_EXCLUSION_LABEL = ",".join(_SERVER_SOURCE_EXCLUSIONS)
 _RECIPE_SOURCE_PATHS = (
     ".dockerignore",
