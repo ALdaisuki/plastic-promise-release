@@ -487,6 +487,12 @@ def _validate_sbom_collaboration_surface(
     rootfs_paths = _collaboration_relative_paths(rootfs_inventory, surface.package_path)
     sbom_paths = _collaboration_relative_paths(sbom_inventory, surface.package_path)
     if rootfs_paths != sbom_paths:
+        print(
+            "sbom_collaboration_diagnostic:"
+            f" rootfs={sorted(rootfs_paths)!r}"
+            f" sbom={sorted(sbom_paths)!r}",
+            file=sys.stderr,
+        )
         _fail("container_artifact_sbom_collaboration_surface_mismatch")
 
 
