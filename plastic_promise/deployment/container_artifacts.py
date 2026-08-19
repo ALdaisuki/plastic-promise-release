@@ -849,10 +849,12 @@ class StaticRecipePolicyValidator:
             install_index, install_run = install_runs[0]
             install_position = install_run.find("python -m pip install --no-cache-dir .")
             cleanup_position = install_run.find("rm -rf /app/plastic_promise")
+            build_cleanup_position = install_run.find("/app/build")
             if (
                 source_copy_index < 0
                 or install_index <= source_copy_index
                 or cleanup_position <= install_position
+                or build_cleanup_position <= install_position
             ):
                 raise ContainerArtifactError("container_recipe_server_source_cleanup_required")
         run_mount_count = 0

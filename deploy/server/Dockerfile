@@ -54,7 +54,7 @@ WORKDIR /app
 COPY --from=server-source /source/pyproject.toml /source/README.md /app/
 COPY --from=server-source /source/plastic_promise /app/plastic_promise
 RUN python -m pip install --no-cache-dir . \
-    && rm -rf /app/plastic_promise \
+    && rm -rf /app/plastic_promise /app/build \
     && useradd --create-home --shell /usr/sbin/nologin ppruntime
 
 USER ppruntime

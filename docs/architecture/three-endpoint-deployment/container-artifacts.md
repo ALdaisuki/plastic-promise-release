@@ -205,7 +205,7 @@ presence is not proof of a build or a usable runtime:
 | Endpoint artifact | Source recipe / companion file | Declared entrypoint |
 |---|---|---|
 | `pp-local-edge` | `deploy/local-edge/Dockerfile`, `entrypoint.sh`, `nginx.conf`, and `compose.yaml` | `plastic-promise-local-edge` |
-| `pp-server-backend` | `deploy/server/Dockerfile` and `compose.yaml`; a discarded `server-package` stage feeds the monorepo to `RolePackageCompiler`, and the fresh final stage installs only the server allowlist | `plastic-promise-canonical-runtime` |
+| `pp-server-backend` | `deploy/server/Dockerfile` and `compose.yaml`; a discarded `server-package` stage feeds the monorepo to `RolePackageCompiler`, and the fresh final stage installs only the server allowlist, then removes both the staged source tree and pip's `/app/build` tree | `plastic-promise-canonical-runtime` |
 | `pp-compute-node` CPU/CUDA | `deploy/local-inference-node/Dockerfile`, compatibility `compose.yaml`, `compose.cpu.yaml`, and `compose.cuda.yaml`; `compute-runtime` supplies dependencies, discarded `compute-package` compiles the one compute allowlist, and the fresh final stage installs it for either variant | `plastic-promise-local-inference-node` |
 
 The Compose files are recipe inputs for later reviewed activation. Their

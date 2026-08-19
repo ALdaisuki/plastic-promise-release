@@ -698,10 +698,24 @@ def test_server_recipe_requires_staged_source_cleanup_after_install(tmp_path: Pa
     target = tmp_path / "deploy/server/Dockerfile"
     text = target.read_text(encoding="utf-8")
     text = text.replace(
-        "    && rm -rf /app/plastic_promise \\\n",
+        "    && rm -rf /app/plastic_promise /app/build \\\n",
         "",
         1,
     )
+    target.write_text(text, encoding="utf-8")
+
+    with pytest.raises(
+        ContainerArtifactError,
+        match="container_recipe_server_source_cleanup_required",
+    ):
+        ContainerArtifactCompiler(repository_root=tmp_path).prepare(_request())
+
+
+def test_server_recipe_requires_build_tree_cleanup_after_install(tmp_path: Path):
+    _copy_recipe_tree(tmp_path)
+    target = tmp_path / "deploy/server/Dockerfile"
+    text = target.read_text(encoding="utf-8")
+    text = text.replace(" /app/build \\\n", " \\\n", 1)
     target.write_text(text, encoding="utf-8")
 
     with pytest.raises(
@@ -716,7 +730,7 @@ def test_server_recipe_rejects_cleanup_before_package_install(tmp_path: Path):
     target = tmp_path / "deploy/server/Dockerfile"
     text = target.read_text(encoding="utf-8")
     text = text.replace(
-        "RUN python -m pip install --no-cache-dir . \\\n    && rm -rf /app/plastic_promise \\\n",
+        "RUN python -m pip install --no-cache-dir . \\\n    && rm -rf /app/plastic_promise /app/build \\\n",
         "RUN rm -rf /app/plastic_promise\nRUN python -m pip install --no-cache-dir . \\\n",
         1,
     )
