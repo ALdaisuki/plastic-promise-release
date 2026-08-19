@@ -66,6 +66,7 @@ def _write_oci_layout(
     rootfs_layers: tuple[tuple[str, ...], ...] = (),
     sbom_files: tuple[str, ...] = (),
     sbom_predicate: dict[str, object] | None = None,
+    statement_type: str = "https://in-toto.io/Statement/v0.1",
 ) -> None:
     blobs: dict[str, bytes] = {}
 
@@ -107,7 +108,7 @@ def _write_oci_layout(
             )
         return _canonical(
             {
-                "_type": "https://in-toto.io/Statement/v0.1",
+                "_type": statement_type,
                 "predicateType": predicate_type,
                 "predicate": predicate,
                 "subject": subjects,
@@ -441,6 +442,26 @@ def test_oci_evidence_cli_rejects_an_empty_sbom_predicate(tmp_path: Path):
     assert result.returncode != 0
     assert "container_artifact_sbom_predicate_invalid" in result.stderr
     assert not output.exists()
+
+
+def test_oci_evidence_cli_accepts_current_in_toto_v1_sbom_statement(tmp_path: Path):
+    plan = ContainerArtifactCompiler().prepare(_request())
+    artifact = plan.artifact_for("pp-local-edge", "linux/amd64")
+    layout = tmp_path / "in-toto-v1.oci.tar"
+    output = tmp_path / "receipt.json"
+    _write_oci_layout(
+        layout,
+        labels=plan.expected_oci_labels(artifact.artifact_id),
+        include_sbom=True,
+        statement_type="https://in-toto.io/Statement/v1",
+    )
+
+    result = subprocess.run(
+        _command(layout, output), cwd=REPOSITORY_ROOT, text=True, capture_output=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.exists()
 
 
 def test_oci_evidence_cli_rejects_sbom_that_omits_a_server_collaboration_file(

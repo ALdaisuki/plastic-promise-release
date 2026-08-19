@@ -35,6 +35,19 @@ _IMAGE_MANIFEST_MEDIA_TYPES = frozenset(
         "application/vnd.docker.distribution.manifest.v2+json",
     }
 )
+_IN_TOTO_STATEMENT_TYPES = frozenset(
+    {
+        "https://in-toto.io/Statement/v0.1",
+        "https://in-toto.io/Statement/v1",
+    }
+)
+_SPDX_PREDICATE_TYPES = frozenset(
+    {
+        "https://spdx.dev/Document",
+        "https://spdx.dev/Document/v2.2",
+        "https://spdx.dev/Document/v2.3",
+    }
+)
 
 if TYPE_CHECKING:
     from plastic_promise.deployment import ArtifactCollaborationSurface
@@ -393,8 +406,8 @@ def _spdx_file_inventory(layer_payload: bytes, image_digest: str) -> tuple[str, 
 
     statement = _attestation_statement(layer_payload, image_digest)
     if (
-        statement.get("_type") != "https://in-toto.io/Statement/v0.1"
-        or statement.get("predicateType") != "https://spdx.dev/Document"
+        statement.get("_type") not in _IN_TOTO_STATEMENT_TYPES
+        or statement.get("predicateType") not in _SPDX_PREDICATE_TYPES
     ):
         _fail("container_artifact_sbom_predicate_invalid")
     predicate = _mapping(statement.get("predicate"), "container_artifact_sbom_predicate_invalid")
