@@ -56,6 +56,13 @@ jobs:
           path: dev-repo
           fetch-depth: 0
           ref: ${{ github.event.inputs.source_commit }}
+          # The release repository's GITHUB_TOKEN cannot read the private
+          # development repository. Use the separately provisioned,
+          # read-only cross-repository credential and keep the immutable SHA
+          # check below as the second line of defense. The secret must be a
+          # fine-grained read-only token (or GitHub App token) scoped only to
+          # ALdaisuki/plastic-promise contents.
+          token: ${{ secrets.DEV_REPO_READ_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
