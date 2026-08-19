@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
-  <title id="title">Plastic Promise 本地治理运行时架构</title>
-  <desc id="desc">分层矢量架构图，展示 Plastic Promise 的参与者、MCP 入口、治理核心、自动化闭环、本地持久化与可选加速路径。</desc>
+  <title id="title">Plastic Promise 联合三端、协作与运行时目标架构</title>
+  <desc id="desc">联合六 PR 合同 revision 2026-08-18.1 定义 pp-local-edge、pp-server-backend、pp-compute-node、server-only 规范与协作权威，以及 LanceDB 派生状态；此图仅表达源码/设计，不证明 runtime 或 production 已激活。</desc>
   <defs>
     <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
       <stop offset="0" stop-color="#0b1220"/>
@@ -36,7 +36,7 @@
   <rect x="36" y="104" width="1208" height="552" rx="22" fill="url(#band)" stroke="#1e3a8a" stroke-width="1"/>
 
   <text x="64" y="58" class="title">Plastic Promise 架构</text>
-  <text x="64" y="86" class="subtitle">本地优先的 MCP 治理运行时：记忆、上下文、审计、信任、技能与任务调度</text>
+  <text x="64" y="86" class="subtitle">联合合同 2026-08-18.1 · 三端架构 · server-only 规范与协调权威</text>
 
   <text x="64" y="136" class="layer">参与者</text>
   <rect x="64" y="154" width="190" height="82" rx="14" class="actor"/>
@@ -51,63 +51,63 @@
   <text x="88" y="401" class="label">Agent 团队</text>
   <text x="88" y="424" class="small">Builder、Fixer、Reviewer</text>
 
-  <text x="316" y="136" class="layer">MCP 入口</text>
+  <text x="316" y="136" class="layer">LOCAL EDGE</text>
   <rect x="316" y="176" width="206" height="96" rx="14" class="entry"/>
-  <text x="344" y="210" class="label">MCP Server</text>
-  <text x="344" y="234" class="small">stdio / HTTP / SSE legacy</text>
-  <text x="344" y="252" class="tiny">58 个工具与兼容别名</text>
+  <text x="344" y="210" class="label">pp-local-edge</text>
+  <text x="344" y="234" class="small">Dashboard + 部署界面</text>
+  <text x="344" y="252" class="tiny">MCP bridge + 有界缓存</text>
 
   <rect x="316" y="322" width="206" height="96" rx="14" class="entry"/>
-  <text x="344" y="356" class="label">工具暴露面</text>
-  <text x="344" y="380" class="small">schema、prompt、健康检查</text>
-  <text x="344" y="398" class="tiny">runtime_mode、request_scope_id</text>
+  <text x="344" y="356" class="label">宿主 ppctl</text>
+  <text x="344" y="380" class="small">只执行 validated plan</text>
+  <text x="344" y="398" class="tiny">UI 无 socket 或 Shell</text>
 
-  <text x="584" y="136" class="layer">治理核心</text>
+  <text x="584" y="136" class="layer">SERVER BACKEND</text>
   <rect x="584" y="150" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="181" class="label">上下文引擎</text>
-  <text x="612" y="204" class="small">检索、图谱、排序</text>
+  <text x="612" y="181" class="label">MCP + 治理</text>
+  <text x="612" y="204" class="small">记忆、上下文、协作</text>
 
   <rect x="584" y="252" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="283" class="label">记忆管道</text>
-  <text x="612" y="306" class="small">提取、去重、衰减</text>
+  <text x="612" y="283" class="label">持久派生工作</text>
+  <text x="612" y="306" class="small">outbox、租约、事件、reconcile</text>
 
   <rect x="584" y="354" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="385" class="label">原则与图谱</text>
-  <text x="612" y="408" class="small">激活、评估、关联</text>
+  <text x="612" y="385" class="label">Maintenance</text>
+  <text x="612" y="408" class="small">扫描、重试、恢复</text>
 
   <rect x="584" y="456" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="487" class="label">信任与防线</text>
-  <text x="612" y="510" class="small">审计、等级、预检查</text>
+  <text x="612" y="487" class="label">Generation Control</text>
+  <text x="612" y="510" class="small">验证、推广、回滚</text>
 
-  <text x="862" y="136" class="layer">自动化闭环</text>
+  <text x="862" y="136" class="layer">COMPUTE NODE</text>
   <rect x="862" y="176" width="214" height="82" rx="14" class="loop"/>
-  <text x="890" y="207" class="label">技能与闭环</text>
-  <text x="890" y="230" class="small">session-init、sp-stage</text>
+  <text x="890" y="207" class="label">Embedding</text>
+  <text x="890" y="230" class="small">固定 identity + schema</text>
 
   <rect x="862" y="298" width="214" height="82" rx="14" class="loop"/>
-  <text x="890" y="329" class="label">Hunter Guild</text>
-  <text x="890" y="352" class="small">认领、心跳、验收</text>
+  <text x="890" y="329" class="label">Rerank</text>
+  <text x="890" y="352" class="small">类型化派生结果</text>
 
   <rect x="862" y="420" width="214" height="82" rx="14" class="loop"/>
-  <text x="890" y="451" class="label">维护守护进程</text>
-  <text x="890" y="474" class="small">扫描、恢复、GC</text>
+  <text x="890" y="451" class="label">可选类型化 JSON</text>
+  <text x="890" y="474" class="small">无任意 Prompt、文件或 Shell</text>
 
-  <text x="64" y="586" class="layer">本地持久化与加速</text>
+  <text x="64" y="586" class="layer">状态与执行所有权</text>
   <rect x="64" y="604" width="246" height="60" rx="14" class="store"/>
   <text x="90" y="631" class="label">SQLite WAL</text>
-  <text x="90" y="651" class="small">结构化真相源</text>
+  <text x="90" y="651" class="small">仅 server 可写 canonical</text>
 
   <rect x="342" y="604" width="246" height="60" rx="14" class="store"/>
   <text x="368" y="631" class="label">LanceDB</text>
-  <text x="368" y="651" class="small">向量与相似度检索</text>
+  <text x="368" y="651" class="small">仅派生 generation</text>
 
   <rect x="620" y="604" width="246" height="60" rx="14" class="rust"/>
-  <text x="646" y="631" class="label">Rust Context Core</text>
-  <text x="646" y="651" class="small">可选加速路径</text>
+  <text x="646" y="631" class="label">宿主 ppctl</text>
+  <text x="646" y="651" class="small">validated execution adapter</text>
 
   <rect x="898" y="604" width="246" height="60" rx="14" class="store"/>
-  <text x="924" y="631" class="label">日志与运行态</text>
-  <text x="924" y="651" class="small">健康、事件、审计轨迹</text>
+  <text x="924" y="631" class="label">模型缓存</text>
+  <text x="924" y="651" class="small">compute 本地，无 canonical 数据</text>
 
   <path class="arrow" d="M254 195 H316"/>
   <path class="arrow" d="M254 303 H316"/>
@@ -124,5 +124,5 @@
   <path class="softArrow" d="M969 502 V604"/>
   <path class="softArrow" d="M743 604 C743 570 742 552 742 538"/>
 
-  <text x="64" y="692" class="tiny">流程：客户端调用带请求作用域的 MCP 工具，治理核心检索上下文并执行约定，自动化闭环完成任务，本地存储保持状态可审计。</text>
+  <text x="64" y="692" class="tiny">联合合同 2026-08-18.1：仅源码/设计图；runtime、migration、promotion、cutover 与 production 均需独立凭证。</text>
 </svg>

@@ -212,6 +212,20 @@ def test_settings_reject_explicit_canonical_db_from_supplied_environment(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_disabled_gateway_listener_exits_cleanly(monkeypatch):
+    from plastic_promise.mcp import inference_gateway_server
+
+    monkeypatch.setenv("PP_INFERENCE_GATEWAY", "0")
+    monkeypatch.setattr(
+        inference_gateway_server,
+        "configure_default_environment",
+        lambda _root: None,
+    )
+
+    assert await inference_gateway_server.serve(9030) is None
+
+
+@pytest.mark.asyncio
 async def test_standalone_app_lifespan_bounds_drain_and_leaves_cloud_job_retryable(
     tmp_path,
     monkeypatch,
@@ -478,6 +492,22 @@ def test_default_store_receives_all_gateway_capacity_settings(tmp_path, monkeypa
         "max_retained_rows_per_project": 19,
         "max_retained_json_bytes_per_project": 2 * 1024 * 1024,
     }
+
+
+def test_server_backend_cannot_start_legacy_inference_executor(tmp_path, monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
+    settings = InferenceGatewaySettings(
+        enabled=True,
+        project_id="project:test",
+        token="t" * 32,
+        db_path=tmp_path / "jobs.db",
+    )
+
+    with pytest.raises(
+        InferenceGatewayConfigurationError,
+        match="^inference_requires_compute_node$",
+    ):
+        create_inference_gateway_routes(settings)
 
 
 @pytest.mark.asyncio

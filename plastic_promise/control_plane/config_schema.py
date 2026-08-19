@@ -21,12 +21,15 @@ from urllib.parse import unquote, urlsplit
 
 CONFIG_CONTRACT = "control-plane-config/v1"
 
-_TOP_LEVEL_FIELDS = frozenset({"embedding", "rerank", "chunk_inference", "gateway"})
+_TOP_LEVEL_FIELDS = frozenset({"embedding", "rerank", "chunk_inference", "gateway", "node_routing"})
 _SECRET_ENV_NAMES = MappingProxyType(
     {
         "embedding_api_key": "EMBEDDER_API_KEY",
         "rerank_api_key": "PP_RERANK_API_KEY",
         "chunk_inference_api_key": "PP_MEMORY_CHUNK_ENRICHMENT_API_KEY",
+        # The value is write-only in the control plane and is projected only
+        # to the compute-node runtime by the deployment supervisor.
+        "compute_node_cloud_api_key": "PP_LOCAL_NODE_CLOUD_API_KEY",
         "gateway_token": "PP_INFERENCE_GATEWAY_TOKEN",
     }
 )
@@ -59,7 +62,14 @@ BOOTSTRAP_ONLY_ENV_NAMES = frozenset(
         "PP_PROJECT_ID",
     }
 )
-_REMOTE_SECRET_NAMES = frozenset({"embedding_api_key", "rerank_api_key", "chunk_inference_api_key"})
+_REMOTE_SECRET_NAMES = frozenset(
+    {
+        "embedding_api_key",
+        "rerank_api_key",
+        "chunk_inference_api_key",
+        "compute_node_cloud_api_key",
+    }
+)
 _MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _PROJECT_RE = re.compile(r"project:[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}\Z")
 _HOST_RE = re.compile(
@@ -68,6 +78,8 @@ _HOST_RE = re.compile(
 )
 _SAFE_SECRET_RE = re.compile(r"[A-Za-z0-9._~+/=:@%-]{8,4096}\Z")
 _GATEWAY_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{32,512}\Z")
+_NODE_ID_RE = re.compile(r"[a-z][a-z0-9_.:-]{1,127}\Z")
+_SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _DOCUMENTATION_HOST_LABELS = frozenset({"doc", "docs", "documentation", "wiki"})
 
 _EMBEDDING_FIELDS = frozenset(
@@ -152,11 +164,34 @@ _GATEWAY_FIELDS = frozenset(
         "provider_host_allowlist",
     }
 )
+_NODE_ROUTING_FIELDS = frozenset(
+    {
+        "enabled",
+        "inference_mode",
+        "embedding_policy",
+        "rerank_policy",
+        "structured_json_policy",
+        "embedding_required_identity",
+        "rerank_required_identity",
+        "structured_json_required_identity",
+        "embedding_pinned_node_id",
+        "rerank_pinned_node_id",
+        "structured_json_pinned_node_id",
+        "allowed_node_ids",
+        "project_overrides",
+        "accelerator_max_enabled",
+        "accelerator_max_concurrency",
+        "accelerator_max_queue_depth",
+        "accelerator_max_daily_tasks",
+        "accelerator_min_free_memory_mib",
+    }
+)
 _SECTION_FIELDS = {
     "embedding": _EMBEDDING_FIELDS,
     "rerank": _RERANK_FIELDS,
     "chunk_inference": _CHUNK_INFERENCE_FIELDS,
     "gateway": _GATEWAY_FIELDS,
+    "node_routing": _NODE_ROUTING_FIELDS,
 }
 _SECTION_PATCH_FIELDS = {
     **_SECTION_FIELDS,
@@ -190,6 +225,7 @@ class PreparedConfiguration:
     environment: Mapping[str, str] = field(repr=False)
     secret_values: Mapping[str, str] = field(repr=False)
     secret_operations: Mapping[str, str] = field(repr=False)
+    compute_environment: Mapping[str, str] = field(default_factory=dict, repr=False)
 
 
 def default_safe_config() -> dict[str, object]:
@@ -270,6 +306,26 @@ def default_safe_config() -> dict[str, object]:
             "max_retained_json_bytes": 512 * 1024 * 1024,
             "provider_host_allowlist": [],
         },
+        "node_routing": {
+            "enabled": False,
+            "inference_mode": "local",
+            "embedding_policy": "remote-node-first",
+            "rerank_policy": "remote-node-first",
+            "structured_json_policy": "remote-node-first",
+            "embedding_required_identity": "",
+            "rerank_required_identity": "",
+            "structured_json_required_identity": "",
+            "embedding_pinned_node_id": "",
+            "rerank_pinned_node_id": "",
+            "structured_json_pinned_node_id": "",
+            "allowed_node_ids": [],
+            "project_overrides": {},
+            "accelerator_max_enabled": False,
+            "accelerator_max_concurrency": 1,
+            "accelerator_max_queue_depth": 32,
+            "accelerator_max_daily_tasks": 100,
+            "accelerator_min_free_memory_mib": 1024,
+        },
     }
 
 
@@ -281,10 +337,12 @@ def safe_config_from_environment(environ: Mapping[str, object]) -> dict[str, obj
     rerank = config["rerank"]
     chunk = config["chunk_inference"]
     gateway = config["gateway"]
+    node_routing = config["node_routing"]
     assert isinstance(embedding, dict)
     assert isinstance(rerank, dict)
     assert isinstance(chunk, dict)
     assert isinstance(gateway, dict)
+    assert isinstance(node_routing, dict)
 
     embedding_provider = _env_text(environ, "EMBEDDER_PROVIDER", "").casefold()
     embedding["enabled"] = embedding_provider in {
@@ -584,11 +642,13 @@ def prepare_configuration(
 
     _validate_required_secrets(normalized, values)
     environment = _render_environment(normalized, values)
+    compute_environment = _render_compute_environment(normalized, values)
     return PreparedConfiguration(
         safe_config=normalized,
         secret_state=secret_state(values),
         embedding_identity=embedding_identity(normalized),
         environment=environment,
+        compute_environment=compute_environment,
         secret_values=values,
         secret_operations={name: operation["op"] for name, operation in operations.items()},
     )
@@ -598,6 +658,30 @@ def normalize_safe_config(config: Mapping[str, object]) -> dict[str, object]:
     """Validate and upgrade one public config without requiring secret values."""
 
     return _normalize_config(config)
+
+
+def routing_for_project(config: Mapping[str, object], project_id: str) -> dict[str, object]:
+    """Return a detached project-scoped routing view from an active config.
+
+    The base node policy remains the default; an optional normalized overlay
+    can change only hot-routable mode/policy fields for one project.  No
+    credentials or provider payloads are accepted in this projection.
+    """
+
+    if not isinstance(config, Mapping) or not isinstance(project_id, str):
+        raise ControlPlaneValidationError("control_node_routing_project_invalid")
+    routing = config.get("node_routing")
+    if not isinstance(routing, Mapping):
+        raise ControlPlaneValidationError("control_node_routing_unavailable")
+    result = deepcopy(dict(routing))
+    overlays = result.pop("project_overrides", {})
+    if isinstance(overlays, Mapping):
+        overlay = overlays.get(project_id)
+        if isinstance(overlay, Mapping):
+            for name in ("inference_mode", "embedding_policy", "rerank_policy", "structured_json_policy"):
+                if name in overlay:
+                    result[name] = overlay[name]
+    return result
 
 
 def embedding_identity(config: Mapping[str, object]) -> str:
@@ -670,8 +754,21 @@ def runtime_embedding_index_identity(
     normalized = _normalize_config(config)
     embedding = normalized["embedding"]
     chunk = normalized["chunk_inference"]
+    node_routing = normalized["node_routing"]
     assert isinstance(embedding, dict)
     assert isinstance(chunk, dict)
+    assert isinstance(node_routing, dict)
+
+    # A governed compute node, rather than the server-only managed projection,
+    # owns the vectors.  Its signed identity is already the complete
+    # non-secret model/revision/dimension/normalization contract and is the
+    # value persisted into generation evidence.  Chunk/material changes remain
+    # bound separately by the source index-material digest.
+    if node_routing["enabled"] is True:
+        identity = node_routing["embedding_required_identity"]
+        if not isinstance(identity, str) or not identity.startswith("sha256:"):
+            raise ControlPlaneValidationError("control_node_routing_identity_required")
+        return identity
     dimension = int(embedding["dimension"])
     if embedding["enabled"]:
         endpoint = hashlib.sha256(
@@ -741,11 +838,13 @@ def _normalize_config(config: Mapping[str, object]) -> dict[str, object]:
     rerank = _normalize_rerank(sections["rerank"])
     chunk = _normalize_chunk_inference(sections["chunk_inference"])
     gateway = _normalize_gateway(sections["gateway"])
+    node_routing = _normalize_node_routing(sections["node_routing"])
     normalized = {
         "embedding": embedding,
         "rerank": rerank,
         "chunk_inference": chunk,
         "gateway": gateway,
+        "node_routing": node_routing,
     }
     _validate_cross_section(normalized)
     return normalized
@@ -756,6 +855,18 @@ def _upgrade_legacy_config_shape(config: dict[str, object]) -> dict[str, object]
 
     upgraded = deepcopy(config)
     changed = False
+
+    if "node_routing" not in upgraded and set(upgraded) == (_TOP_LEVEL_FIELDS - {"node_routing"}):
+        upgraded["node_routing"] = default_safe_config()["node_routing"]
+        changed = True
+    node_routing = upgraded.get("node_routing")
+    if isinstance(node_routing, dict):
+        routing_defaults = default_safe_config()["node_routing"]
+        if isinstance(routing_defaults, dict):
+            for name, value in routing_defaults.items():
+                if name not in node_routing:
+                    node_routing[name] = value
+                    changed = True
 
     embedding = upgraded.get("embedding")
     legacy_embedding_fields = _SECTION_FIELDS["embedding"] - {
@@ -958,7 +1069,10 @@ def _normalize_chunk_inference(section: Mapping[str, object]) -> dict[str, objec
         "temperature": _number(section["temperature"], 0.0, 2.0),
         "top_p": _number(section["top_p"], 0.0, 1.0),
         "json_mode": _boolean(section["json_mode"]),
-        "num_predict": _integer(section["num_predict"], 128, 8192),
+        # Structured JSON token requests are provider-adaptive.  Keep the
+        # prompt/payload/output byte and timeout controls below, but do not
+        # impose the former arbitrary 8192-token ceiling here.
+        "num_predict": _unbounded_integer(section["num_predict"], 128),
         "max_output_chars": _integer(section["max_output_chars"], 512, 64 * 1024),
         "queue_size": _integer(section["queue_size"], 1, 10_000),
         "worker_idle_timeout_seconds": _number(
@@ -1046,15 +1160,123 @@ def _normalize_gateway(section: Mapping[str, object]) -> dict[str, object]:
     return result
 
 
+def _normalize_node_routing(section: Mapping[str, object]) -> dict[str, object]:
+    """Normalize non-secret server-owned routing and accelerator policy.
+
+    This section deliberately carries only opaque node IDs and identity
+    digests. Transport addresses and credentials remain local runtime secrets,
+    never revision material or Dashboard configuration.
+    """
+
+    enabled = _boolean(section["enabled"])
+    policies = {
+        "remote-node-first",
+        "fastest-estimated",
+        "ollama-first",
+        "pinned-node",
+    }
+    raw_nodes = section["allowed_node_ids"]
+    if not isinstance(raw_nodes, list) or len(raw_nodes) > 64:
+        raise ControlPlaneValidationError("control_node_routing_allowed_nodes_invalid")
+    allowed_node_ids = [_node_id(value) for value in raw_nodes]
+    if len(set(allowed_node_ids)) != len(allowed_node_ids):
+        raise ControlPlaneValidationError("control_node_routing_allowed_nodes_invalid")
+    result = {
+        "enabled": enabled,
+        "inference_mode": _choice(section["inference_mode"], {"local", "cloud", "hybrid"}),
+        "embedding_policy": _choice(section["embedding_policy"], policies),
+        "rerank_policy": _choice(section["rerank_policy"], policies),
+        "structured_json_policy": _choice(section["structured_json_policy"], policies),
+        "embedding_required_identity": _optional_sha256(
+            section["embedding_required_identity"],
+            "control_node_routing_embedding_identity_invalid",
+        ),
+        "rerank_required_identity": _optional_sha256(
+            section["rerank_required_identity"],
+            "control_node_routing_rerank_identity_invalid",
+        ),
+        "structured_json_required_identity": _optional_sha256(
+            section["structured_json_required_identity"],
+            "control_node_routing_structured_json_identity_invalid",
+        ),
+        "embedding_pinned_node_id": _optional_node_id(section["embedding_pinned_node_id"]),
+        "rerank_pinned_node_id": _optional_node_id(section["rerank_pinned_node_id"]),
+        "structured_json_pinned_node_id": _optional_node_id(
+            section["structured_json_pinned_node_id"]
+        ),
+        "allowed_node_ids": allowed_node_ids,
+        "project_overrides": _normalize_project_overrides(section.get("project_overrides", {})),
+        "accelerator_max_enabled": _boolean(section["accelerator_max_enabled"]),
+        "accelerator_max_concurrency": _integer(section["accelerator_max_concurrency"], 1, 64),
+        "accelerator_max_queue_depth": _integer(section["accelerator_max_queue_depth"], 1, 100_000),
+        "accelerator_max_daily_tasks": _integer(
+            section["accelerator_max_daily_tasks"], 1, 1_000_000
+        ),
+        "accelerator_min_free_memory_mib": _integer(
+            section["accelerator_min_free_memory_mib"], 0, 1_000_000
+        ),
+    }
+    if not enabled:
+        if result["accelerator_max_enabled"]:
+            raise ControlPlaneValidationError("control_accelerator_requires_node_routing")
+        return result
+    if not allowed_node_ids:
+        raise ControlPlaneValidationError("control_node_routing_allowed_nodes_required")
+    for operation, identity_key, pin_key in (
+        ("embedding", "embedding_required_identity", "embedding_pinned_node_id"),
+        ("rerank", "rerank_required_identity", "rerank_pinned_node_id"),
+        ("structured_json", "structured_json_required_identity", "structured_json_pinned_node_id"),
+    ):
+        policy = result[f"{operation}_policy"]
+        pin = result[pin_key]
+        if policy == "pinned-node" and not pin:
+            raise ControlPlaneValidationError("control_node_routing_pinned_node_required")
+        if pin and pin not in allowed_node_ids:
+            raise ControlPlaneValidationError("control_node_routing_pinned_node_forbidden")
+        # Existing revisions predate structured-json routing.  Keep that
+        # operation disabled until its identity is explicitly declared; the
+        # foreground runtime fails closed rather than inventing a provider.
+        if identity_key is not None and not result[identity_key] and operation != "structured_json":
+            raise ControlPlaneValidationError("control_node_routing_identity_required")
+    return result
+
+
+def _normalize_project_overrides(value: object) -> dict[str, dict[str, object]]:
+    """Normalize project-scoped hot-routing overlays without secrets."""
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or len(value) > 256:
+        raise ControlPlaneValidationError("control_node_routing_project_overrides_invalid")
+    normalized: dict[str, dict[str, object]] = {}
+    allowed = {"inference_mode", "embedding_policy", "rerank_policy", "structured_json_policy"}
+    for project_id, raw in value.items():
+        if not isinstance(project_id, str) or not _PROJECT_RE.fullmatch(project_id):
+            raise ControlPlaneValidationError("control_node_routing_project_id_invalid")
+        if not isinstance(raw, Mapping) or not set(raw).issubset(allowed):
+            raise ControlPlaneValidationError("control_node_routing_project_overrides_invalid")
+        item: dict[str, object] = {}
+        if "inference_mode" in raw:
+            item["inference_mode"] = _choice(raw["inference_mode"], {"local", "cloud", "hybrid"})
+        policies = {"remote-node-first", "fastest-estimated", "ollama-first", "pinned-node"}
+        for name in ("embedding_policy", "rerank_policy", "structured_json_policy"):
+            if name in raw:
+                item[name] = _choice(raw[name], policies)
+        normalized[project_id] = item
+    return normalized
+
+
 def _validate_cross_section(config: Mapping[str, object]) -> None:
     embedding = config["embedding"]
     rerank = config["rerank"]
     chunk = config["chunk_inference"]
     gateway = config["gateway"]
+    node_routing = config["node_routing"]
     assert isinstance(embedding, dict)
     assert isinstance(rerank, dict)
     assert isinstance(chunk, dict)
     assert isinstance(gateway, dict)
+    assert isinstance(node_routing, dict)
     if chunk["enrichment_mode"] == "on" and not embedding["enabled"]:
         raise ControlPlaneValidationError("control_chunk_inference_requires_embedding")
     required_hosts = {
@@ -1084,15 +1306,25 @@ def _validate_required_secrets(
     rerank = config["rerank"]
     chunk = config["chunk_inference"]
     gateway = config["gateway"]
+    node_routing = config["node_routing"]
     assert isinstance(embedding, dict)
     assert isinstance(rerank, dict)
     assert isinstance(chunk, dict)
     assert isinstance(gateway, dict)
+    assert isinstance(node_routing, dict)
+    governed_compute_route = node_routing["enabled"] is True
     requirements = (
-        (embedding["enabled"], "embedding_api_key"),
-        (rerank["enabled"], "rerank_api_key"),
-        (chunk["enrichment_mode"] != "off", "chunk_inference_api_key"),
-        (gateway["enabled"], "gateway_token"),
+        (embedding["enabled"] and not governed_compute_route, "embedding_api_key"),
+        (rerank["enabled"] and not governed_compute_route, "rerank_api_key"),
+        (
+            chunk["enrichment_mode"] != "off" and not governed_compute_route,
+            "chunk_inference_api_key",
+        ),
+        (gateway["enabled"] and not governed_compute_route, "gateway_token"),
+        (
+            node_routing["enabled"] and node_routing["inference_mode"] in {"cloud", "hybrid"},
+            "compute_node_cloud_api_key",
+        ),
     )
     if any(required and not values.get(name) for required, name in requirements):
         raise ControlPlaneValidationError("control_required_secret_missing")
@@ -1106,10 +1338,12 @@ def _render_environment(
     rerank = config["rerank"]
     chunk = config["chunk_inference"]
     gateway = config["gateway"]
+    node_routing = config["node_routing"]
     assert isinstance(embedding, dict)
     assert isinstance(rerank, dict)
     assert isinstance(chunk, dict)
     assert isinstance(gateway, dict)
+    assert isinstance(node_routing, dict)
     dimension = int(embedding["dimension"])
     model = str(embedding["model"])
     env = {
@@ -1188,10 +1422,133 @@ def _render_environment(
             "" if gateway["max_retained_rows"] is None else str(gateway["max_retained_rows"])
         ),
         "PP_INFERENCE_GATEWAY_MAX_RETAINED_JSON_BYTES": str(gateway["max_retained_json_bytes"]),
+        # Deployment supervisor consumes this only when materializing the
+        # compute-node package; pp-server-backend never constructs a provider
+        # from it.
+        "PP_LOCAL_NODE_PROVIDER_MODE": str(node_routing["inference_mode"]),
     }
-    for name in _REMOTE_SECRET_NAMES:
+    # Compute credentials are intentionally absent from the server-managed
+    # EnvironmentFile.  The server may retain only a write-only presence flag;
+    # a compute supervisor receives the separate private projection below.
+    governed_compute_route = node_routing.get("enabled") is True
+    if governed_compute_route:
+        # ``managed.env`` belongs to pp-server-backend.  Once governed node
+        # routing is enabled it may retain schema limits and canonical routing
+        # metadata, but it must not materialize a provider adapter, endpoint,
+        # model runtime or legacy inference gateway.  The complete provider
+        # projection is emitted separately by ``_render_compute_environment``.
+        env.update(
+            {
+                "EMBEDDER_PROVIDER": "fallback",
+                "EMBEDDER_BASE_URL": "",
+                "EMBEDDER_PATH": "",
+                "PP_RERANK_DISABLED": "1",
+                "PP_RERANK_PROVIDERS": "original",
+                "PP_RERANK_BASE_URL": "",
+                "PP_RERANK_PATH": "",
+                "PP_MEMORY_CHUNK_ENRICHMENT": "off",
+                "PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER": "disabled",
+                "PP_MEMORY_CHUNK_ENRICHMENT_BASE_URL": "",
+                "PP_MEMORY_CHUNK_ENRICHMENT_PATH": "",
+                "PP_MEMORY_CHUNK_ENRICHMENT_MODEL": "",
+                "PP_MEMORY_CHUNK_ENRICHMENT_MODEL_REVISION": "",
+                "PP_INFERENCE_GATEWAY": "0",
+            }
+        )
+        env.pop("PP_LOCAL_NODE_PROVIDER_MODE", None)
+    for name in _REMOTE_SECRET_NAMES - {"compute_node_cloud_api_key"}:
+        # Once node routing is enabled, provider credentials belong only to
+        # the compute projection.  Keep the legacy server projection for
+        # installations that have not opted into the governed route.
+        if governed_compute_route:
+            continue
         env[_SECRET_ENV_NAMES[name]] = values.get(name, "")
     return dict(sorted(env.items()))
+
+
+def _render_compute_environment(
+    config: Mapping[str, object],
+    values: Mapping[str, str],
+) -> dict[str, str]:
+    """Render the compute-only private projection.
+
+    This projection is never returned as public config and is never merged
+    into ``managed.env``.  A deployment supervisor may materialize it only on
+    ``pp-compute-node`` after an identity check.
+    """
+
+    node_routing = config.get("node_routing")
+    if not isinstance(node_routing, Mapping):
+        return {}
+    if node_routing.get("enabled") is not True:
+        return {}
+    mode = str(node_routing.get("inference_mode", "local"))
+    if mode not in {"local", "cloud", "hybrid"}:
+        return {}
+    value = str(values.get("compute_node_cloud_api_key") or "")
+    if mode in {"cloud", "hybrid"} and not value:
+        return {}
+
+    embedding = config.get("embedding")
+    rerank = config.get("rerank")
+    chunk = config.get("chunk_inference")
+    if not isinstance(embedding, Mapping) or not isinstance(rerank, Mapping) or not isinstance(chunk, Mapping):
+        return {}
+
+    environment = {
+        "PP_ENDPOINT_ROLE": "pp-compute-node",
+        "PP_LOCAL_NODE_PROVIDER_MODE": mode,
+    }
+    if value:
+        environment["PP_LOCAL_NODE_CLOUD_API_KEY"] = value
+    if embedding.get("enabled") is True:
+        environment.update(
+            {
+                "PP_LOCAL_NODE_EMBEDDING_MODEL": str(embedding.get("model") or ""),
+                "PP_LOCAL_NODE_EMBEDDING_REVISION": str(embedding.get("model_revision") or ""),
+                "PP_LOCAL_NODE_EMBEDDING_DIMENSION": str(embedding.get("dimension") or ""),
+                "PP_LOCAL_NODE_EMBEDDING_NORMALIZATION": "l2",
+            }
+        )
+        if mode in {"cloud", "hybrid"}:
+            environment.update(
+                {
+                    "PP_LOCAL_NODE_EMBEDDING_BACKEND": "openai-compatible",
+                    "PP_LOCAL_NODE_EMBEDDING_CLOUD_BASE_URL": str(embedding.get("base_url") or ""),
+                    "PP_LOCAL_NODE_EMBEDDING_CLOUD_PATH": str(embedding.get("path") or "/embeddings"),
+                }
+            )
+    if rerank.get("enabled") is True:
+        environment.update(
+            {
+                "PP_LOCAL_NODE_RERANK_MODEL": str(rerank.get("model") or ""),
+                "PP_LOCAL_NODE_RERANK_REVISION": str(rerank.get("model_revision") or ""),
+            }
+        )
+        if mode in {"cloud", "hybrid"}:
+            environment.update(
+                {
+                    "PP_LOCAL_NODE_RERANK_BACKEND": "openai-compatible",
+                    "PP_LOCAL_NODE_RERANK_CLOUD_BASE_URL": str(rerank.get("base_url") or ""),
+                    "PP_LOCAL_NODE_RERANK_CLOUD_PATH": str(rerank.get("path") or "/rerank"),
+                }
+            )
+    if chunk.get("enrichment_mode") != "off":
+        environment.update(
+            {
+                "PP_LOCAL_NODE_STRUCTURED_JSON_MODEL": str(chunk.get("model") or ""),
+                "PP_LOCAL_NODE_STRUCTURED_JSON_REVISION": str(chunk.get("model_revision") or ""),
+            }
+        )
+        if mode in {"cloud", "hybrid"}:
+            environment.update(
+                {
+                    "PP_LOCAL_NODE_STRUCTURED_JSON_BACKEND": "openai-compatible",
+                    "PP_LOCAL_NODE_STRUCTURED_JSON_CLOUD_BASE_URL": str(chunk.get("base_url") or ""),
+                    "PP_LOCAL_NODE_STRUCTURED_JSON_CLOUD_PATH": str(chunk.get("path") or "/chat/completions"),
+                }
+            )
+    return dict(sorted(environment.items()))
 
 
 def _normalize_secret_operations(
@@ -1252,6 +1609,14 @@ def _integer(value: object, minimum: int, maximum: int) -> int:
     return value
 
 
+def _unbounded_integer(value: object, minimum: int) -> int:
+    """Validate a positive integer without an arbitrary upper ceiling."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ControlPlaneValidationError("control_config_value_invalid")
+    return value
+
+
 def _optional_integer(value: object, minimum: int, maximum: int) -> int | None:
     if value is None:
         return None
@@ -1302,6 +1667,25 @@ def _optional_model(value: object) -> str:
     text = _text(value, maximum_bytes=256, allow_empty=True)
     if text and not _MODEL_RE.fullmatch(text):
         raise ControlPlaneValidationError("control_model_invalid")
+    return text
+
+
+def _node_id(value: object) -> str:
+    text = _text(value, maximum_bytes=128)
+    if not _NODE_ID_RE.fullmatch(text):
+        raise ControlPlaneValidationError("control_node_routing_node_id_invalid")
+    return text
+
+
+def _optional_node_id(value: object) -> str:
+    text = _text(value, maximum_bytes=128, allow_empty=True)
+    return "" if not text else _node_id(text)
+
+
+def _optional_sha256(value: object, reason: str) -> str:
+    text = _text(value, maximum_bytes=71, allow_empty=True)
+    if text and not _SHA256_RE.fullmatch(text):
+        raise ControlPlaneValidationError(reason)
     return text
 
 
@@ -1471,6 +1855,7 @@ __all__ = [
     "default_safe_config",
     "embedding_identity",
     "normalize_safe_config",
+    "routing_for_project",
     "prepare_configuration",
     "runtime_embedding_index_identity",
     "safe_config_from_environment",

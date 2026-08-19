@@ -12,6 +12,13 @@ from plastic_promise.core.inference_provider import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _compute_node_role(monkeypatch):
+    """Provider construction is intentionally restricted to the compute plane."""
+
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-compute-node")
+
+
 class _Client:
     def __init__(self, payload):
         self.payload = payload
@@ -268,7 +275,7 @@ def test_custom_endpoint_uses_independent_generic_key(monkeypatch):
             "inference_user_payload_too_large",
         ),
         (
-            {"system_prompt": "Return JSON.", "user_payload": {}, "max_tokens": 2_049},
+            {"system_prompt": "Return JSON.", "user_payload": {}, "max_tokens": 0},
             "inference_max_tokens_invalid",
         ),
     ],
@@ -317,7 +324,7 @@ def test_json_provider_rejects_non_json_payload_before_transport():
             str(2 * 1024 * 1024 + 1),
             "inference_max_user_payload_bytes_invalid",
         ),
-        ("PP_INFERENCE_MAX_TOKENS", "8193", "inference_max_tokens_invalid"),
+        ("PP_INFERENCE_MAX_TOKENS", "-1", "inference_max_tokens_invalid"),
         (
             "PP_INFERENCE_MAX_OUTPUT_CHARS",
             str(1024 * 1024 + 1),
@@ -334,6 +341,31 @@ def test_json_provider_rejects_configuration_above_hard_limits(monkeypatch, name
             base_url="https://inference.example.test/v1",
             client=_Client(_response("{}")),
         )
+
+
+def test_json_provider_accepts_configured_token_budget_above_legacy_ceiling(monkeypatch):
+    monkeypatch.setenv("PP_INFERENCE_MAX_TOKENS", "16384")
+    provider = OpenAICompatibleJSONProvider(
+        api_key="not-a-real-key",
+        base_url="https://inference.example.test/v1",
+        client=_Client(_response("{}")),
+    )
+
+    assert provider._max_tokens == 16_384
+
+
+def test_json_provider_accepts_request_above_legacy_ceiling_by_default():
+    client = _Client(_response("{}"))
+    provider = OpenAICompatibleJSONProvider(
+        api_key="not-a-real-key",
+        base_url="https://inference.example.test/v1",
+        client=client,
+    )
+
+    assert provider.complete_json(
+        system_prompt="Return JSON.", user_payload={}, max_tokens=16_384
+    ) == {}
+    assert client.calls[0][1]["max_tokens"] == 16_384
 
 
 def test_ollama_json_provider_uses_same_structured_input_contract():

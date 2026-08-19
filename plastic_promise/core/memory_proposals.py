@@ -49,6 +49,7 @@ TRUSTED_INTERNAL_MEMORY_ROUTES = frozenset(
         "commercial_audit_export",
         "memory_sync_files",
         "review_run",
+        "security_shield",
         "session-init",
         "session_init",
         "skill_auto_track",
@@ -56,9 +57,11 @@ TRUSTED_INTERNAL_MEMORY_ROUTES = frozenset(
         "skill_session_start",
         "sp-stage",
         "sp_stage",
-        "step-closure",
-        "step_closure",
         "system",
+        # Only the durable accepted-work bridge may create a system proposal.
+        # Ordinary step-closure is reflection telemetry and must remain outside
+        # the trusted memory route.
+        "collaboration-promotion",
     }
 )
 FORBIDDEN_METADATA_KEYS = frozenset(
@@ -311,7 +314,7 @@ def _create_memory_proposal_table(conn: Any, table_name: str) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(project_id, origin_turn_hash, content_hash),
-            CHECK(origin_role = 'user'),
+            CHECK(origin_role IN ('user', 'system')),
             CHECK(category IN ('fact', 'preference', 'decision')),
             CHECK(visibility IN ('private', 'project', 'shared', 'global')),
             CHECK(origin_visibility IN ('private', 'project', 'shared', 'global')),
@@ -361,6 +364,7 @@ def _memory_proposal_schema_current(columns: set[str], table_sql: str) -> bool:
     required_fragments = (
         "origin_visibility",
         "unique(project_id, origin_turn_hash, content_hash)",
+        "origin_role in ('user', 'system')",
         "status not in ('adopted', 'rejected')",
         "status != 'adopted' or length(trim(promoted_memory_id)) > 0",
         "between 1 and 500",
@@ -562,9 +566,12 @@ def classify_proposal_candidates(
 
 
 class MemoryProposalStore:
-    def __init__(self, conn: Any) -> None:
+    def __init__(self, conn: Any, *, ensure_schema: bool = True) -> None:
         self.conn = conn
-        ensure_memory_proposal_schema(conn)
+        if not isinstance(ensure_schema, bool):
+            raise ProposalPolicyError("ensure_schema_flag_invalid")
+        if ensure_schema:
+            ensure_memory_proposal_schema(conn)
 
     def create_many(
         self,
@@ -858,7 +865,7 @@ def _validate_candidate(candidate: ProposalCandidate) -> ProposalCandidate:
     if category not in PROPOSAL_CATEGORIES:
         raise ProposalPolicyError("unknown_category")
     origin_role = str(candidate.origin_role or "").strip().casefold()
-    if origin_role != "user":
+    if origin_role != "user" and not (origin_role == "system" and has_trusted_internal_origin()):
         raise ProposalPolicyError("user_origin_required")
     project_id = str(candidate.project_id or "").strip()
     if not project_id:

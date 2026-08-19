@@ -13,13 +13,20 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import httpcore
 import httpx
+
+from plastic_promise.core.execution_plane import require_compute_node_role
+from plastic_promise.core.provider_errors import (
+    ProviderHTTPDiagnostics,
+    ProviderHTTPError,
+    ProviderHTTPResult,
+)
 
 _RETRYABLE_STATUSES = frozenset({408, 429})
 _MAX_RETRIES = 32
@@ -61,80 +68,6 @@ _USAGE_FIELDS = frozenset(
         "total_tokens",
     }
 )
-
-
-@dataclass(frozen=True)
-class ProviderHTTPDiagnostics:
-    """Bounded, non-content diagnostics suitable for logs and metrics."""
-
-    attempts: int = 0
-    latency_ms: float = 0.0
-    status_code: int | None = None
-    request_id: str | None = None
-    usage: dict[str, int | float] = field(default_factory=dict)
-    circuit_state: str = "closed"
-
-
-@dataclass(frozen=True)
-class ProviderHTTPResult:
-    """Validated provider payload and bounded request metadata."""
-
-    payload: dict[str, Any]
-    attempts: int
-    latency_ms: float
-    request_id: str | None
-    status_code: int | None = None
-    usage: dict[str, int | float] = field(default_factory=dict)
-    circuit_state: str = "closed"
-
-    @property
-    def diagnostics(self) -> ProviderHTTPDiagnostics:
-        """Compatibility view for callers that prefer grouped diagnostics."""
-        return ProviderHTTPDiagnostics(
-            attempts=self.attempts,
-            latency_ms=self.latency_ms,
-            status_code=self.status_code,
-            request_id=self.request_id,
-            usage=dict(self.usage),
-            circuit_state=self.circuit_state,
-        )
-
-
-class ProviderHTTPError(RuntimeError):
-    """Provider transport failure exposing only a stable reason code."""
-
-    def __init__(
-        self,
-        reason: str,
-        diagnostics: ProviderHTTPDiagnostics | None = None,
-    ) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.diagnostics = diagnostics or ProviderHTTPDiagnostics()
-
-    @property
-    def attempts(self) -> int:
-        return self.diagnostics.attempts
-
-    @property
-    def latency_ms(self) -> float:
-        return self.diagnostics.latency_ms
-
-    @property
-    def request_id(self) -> str | None:
-        return self.diagnostics.request_id
-
-    @property
-    def status_code(self) -> int | None:
-        return self.diagnostics.status_code
-
-    @property
-    def usage(self) -> dict[str, int | float]:
-        return dict(self.diagnostics.usage)
-
-    @property
-    def circuit_state(self) -> str:
-        return self.diagnostics.circuit_state
 
 
 class _ResolvedPublicNetworkBackend(httpcore.NetworkBackend):
@@ -344,6 +277,10 @@ class ProviderHTTPClient:
             self._api_key = ""
         else:
             self._api_key = api_key.strip()
+        try:
+            require_compute_node_role(injected_transport=transport is not None)
+        except RuntimeError:
+            raise ProviderHTTPError("cloud_provider_requires_compute_node") from None
         self._policy = _coerce_policy(policy)
         self._clock = clock
         self._wall_clock = wall_clock

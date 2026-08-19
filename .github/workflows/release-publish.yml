@@ -1,0 +1,216 @@
+name: Stable OCI Release Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Immutable full 40-character stable source commit SHA"
+        required: true
+        type: string
+      release_version:
+        description: "Stable SemVer tag, for example v1.2.3"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  resolve-source:
+    name: Resolve and bind the immutable stable source commit
+    runs-on: ubuntu-latest
+    outputs:
+      source_commit: ${{ steps.resolve.outputs.commit }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+    steps:
+      - id: validate-input
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if ! [[ "$REQUESTED_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "stable_source_commit_sha_required" >&2
+            exit 1
+          fi
+          if ! [[ "$REQUESTED_RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "stable_release_version_required" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - id: resolve
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          resolved="$(git rev-parse HEAD)"
+          if [ "$resolved" != "$REQUESTED_SOURCE_REF" ]; then
+            echo "stable_source_commit_resolution_mismatch" >&2
+            exit 1
+          fi
+          echo "commit=$resolved" >> "$GITHUB_OUTPUT"
+          echo "release_version=$REQUESTED_RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
+  build-python-evidence:
+    name: Build stable Python evidence after production approval
+    runs-on: ubuntu-latest
+    environment: production-release
+    needs: resolve-source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Require a stable source package version
+        env:
+          EXPECTED_SEMVER: ${{ needs.resolve-source.outputs.release_version }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          expected_semver = os.environ["EXPECTED_SEMVER"]
+          if "-" in expected_semver or not expected_semver.startswith("v"):
+              raise SystemExit("stable_release_version_required")
+          package_version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          if package_version != expected_semver.removeprefix("v"):
+              raise SystemExit(f"package_version_mismatch:{package_version}!={expected_semver}")
+          PY
+      - name: Build, check, and generate an SBOM
+        run: |
+          python -m pip install --upgrade build twine cyclonedx-bom
+          python -m build --outdir dist
+          python -m twine check dist/*
+          cyclonedx-py environment --of JSON --output-file dist/sbom.cdx.json
+      - name: Rehearse an exact wheel installation before publishing
+        run: |
+          python -m venv .stable-wheel-venv
+          .stable-wheel-venv/bin/python -m pip install --no-deps --only-binary=:all: dist/*.whl
+          .stable-wheel-venv/bin/python -c 'import plastic_promise; print(plastic_promise.__version__)'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-python-evidence
+          path: dist/
+          if-no-files-found: error
+      - name: Attest Python release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+  publish-oci-images:
+    name: Publish immutable OCI images after production approval
+    runs-on: ubuntu-latest
+    environment: production-release
+    needs: resolve-source
+    outputs:
+      server_digest: ${{ steps.server.outputs.digest }}
+      inference_node_digest: ${{ steps.inference-node.outputs.digest }}
+      server_repository: ${{ steps.images.outputs.server_repository }}
+      inference_node_repository: ${{ steps.images.outputs.inference_node_repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with:
+          name: plastic-promise-oci
+          use: true
+      - name: Reclaim disposable CI runner space
+        run: bash scripts/reclaim_ci_runner_space.sh
+      - name: Run protected OCI prebuild cleanup
+        run: python scripts/prepare_oci_build.py --execute
+      - id: images
+        run: |
+          echo "server_repository=ghcr.io/aldaisuki/plastic-promise-server" >> "$GITHUB_OUTPUT"
+          echo "inference_node_repository=ghcr.io/aldaisuki/plastic-promise-local-inference-node" >> "$GITHUB_OUTPUT"
+      - name: Log in to GitHub Container Registry with the workflow token
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: server
+        name: Publish multi-architecture server image by immutable digest
+        uses: docker/build-push-action@v6
+        with:
+          builder: plastic-promise-oci
+          context: .
+          file: deploy/server/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.images.outputs.server_repository }}:${{ needs.resolve-source.outputs.release_version }}
+            ${{ steps.images.outputs.server_repository }}:sha-${{ needs.resolve-source.outputs.source_commit }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.resolve-source.outputs.source_commit }}
+            org.opencontainers.image.version=${{ needs.resolve-source.outputs.release_version }}
+          build-args: |
+            SOURCE_REVISION=${{ needs.resolve-source.outputs.source_commit }}
+            PACKAGE_VERSION=${{ needs.resolve-source.outputs.release_version }}
+      - id: inference-node
+        name: Publish Linux NVIDIA inference-node image by immutable digest
+        uses: docker/build-push-action@v6
+        with:
+          builder: plastic-promise-oci
+          context: .
+          file: deploy/local-inference-node/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.images.outputs.inference_node_repository }}:${{ needs.resolve-source.outputs.release_version }}
+            ${{ steps.images.outputs.inference_node_repository }}:sha-${{ needs.resolve-source.outputs.source_commit }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.resolve-source.outputs.source_commit }}
+            org.opencontainers.image.version=${{ needs.resolve-source.outputs.release_version }}
+          build-args: |
+            SOURCE_REVISION=${{ needs.resolve-source.outputs.source_commit }}
+            PACKAGE_VERSION=${{ needs.resolve-source.outputs.release_version }}
+
+  create-release-manifest:
+    name: Bind release evidence to source, hashes, and OCI digests
+    needs: [resolve-source, build-python-evidence, publish-oci-images]
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-python-evidence
+          path: dist
+      - name: Create the immutable release manifest
+        run: |
+          python scripts/create_release_manifest.py \
+            --release-version "${{ needs.resolve-source.outputs.release_version }}" \
+            --source-commit "${{ needs.resolve-source.outputs.source_commit }}" \
+            --dist-dir dist \
+            --sbom dist/sbom.cdx.json \
+            --image "server=${{ needs.publish-oci-images.outputs.server_repository }}@${{ needs.publish-oci-images.outputs.server_digest }}" \
+            --image "inference-node=${{ needs.publish-oci-images.outputs.inference_node_repository }}@${{ needs.publish-oci-images.outputs.inference_node_digest }}" \
+            --workflow-ref "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --output dist/release-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-release-manifest
+          path: dist/release-manifest.json
+          if-no-files-found: error
+      - name: Attest manifest and SBOM
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release-manifest.json

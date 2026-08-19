@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,7 @@ from plastic_promise.core.memory_proposals import (
     contains_secret,
 )
 from plastic_promise.core.proposal_promotion import ProposalAutomation, auto_promotion_mode
+from plastic_promise.core.structured_token_budget import DEFAULT_STRUCTURED_REQUEST_TOKENS
 from plastic_promise.skills.semantic_tool_routing import create_chunk_json_provider
 
 if TYPE_CHECKING:
@@ -30,6 +32,10 @@ if TYPE_CHECKING:
 SEMANTIC_JOB_KIND = "passive_semantic"
 SEMANTIC_SCHEMA_VERSION = "passive-semantic-memory-v1"
 SEMANTIC_CONFIG_REVISION = "passive-semantic-memory-v1"
+DEFAULT_PASSIVE_SEMANTIC_MAX_TOKENS = DEFAULT_STRUCTURED_REQUEST_TOKENS
+PASSIVE_SEMANTIC_INTENT_ID = "plastic-promise/structured-json/passive-semantic-v1"
+PASSIVE_SEMANTIC_SCHEMA_ID = "plastic-promise/structured-json/passive-semantic-memory-v1"
+_GOVERNED_NODE_SEMANTIC_IDENTITY = "governed-node:structured-json/v1"
 
 _ASCII_GROUNDING_TOKEN = re.compile(r"[a-z0-9]+")
 _CJK_GROUNDING_TEXT = re.compile(r"[\u3400-\u9fff]+")
@@ -43,6 +49,7 @@ _CLAUSE_BOUNDARY = re.compile(
 
 _PROVIDER = None
 _PROVIDER_LOCK = threading.Lock()
+_GOVERNED_PROVIDERS: dict[int, GovernedNodeSemanticProvider] = {}
 _RUNTIMES: dict[int, DurableSemanticMemoryWorker] = {}
 _RUNTIMES_LOCK = threading.Lock()
 _RUNTIME_FAILURES: dict[int, str] = {}
@@ -55,6 +62,82 @@ class SemanticSourceError(RuntimeError):
 
 class SemanticOutputError(RuntimeError):
     pass
+
+
+class GovernedNodeSemanticProvider:
+    """Server-side adapter for a compute-node-owned semantic JSON route.
+
+    The adapter deliberately owns neither an API credential nor a concrete
+    provider implementation.  It sends one bounded, integrity-checked payload
+    through the existing server-governed foreground node runtime; that runtime
+    resolves the active project route, acquires its lease, and verifies the
+    compute node's declared structured-JSON identity.
+    """
+
+    identity = _GOVERNED_NODE_SEMANTIC_IDENTITY
+
+    def __init__(self, engine: Any) -> None:
+        self._engine = engine
+
+    @property
+    def stats(self) -> Mapping[str, object]:
+        return {"state": "governed-node", "operation": "structured-json"}
+
+    def complete_json(
+        self,
+        *,
+        system_prompt: str,
+        user_payload: Mapping[str, object],
+        max_tokens: int = 768,
+    ) -> dict[str, object]:
+        # The compute node pins the prompt by intent/schema.  Caller text is
+        # data only and cannot replace that contract.
+        del system_prompt
+        scope = user_payload.get("scope") if isinstance(user_payload, Mapping) else None
+        project_id = scope.get("project_id") if isinstance(scope, Mapping) else None
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise RuntimeError("passive_semantic_project_scope_invalid")
+        runtime_accessor = getattr(self._engine, "memory_index_node_runtime", None)
+        runtime = runtime_accessor() if callable(runtime_accessor) else None
+        operation = getattr(runtime, "structured_json_for_context", None)
+        if not callable(operation):
+            raise RuntimeError("passive_semantic_governed_runtime_unavailable")
+        try:
+            outcome = operation(
+                project_id=project_id,
+                intent_id=PASSIVE_SEMANTIC_INTENT_ID,
+                schema_id=PASSIVE_SEMANTIC_SCHEMA_ID,
+                user_payload=dict(user_payload),
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            code = str(getattr(exc, "code", "") or "").strip()
+            raise RuntimeError(code or "passive_semantic_governed_node_failed") from exc
+        output = getattr(outcome, "output", None)
+        if not isinstance(output, dict):
+            raise RuntimeError("passive_semantic_governed_output_invalid")
+        return dict(output)
+
+    def close(self) -> None:
+        return None
+
+
+def semantic_memory_runtime_snapshot(engine: Any) -> dict[str, str]:
+    """Return the bounded process-local worker state for health projection."""
+
+    engine_id = id(engine)
+    with _RUNTIMES_LOCK:
+        if engine_id in _RUNTIME_FAILURES:
+            return {
+                "state": "degraded",
+                "reason": "semantic_memory_runtime_unavailable",
+            }
+        if engine_id in _RUNTIMES:
+            return {"state": "ready", "reason": ""}
+    return {
+        "state": "pending",
+        "reason": "semantic_memory_runtime_pending",
+    }
 
 
 class DurableSemanticMemoryWorker:
@@ -164,7 +247,11 @@ class DurableSemanticMemoryWorker:
                     },
                     "inputs": inputs,
                 },
-                max_tokens=_bounded_int("PP_PASSIVE_SEMANTIC_MAX_TOKENS", 2048, 128, 8192),
+                max_tokens=_unbounded_int(
+                    "PP_PASSIVE_SEMANTIC_MAX_TOKENS",
+                    DEFAULT_PASSIVE_SEMANTIC_MAX_TOKENS,
+                    128,
+                ),
             )
             candidates = self._validated_candidates(payload, leases, inputs)
             self._commit(leases, candidates)
@@ -437,9 +524,20 @@ def semantic_capture_mode() -> str:
     return mode if mode in {"off", "shadow", "on"} else "off"
 
 
-def get_semantic_memory_provider():
+def get_semantic_memory_provider(engine: Any | None = None):
     global _PROVIDER
     with _PROVIDER_LOCK:
+        if os.getenv("PP_ENDPOINT_ROLE", "").strip() == "pp-server-backend":
+            if engine is None:
+                raise RuntimeError("passive_semantic_governed_engine_required")
+            engine_id = id(engine)
+            provider = _GOVERNED_PROVIDERS.get(engine_id)
+            if provider is None:
+                provider = GovernedNodeSemanticProvider(engine)
+                _GOVERNED_PROVIDERS[engine_id] = provider
+            return provider
+        # Preserve the historic process-wide direct-provider cache and its
+        # no-argument monkeypatch seam outside the server endpoint.
         if _PROVIDER is None:
             _PROVIDER = create_chunk_json_provider()
         return _PROVIDER
@@ -468,7 +566,7 @@ def enqueue_semantic_capture(
     db_path = _canonical_db_path(engine)
     if not db_path:
         return {"status": "degraded", "reason": "canonical_store_unavailable"}
-    provider = get_semantic_memory_provider()
+    provider = get_semantic_memory_provider(engine)
     content_hash = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
     material = {
         "schema": SEMANTIC_SCHEMA_VERSION,
@@ -555,7 +653,7 @@ def initialize_semantic_memory_runtime(
                         "PP_PASSIVE_SEMANTIC_LEASE_SECONDS", 180, 1, 15 * 60
                     ),
                 ),
-                get_semantic_memory_provider(),
+                get_semantic_memory_provider(engine),
                 mode=mode,
                 batch_size=_bounded_int("PP_PASSIVE_SEMANTIC_BATCH_SIZE", 20, 1, 100),
                 max_wait_seconds=_bounded_float(
@@ -604,6 +702,10 @@ def close_semantic_memory_runtime(engine: Any, *, timeout: float = 5.0) -> bool:
     with _RUNTIMES_LOCK:
         runtime = _RUNTIMES.pop(id(engine), None)
         _RUNTIME_FAILURES.pop(id(engine), None)
+    with _PROVIDER_LOCK:
+        provider = _GOVERNED_PROVIDERS.pop(id(engine), None)
+    if provider is not None:
+        provider.close()
     return runtime.close(timeout=timeout) if runtime is not None else False
 
 
@@ -630,6 +732,16 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         value = default
     return min(maximum, max(minimum, value))
+
+
+def _unbounded_int(name: str, default: int, minimum: int) -> int:
+    """Read a positive integer without imposing an arbitrary token ceiling."""
+
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, value)
 
 
 def _bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:

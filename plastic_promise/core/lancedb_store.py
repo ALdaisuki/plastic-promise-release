@@ -1,7 +1,10 @@
 """LanceDBStore — persistent vector storage with ANN + FTS search.
 
 Table: memory_vectors (memory_id, vector, text, tier, category, scope)
-Vector dim: 1024 (mxbai-embed-large), configurable via PP_EMBEDDING_DIM.
+Each table/generation is bound to one embedding dimension.  Different
+dimensions may coexist in different LanceDB paths, but are never mixed in a
+single table.  ``PP_EMBEDDING_DIM`` remains the legacy default for embedders
+that do not expose a dimension property.
 """
 
 import json
@@ -15,7 +18,6 @@ import lancedb
 import pyarrow as pa
 from lancedb.index import FTS
 
-from plastic_promise.core.embedder import Embedder
 from plastic_promise.core.memory_index import (
     INDEX_HASH_SCHEMA,
     IndexMaterial,
@@ -27,6 +29,7 @@ from plastic_promise.core.memory_index import (
     read_persisted_index_material,
     resolve_index_material,
 )
+from plastic_promise.core.server_embedder import Embedder
 from plastic_promise.core.synthesis_retrieval import (
     available_ordinary_memory_sql_predicate,
     synthesis_index_eligible,
@@ -66,16 +69,66 @@ def _has_invalid_v2_index_material(memory: Mapping[str, object]) -> bool:
     return read_persisted_index_material(memory) is None
 
 
-_MEMORY_VECTORS_SCHEMA = pa.schema(
-    [
-        pa.field("memory_id", pa.string()),
-        pa.field("vector", pa.list_(pa.float32(), EMB_DIM)),
-        pa.field("text", pa.string()),
-        pa.field("tier", pa.string()),
-        pa.field("category", pa.string()),
-        pa.field("scope", pa.string()),
-    ]
-)
+def _memory_vectors_schema(dimension: int) -> pa.Schema:
+    """Build the schema for a dimension-bound vector table."""
+
+    return pa.schema(
+        [
+            pa.field("memory_id", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), dimension)),
+            pa.field("text", pa.string()),
+            pa.field("tier", pa.string()),
+            pa.field("category", pa.string()),
+            pa.field("scope", pa.string()),
+        ]
+    )
+
+
+# Kept as a compatibility constant for legacy imports and tests.  New stores
+# must use the dimension exposed by their embedder via ``_memory_vectors_schema``.
+_MEMORY_VECTORS_SCHEMA = _memory_vectors_schema(EMB_DIM)
+
+
+def _resolve_embedder_dimension(embedder: Embedder) -> int:
+    """Resolve and validate an embedder's output dimension.
+
+    Real embedders expose ``dim``.  A small number of legacy test/provider
+    doubles only expose ``embedding_dimension`` or no dimension at all; the
+    latter retain the historical environment default for compatibility.
+    """
+
+    raw_dimension = getattr(embedder, "dim", None)
+    if raw_dimension is None:
+        raw_dimension = getattr(embedder, "embedding_dimension", None)
+    if callable(raw_dimension):
+        raw_dimension = raw_dimension()
+    if raw_dimension is None:
+        raw_dimension = EMB_DIM
+    if isinstance(raw_dimension, float) and not raw_dimension.is_integer():
+        raise RuntimeError("lancedb_embedding_dimension_invalid")
+    try:
+        dimension = int(raw_dimension)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("lancedb_embedding_dimension_invalid") from exc
+    if isinstance(raw_dimension, bool) or dimension <= 0:
+        raise RuntimeError("lancedb_embedding_dimension_invalid")
+    return dimension
+
+
+def _table_vector_dimension(table: object) -> int:
+    """Read a LanceDB table's fixed vector dimension or fail closed."""
+
+    try:
+        field = table.schema.field("vector")
+    except Exception as exc:
+        raise RuntimeError("lancedb_vector_schema_invalid") from exc
+    vector_type = field.type
+    if not pa.types.is_fixed_size_list(vector_type):
+        raise RuntimeError("lancedb_vector_schema_invalid")
+    dimension = getattr(vector_type, "list_size", None)
+    if not isinstance(dimension, int) or dimension <= 0:
+        raise RuntimeError("lancedb_vector_schema_invalid")
+    return dimension
 
 
 class LanceDBStore:
@@ -91,10 +144,13 @@ class LanceDBStore:
         embedder: Embedder,
         *,
         read_only: bool = False,
+        persist_index_material: bool = True,
     ) -> None:
         self._path = db_path
         self._embedder = embedder
+        self._embedding_dimension = _resolve_embedder_dimension(embedder)
         self._read_only = bool(read_only)
+        self._persist_index_material_enabled = bool(persist_index_material)
         self._vectors_disabled = getattr(embedder, "model_name", "") == "fallback-zero"
         if self._vectors_disabled:
             logger.warning("LanceDBStore: FallbackEmbedder detected — vector operations disabled")
@@ -120,6 +176,7 @@ class LanceDBStore:
                 self._table = self._db.open_table(TABLE_NAME)
             except Exception as exc:
                 raise RuntimeError("lancedb_read_only_table_unavailable") from exc
+            self._validate_table_dimension()
             self._fts_ready = self._existing_fts_ready()
             logger.info(
                 "LanceDB: opened read-only table '%s' (%d rows)",
@@ -132,15 +189,51 @@ class LanceDBStore:
         self._db = lancedb.connect(self._path)
         try:
             self._table = self._db.open_table(TABLE_NAME)
+        except Exception:
+            self._table = self._db.create_table(
+                TABLE_NAME,
+                schema=_memory_vectors_schema(self._embedding_dimension),
+                data=[],
+            )
+            logger.info("LanceDB: created table '%s'", TABLE_NAME)
+        else:
+            # Do not catch this validation error and attempt to recreate the
+            # table.  A dimension mismatch is an explicit generation boundary;
+            # callers must open a different path or use the matching embedder.
+            self._validate_table_dimension()
             logger.info(
-                "LanceDB: opened existing table '%s' (%d rows)",
+                "LanceDB: opened existing table '%s' (%d rows; dim=%d)",
                 TABLE_NAME,
                 self._table.count_rows(),
+                self._embedding_dimension,
             )
-        except Exception:
-            self._table = self._db.create_table(TABLE_NAME, schema=_MEMORY_VECTORS_SCHEMA, data=[])
-            logger.info("LanceDB: created table '%s'", TABLE_NAME)
         self._ensure_fts()
+
+    @property
+    def embedding_dimension(self) -> int:
+        """Dimension contract owned by this store/generation."""
+
+        return self._embedding_dimension
+
+    def _validate_table_dimension(self) -> None:
+        """Reject an existing table whose schema targets another dimension."""
+
+        if self._table is None:
+            raise RuntimeError("lancedb_table_unavailable")
+        table_dimension = _table_vector_dimension(self._table)
+        if table_dimension != self._embedding_dimension:
+            raise RuntimeError("lancedb_vector_dimension_mismatch")
+
+    def _validate_vector(self, vector: list[float] | tuple[float, ...]) -> None:
+        """Validate vector shape before it reaches Arrow/LanceDB."""
+
+        try:
+            actual_dimension = len(vector)
+        except TypeError as exc:
+            raise RuntimeError("lancedb_vector_dimension_invalid") from exc
+        expected_dimension = getattr(self, "_embedding_dimension", EMB_DIM)
+        if actual_dimension != expected_dimension:
+            raise RuntimeError("lancedb_vector_dimension_mismatch")
 
     def _existing_fts_ready(self) -> bool:
         """Report an existing FTS index without creating or replacing one."""
@@ -223,7 +316,7 @@ class LanceDBStore:
         """ANN vector search by cosine similarity.
 
         Args:
-            vector: Query embedding (len == EMB_DIM).
+            vector: Query embedding (len == this store's embedding dimension).
             k: Max results to return.
             scope: Optional scope filter.
             tier: Optional tier filter.
@@ -235,6 +328,7 @@ class LanceDBStore:
             return []
         if self._table is None:
             return []
+        self._validate_vector(vector)
         if not self._vector_scan_allowed():
             return []
         try:
@@ -368,6 +462,7 @@ class LanceDBStore:
         """
         if self._table is None:
             return []
+        self._validate_vector(vector)
         if not self._vector_scan_allowed():
             return []
         try:
@@ -601,6 +696,15 @@ class LanceDBStore:
             "LDB_MAX_UNINDEXED_VECTOR_SCAN_FRAGMENTS",
             _DEFAULT_UNINDEXED_VECTOR_SCAN_FRAGMENT_LIMIT,
         )
+        # Some LanceDB releases do not expose ``to_lance().get_fragments()``
+        # even though row counting remains available.  Treat the row count as
+        # a conservative upper bound in that case: a small table may still be
+        # scanned safely, while a large table remains fail-closed.  Never
+        # infer safety from an unknown count.
+        if fragment_count < 0:
+            row_count = int(status.get("row_count", -1))
+            if 0 <= row_count <= limit:
+                return True
         if 0 <= fragment_count <= limit:
             return True
         diagnostic = {
@@ -648,6 +752,7 @@ class LanceDBStore:
         if self._vectors_disabled:
             logger.debug("LanceDBStore.insert(%s): vectors disabled, skipping write", memory_id)
             return
+        self._validate_vector(vector)
         try:
             self.insert_checked(memory_id, vector, text, tier, category, scope)
         except Exception as e:
@@ -670,6 +775,7 @@ class LanceDBStore:
             raise RuntimeError("lancedb_vectors_disabled")
         if self._table is None:
             raise RuntimeError("lancedb_table_unavailable")
+        self._validate_vector(vector)
         escaped_memory_id = str(memory_id).replace("'", "''")
         existing = (
             self._table.search()
@@ -711,6 +817,7 @@ class LanceDBStore:
             raise RuntimeError("lancedb_vectors_disabled")
         if self._table is None:
             raise RuntimeError("lancedb_table_unavailable")
+        self._validate_vector(vector)
         escaped_memory_id = str(memory_id).replace("'", "''")
         existing = (
             self._table.search()
@@ -968,7 +1075,12 @@ class LanceDBStore:
         logger.info("LanceDB: cleared %d rows", count)
         return count
 
-    def rebuild_all(self, engine: object) -> int:
+    def rebuild_all(
+        self,
+        engine: object,
+        *,
+        memory_ids: Iterable[str] | None = None,
+    ) -> int:
         """Clear LanceDB table and rebuild all vectors from SQLite memories.
 
         Used when LanceDB vectors are out of sync with SQLite (ghost vectors,
@@ -997,6 +1109,13 @@ class LanceDBStore:
             return 0
 
         eligible_memories = self._eligible_engine_memories(engine, canonical_memories)
+        if memory_ids is not None:
+            allowed_ids = {str(memory_id) for memory_id in memory_ids}
+            eligible_memories = {
+                memory_id: memory
+                for memory_id, memory in eligible_memories.items()
+                if memory_id in allowed_ids
+            }
         eligible_synthesis_ids = {
             mid
             for mid, memory in eligible_memories.items()
@@ -1182,7 +1301,7 @@ class LanceDBStore:
                     "LanceDB sync: explicitly materializing pre-v2 index contract for %s",
                     mid,
                 )
-                if not self._persist_index_material(
+                if self._persist_index_material_enabled and not self._persist_index_material(
                     engine,
                     mid,
                     mem_data,
@@ -1198,13 +1317,13 @@ class LanceDBStore:
                 vector = precomputed_vector
             else:
                 vector = self._embedder.embed(material.vector_text)
-            if migrating_model:
+            if migrating_model or not self._persist_index_material_enabled:
                 canonical = self._canonical_index_memory(engine, mid)
                 if canonical is not None and not self._memory_is_index_eligible(
                     engine, mid, canonical
                 ):
                     canonical = None
-            else:
+            elif self._persist_index_material_enabled:
                 canonical = self._validated_canonical_index_memory(
                     engine,
                     mid,
@@ -1233,13 +1352,15 @@ class LanceDBStore:
                 self._record_index_diagnostic(mid, "lancedb_insert_failed", failed=True)
                 logger.warning("LanceDB sync: insert failed for %s: %s", mid, exc)
                 return False
-            if migrating_model and not self._persist_index_material(
+            if migrating_model and self._persist_index_material_enabled and not self._persist_index_material(
                 engine, mid, mem_data, material
             ):
                 self._delete_repair_row(mid)
-                self._record_index_diagnostic(mid, "index_material_persist_failed", failed=True)
+                self._record_index_diagnostic(
+                    mid, "index_material_persist_failed", failed=True
+                )
                 return False
-            if (
+            if self._persist_index_material_enabled and (
                 self._validated_canonical_index_memory(
                     engine,
                     mid,

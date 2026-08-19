@@ -90,7 +90,7 @@ def _get_fuzzy_buffer(engine: Any):
     """Get or create FuzzyBuffer / MemoryPipeline attached to the engine."""
     fb = engine.get_fuzzy_buffer()
     if fb is None:
-        from plastic_promise.core.embedder import get_embedder
+        from plastic_promise.core.server_embedder import get_embedder
         from plastic_promise.memory.pipeline import MemoryPipeline
         from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
 
@@ -98,7 +98,7 @@ def _get_fuzzy_buffer(engine: Any):
         try:
             embedder = get_embedder()
         except Exception:
-            from plastic_promise.core.embedder import FallbackEmbedder
+            from plastic_promise.core.server_embedder import FallbackEmbedder
 
             embedder = FallbackEmbedder()
         tier_mgr = MemoryTierManager(rec_mem)

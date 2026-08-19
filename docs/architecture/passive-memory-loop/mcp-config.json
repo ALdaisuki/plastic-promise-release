@@ -2,7 +2,7 @@
   "mcpServers": {
     "plastic-promise": {
       "type": "http",
-      "url": "http://127.0.0.1:9020/mcp",
+      "url": "http://127.0.0.1:19020/mcp",
       "description": "Governed memory, passive context preload, hybrid retrieval and audit"
     }
   },

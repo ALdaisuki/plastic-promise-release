@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 import uvicorn
@@ -29,9 +30,14 @@ async def serve(port: int = 9030) -> None:
     if isinstance(port, bool) or not 1 <= port <= 65_535:
         raise InferenceGatewayConfigurationError("inference_gateway_port_invalid")
     configure_default_environment(str(_PROJECT_ROOT))
+    os.environ.setdefault("PP_ENDPOINT_ROLE", "pp-compute-node")
     settings = InferenceGatewaySettings.from_env(bind_host="127.0.0.1")
     if not settings.enabled:
-        raise InferenceGatewayConfigurationError("inference_gateway_disabled")
+        # Local governed-node deployments deliberately do not run the cloud
+        # gateway.  A clean no-op lets systemd represent this as inactive /
+        # skipped instead of a failed service that retries forever.
+        logging.getLogger(__name__).info("inference_gateway_disabled")
+        return
     app = create_inference_gateway_app(settings)
     http_limit = min(128, max(16, settings.max_concurrency * 4))
     config = uvicorn.Config(

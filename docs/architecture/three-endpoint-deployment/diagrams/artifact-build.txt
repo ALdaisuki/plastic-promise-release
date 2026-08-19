@@ -1,0 +1,56 @@
+ContainerArtifactCompiler — PR 3 build/verify boundary
+Legend: [C] source/CI verification contract (P1 correction)  [T] deferred runtime/release
+
++----------------------------+
+| [C] ArtifactRequest        |
+| pinned source / package    |
+| platform / variant/profile |
++-------------+--------------+
+              |
+              v
++----------------------------+       +--------------------------------+
+| [C] Static recipe preflight| receipt | [C] RecipePolicyReceipt        |
+| Dockerfile / Compose /     |------->| pinned base catalog + recipe   |
+| .dockerignore; no Docker   |        | policy digest                  |
++-------------+--------------+        +---------------+----------------+
+              |                                       |
+              +------------------+--------------------+
+                                 v
++----------------------------+       +--------------------------------+
+| [C] ContainerArtifact      | plan  | [C] ArtifactBuildPlan          |
+|     Compiler.prepare       |------>| matrix / labels / base digest  |
+|                             |       | recipe-policy + plan digest    |
++-------------+--------------+       +---------------+----------------+
+              |                                      |
+              | materialize                          | inspect
+              v                                      v
++----------------------------+       +--------------------------------+
+| [C] Build executor seam    |------>| [C] Final rootfs inventory     |
+| local / verify-only CI /   |       | apply layers + whiteouts       |
+| test fake                  |       | enforce role package surface   |
++-------------+--------------+       +---------------+----------------+
+              |                                      |
+              |                                      v
+              |                      +--------------------------------+
+              +--------------------->| [C] ArtifactEvidenceReceipt    |
+                                     | OCI/SBOM/provenance + surface  |
+                                     | and inventory digest binding   |
+                                     +---------------+----------------+
+                                                     |
+                                                     v
+                                     +--------------------------------+
+                                     | [C] ArtifactBundle             |
+                                     | receipt-set + inspection proof |
+                                     +--------------------------------+
+
+Artifact matrix:
+  pp-local-edge/base      -> collaboration surface absent
+  pp-server-backend/base  -> contracts + event log source-only/unwired
+  pp-compute-node/cpu     -> collaboration package absent
+  pp-compute-node/cuda    -> collaboration package absent
+
+[C] Recipe preflight rejects floating bases, unknown identity, writable roots, sockets,
+    public listeners, writer runtime configuration, and unsafe full-package compute copies.
+[C] OCI inspection requires the server foundation and forbids collaboration paths on edge/compute.
+[C] CI verifies only: no push, signing, attestation claim, deployment, or runtime mutation.
+[T] No activation, tunnel, migration, promotion, Maintenance, MCP restart, or production.

@@ -22,6 +22,96 @@ jobs:
       - run: ruff check plastic_promise/ || true
       - run: mypy plastic_promise/ --ignore-missing-imports || true
 
+  deployment-contract:
+    name: "P0: Deployment contract"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: ruff check plastic_promise/deployment scripts/check_module_layers.py scripts/prepare_oci_build.py scripts/resolve_container_artifact_identity.py scripts/validate_container_artifact_policy.py scripts/verify_oci_artifact_evidence.py tests/test_container_artifacts.py tests/test_oci_artifact_evidence.py tests/test_deployment_contract.py tests/test_oci_build_preflight.py scripts/validate_release_variant.py tests/test_release_variant.py
+      - run: ruff format --check plastic_promise/deployment scripts/check_module_layers.py scripts/prepare_oci_build.py scripts/resolve_container_artifact_identity.py scripts/validate_container_artifact_policy.py scripts/verify_oci_artifact_evidence.py tests/test_container_artifacts.py tests/test_oci_artifact_evidence.py tests/test_deployment_contract.py tests/test_oci_build_preflight.py scripts/validate_release_variant.py tests/test_release_variant.py
+      - run: git diff --check
+      - run: python scripts/check_module_layers.py
+      - run: python scripts/validate_release_variant.py --repo-root . release/variants/standard.json
+      - run: python scripts/validate_container_artifact_policy.py --repository-root . --output /tmp/container-recipe-policy.json
+      - run: python -m pytest -q --no-cov tests/test_container_artifacts.py tests/test_oci_artifact_evidence.py tests/test_deployment_contract.py tests/test_oci_build_preflight.py tests/test_release_variant.py
+
+  python-310-compat:
+    name: "P0: Python 3.10 compatibility"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m venv .venv
+      - run: .venv/bin/python -m pip install -e ".[dev]"
+      - run: .venv/bin/python -m pytest -q --no-cov tests/test_packaging_metadata.py tests/test_codex_config.py tests/test_launcher.py
+
+  local-inference-node-contract:
+    name: "P0: Local inference node contract"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: ruff check plastic_promise/local_inference_node tests/test_local_inference_node.py tests/test_local_inference_node_support.py tests/test_local_inference_node_assets.py
+      - run: ruff format --check plastic_promise/local_inference_node tests/test_local_inference_node.py tests/test_local_inference_node_support.py tests/test_local_inference_node_assets.py
+      - run: git diff --check
+      - run: pytest -q --no-cov tests/test_local_inference_node.py tests/test_local_inference_node_support.py tests/test_local_inference_node_assets.py
+      - name: Validate Compose contract
+        run: docker compose -f deploy/local-inference-node/compose.yaml config --no-interpolate
+      - uses: docker/setup-buildx-action@v3
+        with:
+          name: plastic-promise-oci
+          use: true
+      - name: Reclaim disposable CI runner space
+        run: bash scripts/reclaim_ci_runner_space.sh
+      - name: Run protected OCI prebuild cleanup
+        run: python scripts/prepare_oci_build.py --execute
+      - name: Resolve immutable CPU build identity
+        env:
+          PP_PR_VERIFY_MODEL_CATALOG_REFERENCE: pr-verify-model-catalog
+          PP_PR_VERIFY_MODEL_CATALOG_DIGEST: sha256:bb32706f1224df4e3c03d00ed03dd5baafac6576ac4caafc9cecf7d0450f3cf6
+        run: |
+          python scripts/resolve_container_artifact_identity.py \
+            --repository-root . --profile-id split-accelerated \
+            --source-revision "${{ github.sha }}" --package-version ci-verify \
+            --platform linux/amd64 --compute-variant cpu \
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST" \
+            --artifact-role pp-compute-node --artifact-platform linux/amd64 \
+            --artifact-variant cpu --output /tmp/compute-ci.identity.json >/dev/null
+          jq -r '.build_args | to_entries[] | "\(.key)=\(.value)"' /tmp/compute-ci.identity.json >> "$GITHUB_ENV"
+      - name: Build local inference node without model artifacts
+        run: |
+          docker buildx build --builder plastic-promise-oci --load \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg BASE_IMAGE_DIGEST="$BASE_IMAGE_DIGEST" \
+            --build-arg COMPUTE_VARIANT="$COMPUTE_VARIANT" \
+            --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
+            --build-arg PACKAGE_VERSION="$PACKAGE_VERSION" \
+            --build-arg BUILD_POLICY_DIGEST="$BUILD_POLICY_DIGEST" \
+            --build-arg RECIPE_POLICY_DIGEST="$RECIPE_POLICY_DIGEST" \
+            --file deploy/local-inference-node/Dockerfile \
+            --tag plastic-promise-local-inference-node:ci \
+            .
+      - name: Inspect local inference node image boundary
+        run: |
+          docker run --rm --entrypoint sh plastic-promise-local-inference-node:ci -c '
+            test ! -e /app/state &&
+            test ! -e /app/runtime &&
+            test ! -e /app/models &&
+            test ! -e /app/uv.lock &&
+            test ! -e /app/.env &&
+            test -x /opt/plastic-promise-venv/bin/plastic-promise-local-inference-node
+          '
+
   test-python:
     name: "P0: Python unit tests"
     runs-on: ubuntu-latest
@@ -33,6 +123,58 @@ jobs:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
       - run: pytest tests/ -v --tb=short -x || true
+
+  documentation-parity:
+    name: "P0: Documentation parity & architecture"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: python scripts/render_union_six_pr_contract.py
+      - name: Verify union contract and revision lineage
+        env:
+          PP_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PP_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          base_sha="$PP_BASE_SHA"
+          source_sha="$PP_SOURCE_SHA"
+          zero_sha="0000000000000000000000000000000000000000"
+
+          if [ -z "$base_sha" ] || [ "$base_sha" = "$zero_sha" ]; then
+            if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+              base_sha="$(git rev-parse HEAD^)"
+            else
+              echo "Unable to establish a base revision for union-contract lineage" >&2
+              exit 1
+            fi
+          fi
+
+          if ! git cat-file -e "$base_sha^{commit}" 2>/dev/null; then
+            echo "Unable to resolve base revision for union-contract lineage: $base_sha" >&2
+            exit 1
+          fi
+          if ! git cat-file -e "$source_sha^{commit}" 2>/dev/null; then
+            echo "Unable to resolve source revision for union-contract lineage: $source_sha" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$base_sha" "$source_sha"
+          if git cat-file -e "$base_sha:docs/standards/union-six-pr-contract.json" 2>/dev/null; then
+            python scripts/verify_union_six_pr_contract.py \
+              --repo-root . \
+              --base-revision "$base_sha" \
+              --source-revision "$source_sha"
+          else
+            python scripts/verify_union_six_pr_contract.py \
+              --repo-root . \
+              --previous-contract \
+              docs/standards/history/union-six-pr-contract-2026-08-11.3.json
+          fi
+      - run: python -m pytest -q --no-cov tests/test_union_six_pr_contract.py tests/test_documentation_parity.py
 
   security-python:
     name: "P0: Python security scan"

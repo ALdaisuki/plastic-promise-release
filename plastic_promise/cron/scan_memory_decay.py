@@ -12,6 +12,10 @@ from plastic_promise.core.synthesis_retrieval import (
     available_ordinary_memory_sql_predicate,
     ordinary_memory_sql_predicate,
 )
+from plastic_promise.cron.project_scope import (
+    ProjectScopeResolutionError,
+    resolve_memory_project_id,
+)
 
 
 def _worth(success: int | float | None, failure: int | float | None) -> float:
@@ -21,10 +25,53 @@ def _worth(success: int | float | None, failure: int | float | None) -> float:
     return (ws + 1.0) / (total + 2.0) if total > 0 else 0.5
 
 
-def _run_lifecycle_maintenance(conn: sqlite3.Connection, engine) -> dict:
+def run_periodic_memory_maintenance(engine, *, system_authority: bool = False) -> dict:
+    """Run the global RecMem decay/evolution pass exactly once per daemon cycle.
+
+    This pass intentionally lives outside project scanners: RecMem currently has
+    no public project-scoped lifecycle API, so pretending to scope it by editing
+    its private record cache would be unsafe. Project scanners remain isolated;
+    only the daemon's explicit system authority may run this system-wide step.
+    """
+
+    if not system_authority:
+        raise PermissionError("system_authority=True is required for global memory maintenance")
+
+    if os.environ.get("PP_PERIODIC_MAINTENANCE", "1") != "1":
+        return {"skipped": "periodic_maintenance_disabled"}
+
+    try:
+        from plastic_promise.memory.soul_memory import EvolveR, RecMem
+
+        rec_mem = RecMem(engine)
+        updated = rec_mem.update_all_decay()
+        evolve_report = EvolveR(rec_mem).evolve_cycle()
+        return {
+            "decay_updated": updated,
+            "evolved": True,
+            "evolve_report": {
+                "promoted": evolve_report.get("promoted", 0),
+                "demoted": evolve_report.get("demoted", 0),
+                "decayed": evolve_report.get("decayed", 0),
+            },
+        }
+    except Exception as exc:
+        return {
+            "failure_code": "periodic_memory_maintenance_failed",
+            "error_class": exc.__class__.__name__,
+        }
+
+
+def _run_lifecycle_maintenance(
+    conn: sqlite3.Connection,
+    engine,
+    *,
+    project_id: str | None = None,
+) -> dict:
     """Discover lifecycle candidates and delegate canonical state changes."""
     ensure_synthesis_schema(conn)
     conn.commit()
+    project_id = resolve_memory_project_id(conn, project_id)
     ordinary_guard = ordinary_memory_sql_predicate("memories")
     available_guard = available_ordinary_memory_sql_predicate("memories")
     eligible_guard = " AND ".join(
@@ -122,9 +169,11 @@ def _run_lifecycle_maintenance(conn: sqlite3.Connection, engine) -> dict:
           AND COALESCE(worth_failure, 0) >= COALESCE(worth_success, 0)
           AND {eligible_guard}
           AND {available_guard}
+          AND project_id = ?
         ORDER BY created_at, id
         LIMIT 50
-        """
+        """,
+        (project_id,),
     ).fetchall()
     for row in stale_rows:
         if mark_forgotten(
@@ -140,11 +189,13 @@ def _run_lifecycle_maintenance(conn: sqlite3.Connection, engine) -> dict:
         FROM memories
         WHERE {eligible_guard}
           AND {available_guard}
+          AND project_id = ?
         GROUP BY project_id, content
         HAVING COUNT(*) > 1
         ORDER BY project_id, content
         LIMIT 20
-        """
+        """,
+        (project_id,),
     ).fetchall()
     for duplicate in duplicate_contents:
         rows = conn.execute(
@@ -186,12 +237,14 @@ def _run_lifecycle_maintenance(conn: sqlite3.Connection, engine) -> dict:
                 lifecycle["conflicts_marked"] += 1
 
     lifecycle["forgotten_candidates"] = conn.execute(
-        f"SELECT COUNT(*) FROM memories WHERE tags LIKE '%status:forgotten%' AND {ordinary_guard}"
+        f"SELECT COUNT(*) FROM memories WHERE tags LIKE '%status:forgotten%' "
+        f"AND {ordinary_guard} AND project_id = ?",
+        (project_id,),
     ).fetchone()[0]
     return lifecycle
 
 
-async def scan_memory_decay(engine) -> dict:
+async def scan_memory_decay(engine, *, project_id: str | None = None) -> dict:
     """Scan memory pool for decay signals:
     1. Zombie memories (L3 + 30d inactive)
     2. Memory influx (24h spike, dynamic threshold median+2σ)
@@ -207,13 +260,25 @@ async def scan_memory_decay(engine) -> dict:
     lifecycle = {"stale_marked": 0, "conflicts_marked": 0, "forgotten_candidates": 0}
 
     try:
+        project_id = resolve_memory_project_id(conn, project_id)
+    except ProjectScopeResolutionError as exc:
+        conn.close()
+        return {
+            "scanner": "scan_memory_decay",
+            "findings": 0,
+            "dispatched": 0,
+            "lifecycle": lifecycle,
+            "failure_code": exc.reason,
+        }
+
+    try:
         # 1. Zombie detection: L3 tier, 30+ days no access
         thirty_days = (datetime.now() - timedelta(days=30)).isoformat()
         zombies = conn.execute(
             "SELECT COUNT(*) FROM memories WHERE tier='L3' "
             "AND (last_accessed IS NULL OR last_accessed = '' OR last_accessed < ?) "
-            f"AND {ordinary_guard}",
-            (thirty_days,),
+            f"AND {ordinary_guard} AND project_id = ?",
+            (thirty_days, project_id),
         ).fetchone()[0]
 
         if zombies > 5:
@@ -231,16 +296,18 @@ async def scan_memory_decay(engine) -> dict:
         # 2. Memory influx: count new memories in last 24h
         yesterday = (datetime.now() - timedelta(hours=24)).isoformat()
         influx = conn.execute(
-            f"SELECT COUNT(*) FROM memories WHERE created_at > ? AND {ordinary_guard}",
-            (yesterday,),
+            f"SELECT COUNT(*) FROM memories WHERE created_at > ? AND {ordinary_guard} "
+            "AND project_id = ?",
+            (yesterday, project_id),
         ).fetchone()[0]
 
         # Dynamic threshold: median + 2*std of daily counts over 7 days
         daily_counts = conn.execute(
             "SELECT DATE(created_at) as d, COUNT(*) as cnt "
             "FROM memories WHERE created_at > datetime('now', '-7 days') "
-            f"AND {ordinary_guard} "
-            "GROUP BY d ORDER BY cnt"
+            f"AND {ordinary_guard} AND project_id = ? "
+            "GROUP BY d ORDER BY cnt",
+            (project_id,),
         ).fetchall()
         if len(daily_counts) >= 3:
             counts = [r[1] for r in daily_counts]
@@ -267,8 +334,9 @@ async def scan_memory_decay(engine) -> dict:
         domain_counts = conn.execute(
             "SELECT domain, COUNT(*) as cnt FROM memories "
             "WHERE domain IS NOT NULL AND domain != '' "
-            f"AND {ordinary_guard} "
-            "GROUP BY domain"
+            f"AND {ordinary_guard} AND project_id = ? "
+            "GROUP BY domain",
+            (project_id,),
         ).fetchall()
         if domain_counts:
             total = sum(r[1] for r in domain_counts)
@@ -286,36 +354,8 @@ async def scan_memory_decay(engine) -> dict:
                             "title": f"记忆分布失衡: {domain} 占比 {ratio:.0%}",
                         }
                     )
-        # 4. Routine maintenance: decay recalculation + lifecycle evolution
-        routine = {}
-        if os.environ.get("PP_PERIODIC_MAINTENANCE", "1") == "1":
-            rm = None
-            try:
-                from plastic_promise.memory.soul_memory import EvolveR, RecMem
-
-                # The scanner's engine owns the canonical SQLite snapshot.
-                # Passing it through both makes periodic lifecycle work real
-                # and keeps RecMem on the guarded Python mutation path.
-                rm = RecMem(engine)
-                updated = rm.update_all_decay()
-                routine["decay_updated"] = updated
-                evolver = EvolveR(rm)
-                evolve_report = evolver.evolve_cycle()
-                routine["evolved"] = True
-                routine["evolve_report"] = {
-                    "promoted": evolve_report.get("promoted", 0),
-                    "demoted": evolve_report.get("demoted", 0),
-                    "decayed": evolve_report.get("decayed", 0),
-                }
-            except Exception as e:
-                routine["error"] = str(e)
-            finally:
-                # ``engine`` is owned by the scanner caller.  Do not close its
-                # canonical SQLite connection after routine maintenance.
-                pass
-
-        # 4b. Lifecycle candidates: canonical unavailable transitions.
-        lifecycle = _run_lifecycle_maintenance(conn, engine)
+        # 4. Lifecycle candidates: canonical unavailable transitions.
+        lifecycle = _run_lifecycle_maintenance(conn, engine, project_id=project_id)
 
         # 5. Decay anomaly detection: frequently accessed but heavily decayed
         anomalies = conn.execute(
@@ -323,8 +363,9 @@ async def scan_memory_decay(engine) -> dict:
             "FROM memories "
             "WHERE decay_multiplier < 0.2 AND access_count > 10 "
             "AND tier != 'L1' "
-            f"AND {ordinary_guard} "
-            "LIMIT 20"
+            f"AND {ordinary_guard} AND project_id = ? "
+            "LIMIT 20",
+            (project_id,),
         ).fetchall()
         for row in anomalies:
             findings.append(
@@ -360,6 +401,7 @@ async def scan_memory_decay(engine) -> dict:
                     "to_agent": f["to_agent"],
                     "priority": f["priority"],
                     "source_scan": "scan_memory_decay",
+                    "project_id": project_id,
                     "payload": f,
                 },
             )

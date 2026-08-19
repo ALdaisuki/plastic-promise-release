@@ -156,6 +156,73 @@ class TestAutoContextInject:
         start.assert_not_awaited()
         after.assert_not_awaited()
 
+    @pytest.mark.parametrize(
+        ("lifecycle", "status", "persistent"),
+        [
+            (
+                {"state": "durable", "action": "session_end", "persistent": True},
+                "completed",
+                True,
+            ),
+            (
+                {
+                    "state": "deferred",
+                    "reason": "durable_collaboration_authenticated_binding_required",
+                },
+                "deferred",
+                False,
+            ),
+        ],
+    )
+    def test_session_end_short_circuits_memory_and_skill_tracking(
+        self,
+        monkeypatch,
+        lifecycle,
+        status,
+        persistent,
+    ):
+        from plastic_promise.mcp.tools.context import handle_auto_context_inject
+
+        # SessionEnd is a lifecycle operation even when proposal/context
+        # features are disabled or misconfigured.
+        monkeypatch.setenv("PP_PASSIVE_CONTEXT", "off")
+        monkeypatch.setenv("PP_PASSIVE_MEMORY", "off")
+        monkeypatch.setenv("PP_MEMORY_PROPOSALS", "invalid")
+        start = AsyncMock()
+        complete = AsyncMock()
+        before = AsyncMock()
+        after = AsyncMock()
+        store = AsyncMock()
+        with (
+            patch(_START_PATH, new=start),
+            patch(_COMPLETE_PATH, new=complete),
+            patch(_BEFORE_PATH, new=before),
+            patch(_AFTER_PATH, new=after),
+            patch(_STORE_PATH, new=store),
+        ):
+            result = asyncio.run(
+                handle_auto_context_inject(
+                    object(),
+                    {
+                        "event": "session_end",
+                        "task_description": "Codex session_end",
+                        "_durable_collaboration_lifecycle": lifecycle,
+                    },
+                )
+            )
+
+        payload = json.loads(result[0].text)
+        assert payload["event"] == "session_end"
+        assert payload["status"] == status
+        assert payload["queued"] is False
+        assert payload["persistent"] is persistent
+        assert payload["durable_collaboration_lifecycle"] == lifecycle
+        start.assert_not_awaited()
+        complete.assert_not_awaited()
+        before.assert_not_awaited()
+        after.assert_not_awaited()
+        store.assert_not_awaited()
+
     def test_before_invoke_is_read_only_and_ephemeral(self):
         from plastic_promise.mcp.tools.context import handle_auto_context_inject
 

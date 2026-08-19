@@ -7,11 +7,25 @@
 
 Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治理系统。通过共享 MCP Server 实现：
 
-- **共享记忆**: 所有 Agent 读写同一记忆池（SQLite + LanceDB）
+- **共享治理面**: 所有 Agent 通过 server-owned MCP 访问共享上下文与治理能力；canonical 写入只由服务器执行，SQLite 是唯一真相源，LanceDB 是可重建派生索引而不是共享可写记忆池
 - **共享原则**: 12 条核心原则在所有 Agent 同时生效
 - **上下文供应**: 任一方调用 `context_supply` 获取智能三层上下文包
 - **审计同步**: 11 维审计结果所有 Agent 可见
 - **自治流水线**: 标签驱动、零 Token Daemon、自动衔接
+
+## 联合六 PR 权威合同
+
+涉及可组合部署、三端职责或项目级 Agent 协作的开发、审查、文档和状态汇报，必须先读取
+[`docs/standards/union-six-pr-contract.json`](docs/standards/union-six-pr-contract.json)。
+该机器可读文件是六 PR 范围与完成条件的唯一规范源；架构、路线图、TODO、README 和
+历史 PR 描述都只是投影，不得重新定义范围。
+
+每个 PR 同时拥有 `delivery_scope` 与 `collaboration_scope`。只有两侧职责及其
+`required_evidence` 全部满足时才能称为完成；不得把某个源码合同、容器制品、Hook、前端
+或文档切片的完成状态扩大成整个 PR 完成。规范变更必须修改机器可读源、重新生成中英文
+文档并通过漂移门禁，不能直接手改生成文档。
+
+只有交付范围、协作范围和所需证据全部通过，PR 才算完成；任一单侧完成都不等于 PR 完成。
 
 ## MCP 工具目录 (58 暴露工具, 以源码 `plastic_promise/mcp/server.py` 为准)
 
@@ -118,13 +132,13 @@ Plastic Promise 是以「约定工程」替代「约束工程」的 AI 行为治
 ### 委托调度域 (7)
 | 工具 | 用途 |
 |------|------|
-| `task_enqueue` | 挂委托 — Daemon/Claude 发现需求，挂上委托板；支持委托人信任分验证 + C级审批队列 |
-| `task_claim` | 揭榜 — 猎人认领委托（原子 UPDATE WHERE status='pending'），自动等级匹配检查 |
-| `task_complete` | 交委托 — 完成回报，自动创建验收子委托给 Claude |
-| `task_verify` | 长老验收 — Claude 确认委托完成，通过→信任分+0.02，打回→信任分-0.03+自动重派 |
-| `task_inbox` | 查看委托板 — 显示可接委托 + 等级匹配度 + 我的活跃任务 |
-| `task_heartbeat` | 心跳保活 — 每60s汇报存活，超时自动释放委托 + 惩罚 |
-| `task_abandon` | 主动弃单 — 放弃委托，信任分-0.02，累计5次降级到D |
+| `task_enqueue` | 项目内挂委托 — 必须传 canonical `project_id`；支持委托人声明与 C 级审批队列 |
+| `task_claim` | 项目内揭榜 — 按 `project_id + task_id` 原子认领，自动等级匹配检查 |
+| `task_complete` | 项目内交委托 — 完成回报，自动创建同项目验收子委托 |
+| `task_verify` | 项目内验收 — server-owned reviewer authority 验收；通过或打回后更新同项目生命周期 |
+| `task_inbox` | 查看项目委托板 — 只显示指定 `project_id` 的可接委托与活跃任务 |
+| `task_heartbeat` | 项目内心跳 — 按 `project_id + task_id` 保活，超时由恢复器处理 |
+| `task_abandon` | 项目内弃单 — 只释放指定项目任务并记录该项目失败计数 |
 
 ### Review 域 (1)
 | 工具 | 用途 |
@@ -372,7 +386,7 @@ project:agent:feature-x   ← 项目归属（可选）
 ### 设计原则
 
 - **不建新域**：走现有 7 行为域体系，通过 `source` 字段区分 Agent 身份
-- **不建专用技能**：现有 `session-init` 已覆盖通用启动流程
+- **不为每个外部 Agent 建专用技能**：现有 `session-init` 仍是权威启动流程；仓库只保留一个可选的项目级 `plastic-promise-agent` 操作手册，用于汇总本项目的协作、记忆、推理节点与发行边界，不改变 MCP 权限或启动语义
 - **标签命名空间隔离**：`session:<agent>:<id>` 提供轻量会话隔离
 - **零代码改动**：纯约定层，DomainManager、SkillEngine、Rust Core 均不动
 - **预留扩展**：后续外部 Agent 直接复用此约定，`<agent>` 替换为对应名称即可
@@ -401,9 +415,11 @@ task:rejected → Fixer认领 → task:accepted → 修复循环
 
 ---
 
-## 猎人公会委托协议（新·推荐）
+## 猎人公会委托协议（兼容层）
 
-> 全域调度中心：Daemon 发现 → 挂委托板 → SSE 推送 → 猎人揭榜 → 心跳保活 → 长老验收。
+> 该协议描述现有 Task Queue 兼容层，不等同于联合六 PR 的
+> `ProjectWorkBoard`。正确性路径是按项目 cursor 拉取并校验服务器状态；SSE
+> 只能提供低延迟 UX 提示，断线、漏推或重放都不得改变任务归属、租约或验收结果。
 
 ### Agent 猎人身份
 
@@ -414,47 +430,78 @@ task:rejected → Fixer认领 → task:accepted → 修复循环
 | `pi_reviewer` | 审查猎人 | daemon | review_*, investigate_* |
 | `claude` | S级传奇猎人/长老 | system, daemon | audit_*, investigate_*, 全部S/A级 |
 
+### 项目与权限合同
+
+- 七个 Task Queue 工具每次调用都必须显式传入 canonical `project_id`（例如 `project:plastic-promise`）；空值、`project:unknown` 和非项目作用域必须 fail closed。
+- `project:legacy-quarantine` 只用于迁移或恢复无法证明归属的历史行。普通 MCP Task Queue 工具不得列出、认领、修改或把新任务写入该作用域；只有 server-owned migration/recovery authority 可以处置。
+- `from_agent`、`agent_name`、`trust_score`、`verified_by` 等字段只是调用方声明，用于路由、展示和审计，不能授予 mutation 或 reviewer 权限，也不能扩大项目可见性。
+- 真正的 mutation/reviewer authority 必须由服务端持有，并绑定可信传输身份及 server-owned runtime/session scope。调用方声明与服务端 authority 不一致时必须拒绝；自动审批、验收、重派和升级子任务必须继承父任务 `project_id`。
+- `task_queue` 属于服务器 canonical SQLite；LanceDB 及其他派生索引不得充当任务归属或权限真相源。
+
 ### 委托板协议
 
 ```
+PROJECT_ID = "project:plastic-promise"
+AGENT_NAME = "pi_fixer"
+TRUST_SCORE = 0.60
+TASK_ID = "t_..."
+
 作为委托人 (Claude/Daemon):
-  task_enqueue(task_type="fix_memory", title="...", to_agent="pi_fixer", priority=3)
-  → SSE 推送通知 pi_fixer + 匹配订阅者
+  task_enqueue(project_id=PROJECT_ID, task_type="fix_memory", title="...", to_agent="pi_fixer", priority=3)
+  → 可选 SSE UX 提示 pi_fixer + 匹配订阅者；消费方仍须通过项目 cursor 拉取确认
 
 作为猎人 (Agent):
-  1. task_inbox(agent_name, trust_score)           → 查看委托板
-  2. task_claim(agent_name, task_id, trust_score)  → 揭榜（原子防重复）
-  3. task_heartbeat(task_id, agent_name)           → 每60s保活
-  4. task_complete(task_id, agent_name, result)    → 交委托
+  1. task_inbox(project_id=PROJECT_ID, agent_name=AGENT_NAME, trust_score=TRUST_SCORE)
+     → 查看项目委托板
+  2. task_claim(project_id=PROJECT_ID, agent_name=AGENT_NAME, task_id=TASK_ID, trust_score=TRUST_SCORE)
+     → 揭榜（原子防重复）
+  3. task_heartbeat(project_id=PROJECT_ID, task_id=TASK_ID, agent_name=AGENT_NAME)
+     → 每60s保活
+  4. task_complete(project_id=PROJECT_ID, task_id=TASK_ID, agent_name=AGENT_NAME, result="...")
+     → 交委托
 
 作为长老 (Claude):
-  task_verify(task_id, verdict="accepted|rejected", comment="...")
-  → accepted: 信任分+0.02 + SSE通知猎人
+  task_verify(project_id=PROJECT_ID, task_id=TASK_ID, verdict="accepted|rejected", comment="...")
+  → accepted: 只完成 legacy Task Queue 验证并调整信任分；它不会创建 Accepted Work
   → rejected: 信任分-0.03 + 自动重派子委托
 ```
 
-### 委托生命周期（SQLite 真相源）
+只有服务器认证的 `AcceptanceReceipt` 才能把经过 WorkReceipt、ResultReceipt、
+ReviewReceipt、session/policy/source/evidence 校验的提交变成 Accepted Work。
+
+### 兼容委托生命周期（SQLite 真相源）
 
 ```
 pending → claimed → executing → done → verified
               ↑ 揭榜(原子)  ↑ 心跳   ↑ 完成   ↑ 验收
               ✗ 超时→释放回pending (escalation_count++) → 超3次→Claude兜底
-              ✗ task_abandon→释放+惩罚
-              ✗ task_verify(rejected)→reassigned→自动子委托
+              ✗ task_abandon(project_id=PROJECT_ID, task_id=TASK_ID, agent_name=AGENT_NAME)→释放+惩罚
+              ✗ task_verify(project_id=PROJECT_ID, task_id=TASK_ID, verdict="rejected")→同项目自动子委托
 ```
 
 ### 发现→调度→验收闭环
 
 ```
 Daemon 扫描器(5个) → 发现问题
-  → task_enqueue(to_agent, priority, source_scan)
-    → SSE task:new 推送
-      → 猎人 task_inbox → task_claim → 执行 → task_complete
+  → task_enqueue(project_id=PROJECT_ID, to_agent=AGENT_NAME, priority=PRIORITY, source_scan=SCANNER)
+    → 可选 SSE task:new UX 提示
+      → 通过项目 cursor/task_inbox 拉取 → task_claim(project_id=PROJECT_ID, task_id=TASK_ID)
+        → 执行 → task_complete(project_id=PROJECT_ID, task_id=TASK_ID)
         → 自动创建验收子委托给 Claude
-          → task_verify(accepted|rejected)
+          → task_verify(project_id=PROJECT_ID, task_id=TASK_ID, verdict=VERDICT)
             → defense adjust ±信任分
-            → SSE 通知猎人结果
+            → 可选 SSE 通知猎人结果；服务器状态仍是正确性来源
 ```
+
+新的 `ProjectWorkBoard` 生命周期为：
+
+```text
+proposed → ready → leased → in_progress → submitted → reviewing
+  → accepted | rework | expired
+```
+
+它使用 WorkLease fence、cursor、Receipt 谱系与服务器认证 authority，不得与上述
+legacy `pending → claimed → executing → done → verified` 状态机互相代换。
 
 ---
 
@@ -528,7 +575,7 @@ python -m plastic_promise --streamable-http 9020
 python daemons/maintenance_daemon.py
 
 # 新任务建议使用 Hunter Guild 委托系统
-task_enqueue(task_type="build_feature", title="...", to_agent="pi_builder")
+task_enqueue(project_id="project:plastic-promise", task_type="build_feature", title="...", to_agent="pi_builder")
 ```
 
 ## 架构

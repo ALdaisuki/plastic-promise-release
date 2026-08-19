@@ -5,9 +5,14 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback.
+    import tomli as tomllib
 
-EXPECTED_STREAMABLE_HTTP_URL = "http://127.0.0.1:9020/mcp"
+# This is a Codex client configuration, not the server launch command.  The
+# Mac reaches the server's 9020 listener through the 19020 SSH LocalForward.
+EXPECTED_STREAMABLE_HTTP_URL = "http://127.0.0.1:19020/mcp"
 
 
 def check_project_codex_mcp_config(project_root: str | Path = ".") -> tuple[bool, list[str]]:
@@ -27,7 +32,9 @@ def check_project_codex_mcp_config(project_root: str | Path = ".") -> tuple[bool
 
     plastic = data.get("mcp_servers", {}).get("plastic_promise")
     if not isinstance(plastic, dict):
-        messages.append("[ENV]   Codex MCP config .............. [FAIL] missing plastic_promise server")
+        messages.append(
+            "[ENV]   Codex MCP config .............. [FAIL] missing plastic_promise server"
+        )
         ok = False
     elif plastic.get("url") != EXPECTED_STREAMABLE_HTTP_URL:
         messages.append(

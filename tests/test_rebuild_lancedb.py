@@ -36,6 +36,7 @@ def _persisted_memory_row(
     content: str,
     *,
     policy: str = "compact-v2",
+    project_id: str = "project:test",
 ) -> dict[str, str]:
     material = build_index_material(
         {"content": content, "l0_abstract": content},
@@ -48,8 +49,9 @@ def _persisted_memory_row(
         "embedding_text": material.vector_text,
         "embedding_hash": material.embedding_hash,
         "search_text": material.search_text,
+        "project_id": project_id,
         "metadata_json": json.dumps(
-            {"memory_index": index_metadata(material)},
+            {"memory_index": index_metadata(material), "project_id": project_id},
             sort_keys=True,
         ),
     }
@@ -164,6 +166,88 @@ def test_runtime_embedder_identity_rejects_stale_cloud_endpoint(monkeypatch):
         rebuild_lancedb._runtime_embedder_identity(_StaleEmbedder())
 
 
+def test_generation_embedder_bootstraps_governed_node_without_legacy_discovery(monkeypatch):
+    from plastic_promise.core import node_runtime_bootstrap
+    from plastic_promise.core.memory_index_node_runtime import (
+        GovernedRetrievalEmbedder,
+        NodeIndexEmbedding,
+    )
+
+    required_identity = "sha256:" + "a" * 64
+
+    class Runtime:
+        def embedding_for_retrieval(self, *, text, project_id):
+            assert text
+            assert project_id == "project:test"
+            return NodeIndexEmbedding(
+                vector=(0.25, 0.75),
+                identity=required_identity,
+                model="Qwen3-Embedding-4B-GGUF",
+                revision="f4602530db1d980e16da9d7d3a70294cf5c190be",
+                dimension=2,
+                normalization="l2",
+            )
+
+    class Engine:
+        def __init__(self):
+            self.runtime = None
+            self.status = {}
+
+        def install_memory_index_node_runtime(self, runtime):
+            self.runtime = runtime
+
+        def memory_index_node_runtime(self):
+            return self.runtime
+
+        def set_memory_index_node_runtime_status(self, status):
+            self.status = dict(status)
+
+    runtime = Runtime()
+
+    def bootstrap(engine):
+        engine.install_memory_index_node_runtime(runtime)
+        engine.set_memory_index_node_runtime_status(
+            {"state": "ready", "reason": "node_routing_ready"}
+        )
+        return type(
+            "Report",
+            (),
+            {"state": "ready", "reason": "node_routing_ready"},
+        )()
+
+    def legacy_embedder_must_not_be_discovered(*_args, **_kwargs):
+        pytest.fail("governed generation must not discover a legacy embedder")
+
+    monkeypatch.setenv("PP_CONTROL_PLANE", "1")
+    monkeypatch.setattr(
+        node_runtime_bootstrap,
+        "bootstrap_memory_index_node_runtime",
+        bootstrap,
+    )
+    monkeypatch.setattr(rebuild_lancedb, "_get_embedder", legacy_embedder_must_not_be_discovered)
+
+    embedder = rebuild_lancedb._generation_embedder(Engine(), project_id="project:test")
+
+    assert isinstance(embedder, GovernedRetrievalEmbedder)
+    assert embedder.index_model_name == required_identity
+
+
+def test_configured_index_identity_fails_closed_without_governed_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PP_CONTROL_PLANE", "1")
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "db" / "plastic_memory.db"))
+    monkeypatch.delenv("PP_CONTROL_ROOT", raising=False)
+    monkeypatch.delenv("PP_DEPLOYMENT_MANIFEST_PATH", raising=False)
+
+    with pytest.raises(
+        rebuild_lancedb.ShadowBuildError,
+        match="^governed_control_projection_unavailable$",
+    ):
+        rebuild_lancedb._configured_embedding_index_identity()
+
+
 def _create_source_database(
     path: Path,
     *,
@@ -176,13 +260,13 @@ def _create_source_database(
             "CREATE TABLE memories ("
             "id TEXT PRIMARY KEY, content TEXT NOT NULL, embedding_text TEXT NOT NULL, "
             "embedding_hash TEXT NOT NULL, search_text TEXT NOT NULL, "
-            "metadata_json TEXT NOT NULL)"
+            "metadata_json TEXT NOT NULL, project_id TEXT NOT NULL)"
         )
         connection.executemany(
             "INSERT INTO memories ("
             "id, content, embedding_text, embedding_hash, search_text, metadata_json"
-            ") VALUES ("
-            ":id, :content, :embedding_text, :embedding_hash, :search_text, :metadata_json"
+            ", project_id) VALUES ("
+            ":id, :content, :embedding_text, :embedding_hash, :search_text, :metadata_json, :project_id"
             ")",
             [
                 _persisted_memory_row(f"memory-{index:04d}", f"content {index}")
@@ -275,8 +359,20 @@ def _install_shadow_fakes(monkeypatch: pytest.MonkeyPatch, state: FakeState) -> 
             self._index_failures: list[dict[str, str]] = []
             state.index_paths.append(index_path)
 
-        def rebuild_all(self, engine: object) -> int:
+        def rebuild_all(
+            self,
+            engine: object,
+            *,
+            memory_ids: object | None = None,
+        ) -> int:
             source_memories = eligible(engine)
+            if memory_ids is not None:
+                allowed_ids = {str(memory_id) for memory_id in memory_ids}
+                source_memories = {
+                    memory_id: memory
+                    for memory_id, memory in source_memories.items()
+                    if memory_id in allowed_ids
+                }
             source_ids = sorted(source_memories)
             limit = int(os.environ.get("LDB_REBUILD_MAX_PER_CALL", "200"))
             state.rebuild_limits.append(limit)
@@ -334,7 +430,7 @@ def _install_shadow_fakes(monkeypatch: pytest.MonkeyPatch, state: FakeState) -> 
 
     def eligible(engine: object) -> dict[str, dict[str, str]]:
         rows = engine._sqlite._conn.execute(
-            "SELECT id, content, embedding_text, embedding_hash, search_text, metadata_json "
+            "SELECT id, content, embedding_text, embedding_hash, search_text, metadata_json, project_id "
             "FROM memories ORDER BY id"
         ).fetchall()
         return {
@@ -345,6 +441,7 @@ def _install_shadow_fakes(monkeypatch: pytest.MonkeyPatch, state: FakeState) -> 
                 "embedding_hash": str(row[3]),
                 "search_text": str(row[4]),
                 "metadata_json": str(row[5]),
+                "project_id": str(row[6]),
             }
             for row in rows
         }
@@ -354,7 +451,7 @@ def _install_shadow_fakes(monkeypatch: pytest.MonkeyPatch, state: FakeState) -> 
     monkeypatch.setattr(
         rebuild_lancedb,
         "_create_lancedb_store",
-        lambda path, embedder: FakeStore(path, embedder),
+        lambda path, embedder, **_kwargs: FakeStore(path, embedder),
     )
     monkeypatch.setattr(rebuild_lancedb, "_eligible_memories", eligible)
     monkeypatch.setattr(
@@ -787,6 +884,8 @@ def _arguments(root: Path, source: Path, report: Path, generation_id: str) -> li
         str(source),
         "--quality-report",
         str(report),
+        "--project-id",
+        "project:test",
     ]
 
 
@@ -813,6 +912,7 @@ def test_v2_max_v1_control_does_not_require_candidate_manifest(tmp_path, monkeyp
         rebuild_lancedb._shadow_generation_build(
             tmp_path / "generation-root",
             "max-v1-control",
+            "project:test",
             tmp_path / "source.db",
             report,
             None,
@@ -839,6 +939,7 @@ def test_v2_wrrf_generation_still_requires_candidate_manifest(tmp_path):
         rebuild_lancedb._shadow_generation_build(
             tmp_path / "generation-root",
             "wrrf-candidate",
+            "project:test",
             tmp_path / "source.db",
             report,
             None,

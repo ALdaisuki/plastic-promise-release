@@ -26,6 +26,7 @@ class PassiveMemoryEvent:
     task_description: str = ""
     task_type: str = "general"
     source: str = "mcp"
+    scope: str = ""
     user_text: str = ""
     assistant_text: str = ""
     call_id: str = ""
@@ -55,6 +56,7 @@ class PassiveMemoryEvent:
             task_description=_text(values.get("task_description")),
             task_type=_text(values.get("task_type")) or "general",
             source=_text(values.get("source")) or "mcp",
+            scope=_text(values.get("scope")),
             user_text=_raw_field(values, "user_text", "user_message", "prompt"),
             assistant_text=_text(
                 values.get("assistant_text")
@@ -78,6 +80,7 @@ class PassiveMemoryEvent:
             "task_description": self.task_description,
             "task_type": self.task_type,
             "source": self.source,
+            "scope": self.scope,
             "call_id": self.call_id,
             "parent_call_id": self.parent_call_id,
             "request_id": self.request_id,

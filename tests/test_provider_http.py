@@ -98,6 +98,67 @@ def test_config_accepts_https_or_loopback_http(base_url):
     client.close()
 
 
+def test_server_backend_cannot_construct_any_inference_provider(monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
+
+    with pytest.raises(ProviderHTTPError, match="cloud_provider_requires_compute_node"):
+        ProviderHTTPClient(
+            provider="future-provider-label",
+            base_url="https://provider.example/v1",
+            api_key="test-secret-key",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={})),
+        )
+
+
+def test_unknown_endpoint_role_cannot_construct_inference_provider(monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "unknown-endpoint")
+
+    with pytest.raises(ProviderHTTPError, match="cloud_provider_requires_compute_node"):
+        ProviderHTTPClient(
+            provider="future-provider-label",
+            base_url="https://provider.example/v1",
+            api_key="test-secret-key",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={})),
+        )
+
+
+def test_missing_endpoint_role_cannot_construct_production_inference_provider(monkeypatch):
+    monkeypatch.delenv("PP_ENDPOINT_ROLE", raising=False)
+
+    with pytest.raises(ProviderHTTPError, match="cloud_provider_requires_compute_node"):
+        ProviderHTTPClient(
+            provider="future-provider-label",
+            base_url="https://provider.example/v1",
+            api_key="test-secret-key",
+        )
+
+
+def test_missing_endpoint_role_allows_only_injected_test_transport(monkeypatch):
+    monkeypatch.delenv("PP_ENDPOINT_ROLE", raising=False)
+    client = ProviderHTTPClient(
+        provider="future-provider-label",
+        base_url="https://provider.example/v1",
+        api_key="test-secret-key",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"ok": True})),
+    )
+
+    assert client.post_json("health", {}).payload == {"ok": True}
+    client.close()
+
+
+def test_compute_node_can_construct_inference_provider(monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-compute-node")
+    client = ProviderHTTPClient(
+        provider="node-cloud-structured-json",
+        base_url="https://provider.example/v1",
+        api_key="test-secret-key",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"ok": True})),
+    )
+
+    assert client.post_json("chat/completions", {}).payload == {"ok": True}
+    client.close()
+
+
 @pytest.mark.parametrize(
     "address",
     [

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
-  <title id="title">Plastic Promise distribution profiles</title>
-  <desc id="desc">Two supported deployment profiles share one asynchronous admission contract: local all-in-one and split client-server with server-owned canonical state.</desc>
+  <title id="title">Plastic Promise union deployment profiles and authority target</title>
+  <desc id="desc">Union Six-PR Contract revision 2026-08-18.1 defines deployment profiles and authority boundaries. Artifact activation and independent runtime placement require separate runtime and production evidence.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8"/>
@@ -25,61 +25,61 @@
   </defs>
 
   <rect width="1280" height="760" rx="28" fill="#0b1220"/>
-  <text x="56" y="58" class="title">Plastic Promise Distribution Profiles</text>
-  <text x="56" y="86" class="subtitle">One release contract, two deployment topologies, one asynchronous admission path</text>
+  <text x="56" y="58" class="title">Plastic Promise Deployment Profiles</text>
+  <text x="56" y="86" class="subtitle">Union contract 2026-08-18.1; activation and runtime placement remain evidence-gated targets</text>
 
-  <text x="56" y="132" class="section">SUPPORTED PROFILES</text>
+  <text x="56" y="132" class="section">UNION CONTRACT 2026-08-18.1 · RUNTIME TARGET PRS 3–6</text>
   <rect x="56" y="150" width="552" height="344" rx="20" class="local"/>
-  <text x="84" y="190" class="label">local-all-in-one</text>
-  <text x="84" y="216" class="body">Everything runs on one local host.</text>
+  <text x="84" y="190" class="label">local-all-in-one / local-cloud</text>
+  <text x="84" y="216" class="body">Edge/backend co-located; local or cloud inference.</text>
   <rect x="84" y="244" width="226" height="78" rx="12" class="client"/>
-  <text x="106" y="276" class="label">Client + Dashboard</text>
-  <text x="106" y="299" class="small">Codex, browser, loopback</text>
+  <text x="106" y="276" class="label">pp-local-edge</text>
+  <text x="106" y="299" class="small">Dashboard, Deployment Center</text>
   <rect x="354" y="244" width="226" height="78" rx="12" class="server"/>
-  <text x="376" y="276" class="label">MCP + Workers</text>
-  <text x="376" y="299" class="small">runtime, maintenance, hooks</text>
+  <text x="376" y="276" class="label">pp-server-backend</text>
+  <text x="376" y="299" class="small">SQLite writer; LanceDB derived</text>
   <path class="arrow" d="M310 283 H354"/>
   <rect x="84" y="358" width="226" height="82" rx="12" class="store"/>
-  <text x="106" y="391" class="label">SQLite</text>
-  <text x="106" y="414" class="small">canonical writable state</text>
+  <text x="106" y="391" class="label">pp-compute-node</text>
+  <text x="106" y="414" class="small">local-all-in-one typed inference</text>
   <rect x="354" y="358" width="226" height="82" rx="12" class="store"/>
-  <text x="376" y="391" class="label">LanceDB</text>
-  <text x="376" y="414" class="small">derived rebuildable index</text>
+  <text x="376" y="391" class="label">Explicit cloud</text>
+  <text x="376" y="414" class="small">local-cloud identity; derived only</text>
   <path class="dashed" d="M467 322 V358"/>
   <path class="dashed" d="M197 322 V358"/>
 
   <rect x="672" y="150" width="552" height="344" rx="20" class="split"/>
-  <text x="700" y="190" class="label">split-async (default)</text>
-  <text x="700" y="216" class="body">Client access is separate from server truth.</text>
+  <text x="700" y="190" class="label">split-accelerated</text>
+  <text x="700" y="216" class="body">Local edge, server backend, and compute run on separate hosts.</text>
   <rect x="700" y="244" width="226" height="78" rx="12" class="client"/>
-  <text x="722" y="276" class="label">Client</text>
-  <text x="722" y="299" class="small">Codex, dashboard, bounded cache</text>
+  <text x="722" y="276" class="label">pp-local-edge</text>
+  <text x="722" y="299" class="small">Codex, Dashboard, MCP bridge</text>
   <rect x="970" y="244" width="226" height="78" rx="12" class="server"/>
-  <text x="992" y="276" class="label">Server Runtime</text>
-  <text x="992" y="299" class="small">MCP, workers, async ownership</text>
+  <text x="992" y="276" class="label">pp-server-backend</text>
+  <text x="992" y="299" class="small">SQLite writer; LanceDB derived</text>
   <path class="arrow" d="M926 283 H970"/>
   <text x="928" y="266" class="small">secure tunnel</text>
   <rect x="700" y="358" width="226" height="82" rx="12" class="store"/>
-  <text x="722" y="391" class="label">SQLite</text>
+  <text x="722" y="391" class="label">SQLite WAL</text>
   <text x="722" y="414" class="small">server-only canonical state</text>
   <rect x="970" y="358" width="226" height="82" rx="12" class="store"/>
-  <text x="992" y="391" class="label">LanceDB</text>
-  <text x="992" y="414" class="small">server-derived index</text>
+  <text x="992" y="391" class="label">pp-compute-node</text>
+  <text x="992" y="414" class="small">typed results; no canonical access</text>
   <path class="dashed" d="M1083 322 V358"/>
   <path class="dashed" d="M813 322 V358"/>
 
   <text x="56" y="540" class="section">SHARED ASYNC CONTRACT</text>
   <rect x="56" y="558" width="1168" height="128" rx="20" class="async"/>
-  <text x="86" y="596" class="label">canonical enqueue</text>
-  <text x="86" y="621" class="small">ack only after durable admission</text>
+  <text x="86" y="596" class="label">Deployment Manifest</text>
+  <text x="86" y="621" class="small">secret-free deployment truth</text>
   <path class="arrow" d="M252 616 H330"/>
-  <text x="350" y="596" class="label">durable outbox</text>
-  <text x="350" y="621" class="small">SQLite-backed work intent</text>
+  <text x="350" y="596" class="label">host ppctl</text>
+  <text x="350" y="621" class="small">target adapter; separate runtime proof</text>
   <path class="arrow" d="M520 616 H598"/>
-  <text x="618" y="596" class="label">bounded batch</text>
-  <text x="618" y="621" class="small">async embedding / enrichment</text>
+  <text x="618" y="596" class="label">durable queue</text>
+  <text x="618" y="621" class="small">leases, retries, reconcile</text>
   <path class="arrow" d="M764 616 H842"/>
-  <text x="862" y="596" class="label">retry + reconcile</text>
-  <text x="862" y="621" class="small">persistent state, project-isolated</text>
-  <text x="86" y="662" class="small">The client cache is never a second writable canonical database.</text>
+  <text x="862" y="596" class="label">typed result</text>
+  <text x="862" y="621" class="small">identity checked before acceptance</text>
+  <text x="86" y="662" class="small">Only pp-server-backend writes SQLite; LanceDB and inference results remain derived.</text>
 </svg>

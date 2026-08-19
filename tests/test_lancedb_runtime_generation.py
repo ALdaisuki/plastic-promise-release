@@ -289,7 +289,7 @@ def _reconciled_outbox_evidence(
             )
             """
         )
-        snapshot = snapshot_index_outbox(connection)
+        snapshot = snapshot_index_outbox(connection, project_id="project:test")
         receipt = reconcile_index_outbox(
             connection,
             generation_id=generation_id,

@@ -44,6 +44,7 @@ class TestSkillSessionStart:
                             {
                                 "skill_name": "grill-with-docs",
                                 "task_description": "Design the skill tracking module",
+                                "project_id": "project:test",
                                 "parent_entity_id": None,
                             },
                         )
@@ -164,6 +165,7 @@ class TestSkillSessionStart:
                     {
                         "skill_name": "grill-with-docs",
                         "task_description": "Reject malformed creation results",
+                        "project_id": "project:test",
                     },
                 )
             )
@@ -185,6 +187,7 @@ class TestSkillSessionStart:
                     {
                         "skill_name": "grill-with-docs",
                         "task_description": "Surface persistence failures",
+                        "project_id": "project:test",
                     },
                 )
             )
@@ -274,6 +277,39 @@ class TestSkillSessionStart:
 
         assert tick_elapsed < 0.10
         assert payload["tracking_persistence"] == "entity_only"
+
+    def test_start_persists_project_scope_in_memory_and_graph(self):
+        from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
+
+        engine = MagicMock()
+        engine.register_entity.return_value = {
+            "node_id": "skill_session:scoped",
+            "type": "skill_session",
+        }
+        engine.create_ordinary_if_absent.side_effect = lambda record: record["id"]
+
+        result = asyncio.run(
+            handle_skill_session_start(
+                engine,
+                {
+                    "skill_name": "code-review",
+                    "task_description": "Review the scoped workflow",
+                    "project_id": "project:alpha",
+                    "stage_session_id": "stage:alpha",
+                    "flow_line_id": "codex",
+                },
+            )
+        )
+
+        payload = json.loads(result[0].text)
+        stored = engine.create_ordinary_if_absent.call_args.args[0]
+        metadata = engine.register_entity.call_args.kwargs["metadata"]
+        assert payload["project_id"] == "project:alpha"
+        assert stored["project_id"] == "project:alpha"
+        assert stored["visibility"] == "project"
+        assert metadata["project_id"] == "project:alpha"
+        assert metadata["stage_session_id"] == "stage:alpha"
+        assert metadata["flow_line_id"] == "codex"
 
 
 class TestSkillSessionComplete:

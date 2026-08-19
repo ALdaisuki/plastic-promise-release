@@ -171,6 +171,7 @@ CURATED_MANIFESTS: dict[str, dict[str, Any]] = {
         "side_effects": ("task_write", "event_emit"),
         "trust_requirement": 0.50,
         "fallbacks": ("local_plan_record",),
+        "evidence_required": ("project_id",),
     },
     "task_claim": {
         "domain": "task",
@@ -179,6 +180,7 @@ CURATED_MANIFESTS: dict[str, dict[str, Any]] = {
         "side_effects": ("task_state", "event_emit"),
         "trust_requirement": 0.30,
         "fallbacks": ("no_op_error",),
+        "evidence_required": ("project_id", "task_id"),
     },
     "task_complete": {
         "domain": "task",
@@ -187,6 +189,7 @@ CURATED_MANIFESTS: dict[str, dict[str, Any]] = {
         "side_effects": ("task_state", "event_emit"),
         "trust_requirement": 0.30,
         "fallbacks": ("no_op_error",),
+        "evidence_required": ("project_id", "task_id"),
     },
     "task_verify": {
         "domain": "task",
@@ -195,6 +198,34 @@ CURATED_MANIFESTS: dict[str, dict[str, Any]] = {
         "side_effects": ("task_state", "trust_mutation", "event_emit"),
         "trust_requirement": 0.60,
         "fallbacks": ("pending_review",),
+        "evidence_required": ("project_id", "task_id"),
+    },
+    "task_inbox": {
+        "domain": "task",
+        "capabilities": ("task.read",),
+        "risk_level": "low",
+        "side_effects": (),
+        "trust_requirement": 0.00,
+        "fallbacks": ("empty_project_view",),
+        "evidence_required": ("project_id",),
+    },
+    "task_heartbeat": {
+        "domain": "task",
+        "capabilities": ("task.heartbeat",),
+        "risk_level": "medium",
+        "side_effects": ("task_state", "event_emit"),
+        "trust_requirement": 0.30,
+        "fallbacks": ("no_op_error",),
+        "evidence_required": ("project_id", "task_id"),
+    },
+    "task_abandon": {
+        "domain": "task",
+        "capabilities": ("task.abandon",),
+        "risk_level": "medium",
+        "side_effects": ("task_state", "trust_mutation", "event_emit"),
+        "trust_requirement": 0.30,
+        "fallbacks": ("no_op_error",),
+        "evidence_required": ("project_id", "task_id"),
     },
 }
 

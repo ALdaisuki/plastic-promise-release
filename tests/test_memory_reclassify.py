@@ -55,8 +55,15 @@ class _NonzeroEmbedder:
         return [self.embed(text) for text in texts]
 
 
-def _seed_indexed_ordinary(engine, memory_id="reclassify-ordinary"):
-    content = "The team decided to reclassify this durable project decision."
+def _seed_indexed_ordinary(
+    engine,
+    memory_id="reclassify-ordinary",
+    *,
+    content="The team decided to reclassify this durable project decision.",
+    tags=None,
+    domain="building",
+):
+    normalized_tags = list(tags or [f"domain:{domain}"])
     material = build_index_material(
         {"content": content},
         policy="legacy",
@@ -70,8 +77,8 @@ def _seed_indexed_ordinary(engine, memory_id="reclassify-ordinary"):
             "source": "test",
             "tier": "L1",
             "category": "other",
-            "tags": ["domain:building"],
-            "domain": "building",
+            "tags": normalized_tags,
+            "domain": domain,
             "project_id": "project:reclassify",
             "visibility": "project",
             "source_class": "experience",
@@ -233,15 +240,13 @@ class TestMemoryReclassify:
                 "test content for reclassify with enough reflecting audit detail "
                 "to pass the memory quality gate deterministically"
             )
-            # Store a memory with domain:reflecting tag
-            fb.store_urgent(
+            _seed_indexed_ordinary(
+                engine,
+                "reclassify-preserve-content",
                 content=content,
-                entity_ids=["skill:test:1"],
-                custom_tags=["domain:reflecting", "task:done"],
-                domain_hint="reflecting",
-                max_llm_calls=0,
+                tags=["domain:reflecting", "task:done"],
+                domain="reflecting",
             )
-            fb.process_pipeline()
             # In lightweight ContextEngine, DomainManager is not initialized.
             # Key assertion: reclassify re-processes in place and preserves traceable tags.
 

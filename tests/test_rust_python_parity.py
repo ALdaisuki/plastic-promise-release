@@ -560,7 +560,7 @@ def _python_pack(
     engine._memories = {memory["id"]: deepcopy(memory) for memory in memories}
     engine._ldb = _FakeVectorStore(engine._memories)
     engine._ensure_heavy_init = lambda: None
-    engine._activate_principles = lambda task_type, task_description: []
+    engine._activate_principles = lambda task_type, task_description, **_kwargs: []
     engine._inject_activated_to_graph = lambda activated, task_type: 0
     engine._graph_traversal = lambda task_type: []
     engine._fts_retrieval = lambda query, scope="global": []

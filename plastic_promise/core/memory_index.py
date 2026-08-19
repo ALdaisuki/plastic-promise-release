@@ -35,7 +35,7 @@ def effective_embedding_model_name(embedder: object | None = None) -> str:
         )
         if value:
             return _model_name_with_chunking(value)
-    provider = os.environ.get("EMBEDDER_PROVIDER", "ollama").strip().casefold()
+    provider = os.environ.get("EMBEDDER_PROVIDER", "openai-compatible").strip().casefold()
     supported_providers = {
         "ollama",
         "local",

@@ -20,9 +20,11 @@ import json
 import logging
 import math
 import os
+import secrets
 import sys
 import threading
 import weakref
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -56,6 +58,7 @@ from plastic_promise.core.fusion_policy import (
     canonical_fusion_config_hash,
     load_fusion_config,
 )
+from plastic_promise.core.project_identity import canonical_project_id
 from plastic_promise.core.recall_quality_environment import loaded_rust_extension_identity
 from plastic_promise.core.retrieval_planner import plan_retrieval
 from plastic_promise.launcher.default_environment import configure_default_environment
@@ -64,6 +67,11 @@ from plastic_promise.launcher.service_manager import (
     MCP_FUSION_IDENTITY_SCHEMA,
     canonical_source_root,
     resolve_source_revision,
+)
+from plastic_promise.mcp import server_composition as _server_composition
+
+compose_pp_server_backend_migration_operations = (
+    _server_composition.compose_pp_server_backend_migration_operations
 )
 
 PLASTIC_PROMISE_VERSION = __version__
@@ -83,6 +91,39 @@ _skill_engine = None  # 延迟初始化 — SkillEngine 单例
 _closure_history: deque = deque(maxlen=5)  # 滑动窗口: 最近5次闭环 {scarf, trust, cei}
 _workflow_flow_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 _workflow_flow_locks_guard = threading.Lock()
+_task_session_authorities: weakref.WeakKeyDictionary[Any, dict[str, Any]] = (
+    weakref.WeakKeyDictionary()
+)
+_task_session_authorities_guard = threading.Lock()
+_durable_collaboration_bindings: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
+_durable_collaboration_bindings_guard = threading.Lock()
+_mcp_transport_instances: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
+_mcp_transport_instances_guard = threading.Lock()
+_durable_collaboration_continuation_authority_instance: Any | None = None
+_durable_collaboration_continuation_authority_guard = threading.Lock()
+_known_mcp_tool_names_cache: frozenset[str] = frozenset()
+
+_COLLABORATION_CONTINUATION_TOKEN_ARGUMENT = "collaboration_continuation_token"
+_COLLABORATION_TOOL_CALL_RECONCILE_EXCLUSIONS = frozenset(
+    {
+        "session-init",
+        "session_init",
+        "auto_context_inject",
+        "collaboration_lease_heartbeat",
+    }
+)
+
+_TASK_QUEUE_TOOL_NAMES = frozenset(
+    {
+        "task_enqueue",
+        "task_claim",
+        "task_complete",
+        "task_verify",
+        "task_inbox",
+        "task_heartbeat",
+        "task_abandon",
+    }
+)
 
 
 def _workflow_flow_lock(engine: Any, arguments: dict[str, Any]) -> asyncio.Lock:
@@ -147,11 +188,27 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
     vector_reason = None
     embedding_identity = None
     embedder = getattr(runtime_engine, "_embedder", None)
-    if embedder is None:
+    route_probe = getattr(runtime_engine, "retrieval_embedding_probe", None)
+    node_runtime_reader = getattr(runtime_engine, "memory_index_node_runtime", None)
+    retrieval_route_active = callable(route_probe)
+    node_route_active = retrieval_route_active and (
+        not callable(node_runtime_reader) or node_runtime_reader() is not None
+    )
+    probe_source = (
+        "governed_route"
+        if node_route_active
+        else "retrieval_route"
+        if retrieval_route_active
+        else "legacy_embedder"
+    )
+    if embedder is None and not retrieval_route_active:
         vector_reason = "retrieval_embedder_unavailable"
     else:
         try:
-            probe_vector = embedder.embed("plastic promise retrieval health probe")
+            if retrieval_route_active:
+                probe_vector = route_probe("plastic promise retrieval health probe")
+            else:
+                probe_vector = embedder.embed("plastic promise retrieval health probe")
         except Exception:
             vector_reason = "retrieval_embedding_probe_failed"
             probe_vector = None
@@ -165,10 +222,16 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
             or not any(float(value) != 0.0 for value in probe_vector)
         ):
             vector_reason = "retrieval_embedding_zero_or_invalid"
-        try:
-            embedding_identity = _embedding_process_identity(embedder, env)
-        except RuntimeError:
-            if vector_reason is None:
+        if vector_reason is None:
+            try:
+                if node_route_active:
+                    embedding_identity = _governed_embedding_process_identity(
+                        runtime_engine,
+                        probe_vector,
+                    )
+                else:
+                    embedding_identity = _embedding_process_identity(embedder, env)
+            except RuntimeError:
                 raise
     lancedb = getattr(runtime_engine, "_ldb", None)
     lancedb_required = env.get("LDB_INIT_ON_HEAVY_INIT", "1") == "1"
@@ -250,6 +313,10 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
             raise FusionConfigurationError("fusion_health_config_hash_mismatch")
         config_payload["config_hash"] = recomputed_hash
     live_lagged = vector_ready and live_lag_state == "lagged"
+    optional_capabilities = _optional_capability_health(runtime_engine, env)
+    optional_capabilities_degraded = any(
+        capability.get("state") == "degraded" for capability in optional_capabilities.values()
+    )
     return {
         "identity_valid": True,
         "version": PLASTIC_PROMISE_VERSION,
@@ -257,6 +324,10 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
         "source_root": _SOURCE_ROOT,
         "source_revision": _SOURCE_REVISION,
         "embedding": embedding_identity,
+        "embedding_probe": {
+            "source": probe_source,
+            "status": "ready" if vector_reason is None else "failed",
+        },
         "health_policy": "text-only" if allow_text_only else "strict",
         "degraded": not vector_ready or live_lagged,
         "retrieval_status": (
@@ -273,6 +344,8 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
         "lancedb_sync": lancedb_sync,
         "bm25_ready": bm25_ready,
         "graph_ready": graph_ready,
+        "optional_capabilities_degraded": optional_capabilities_degraded,
+        "optional_capabilities": optional_capabilities,
         "fusion_policy": fusion_policy,
         "rust_runtime": rust_runtime,
         "fusion_attestation": {
@@ -285,6 +358,161 @@ def _server_process_identity(engine=None, environ=None) -> dict[str, Any]:
             "candidate_id": candidate_id,
             "config_hash": candidate_id.partition(":")[2] if candidate_id else "",
             "config": config_payload,
+        },
+    }
+
+
+def _governed_embedding_process_identity(
+    runtime_engine: object,
+    probe_vector: object,
+) -> dict[str, Any]:
+    """Return the bounded identity of the route that produced the health vector."""
+
+    identity_reader = getattr(runtime_engine, "retrieval_embedding_identity", None)
+    if not callable(identity_reader):
+        raise RuntimeError("retrieval_embedding_identity_unavailable")
+    try:
+        raw_identity = identity_reader()
+    except Exception:
+        raise RuntimeError("retrieval_embedding_identity_unavailable") from None
+    if not isinstance(raw_identity, dict):
+        raise RuntimeError("retrieval_embedding_identity_invalid")
+    try:
+        provider = _bounded_identity_value(
+            raw_identity.get("provider"),
+            "retrieval_embedding_provider",
+        )
+        model = _bounded_identity_value(
+            raw_identity.get("model"),
+            "retrieval_embedding_model",
+        )
+        revision = _bounded_identity_value(
+            raw_identity.get("revision") or raw_identity.get("model_revision"),
+            "retrieval_embedding_model_revision",
+        )
+        normalization = _bounded_identity_value(
+            raw_identity.get("normalization"),
+            "retrieval_embedding_normalization",
+        )
+        index_identity = _bounded_identity_value(
+            raw_identity.get("index_identity"),
+            "retrieval_embedding_index_identity",
+        )
+    except RuntimeError:
+        raise RuntimeError("retrieval_embedding_identity_invalid") from None
+    dimension = raw_identity.get("dimension")
+    if (
+        type(dimension) is not int
+        or dimension <= 0
+        or not isinstance(probe_vector, list)
+        or len(probe_vector) != dimension
+    ):
+        raise RuntimeError("retrieval_embedding_identity_invalid")
+    usage_reader = getattr(runtime_engine, "retrieval_embedding_usage", None)
+    if not callable(usage_reader):
+        raise RuntimeError("retrieval_embedding_usage_unavailable")
+    try:
+        raw_usage = usage_reader()
+    except Exception:
+        raise RuntimeError("retrieval_embedding_usage_unavailable") from None
+    if not isinstance(raw_usage, Mapping):
+        raise RuntimeError("retrieval_embedding_usage_invalid")
+    usage = dict(raw_usage)
+    required_usage = {
+        "embedding_requests",
+        "embedding_input_tokens",
+        "cost",
+        "cost_currency",
+        "cost_usd",
+        "pricing_revision",
+    }
+    if set(usage) != required_usage:
+        raise RuntimeError("retrieval_embedding_usage_invalid")
+    if (
+        type(usage["embedding_requests"]) is not int
+        or usage["embedding_requests"] < 0
+        or type(usage["embedding_input_tokens"]) is not int
+        or usage["embedding_input_tokens"] < 0
+        or usage["cost_currency"] not in SUPPORTED_COST_CURRENCIES
+        or not isinstance(usage["pricing_revision"], str)
+        or not usage["pricing_revision"].strip()
+    ):
+        raise RuntimeError("retrieval_embedding_usage_invalid")
+
+    def optional_cost(value: object) -> float | None:
+        if value is None:
+            return None
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise RuntimeError("retrieval_embedding_usage_invalid")
+        return float(value)
+
+    cost = optional_cost(usage["cost"])
+    cost_usd = optional_cost(usage["cost_usd"])
+    if cost_usd != (cost if usage["cost_currency"] == "USD" else None):
+        raise RuntimeError("retrieval_embedding_usage_invalid")
+    usage["cost"] = cost
+    usage["cost_usd"] = cost_usd
+    return {
+        "provider": provider,
+        "model": model,
+        "model_revision": revision,
+        "dimension": dimension,
+        "normalization": normalization,
+        "index_identity": index_identity,
+        "usage": usage,
+    }
+
+
+def _optional_capability_health(
+    runtime_engine: object,
+    env: Any,
+) -> dict[str, dict[str, Any]]:
+    """Report async semantic capability state without probing remote providers."""
+
+    from plastic_promise.core import structured_memory_fusion
+    from plastic_promise.passive_memory import semantic_pipeline
+
+    structured_mode = str(env.get("PP_STRUCTURED_MEMORY_FUSION", "off")).strip().casefold()
+    synthesis_mode = str(env.get("PP_SYNTHESIS_ARTIFACTS", "off")).strip().casefold()
+    structured_enabled = structured_mode in {"shadow", "on"} and synthesis_mode in {
+        "shadow",
+        "on",
+    }
+    if not structured_enabled:
+        structured_state = "disabled"
+        structured_reason = ""
+    else:
+        structured_snapshot = structured_memory_fusion.durable_fusion_runtime_snapshot(
+            runtime_engine
+        )
+        structured_state = structured_snapshot["state"]
+        structured_reason = structured_snapshot["reason"]
+
+    passive_mode = str(env.get("PP_PASSIVE_SEMANTIC_CAPTURE", "off")).strip().casefold()
+    passive_enabled = passive_mode in {"shadow", "on"}
+    if not passive_enabled:
+        passive_state = "disabled"
+        passive_reason = ""
+    else:
+        passive_snapshot = semantic_pipeline.semantic_memory_runtime_snapshot(runtime_engine)
+        passive_state = passive_snapshot["state"]
+        passive_reason = passive_snapshot["reason"]
+
+    return {
+        "passive_semantic_capture": {
+            "enabled": passive_enabled,
+            "state": passive_state,
+            "reason": passive_reason,
+        },
+        "structured_memory_fusion": {
+            "enabled": structured_enabled,
+            "state": structured_state,
+            "reason": structured_reason,
         },
     }
 
@@ -456,6 +684,37 @@ def get_engine():
     _engine = PyEngine()
     logging.info("ContextEngine: Python 核心已加载 (SQLite + LanceDB)")
 
+    # Private-node routing is opt-in through the active controlled revision.
+    # The bootstrap is fail-closed for derived indexing only: a missing local
+    # tunnel, manifest, schema, or identity proof never blocks canonical
+    # SQLite memory writes and never silently falls back to an ungoverned
+    # remote embedding call.
+    try:
+        from plastic_promise.core.node_runtime_bootstrap import (
+            bootstrap_memory_index_node_runtime,
+        )
+
+        node_runtime = bootstrap_memory_index_node_runtime(_engine)
+        logging.info(
+            "ContextEngine: node routing bootstrap state=%s reason=%s nodes=%d",
+            node_runtime.state,
+            node_runtime.reason,
+            node_runtime.registered_nodes,
+        )
+    except Exception:
+        # Bootstrap must not prevent the MCP process from serving text and
+        # canonical-memory operations.  Do not log raw exception values here:
+        # resolver failures may originate from private runtime material.
+        _engine.set_memory_index_node_runtime_status(
+            {
+                "state": "blocked",
+                "reason": "node_routing_bootstrap_unavailable",
+                "registered_nodes": 0,
+                "config_revision": None,
+            }
+        )
+        logging.warning("ContextEngine: node routing bootstrap unavailable")
+
     # 预导入 Rust 加速器（如果可用），供 _supply_rust 路径使用
     try:
         from plastic_promise.core.rust_extension import try_load_context_engine_core
@@ -505,6 +764,61 @@ server = Server(
     instructions=SERVER_INSTRUCTIONS,
 )
 
+_SYSTEM_NOTIFICATION_PROJECT_ID = "project:system-governance"
+
+
+def _notification_event_with_project(
+    event: dict[str, Any],
+    runtime_authority: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a project-scoped event without treating the scope as authentication."""
+
+    if not isinstance(event, dict):
+        raise ValueError("notification event must be an object")
+    if "project_id" in event:
+        project_id = canonical_project_id(event.get("project_id"))
+        if not project_id:
+            raise ValueError("canonical project_id is required")
+    else:
+        runtime_project_id = canonical_project_id((runtime_authority or {}).get("project_id"))
+        project_id = runtime_project_id or _SYSTEM_NOTIFICATION_PROJECT_ID
+    return {**event, "project_id": project_id}
+
+
+class _ProjectNotificationHub:
+    """Fan out general notifications to every subscriber in one project."""
+
+    def __init__(self) -> None:
+        self._subscribers: dict[str, set[asyncio.Queue[Any]]] = {}
+
+    def register(self, project_id: str, queue: asyncio.Queue[Any]) -> None:
+        scoped = _notification_event_with_project(
+            {"project_id": project_id, "type": "subscription"}
+        )["project_id"]
+        self._subscribers.setdefault(scoped, set()).add(queue)
+
+    def unregister(self, project_id: str, queue: asyncio.Queue[Any]) -> None:
+        subscribers = self._subscribers.get(project_id)
+        if not subscribers:
+            return
+        subscribers.discard(queue)
+        if not subscribers:
+            self._subscribers.pop(project_id, None)
+
+    def put_nowait(self, event: dict[str, Any]) -> None:
+        scoped_event = _notification_event_with_project(event)
+        project_id = scoped_event["project_id"]
+        for queue in tuple(self._subscribers.get(project_id, ())):
+            with suppress(Exception):
+                queue.put_nowait(dict(scoped_event))
+
+    async def put(self, event: dict[str, Any]) -> None:
+        scoped_event = _notification_event_with_project(event)
+        project_id = scoped_event["project_id"]
+        for queue in tuple(self._subscribers.get(project_id, ())):
+            await queue.put(dict(scoped_event))
+
+
 _notify_queue: Any | None = None
 
 
@@ -514,6 +828,21 @@ def notify_issue_change(data: dict[str, Any]) -> None:
     if queue is not None:
         with suppress(Exception):
             queue.put_nowait(data)
+
+
+def _task_event_subscription_scope(query_params: Any) -> tuple[str, str] | None:
+    """Parse one required project-scoped local SSE subscription.
+
+    The query scope isolates trusted loopback clients; it is not internet-grade
+    multi-tenant authentication.
+    """
+
+    project_id = str(query_params.get("project_id") or "").strip()
+    agent_name = str(query_params.get("agent_name") or "").strip()
+    scoped_project_id = canonical_project_id(project_id)
+    if not scoped_project_id or not agent_name:
+        raise ValueError("canonical project_id and agent_name are required")
+    return scoped_project_id, agent_name
 
 
 _CODEX_DISCOVERY_HINTS = {
@@ -548,6 +877,10 @@ _CODEX_DISCOVERY_HINTS = {
     "commercial_audit_export": (
         "Plastic Promise MCP; Codex tool_search discovery; commercial audit export; "
         "call spans; degradation events; store outbox; traceability bundle."
+    ),
+    "knowledge_search": (
+        "Plastic Promise MCP; Codex tool_search discovery; knowledge search; "
+        "knowledge_search; lexical retrieval; citations; knowledge system."
     ),
 }
 
@@ -1107,7 +1440,7 @@ async def list_tools() -> list[Tool]:
                     "properties": {
                         "event": {
                             "type": "string",
-                            "enum": ["before_invoke", "after_invoke"],
+                            "enum": ["before_invoke", "after_invoke", "session_end"],
                             "description": "Lifecycle event; defaults to before_invoke for compatibility",
                         },
                         "task_description": {
@@ -1133,6 +1466,14 @@ async def list_tools() -> list[Tool]:
                         "call_id": {"type": "string"},
                         "parent_call_id": {"type": "string"},
                         "request_id": {"type": "string"},
+                        "hook_session_id": {
+                            "type": "string",
+                            "description": "Hook session identity bound to the server-issued collaboration continuation",
+                        },
+                        _COLLABORATION_CONTINUATION_TOKEN_ARGUMENT: {
+                            "type": "string",
+                            "description": "Opaque short-lived server-issued bearer assertion; do not log, persist, inspect, or modify",
+                        },
                         "stage_session_id": {"type": "string"},
                         "flow_line_id": {"type": "string"},
                         "project_id": {"type": "string"},
@@ -1566,6 +1907,10 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project identity, e.g. project:plastic-promise",
+                        },
                         "task_type": {
                             "type": "string",
                             "description": "任务类型: fix_memory/gc_*/build_*/refactor_*/review_*/investigate_*",
@@ -1597,7 +1942,7 @@ async def list_tools() -> list[Tool]:
                         },
                         "payload": {"type": "object", "description": "附加数据"},
                     },
-                    "required": ["task_type", "title", "to_agent"],
+                    "required": ["project_id", "task_type", "title", "to_agent"],
                 },
             ),
             Tool(
@@ -1606,12 +1951,16 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project identity owning the task",
+                        },
                         "agent_name": {"type": "string", "description": "揭榜猎人名称"},
                         "task_id": {"type": "string", "description": "要认领的委托 ID"},
                         "trust_score": {"type": "number", "description": "猎人当前信任分"},
                         "force": {"type": "boolean", "description": "强制越级揭榜 (默认 false)"},
                     },
-                    "required": ["agent_name", "task_id", "trust_score"],
+                    "required": ["project_id", "agent_name", "task_id", "trust_score"],
                 },
             ),
             Tool(
@@ -1620,6 +1969,10 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project identity owning the task",
+                        },
                         "task_id": {"type": "string", "description": "委托 ID"},
                         "agent_name": {"type": "string", "description": "提交完成的猎人名称"},
                         "result": {"type": "string", "description": "完成结果描述"},
@@ -1629,7 +1982,7 @@ async def list_tools() -> list[Tool]:
                             "description": "产物路径列表",
                         },
                     },
-                    "required": ["task_id", "agent_name", "result"],
+                    "required": ["project_id", "task_id", "agent_name", "result"],
                 },
             ),
             Tool(
@@ -1638,6 +1991,10 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project identity owning the task",
+                        },
                         "task_id": {"type": "string", "description": "待验收的委托 ID"},
                         "verdict": {
                             "type": "string",
@@ -1650,7 +2007,7 @@ async def list_tools() -> list[Tool]:
                             "description": "重派目标 Agent (默认原 to_agent)",
                         },
                     },
-                    "required": ["task_id", "verdict"],
+                    "required": ["project_id", "task_id", "verdict"],
                 },
             ),
             Tool(
@@ -1659,6 +2016,10 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project identity whose task board is visible",
+                        },
                         "agent_name": {"type": "string", "description": "查看委托板的猎人名称"},
                         "trust_score": {"type": "number", "description": "猎人当前信任分"},
                         "filter_status": {
@@ -1667,7 +2028,7 @@ async def list_tools() -> list[Tool]:
                         },
                         "limit": {"type": "integer", "description": "返回数量上限 (默认 20)"},
                     },
-                    "required": ["agent_name", "trust_score"],
+                    "required": ["project_id", "agent_name", "trust_score"],
                 },
             ),
             Tool(
@@ -1676,10 +2037,14 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project identity owning the task",
+                        },
                         "task_id": {"type": "string", "description": "委托 ID"},
                         "agent_name": {"type": "string", "description": "揭榜猎人名称"},
                     },
-                    "required": ["task_id", "agent_name"],
+                    "required": ["project_id", "task_id", "agent_name"],
                 },
             ),
             Tool(
@@ -1688,11 +2053,134 @@ async def list_tools() -> list[Tool]:
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project identity owning the task",
+                        },
                         "task_id": {"type": "string", "description": "委托 ID"},
                         "agent_name": {"type": "string", "description": "揭榜猎人名称"},
                         "reason": {"type": "string", "description": "弃单原因"},
                     },
-                    "required": ["task_id", "agent_name"],
+                    "required": ["project_id", "task_id", "agent_name"],
+                },
+            ),
+        ]
+    )
+
+    # === PR5 durable ProjectWorkBoard ===
+    # These tools never accept AgentSession, lease, role, policy, capability,
+    # or storage identifiers.  The server resolves every authority-bearing
+    # value from the exact authenticated transport binding created by
+    # session-init.
+    tools.extend(
+        [
+            Tool(
+                name="collaboration_work_list",
+                description=(
+                    "列出当前认证 MCP transport 在其精确 project/workflow scope 中的"
+                    "有界 ProjectWorkBoard inbox；只读且不授予 authority。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": _PROJECT_CONTEXT_PROPERTIES["project_id"],
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 64,
+                            "default": 32,
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="collaboration_work_register",
+                description=(
+                    "由服务器为当前认证 Agent session 签发并持久化 WorkReceipt。调用方只能描述"
+                    "objective、依赖和幂等提示；project/scope/assignee/time/fence 均由服务器绑定。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": _PROJECT_CONTEXT_PROPERTIES["project_id"],
+                        "objective": {"type": "string", "maxLength": 4096},
+                        "dependency_work_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 32,
+                        },
+                        "max_attempts": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "default": 1,
+                        },
+                        "request_id": {
+                            "type": "string",
+                            "description": "Bounded idempotency hint; grants no authority.",
+                        },
+                    },
+                    "required": ["objective"],
+                },
+            ),
+            Tool(
+                name="collaboration_work_claim",
+                description=(
+                    "认领已分配给当前认证 transport 的 work；lease、owner、fence、attempt 与"
+                    "session authority 均由服务器解析和签发。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": _PROJECT_CONTEXT_PROPERTIES["project_id"],
+                        "work_item_id": {"type": "string"},
+                    },
+                    "required": ["work_item_id"],
+                },
+            ),
+            Tool(
+                name="collaboration_lease_heartbeat",
+                description=(
+                    "为当前认证 transport 精确拥有的 active collaboration lease 发送服务器心跳。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": _PROJECT_CONTEXT_PROPERTIES["project_id"],
+                        "work_item_id": {"type": "string"},
+                    },
+                    "required": ["work_item_id"],
+                },
+            ),
+            Tool(
+                name="collaboration_work_review",
+                description=(
+                    "由当前认证 peer session 将 submitted work 推进到 reviewing；"
+                    "reviewer identity/session 由服务器绑定。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": _PROJECT_CONTEXT_PROPERTIES["project_id"],
+                        "work_item_id": {"type": "string"},
+                    },
+                    "required": ["work_item_id"],
+                },
+            ),
+            Tool(
+                name="collaboration_work_accept",
+                description=(
+                    "使用服务器已持久签发的 AcceptanceReceipt 推进 reviewed work；"
+                    "receipt id 只是查找键，不是 authority。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": _PROJECT_CONTEXT_PROPERTIES["project_id"],
+                        "work_item_id": {"type": "string"},
+                        "acceptance_receipt_id": {"type": "string"},
+                    },
+                    "required": ["work_item_id", "acceptance_receipt_id"],
                 },
             ),
         ]
@@ -1709,6 +2197,10 @@ async def list_tools() -> list[Tool]:
                     "properties": {
                         "skill_name": {"type": "string", "description": "技能名称"},
                         "task_description": {"type": "string", "description": "本次执行的任务描述"},
+                        "project_id": {
+                            "type": "string",
+                            "description": "持久化技能记忆所属项目；必须是稳定的 project:* 标识",
+                        },
                         "parent_entity_id": {
                             "type": "string",
                             "description": "父技能会话的 entity_id",
@@ -1718,7 +2210,7 @@ async def list_tools() -> list[Tool]:
                             "description": "预估耗时（分钟）",
                         },
                     },
-                    "required": ["skill_name", "task_description"],
+                    "required": ["skill_name", "task_description", "project_id"],
                 },
             ),
             Tool(
@@ -1856,6 +2348,14 @@ async def list_tools() -> list[Tool]:
                             "type": "string",
                             "description": "Agent identity used when allocating a stage_session_id",
                         },
+                        "hook_session_id": {
+                            "type": "string",
+                            "description": "Hook session identity to bind to the server-issued collaboration continuation",
+                        },
+                        _COLLABORATION_CONTINUATION_TOKEN_ARGUMENT: {
+                            "type": "string",
+                            "description": "Opaque short-lived server-issued bearer assertion; do not log, persist, inspect, or modify",
+                        },
                         **_PROJECT_CONTEXT_PROPERTIES,
                     },
                     "required": ["task_description"],
@@ -1926,6 +2426,37 @@ async def list_tools() -> list[Tool]:
                             "default": "claude",
                             "description": "信任分追踪目标 (claude/pi_builder/pi_reviewer 等)",
                         },
+                        "work_item_id": {
+                            "type": "string",
+                            "description": (
+                                "可选的正式协作闭环 WorkItem；提供后由服务器从当前认证传输解析 active lease"
+                            ),
+                        },
+                        "outcome": {
+                            "type": "string",
+                            "enum": ["completed", "blocked", "failed", "cancelled"],
+                            "description": "正式协作结果状态；只有提供 work_item_id 时生效",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "正式协作结果的有界公开摘要，不使用原始 prompt 或私有推理",
+                        },
+                        "artifact_refs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 32,
+                            "description": "正式协作结果关联的 artifact 引用",
+                        },
+                        "evidence_refs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 32,
+                            "description": "正式协作结果关联的 evidence 引用",
+                        },
+                        "result": {
+                            "type": "object",
+                            "description": "正式协作结果的有界 JSON 投影；不得包含 secret 或私有推理",
+                        },
                     },
                     "required": ["task_description"],
                 },
@@ -1964,6 +2495,37 @@ async def list_tools() -> list[Tool]:
                         },
                     },
                     "required": ["action"],
+                },
+            ),
+            # === 知识域 ===
+            Tool(
+                name="knowledge_search",
+                description="项目作用域词法知识检索，返回证据块引用与摘要。受 PP_KNOWLEDGE_SYSTEM / PP_KNOWLEDGE_RETRIEVAL 门控，默认 off 时返回降级结果。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "检索查询文本（中英文均可）",
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": "Canonical project id, e.g. project:plastic-promise",
+                        },
+                        "space_id": {
+                            "type": "string",
+                            "description": "可选：限定知识空间 id",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "最大命中数 (1-50, 默认 10)",
+                        },
+                        "include_stale": {
+                            "type": "boolean",
+                            "description": "是否包含已过期生命周期行 (默认 false)",
+                        },
+                    },
+                    "required": ["query", "project_id"],
                 },
             ),
             # === 商业审计域 ===
@@ -2196,6 +2758,7 @@ async def list_tools() -> list[Tool]:
         "smart-remember",
         "smart_remember",
         "review_run",
+        "knowledge_search",
     ):
         schema = by_name[tool_name].inputSchema
         schema.setdefault("properties", {}).update(_PROJECT_CONTEXT_PROPERTIES)
@@ -2337,6 +2900,801 @@ def _feedback_runtime_actor() -> str:
         if actor.replace("_", "") in compact:
             return actor
     return normalized or "mcp"
+
+
+def _current_mcp_session() -> Any | None:
+    """Return the SDK-owned session for the current request, if one exists."""
+
+    try:
+        return server.request_context.session
+    except (AttributeError, LookupError):
+        return None
+
+
+def _authenticated_transport_instance() -> str:
+    """Return an opaque id for the current SDK-owned MCP transport session.
+
+    This is deliberately a private composition detail rather than an MCP
+    argument.  A workflow scope says which collaboration lane an invocation
+    belongs to; it does *not* prove that two invocations originate from the
+    same live transport.  Keeping the minted instance id against the SDK
+    session object prevents same-actor peer connections from sharing a
+    durable AgentSession, cursor, heartbeat, or SessionEnd lifecycle.
+    """
+
+    session = _current_mcp_session()
+    if session is None:
+        return ""
+    with _mcp_transport_instances_guard:
+        token = _mcp_transport_instances.get(session)
+        if isinstance(token, str) and token:
+            return token
+        token = f"transport:mcp:{secrets.token_hex(16)}"
+        _mcp_transport_instances[session] = token
+        return token
+
+
+def _configured_task_runtime_actor() -> str:
+    """Return an explicitly configured process actor; the default ``mcp`` is not identity."""
+
+    if not str(os.environ.get("PP_MCP_RUNTIME_ACTOR") or "").strip():
+        return ""
+    actor = _feedback_runtime_actor()
+    return "" if actor == "mcp" else actor
+
+
+def _task_session_authority() -> dict[str, Any] | None:
+    session = _current_mcp_session()
+    if session is None:
+        return None
+    with _task_session_authorities_guard:
+        binding = _task_session_authorities.get(session)
+        return dict(binding) if isinstance(binding, dict) else None
+
+
+def _current_durable_collaboration_binding() -> Any | None:
+    """Return the exact durable binding owned by the current MCP transport."""
+
+    session = _current_mcp_session()
+    if session is None:
+        return None
+    with _durable_collaboration_bindings_guard:
+        return _durable_collaboration_bindings.get(session)
+
+
+def _durable_collaboration_continuation_authority() -> Any:
+    """Return the server continuation authority backed by a private key ring."""
+
+    global _durable_collaboration_continuation_authority_instance
+    with _durable_collaboration_continuation_authority_guard:
+        authority = _durable_collaboration_continuation_authority_instance
+        if authority is None:
+            from plastic_promise.collaboration.runtime_binding import (
+                DurableCollaborationContinuationAuthority,
+            )
+            from plastic_promise.core.paths import get_db_path
+
+            configured_path = str(
+                os.environ.get("PP_COLLABORATION_CONTINUATION_KEYRING_FILE") or ""
+            ).strip()
+            if configured_path:
+                keyring_path = Path(configured_path).expanduser()
+            else:
+                raw_database_path = str(get_db_path())
+                keyring_path = (
+                    None
+                    if raw_database_path == ":memory:"
+                    else Path(raw_database_path).expanduser().parent
+                    / ".collaboration-continuation-keyring.json"
+                )
+            authority = (
+                DurableCollaborationContinuationAuthority.from_key_file(keyring_path)
+                if keyring_path is not None
+                else DurableCollaborationContinuationAuthority()
+            )
+            _durable_collaboration_continuation_authority_instance = authority
+        return authority
+
+
+def _without_collaboration_continuation_token(
+    arguments: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Copy public arguments while removing the bearer secret before tracing."""
+
+    values = dict(arguments or {})
+    values.pop(_COLLABORATION_CONTINUATION_TOKEN_ARGUMENT, None)
+    return values
+
+
+def _bind_task_session_authority_from_continuation(claims: Any) -> tuple[bool, str]:
+    """Install only the server-verified scope carried by a valid assertion."""
+
+    session = _current_mcp_session()
+    if session is None:
+        return False, "durable_collaboration_mcp_session_unavailable"
+    actor = _configured_task_runtime_actor()
+    if not actor or str(getattr(claims, "server_actor", "")) != actor:
+        return False, "durable_collaboration_continuation_actor_conflict"
+    binding = {
+        "project_id": str(getattr(claims, "project_id", "")),
+        "actor": actor,
+        "stage_session_id": str(getattr(claims, "stage_session_id", "")),
+        "flow_line_id": str(getattr(claims, "flow_line_id", "")),
+        "flow_scope_id": str(getattr(claims, "flow_scope_id", "")),
+        "route_id": str(getattr(claims, "flow_line_id", "")),
+        "continuation_authenticated": True,
+    }
+    if not binding["project_id"] or not binding["flow_scope_id"]:
+        return False, "durable_collaboration_continuation_binding_invalid"
+    with _task_session_authorities_guard:
+        existing = _task_session_authorities.get(session)
+        if isinstance(existing, dict) and (
+            existing.get("project_id") != binding["project_id"]
+            or existing.get("flow_scope_id") != binding["flow_scope_id"]
+            or existing.get("actor") != binding["actor"]
+        ):
+            return False, "durable_collaboration_transport_binding_conflict"
+        _task_session_authorities[session] = binding
+    return True, ""
+
+
+def _resume_durable_collaboration_continuation(
+    *,
+    engine: Any,
+    token: object,
+    project_id: object,
+    flow_scope_id: object,
+    hook_session_id: object,
+    stage_session_id: object = "",
+    flow_line_id: object = "",
+) -> tuple[Any | None, str]:
+    actor = _configured_task_runtime_actor()
+    if not actor:
+        return None, "durable_collaboration_server_actor_unconfigured"
+    outcome = _durable_collaboration_continuation_authority().resume(
+        token,
+        project_id=project_id,
+        flow_scope_id=flow_scope_id,
+        server_actor=actor,
+        hook_session_id=hook_session_id,
+        stage_session_id=stage_session_id,
+        flow_line_id=flow_line_id,
+    )
+    if not outcome.valid or outcome.claims is None:
+        return None, outcome.reason or "durable_collaboration_continuation_invalid"
+    binding = outcome.binding
+    if binding is None:
+        from plastic_promise.collaboration.runtime_binding import (
+            resume_mcp_durable_collaboration_runtime,
+        )
+
+        binding = resume_mcp_durable_collaboration_runtime(engine, claims=outcome.claims)
+        if not binding.durable:
+            return None, binding.reason or "durable_collaboration_continuation_session_inactive"
+    host = getattr(binding, "host", None)
+    try:
+        if host is None or not host.continuation_is_active():
+            return None, "durable_collaboration_continuation_session_inactive"
+    except Exception:
+        return None, "durable_collaboration_continuation_session_inactive"
+    bound, reason = _bind_task_session_authority_from_continuation(outcome.claims)
+    if not bound:
+        return None, reason
+    return binding, ""
+
+
+def _issue_durable_collaboration_continuation(
+    *,
+    hook_session_id: object,
+) -> tuple[str, int, str]:
+    binding = _task_session_authority()
+    exact = _current_durable_collaboration_binding()
+    if not isinstance(binding, dict) or exact is None:
+        return "", 0, "durable_collaboration_authenticated_binding_required"
+    outcome = _durable_collaboration_continuation_authority().issue(
+        exact,
+        project_id=binding.get("project_id"),
+        flow_scope_id=binding.get("flow_scope_id"),
+        server_actor=binding.get("actor"),
+        hook_session_id=hook_session_id,
+        stage_session_id=binding.get("stage_session_id"),
+        flow_line_id=binding.get("flow_line_id"),
+    )
+    if not outcome.valid or not outcome.token:
+        return "", 0, outcome.reason or "durable_collaboration_continuation_unavailable"
+    return outcome.token, outcome.expires_at_epoch, ""
+
+
+def _revoke_durable_collaboration_binding(binding: Any) -> None:
+    """Revoke assertions and detach every transport sharing one durable session."""
+
+    _durable_collaboration_continuation_authority().revoke_binding(binding)
+    target_session = getattr(binding, "session", None)
+    target_session_id = str(getattr(target_session, "session_id", ""))
+    detached: list[Any] = []
+    with _durable_collaboration_bindings_guard:
+        for transport, candidate in list(_durable_collaboration_bindings.items()):
+            candidate_session = getattr(candidate, "session", None)
+            if candidate is binding or (
+                target_session_id
+                and str(getattr(candidate_session, "session_id", "")) == target_session_id
+            ):
+                detached.append(transport)
+                _durable_collaboration_bindings.pop(transport, None)
+    if not detached:
+        return
+    with _task_session_authorities_guard:
+        for transport in detached:
+            _task_session_authorities.pop(transport, None)
+    with _mcp_transport_instances_guard:
+        for transport in detached:
+            _mcp_transport_instances.pop(transport, None)
+
+
+def _bind_task_session_authority(
+    project_id: object,
+    *,
+    workflow: Mapping[str, Any] | None = None,
+    stage_session_id: object = "",
+) -> tuple[bool, str]:
+    """Bind one canonical project and server-owned actor to the current MCP session.
+
+    This is a trusted local-client/session boundary, not internet-grade user
+    authentication.  A session may not silently switch project or workflow
+    scope after binding.  Both scope values come from the server-resolved
+    ``session-init`` result, never directly from arbitrary tool JSON.
+    """
+
+    scoped_project_id = canonical_project_id(project_id)
+    if not scoped_project_id:
+        return False, "task_session_project_required"
+    actor = _configured_task_runtime_actor()
+    if not actor:
+        return False, "task_runtime_actor_unconfigured"
+    session = _current_mcp_session()
+    if session is None:
+        return False, "task_mcp_session_unavailable"
+
+    workflow_data = workflow if isinstance(workflow, Mapping) else {}
+    resolved_stage_session_id = str(
+        workflow_data.get("stage_session_id") or stage_session_id or "default"
+    ).strip()
+    resolved_flow_line_id = str(
+        workflow_data.get("flow_line_id") or workflow_data.get("route_id") or "idea-to-ship"
+    ).strip()
+    resolved_flow_scope_id = str(workflow_data.get("flow_scope_id") or "").strip()
+    if not resolved_flow_scope_id:
+        from plastic_promise.core.workflow_state import compose_flow_scope
+
+        resolved_flow_scope_id = compose_flow_scope(
+            resolved_stage_session_id,
+            resolved_flow_line_id,
+            scoped_project_id,
+        )
+    resolved_route_id = str(workflow_data.get("route_id") or resolved_flow_line_id).strip()
+    if not resolved_stage_session_id or not resolved_flow_line_id or not resolved_flow_scope_id:
+        return False, "task_session_workflow_scope_required"
+
+    with _task_session_authorities_guard:
+        existing = _task_session_authorities.get(session)
+        if isinstance(existing, dict) and existing.get("project_id") != scoped_project_id:
+            return False, "task_session_project_conflict"
+        if isinstance(existing, dict):
+            existing_scope = str(existing.get("flow_scope_id") or "").strip()
+            if existing_scope and existing_scope != resolved_flow_scope_id:
+                return False, "task_session_workflow_scope_conflict"
+        _task_session_authorities[session] = {
+            "project_id": scoped_project_id,
+            "actor": actor,
+            "stage_session_id": resolved_stage_session_id,
+            "flow_line_id": resolved_flow_line_id,
+            "flow_scope_id": resolved_flow_scope_id,
+            "route_id": resolved_route_id,
+        }
+    return True, ""
+
+
+def _task_session_project_conflict(project_id: object) -> bool:
+    """Return whether session-init would try to rebind an existing Task scope."""
+
+    scoped_project_id = canonical_project_id(project_id)
+    binding = _task_session_authority()
+    return bool(scoped_project_id and binding and binding.get("project_id") != scoped_project_id)
+
+
+def _bind_durable_collaboration_runtime_for_project(
+    engine: Any,
+    project_id: object,
+    *,
+    continuation_token: object = "",
+    hook_session_id: object = "",
+) -> tuple[bool, str]:
+    """Bind the current authenticated MCP transport to one durable PR5 session.
+
+    The only public input is a project used as a consistency check.  Project,
+    workflow scope, actor, and opaque transport instance all come from
+    server-owned state.  In particular, neither a tool payload nor an actor
+    name can choose an existing durable session.
+
+    A missing PR5 schema is an optional-plane deferred state: the ordinary
+    memory/context plane remains available, but the response never pretends
+    that collaboration persistence happened.
+    """
+
+    binding = _task_session_authority()
+    if not isinstance(binding, dict):
+        return False, "durable_collaboration_task_session_authority_required"
+    bound_project_id = canonical_project_id(binding.get("project_id"))
+    requested_project_id = canonical_project_id(project_id)
+    if not bound_project_id:
+        return False, "durable_collaboration_task_session_authority_required"
+    if requested_project_id and requested_project_id != bound_project_id:
+        return False, "durable_collaboration_project_conflict"
+    coordination_scope = str(binding.get("flow_scope_id") or "").strip()
+    if not coordination_scope:
+        return False, "durable_collaboration_workflow_scope_required"
+    actor = _configured_task_runtime_actor()
+    if not actor:
+        return False, "durable_collaboration_server_actor_unconfigured"
+    session = _current_mcp_session()
+    transport_session_id = _authenticated_transport_instance()
+    if session is None or not transport_session_id:
+        return False, "durable_collaboration_mcp_session_unavailable"
+
+    existing = _current_durable_collaboration_binding()
+    if existing is not None:
+        current_session = getattr(existing, "session", None)
+        if current_session is None:
+            return False, "durable_collaboration_binding_invalid"
+        if (
+            current_session.project.project_id != bound_project_id
+            or current_session.coordination_session_id != coordination_scope
+            or current_session.identity.agent_id != f"agent:{actor}"
+        ):
+            return False, "durable_collaboration_transport_binding_conflict"
+        return True, ""
+
+    if str(continuation_token or "").strip():
+        resumed, reason = _resume_durable_collaboration_continuation(
+            engine=engine,
+            token=continuation_token,
+            project_id=bound_project_id,
+            flow_scope_id=coordination_scope,
+            hook_session_id=hook_session_id,
+        )
+        if resumed is None:
+            return False, reason
+        with _durable_collaboration_bindings_guard:
+            _durable_collaboration_bindings[session] = resumed
+        return True, ""
+
+    try:
+        from plastic_promise.collaboration.runtime_binding import (
+            open_mcp_durable_collaboration_runtime,
+        )
+
+        result = open_mcp_durable_collaboration_runtime(
+            engine,
+            project_id=bound_project_id,
+            server_actor=actor,
+            coordination_session_id=coordination_scope,
+            transport_session_id=transport_session_id,
+        )
+        if not result.durable:
+            return False, result.reason or "durable_collaboration_runtime_unavailable"
+        with _durable_collaboration_bindings_guard:
+            _durable_collaboration_bindings[session] = result
+        return True, ""
+    except Exception:
+        return False, "durable_collaboration_runtime_unavailable"
+
+
+def _durable_collaboration_lifecycle(
+    engine: Any,
+    arguments: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Advance an exact transport binding or a verified server continuation."""
+
+    values = dict(arguments or {})
+    event = str(values.get("event") or "before_invoke").strip().casefold()
+    if event not in {"before_invoke", "after_invoke", "session_end"}:
+        return {"state": "skipped", "reason": "durable_lifecycle_event_unsupported"}
+    binding = _task_session_authority()
+    exact = _current_durable_collaboration_binding()
+    continuation_token = values.get(_COLLABORATION_CONTINUATION_TOKEN_ARGUMENT)
+    if str(continuation_token or "").strip():
+        expected_project = (
+            binding.get("project_id")
+            if isinstance(binding, dict)
+            else values.get("project_id")
+        )
+        expected_scope = (
+            str(binding.get("flow_scope_id") or "").strip()
+            if isinstance(binding, dict)
+            else ""
+        )
+        resumed, reason = _resume_durable_collaboration_continuation(
+            engine=engine,
+            token=continuation_token,
+            project_id=expected_project,
+            flow_scope_id=expected_scope,
+            hook_session_id=values.get("hook_session_id"),
+            stage_session_id=values.get("stage_session_id") or values.get("stage_id"),
+            flow_line_id=values.get("flow_line_id") or values.get("flow_id"),
+        )
+        if resumed is None:
+            return {"state": "deferred", "reason": reason}
+        resumed_session = getattr(resumed, "session", None)
+        exact_session = getattr(exact, "session", None)
+        if exact is not None and (
+            exact_session is None
+            or resumed_session is None
+            or exact_session.session_id != resumed_session.session_id
+        ):
+            return {
+                "state": "deferred",
+                "reason": "durable_collaboration_transport_binding_conflict",
+            }
+        current = _current_mcp_session()
+        if current is None:
+            return {
+                "state": "deferred",
+                "reason": "durable_collaboration_mcp_session_unavailable",
+            }
+        with _durable_collaboration_bindings_guard:
+            _durable_collaboration_bindings[current] = resumed
+        exact = resumed
+        binding = _task_session_authority()
+    if not isinstance(binding, dict):
+        return {
+            "state": "deferred",
+            "reason": "durable_collaboration_task_session_authority_required",
+        }
+    requested_project = canonical_project_id(values.get("project_id"))
+    bound_project = canonical_project_id(binding.get("project_id"))
+    if requested_project and requested_project != bound_project:
+        return {"state": "deferred", "reason": "durable_collaboration_project_conflict"}
+    if exact is None:
+        return {
+            "state": "deferred",
+            "reason": "durable_collaboration_authenticated_binding_required",
+        }
+    runtime = getattr(exact, "runtime", None)
+    session = getattr(exact, "session", None)
+    host = getattr(exact, "host", None)
+    if runtime is None or session is None or host is None:
+        return {"state": "deferred", "reason": "durable_collaboration_binding_invalid"}
+    if (
+        session.project.project_id != bound_project
+        or session.coordination_session_id != str(binding.get("flow_scope_id") or "").strip()
+    ):
+        return {
+            "state": "deferred",
+            "reason": "durable_collaboration_transport_binding_conflict",
+        }
+    try:
+        if event == "session_end":
+            receipt = host.end_session(reason="mcp_session_end")
+            action = "session_end"
+        else:
+            raw_ack = values.get("collaboration_cursor_ack")
+            receipt = host.heartbeat(cursor_ack=raw_ack)
+            action = "heartbeat"
+            if event == "after_invoke":
+                stop_activity = host.publish_stop_activity(
+                    idempotency_key=values.get("request_id") or values.get("call_id") or "stop"
+                )
+                receipt = {**receipt, "stop_activity": stop_activity}
+        response = {
+            "state": "durable",
+            "action": action,
+            "persistent": True,
+            "receipt": dict(receipt) if isinstance(receipt, dict) else {},
+        }
+        if event == "session_end":
+            _revoke_durable_collaboration_binding(exact)
+        return response
+    except Exception as exc:
+        # Only collaboration contract codes are safe public diagnostics.
+        # Arbitrary exception text may contain paths, SQL, or provider data.
+        from plastic_promise.collaboration.contracts import CollaborationContractError
+
+        reason = str(exc).strip() if isinstance(exc, CollaborationContractError) else ""
+        return {
+            "state": "deferred",
+            "reason": reason or "durable_collaboration_lifecycle_unavailable",
+        }
+
+
+def _publish_sp_stage_collaboration_events(
+    *,
+    flow_scope_id: str,
+    execution_receipt_id: str,
+    route_id: str,
+    stage: str,
+    step_index: int,
+) -> dict[str, Any]:
+    """Publish bounded workflow events through the exact MCP transport binding.
+
+    ``sp-stage`` owns the official workflow receipt; the durable collaboration
+    runtime owns Agent identity, project/session scope, server time, and event
+    persistence.  This adapter only joins those two server-owned facts.  It
+    never recreates a binding from caller JSON and never copies receipt
+    evidence, prompts, or task descriptions into collaboration events.
+    """
+
+    def deferred(reason: str) -> dict[str, Any]:
+        return {
+            "schema_version": "sp-stage-collaboration-handoff/v1",
+            "state": "deferred",
+            "persistent": False,
+            "reason": reason,
+            "canonical_memory_effect": "none",
+        }
+
+    receipt_id = str(execution_receipt_id or "").strip()
+    if not receipt_id:
+        return deferred("workflow_execution_receipt_id_required")
+    binding = _task_session_authority()
+    if not isinstance(binding, dict):
+        return deferred("durable_collaboration_task_session_authority_required")
+    bound_scope = str(binding.get("flow_scope_id") or "").strip()
+    if not bound_scope or bound_scope != str(flow_scope_id or "").strip():
+        return deferred("durable_collaboration_workflow_scope_conflict")
+    exact = _current_durable_collaboration_binding()
+    if exact is None:
+        return deferred("durable_collaboration_authenticated_binding_required")
+    runtime = getattr(exact, "runtime", None)
+    session = getattr(exact, "session", None)
+    if runtime is None or session is None:
+        return deferred("durable_collaboration_binding_invalid")
+    bound_project = canonical_project_id(binding.get("project_id"))
+    bound_actor = str(binding.get("actor") or "").strip()
+    if (
+        not bound_project
+        or not bound_actor
+        or session.project.project_id != bound_project
+        or session.coordination_session_id != bound_scope
+        or session.identity.agent_id != f"agent:{bound_actor}"
+    ):
+        return deferred("durable_collaboration_transport_binding_conflict")
+    try:
+        outcome = runtime.publish_workflow_receipt_events(
+            agent_session_id=session.session_id,
+            execution_receipt_id=receipt_id,
+            route_id=route_id,
+            stage=stage,
+            step_index=step_index,
+        )
+    except Exception as exc:
+        from plastic_promise.collaboration.contracts import CollaborationContractError
+
+        reason = str(exc).strip() if isinstance(exc, CollaborationContractError) else ""
+        return deferred(reason or "durable_collaboration_event_handoff_unavailable")
+    if not isinstance(outcome, Mapping) or outcome.get("state") != "durable":
+        return deferred("durable_collaboration_event_handoff_invalid")
+    return {
+        "schema_version": "sp-stage-collaboration-handoff/v1",
+        "state": "durable",
+        "persistent": True,
+        "execution_receipt_id": receipt_id,
+        "receipt_sha256": str(outcome.get("receipt_sha256") or ""),
+        "event_ids": list(outcome.get("event_ids") or ()),
+        "event_types": list(outcome.get("event_types") or ()),
+        "replayed": bool(outcome.get("replayed")),
+        "canonical_memory_effect": "none",
+    }
+
+
+def _durable_collaboration_work_operation(
+    operation: str,
+    arguments: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Route a bounded work-board operation through the exact MCP binding."""
+
+    values = dict(arguments or {})
+    exact = _current_durable_collaboration_binding()
+    if exact is None:
+        return {
+            "schema_version": "collaboration-work-operation/v1",
+            "state": "deferred",
+            "persistent": False,
+            "operation": operation,
+            "reason": "durable_collaboration_authenticated_binding_required",
+            "canonical_memory_effect": "none",
+        }
+    binding = _task_session_authority()
+    host = getattr(exact, "host", None)
+    session = getattr(exact, "session", None)
+    if host is None or session is None or not isinstance(binding, dict):
+        return {
+            "schema_version": "collaboration-work-operation/v1",
+            "state": "deferred",
+            "persistent": False,
+            "operation": operation,
+            "reason": "durable_collaboration_binding_invalid",
+            "canonical_memory_effect": "none",
+        }
+    bound_project = canonical_project_id(binding.get("project_id"))
+    requested_project = canonical_project_id(values.get("project_id"))
+    bound_scope = str(binding.get("flow_scope_id") or "").strip()
+    bound_actor = str(binding.get("actor") or "").strip()
+    if requested_project and requested_project != bound_project:
+        reason = "durable_collaboration_project_conflict"
+    elif (
+        not bound_project
+        or not bound_scope
+        or not bound_actor
+        or session.project.project_id != bound_project
+        or session.coordination_session_id != bound_scope
+        or session.identity.agent_id != f"agent:{bound_actor}"
+    ):
+        reason = "durable_collaboration_transport_binding_conflict"
+    else:
+        reason = ""
+    if reason:
+        return {
+            "schema_version": "collaboration-work-operation/v1",
+            "state": "deferred",
+            "persistent": False,
+            "operation": operation,
+            "reason": reason,
+            "canonical_memory_effect": "none",
+        }
+    try:
+        if operation == "list":
+            return dict(host.work_list(limit=values.get("limit", 32)))
+        if operation == "register":
+            return dict(host.work_register(arguments=values))
+        if operation == "claim":
+            return dict(host.work_claim(work_item_id=values.get("work_item_id")))
+        if operation == "lease_heartbeat":
+            return dict(host.lease_heartbeat(work_item_id=values.get("work_item_id")))
+        if operation == "review":
+            return dict(host.work_review(work_item_id=values.get("work_item_id")))
+        if operation == "accept":
+            return dict(
+                host.work_accept(
+                    work_item_id=values.get("work_item_id"),
+                    acceptance_receipt_id=values.get("acceptance_receipt_id"),
+                    acceptance_repository=getattr(exact, "acceptance_repository", None),
+                )
+            )
+        reason = "collaboration_work_operation_unsupported"
+    except Exception as exc:
+        from plastic_promise.collaboration.contracts import CollaborationContractError
+
+        reason = str(exc).strip() if isinstance(exc, CollaborationContractError) else ""
+        reason = reason or "durable_collaboration_work_operation_unavailable"
+    return {
+        "schema_version": "collaboration-work-operation/v1",
+        "state": "deferred",
+        "persistent": False,
+        "operation": operation,
+        "reason": reason,
+        "canonical_memory_effect": "none",
+    }
+
+
+def _publish_sp_stage_lifecycle_event(
+    *,
+    flow_scope_id: str,
+    execution_receipt_id: str,
+    route_id: str,
+    stage: str,
+    step_index: int,
+    lifecycle: str,
+    reason_code: str = "",
+) -> dict[str, Any]:
+    """Project a bounded started/blocked event through exact MCP binding.
+
+    The official workflow remains authoritative for execution success.  A
+    deferred collaboration projection is reported as such and never turns a
+    successful or failed SkillEngine call into a different workflow outcome.
+    """
+
+    def deferred(reason: str) -> dict[str, Any]:
+        return {
+            "schema_version": "sp-stage-lifecycle-handoff/v1",
+            "state": "deferred",
+            "persistent": False,
+            "lifecycle": lifecycle,
+            "reason": reason,
+            "canonical_memory_effect": "none",
+        }
+
+    lifecycle = str(lifecycle or "").strip().casefold()
+    if lifecycle not in {"started", "blocked"}:
+        return deferred("workflow_stage_lifecycle_invalid")
+    receipt_id = str(execution_receipt_id or "").strip()
+    if not receipt_id:
+        return deferred("workflow_execution_receipt_id_required")
+    binding = _task_session_authority()
+    if not isinstance(binding, dict):
+        return deferred("durable_collaboration_task_session_authority_required")
+    bound_scope = str(binding.get("flow_scope_id") or "").strip()
+    if not bound_scope or bound_scope != str(flow_scope_id or "").strip():
+        return deferred("durable_collaboration_workflow_scope_conflict")
+    exact = _current_durable_collaboration_binding()
+    if exact is None:
+        return deferred("durable_collaboration_authenticated_binding_required")
+    runtime = getattr(exact, "runtime", None)
+    session = getattr(exact, "session", None)
+    if runtime is None or session is None:
+        return deferred("durable_collaboration_binding_invalid")
+    bound_project = canonical_project_id(binding.get("project_id"))
+    bound_actor = str(binding.get("actor") or "").strip()
+    if (
+        not bound_project
+        or not bound_actor
+        or session.project.project_id != bound_project
+        or session.coordination_session_id != bound_scope
+        or session.identity.agent_id != f"agent:{bound_actor}"
+    ):
+        return deferred("durable_collaboration_transport_binding_conflict")
+    try:
+        outcome = runtime.publish_workflow_stage_lifecycle_event(
+            agent_session_id=session.session_id,
+            execution_receipt_id=receipt_id,
+            route_id=route_id,
+            stage=stage,
+            step_index=step_index,
+            lifecycle=lifecycle,
+            reason_code=reason_code,
+        )
+    except Exception as exc:
+        from plastic_promise.collaboration.contracts import CollaborationContractError
+
+        reason = str(exc).strip() if isinstance(exc, CollaborationContractError) else ""
+        return deferred(reason or "durable_collaboration_lifecycle_unavailable")
+    if not isinstance(outcome, Mapping) or outcome.get("state") != "durable":
+        return deferred("durable_collaboration_lifecycle_invalid")
+    return {
+        "schema_version": "sp-stage-lifecycle-handoff/v1",
+        "state": "durable",
+        "persistent": True,
+        "lifecycle": lifecycle,
+        "workflow_attempt_id": str(outcome.get("workflow_attempt_id") or ""),
+        "event_id": str(outcome.get("event_id") or ""),
+        "event_type": str(outcome.get("event_type") or ""),
+        "reason_code": str(outcome.get("reason_code") or ""),
+        "causal_parent_event_id": str(outcome.get("causal_parent_event_id") or ""),
+        "cursor": outcome.get("cursor"),
+        "replayed": bool(outcome.get("replayed")),
+        "canonical_memory_effect": "none",
+    }
+
+
+def _task_runtime_context(
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build Task authority from process actor + MCP-session project binding."""
+
+    context = _mutation_runtime_context(tool_name, arguments)
+    context["tool_name"] = tool_name
+    binding = _task_session_authority()
+    configured_actor = _configured_task_runtime_actor()
+    if not binding or not configured_actor or binding.get("actor") != configured_actor:
+        context.update(
+            {
+                "project_id": str((binding or {}).get("project_id") or ""),
+                "actor": configured_actor or "mcp",
+                "defense_decision": "deny",
+                "authority_source": "server_runtime_unbound",
+                "authorization_reason": "task_runtime_authorization_required",
+            }
+        )
+        return context
+
+    context.update(
+        {
+            "project_id": str(binding["project_id"]),
+            "actor": configured_actor,
+            "authority_source": "server_runtime_session",
+        }
+    )
+    return context
 
 
 def _memory_sync_allowed_roots(environ: dict[str, str] | None = None) -> list[str]:
@@ -2882,6 +4240,7 @@ async def _persist_then_publish_notification(
         await queue.put(
             {
                 "type": "audit_report_persistence",
+                **({"project_id": event["project_id"]} if event.get("project_id") else {}),
                 "status": "partial",
                 "event": event,
                 "audit_persistence": persistence,
@@ -3016,14 +4375,120 @@ def _project_principles(principles: Any) -> list[Any]:
     return projected
 
 
+def _resolved_session_init_project_id(result: Any) -> str:
+    """Read the canonical project resolved by session-init itself."""
+
+    data = result.data if isinstance(getattr(result, "data", None), dict) else {}
+    workflow = data.get("workflow_contract")
+    workflow = workflow if isinstance(workflow, dict) else {}
+    context_status = data.get("context_status")
+    context_status = context_status if isinstance(context_status, dict) else {}
+    chain_state = data.get("chain_state")
+    chain_state = chain_state if isinstance(chain_state, dict) else {}
+    for candidate in (
+        data.get("project_id"),
+        workflow.get("project_id"),
+        context_status.get("project_id"),
+        chain_state.get("project_id"),
+    ):
+        project_id = canonical_project_id(candidate)
+        if project_id:
+            return project_id
+    return ""
+
+
+def _annotate_task_session_binding(
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+    success: bool,
+    reason: str = "",
+) -> None:
+    diagnostics = payload.get("diagnostics")
+    diagnostics = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    diagnostics["task_session_binding"] = {
+        "success": success,
+        "project_id": project_id,
+        **({"reason": reason} if reason else {}),
+    }
+    payload["diagnostics"] = diagnostics
+    if project_id:
+        payload["project_id"] = project_id
+    if success:
+        return
+    payload["degraded"] = True
+    warnings = list(payload.get("warnings") or [])
+    warning = f"task_session_binding:{reason or 'task_session_project_required'}"
+    if warning not in warnings:
+        warnings.append(warning)
+    payload["warnings"] = warnings
+
+
+def _annotate_durable_collaboration_binding(
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+    success: bool,
+    reason: str = "",
+    binding: Any | None = None,
+) -> None:
+    """Project a bounded PR5 binding receipt into ``session-init`` output.
+
+    The receipt deliberately exposes neither the opaque SDK transport identity
+    nor the durable AgentSession id.  Those are server-owned lifecycle
+    bindings, not caller-selectable handles.  Until the full PR5 lifecycle is
+    independently evidenced, a successful local registration is described
+    only as a persistent runtime binding—not as a completed collaboration
+    system.
+    """
+
+    diagnostics = payload.get("diagnostics")
+    diagnostics = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    diagnostics["durable_collaboration_binding"] = {
+        "success": success,
+        "project_id": project_id,
+        "persistent": success,
+        **({"reason": reason} if reason else {}),
+    }
+    payload["diagnostics"] = diagnostics
+    if success:
+        host = getattr(binding, "host", None)
+        if host is None:
+            payload["degraded"] = True
+            warnings = list(payload.get("warnings") or [])
+            warning = "durable_collaboration_binding:host_unavailable"
+            if warning not in warnings:
+                warnings.append(warning)
+            payload["warnings"] = warnings
+            return
+        try:
+            payload["durable_collaboration"] = host.session_init_projection()
+        except Exception:
+            payload["degraded"] = True
+            warnings = list(payload.get("warnings") or [])
+            warning = "durable_collaboration_binding:projection_unavailable"
+            if warning not in warnings:
+                warnings.append(warning)
+            payload["warnings"] = warnings
+        return
+    payload["degraded"] = True
+    warnings = list(payload.get("warnings") or [])
+    warning = f"durable_collaboration_binding:{reason or 'unavailable'}"
+    if warning not in warnings:
+        warnings.append(warning)
+    payload["warnings"] = warnings
+
+
 def _project_session_init_result(result: Any, response_mode: str) -> dict[str, Any]:
     data = result.data if isinstance(result.data, dict) else {}
+    project_id = _resolved_session_init_project_id(result)
     if response_mode == "standard":
         return {
             "schema_version": "session-init-response-v1",
             "response_mode": response_mode,
             "skill": result.skill_name,
             "success": result.success,
+            **({"project_id": project_id} if project_id else {}),
             "data": data,
             "degrade_log": result.degrade_log,
             "errors": result.errors,
@@ -3069,6 +4534,7 @@ def _project_session_init_result(result: Any, response_mode: str) -> dict[str, A
         "response_mode": response_mode,
         "skill": result.skill_name,
         "success": result.success,
+        **({"project_id": project_id} if project_id else {}),
         "principles": _project_principles(data.get("principles")),
         "trust": data.get("trust", {}),
         "context_status": context_status,
@@ -3159,6 +4625,78 @@ def _record_tool_runtime_event(engine: Any, ctx: dict[str, Any], status: str) ->
         pass
 
 
+async def _is_known_mcp_tool(name: str) -> bool:
+    """Resolve registered tools without treating the unknown fallback as work."""
+
+    global _known_mcp_tool_names_cache
+    if name in _known_mcp_tool_names_cache:
+        return True
+    names = frozenset(tool.name for tool in await list_tools())
+    _known_mcp_tool_names_cache = names
+    return name in names
+
+
+def _reconcile_authenticated_tool_call(engine: Any) -> dict[str, Any] | None:
+    """Run one bounded collaboration reconcile for the exact live transport."""
+
+    exact = _current_durable_collaboration_binding()
+    host = getattr(exact, "host", None) if exact is not None else None
+    if host is None:
+        return None
+    try:
+        receipt = host.reconcile_tool_call()
+    except Exception as exc:
+        from plastic_promise.collaboration.contracts import CollaborationContractError
+
+        reason = str(exc).strip() if isinstance(exc, CollaborationContractError) else ""
+        return {
+            "schema_version": "durable-collaboration-tool-call-runtime/v1",
+            "state": "deferred",
+            "reason": reason or "durable_collaboration_tool_call_reconcile_unavailable",
+        }
+    active_leases = receipt.get("active_leases")
+    peer_delta = receipt.get("peer_delta")
+    cursor = receipt.get("cursor")
+    return {
+        "schema_version": "durable-collaboration-tool-call-runtime/v1",
+        "state": "durable",
+        "presence_state": str(receipt.get("state") or "active"),
+        "active_lease_count": len(active_leases) if isinstance(active_leases, list) else 0,
+        "peer_event_count": (
+            len(peer_delta.get("items") or ()) if isinstance(peer_delta, Mapping) else 0
+        ),
+        "cursor_stored_sequence": (
+            int(cursor.get("stored_sequence") or 0) if isinstance(cursor, Mapping) else 0
+        ),
+        "cursor_next_sequence": (
+            int(cursor.get("next_sequence") or 0) if isinstance(cursor, Mapping) else 0
+        ),
+        "persistent": True,
+        "canonical_memory_effect": "none",
+    }
+
+
+def _delegated_policy_error(
+    role: object, tool_name: str, decision: dict[str, Any]
+) -> list[TextContent]:
+    """Return a stable fail-closed response for delegated-agent calls."""
+
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "error": "delegated_agent_policy_denied",
+                    "tool": tool_name,
+                    "agent_role": str(role or ""),
+                    "decision": decision,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    ]
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Route MCP tool calls to handler modules.
@@ -3168,6 +4706,23 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     Handlers are lazily imported on first call.
     """
     from plastic_promise.core.traceability import bind_call_span_start, reset_call_span_start
+
+    # Delegated agents must explicitly declare their role.  The primary
+    # Codex client has no role field and keeps the normal full MCP surface;
+    # once a role is declared, every call is checked here before any handler
+    # or runtime event can run.  This is the enforcement point, not merely
+    # guidance emitted by the workflow stage planner.
+    delegated_role = arguments.get("agent_role")
+    if delegated_role is not None and str(delegated_role).strip():
+        from plastic_promise.core.agent_tool_policy import authorize_agent_mcp_call
+
+        policy_arguments = _without_collaboration_continuation_token(arguments)
+        policy_arguments.pop("agent_role", None)
+        decision = authorize_agent_mcp_call(delegated_role, name, policy_arguments)
+        if not decision.get("allowed"):
+            return _delegated_policy_error(delegated_role, name, decision)
+        arguments = dict(arguments)
+        arguments.pop("agent_role", None)
 
     engine = get_engine()
     mutation_tool_name = "memory_update" if name in {"smart-remember", "smart_remember"} else name
@@ -3184,11 +4739,24 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         }
         else None
     )
+    task_runtime_context = (
+        _task_runtime_context(name, arguments) if name in _TASK_QUEUE_TOOL_NAMES else None
+    )
+    authority_runtime_context = task_runtime_context or mutation_runtime_context
     runtime_ctx = _tool_runtime_event_context(
         name,
-        arguments,
-        mutation_runtime_context=mutation_runtime_context,
+        _without_collaboration_continuation_token(arguments),
+        mutation_runtime_context=authority_runtime_context,
     )
+    if (
+        name not in _COLLABORATION_TOOL_CALL_RECONCILE_EXCLUSIONS
+        and await _is_known_mcp_tool(name)
+    ):
+        collaboration_reconcile = _reconcile_authenticated_tool_call(engine)
+        if collaboration_reconcile is not None:
+            runtime_metadata = dict(runtime_ctx.get("metadata") or {})
+            runtime_metadata["durable_collaboration"] = collaboration_reconcile
+            runtime_ctx["metadata"] = runtime_metadata
     runtime_status = "completed"
     _record_tool_runtime_event(engine, runtime_ctx, "pending")
     _record_tool_runtime_event(engine, runtime_ctx, "running")
@@ -3265,7 +4833,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "context_supply":
             from plastic_promise.mcp.tools.context import handle_context_supply
 
-            return await handle_context_supply(engine, arguments)
+            exact = _current_durable_collaboration_binding()
+            collaboration_runtime = getattr(exact, "host", None) if exact is not None else None
+            return await handle_context_supply(
+                engine,
+                arguments,
+                _collaboration_runtime=collaboration_runtime,
+            )
         elif name == "context_inject":
             from plastic_promise.mcp.tools.context import handle_context_inject
 
@@ -3277,7 +4851,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "auto_context_inject":
             from plastic_promise.mcp.tools.context import handle_auto_context_inject
 
-            return await handle_auto_context_inject(engine, arguments)
+            lifecycle = _durable_collaboration_lifecycle(engine, arguments)
+            lifecycle_arguments = _without_collaboration_continuation_token(arguments)
+            # This is a server-owned internal projection.  It never appears
+            # in the public input schema and is consumed by the handler only
+            # to expose bounded diagnostics alongside passive-memory output.
+            lifecycle_arguments["_durable_collaboration_lifecycle"] = lifecycle
+            return await handle_auto_context_inject(engine, lifecycle_arguments)
         elif name == "mgp_shadow_bridge":
             from plastic_promise.mcp.tools.mgp_shadow import handle_mgp_shadow_bridge
 
@@ -3350,31 +4930,77 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "task_enqueue":
             from plastic_promise.mcp.tools.task_queue import handle_task_enqueue
 
-            return await handle_task_enqueue(engine, arguments)
+            return await handle_task_enqueue(
+                engine,
+                arguments,
+                _runtime_context=task_runtime_context,
+            )
         elif name == "task_claim":
             from plastic_promise.mcp.tools.task_queue import handle_task_claim
 
-            return await handle_task_claim(engine, arguments)
+            return await handle_task_claim(
+                engine,
+                arguments,
+                _runtime_context=task_runtime_context,
+            )
         elif name == "task_complete":
             from plastic_promise.mcp.tools.task_queue import handle_task_complete
 
-            return await handle_task_complete(engine, arguments)
+            return await handle_task_complete(
+                engine,
+                arguments,
+                _runtime_context=task_runtime_context,
+            )
         elif name == "task_verify":
             from plastic_promise.mcp.tools.task_queue import handle_task_verify
 
-            return await handle_task_verify(engine, arguments)
+            return await handle_task_verify(
+                engine,
+                arguments,
+                _runtime_context=task_runtime_context,
+            )
         elif name == "task_inbox":
             from plastic_promise.mcp.tools.task_queue import handle_task_inbox
 
-            return await handle_task_inbox(engine, arguments)
+            return await handle_task_inbox(
+                engine,
+                arguments,
+                _runtime_context=task_runtime_context,
+            )
         elif name == "task_heartbeat":
             from plastic_promise.mcp.tools.task_queue import handle_task_heartbeat
 
-            return await handle_task_heartbeat(engine, arguments)
+            return await handle_task_heartbeat(
+                engine,
+                arguments,
+                _runtime_context=task_runtime_context,
+            )
         elif name == "task_abandon":
             from plastic_promise.mcp.tools.task_queue import handle_task_abandon
 
-            return await handle_task_abandon(engine, arguments)
+            return await handle_task_abandon(
+                engine,
+                arguments,
+                _runtime_context=task_runtime_context,
+            )
+        elif name == "collaboration_work_list":
+            outcome = _durable_collaboration_work_operation("list", arguments)
+            return [TextContent(type="text", text=json.dumps(outcome, ensure_ascii=False))]
+        elif name == "collaboration_work_register":
+            outcome = _durable_collaboration_work_operation("register", arguments)
+            return [TextContent(type="text", text=json.dumps(outcome, ensure_ascii=False))]
+        elif name == "collaboration_work_claim":
+            outcome = _durable_collaboration_work_operation("claim", arguments)
+            return [TextContent(type="text", text=json.dumps(outcome, ensure_ascii=False))]
+        elif name == "collaboration_lease_heartbeat":
+            outcome = _durable_collaboration_work_operation("lease_heartbeat", arguments)
+            return [TextContent(type="text", text=json.dumps(outcome, ensure_ascii=False))]
+        elif name == "collaboration_work_review":
+            outcome = _durable_collaboration_work_operation("review", arguments)
+            return [TextContent(type="text", text=json.dumps(outcome, ensure_ascii=False))]
+        elif name == "collaboration_work_accept":
+            outcome = _durable_collaboration_work_operation("accept", arguments)
+            return [TextContent(type="text", text=json.dumps(outcome, ensure_ascii=False))]
 
         # Skill tracking
         elif name == "skill_session_start":
@@ -3400,12 +5026,96 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         # === Skills 域 (Phase 1) ===
         elif name in ("session-init", "session_init"):
+            if _task_session_project_conflict(arguments.get("project_id")):
+                binding = _task_session_authority() or {}
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "success": False,
+                                "error": "task_session_project_conflict",
+                                "project_id": str(binding.get("project_id") or ""),
+                                "requested_project_id": str(
+                                    arguments.get("project_id") or ""
+                                ).strip(),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            continuation_token = arguments.get(_COLLABORATION_CONTINUATION_TOKEN_ARGUMENT)
+            hook_session_id = str(arguments.get("hook_session_id") or "").strip()
+            if not str(continuation_token or "").strip() and not hook_session_id:
+                hook_session_id = f"hook:mcp:{secrets.token_hex(16)}"
             se = get_skill_engine()
-            result = await se.exec("session-init", arguments, caller="claude")
+            skill_arguments = _without_collaboration_continuation_token(arguments)
+            result = await se.exec("session-init", skill_arguments, caller="claude")
             response_mode = str(arguments.get("response_mode") or "compact").strip().casefold()
             if response_mode not in {"standard", "compact"}:
                 response_mode = "compact"
             payload = _project_session_init_result(result, response_mode)
+            if result.success:
+                resolved_project_id = _resolved_session_init_project_id(result)
+                session_data = result.data if isinstance(result.data, dict) else {}
+                workflow = session_data.get("workflow_contract")
+                workflow = workflow if isinstance(workflow, Mapping) else {}
+                binding_succeeded, binding_reason = _bind_task_session_authority(
+                    resolved_project_id,
+                    workflow=workflow,
+                    stage_session_id=session_data.get("stage_session_id") or "",
+                )
+                _annotate_task_session_binding(
+                    payload,
+                    project_id=resolved_project_id,
+                    success=binding_succeeded,
+                    reason=binding_reason,
+                )
+                if binding_succeeded:
+                    durable_succeeded, durable_reason = (
+                        _bind_durable_collaboration_runtime_for_project(
+                            engine,
+                            resolved_project_id,
+                            continuation_token=continuation_token,
+                            hook_session_id=hook_session_id,
+                        )
+                    )
+                else:
+                    durable_succeeded = False
+                    durable_reason = "durable_collaboration_task_session_authority_required"
+                _annotate_durable_collaboration_binding(
+                    payload,
+                    project_id=resolved_project_id,
+                    success=durable_succeeded,
+                    reason=durable_reason,
+                    binding=(
+                        _current_durable_collaboration_binding()
+                        if durable_succeeded
+                        else None
+                    ),
+                )
+                if durable_succeeded and hook_session_id:
+                    token, expires_at_epoch, continuation_reason = (
+                        _issue_durable_collaboration_continuation(
+                            hook_session_id=hook_session_id
+                        )
+                    )
+                    if token:
+                        payload[_COLLABORATION_CONTINUATION_TOKEN_ARGUMENT] = token
+                        payload["collaboration_continuation"] = {
+                            "schema_version": "durable-collaboration-continuation/v1",
+                            "token": token,
+                            "expires_at_epoch": expires_at_epoch,
+                            "hook_session_id": hook_session_id,
+                            "storage": "client-secret-only",
+                        }
+                    elif continuation_reason:
+                        payload["degraded"] = True
+                        warnings = list(payload.get("warnings") or [])
+                        warning = f"durable_collaboration_continuation:{continuation_reason}"
+                        if warning not in warnings:
+                            warnings.append(warning)
+                        payload["warnings"] = warnings
             return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
         elif name in ("smart-remember", "smart_remember"):
             se = get_skill_engine()
@@ -3436,6 +5146,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name in ("step-closure", "step_closure"):
             from plastic_promise.loop.soul_loop import post_task
 
+            formal_fields = (
+                "outcome",
+                "summary",
+                "artifact_refs",
+                "evidence_refs",
+                "result",
+            )
             task_desc = arguments.get("task_description", "")
             git_commit = arguments.get("git_commit", "")
             mode = arguments.get("mode", "full")
@@ -3445,19 +5162,190 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             optimization = arguments.get("optimization", "")
             trick = arguments.get("trick", "")
             target = arguments.get("target", "claude")
-            result = await asyncio.to_thread(
-                post_task,
-                task_desc,
-                git_commit,
-                mode,
-                None,  # issue_id
-                lesson,
-                improvement,
-                root_cause,
-                optimization,
-                trick,
-                target,
+            work_item_id = str(arguments.get("work_item_id") or "").strip()
+            formal_outcome = str(arguments.get("outcome") or "").strip().casefold()
+            formal_summary = str(arguments.get("summary") or "").strip()
+            formal_artifact_refs = tuple(
+                str(item).strip()
+                for item in (arguments.get("artifact_refs") or ())
+                if str(item).strip()
             )
+            formal_evidence_refs = tuple(
+                str(item).strip()
+                for item in (arguments.get("evidence_refs") or ())
+                if str(item).strip()
+            )
+            formal_result = arguments.get("result")
+            collaboration_result: dict[str, Any] | None = None
+            is_formal = bool(work_item_id)
+            if not is_formal and any(field in arguments for field in formal_fields):
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "success": False,
+                                "error": "formal_work_item_required",
+                                "closure": None,
+                                "collaboration_result": None,
+                                "memory_proposal": None,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            if work_item_id:
+                exact = _current_durable_collaboration_binding()
+                runtime = getattr(exact, "runtime", None) if exact is not None else None
+                session = getattr(exact, "session", None) if exact is not None else None
+                if runtime is None or session is None:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "success": False,
+                                    "error": "durable_collaboration_authenticated_binding_required",
+                                    "closure": None,
+                                    "collaboration_result": None,
+                                    "memory_proposal": None,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+                if formal_outcome not in {"completed", "blocked", "failed", "cancelled"}:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "success": False,
+                                    "error": "result_outcome_required",
+                                    "closure": None,
+                                    "collaboration_result": None,
+                                    "memory_proposal": None,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+                if not formal_summary:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "success": False,
+                                    "error": "result_summary_required",
+                                    "closure": None,
+                                    "collaboration_result": None,
+                                    "memory_proposal": None,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+                if "result" in arguments and not isinstance(formal_result, Mapping):
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "success": False,
+                                    "error": "result_projection_invalid",
+                                    "closure": None,
+                                    "collaboration_result": None,
+                                    "memory_proposal": None,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+                try:
+                    collaboration_result = runtime.record_step_closure_result(
+                        work_item_id=work_item_id,
+                        outcome=formal_outcome,
+                        summary=formal_summary,
+                        artifact_refs=formal_artifact_refs,
+                        evidence_refs=formal_evidence_refs,
+                        result=formal_result if isinstance(formal_result, Mapping) else None,
+                        agent_session_id=session.session_id,
+                    )
+                except Exception as exc:
+                    from plastic_promise.collaboration.contracts import CollaborationContractError
+
+                    reason = str(exc).strip() if isinstance(exc, CollaborationContractError) else ""
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "success": False,
+                                    "error": reason or "durable_collaboration_result_unavailable",
+                                    "closure": None,
+                                    "collaboration_result": None,
+                                    "memory_proposal": None,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    ]
+            collaboration_replayed = bool(
+                collaboration_result is not None and collaboration_result.get("replayed") is True
+            )
+            if collaboration_replayed:
+                replay_projection = dict(collaboration_result)
+                replay_projection["state"] = "replayed"
+                replay_projection["persistent"] = True
+                payload = {
+                    "schema_version": "step-closure-response/v2",
+                    "success": True,
+                    "closure": {
+                        "state": "replayed",
+                        "dashboard": "",
+                        "reflection": {},
+                        "reason": "durable_result_replayed",
+                    },
+                    "collaboration_result": replay_projection,
+                    "memory_proposal": None,
+                    "canonical_memory_effect": "none",
+                }
+                return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+            try:
+                result = await asyncio.to_thread(
+                    post_task,
+                    task_desc,
+                    git_commit,
+                    mode,
+                    None,  # issue_id
+                    lesson,
+                    improvement,
+                    root_cause,
+                    optimization,
+                    trick,
+                    target,
+                )
+            except Exception:
+                if is_formal and collaboration_result is not None:
+                    degraded_projection = dict(collaboration_result)
+                    degraded_projection["state"] = "submitted"
+                    degraded_projection["persistent"] = True
+                    payload = {
+                        "schema_version": "step-closure-response/v2",
+                        "success": True,
+                        "closure": {
+                            "state": "degraded",
+                            "dashboard": "",
+                            "reflection": {},
+                            "reason": "reflection_unavailable",
+                        },
+                        "collaboration_result": degraded_projection,
+                        "memory_proposal": None,
+                        "canonical_memory_effect": "none",
+                    }
+                    return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+                raise
 
             def safe_serialize(obj):
                 if isinstance(obj, dict):
@@ -3482,6 +5370,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         return str(obj)
 
             safe = safe_serialize(result)
+            if not isinstance(safe, dict):
+                safe = {}
 
             # Record closure in sliding window for trend tracking
             _closure_history.append(
@@ -3492,84 +5382,41 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 }
             )
 
-            # 5. 反思持久化 — 执行者 (Claude) 提供的 lesson/improvement/root_cause/optimization
-            #    合并为一条结构化记忆，通过 smart-remember 走完整分类管线入池
-            smart_memory_id = None
-            if mode == "full":
-                # 读取执行者传入的反思字段
-                lesson_text = arguments.get("lesson", "")
-                improvement_text = arguments.get("improvement", "")
-                root_cause_text = arguments.get("root_cause", "")
-                optimization_text = arguments.get("optimization", "")
-                trick_text = arguments.get("trick", "")
-
-                if trick_text and lesson_text:
-                    lesson_text = f"{lesson_text} | 窍门: {trick_text}"
-
-                # 至少有一个字段有内容才入库
-                any_content = (
-                    (lesson_text and len(lesson_text) > 5)
-                    or (improvement_text and len(improvement_text) > 5)
-                    or (root_cause_text and len(root_cause_text) > 5)
-                    or (optimization_text and len(optimization_text) > 5)
-                )
-                if any_content:
-                    try:
-                        from plastic_promise.core.memory_proposals import (
-                            trusted_memory_origin,
-                        )
-                        from plastic_promise.skills.engine import SkillEngine
-                        from plastic_promise.skills.memory_operations import skill_smart_remember
-                        from plastic_promise.skills.official_workflow_stages import (
-                            SKILL_DEFS as _OFFICIAL_DEFS,
-                        )
-                        from plastic_promise.skills.session_lifecycle import skill_session_init
-
-                        sr_engine = SkillEngine(get_engine())
-                        sr_engine.register(skill_session_init)
-                        sr_engine.register(skill_smart_remember)
-                        for _name, _def in _OFFICIAL_DEFS.items():
-                            sr_engine.register(_def)
-
-                        # 组装一条结构化反思记忆
-                        parts = []
-                        if lesson_text:
-                            parts.append(f"[经验] {lesson_text}")
-                        if improvement_text:
-                            parts.append(f"[优化] {improvement_text}")
-                        if root_cause_text:
-                            parts.append(f"[根因] {root_cause_text}")
-                        if optimization_text:
-                            parts.append(f"[动作] {optimization_text}")
-                        structured_content = "\n".join(parts)
-
-                        step_id = safe.get("reflection", {}).get("step_id", "")
-                        tags = ["closure", "domain:reflecting", f"step:{step_id}"]
-
-                        smart_runtime_context = _mutation_runtime_context("memory_update")
-                        with trusted_memory_origin("step-closure"):
-                            sr_result = await sr_engine.exec(
-                                "smart-remember",
-                                {
-                                    "content": structured_content,
-                                    "memory_type": "reflection",
-                                    "source": "step-closure",
-                                    "scope": "global",
-                                    "tags": tags,
-                                    "_runtime_context": smart_runtime_context,
-                                },
-                                caller=_smart_remember_runtime_caller(smart_runtime_context),
-                            )
-                        if sr_result.success and sr_result.data:
-                            smart_memory_id = sr_result.data.get("memory_id", "")
-                    except Exception as e:
-                        logging.warning(f"step-closure smart-remember exception: {e}")
-
             # Build dashboard summary + JSON body
             dashboard = _format_closure_dashboard(safe, _closure_history)
-            if smart_memory_id:
-                dashboard += f"\n  [记忆] 反思已入池: {smart_memory_id[:20]}..."
-            return [TextContent(type="text", text=dashboard)]
+            reflection = safe.get("reflection")
+            reflection_fields = reflection if isinstance(reflection, dict) else {}
+            reflection_available = any(
+                isinstance(reflection_fields.get(field), str)
+                and len(reflection_fields.get(field, "").strip()) > 5
+                for field in ("lesson", "improvement", "root_cause", "optimization")
+            )
+            if reflection_available:
+                dashboard += (
+                    "\n  [记忆] 反思仅作为临时闭环结果返回；"
+                    "正式记忆必须经独立 accepted-work promotion。"
+                )
+            payload = {
+                "schema_version": "step-closure-response/v2",
+                "success": True,
+                "closure": {
+                    "state": "completed",
+                    "dashboard": dashboard,
+                    "reflection": reflection_fields,
+                },
+                "collaboration_result": (
+                    {
+                        **collaboration_result,
+                        "state": "submitted",
+                        "persistent": True,
+                    }
+                    if collaboration_result is not None
+                    else None
+                ),
+                "memory_proposal": None,
+                "canonical_memory_effect": "none",
+            }
+            return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
 
         # === 审查域 ===
         elif name == "commercial_audit_export":
@@ -3581,6 +5428,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             from plastic_promise.mcp.tools.review import handle_review_run
 
             return await handle_review_run(engine, arguments)
+        elif name == "knowledge_search":
+            from plastic_promise.mcp.tools.knowledge import handle_knowledge_search
+
+            return await handle_knowledge_search(engine, arguments)
 
         # === Pinned Matt Pocock workflow (public name retained for compatibility) ===
         elif name in ("sp-stage", "sp_stage"):
@@ -3914,6 +5765,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 ]
             connection = engine_connection(engine)
             expected_receipt_id = ""
+            receipt_status = "unavailable"
             if connection is not None:
                 receipt_status, expected_receipt_id = inspect_execution_receipt(
                     connection,
@@ -3941,6 +5793,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     replay_data = attach_stage_guidance(
                         {}, lookup_stage, route_id=resolved_route_id
                     )
+                    collaboration_handoff = _publish_sp_stage_collaboration_events(
+                        flow_scope_id=flow_scope_id,
+                        execution_receipt_id=expected_receipt_id,
+                        route_id=resolved_route_id,
+                        stage=lookup_stage,
+                        step_index=target_step_index,
+                    )
+                    replay_data["collaboration_handoff"] = collaboration_handoff
                     guidance_level = (
                         str(arguments.get("guidance_level") or "summary").strip().casefold()
                     )
@@ -3960,6 +5820,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                                     "invocation_source_authenticated": False,
                                     "execution_status": "already_completed",
                                     "execution_receipt_id": expected_receipt_id,
+                                    "collaboration_event_status": collaboration_handoff["state"],
                                     "guidance_level": guidance_level,
                                     "data": _project_sp_stage_data(replay_data, guidance_level),
                                 },
@@ -3967,8 +5828,27 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                             ),
                         )
                     ]
-            # ── Stage existence validation: reject unknown/empty stages ──
-            se = get_skill_engine()
+            started_lifecycle: dict[str, Any] = {
+                "schema_version": "sp-stage-lifecycle-handoff/v1",
+                "state": "deferred",
+                "persistent": False,
+                "lifecycle": "started",
+                "reason": "workflow_stage_started_not_attempted",
+                "canonical_memory_effect": "none",
+            }
+            # A started event is meaningful only for a receipt-bearing first
+            # attempt.  It is deliberately after all route/chain/receipt
+            # admission checks and immediately before SkillEngine execution;
+            # guidance and already-completed replay paths do not emit it.
+            if connection is not None and receipt_status == "missing":
+                started_lifecycle = _publish_sp_stage_lifecycle_event(
+                    flow_scope_id=flow_scope_id,
+                    execution_receipt_id=expected_receipt_id,
+                    route_id=resolved_route_id,
+                    stage=lookup_stage,
+                    step_index=target_step_index,
+                    lifecycle="started",
+                )
             skill_name = f"sp-{lookup_stage}"
             stage_params = {
                 "task_description": task_desc,
@@ -3986,13 +5866,70 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     f"{expected_receipt_id}:outer:{lookup_stage}"
                 )
                 stage_params["tracking_basis"] = "execution_receipt"
-            result = await se.exec(skill_name, stage_params, caller="trae")
+            try:
+                # Engine acquisition is part of the post-start finalization
+                # boundary. If construction fails, the durable started event
+                # must receive a stable blocked terminal instead of hanging.
+                se = get_skill_engine()
+                result = await se.exec(skill_name, stage_params, caller="trae")
+            except asyncio.CancelledError:
+                if started_lifecycle.get("state") == "durable":
+                    _publish_sp_stage_lifecycle_event(
+                        flow_scope_id=flow_scope_id,
+                        execution_receipt_id=expected_receipt_id,
+                        route_id=resolved_route_id,
+                        stage=lookup_stage,
+                        step_index=target_step_index,
+                        lifecycle="blocked",
+                        reason_code="stage_execution_cancelled",
+                    )
+                raise
+            except Exception:
+                if started_lifecycle.get("state") == "durable":
+                    _publish_sp_stage_lifecycle_event(
+                        flow_scope_id=flow_scope_id,
+                        execution_receipt_id=expected_receipt_id,
+                        route_id=resolved_route_id,
+                        stage=lookup_stage,
+                        step_index=target_step_index,
+                        lifecycle="blocked",
+                        reason_code="stage_finalization_failed",
+                    )
+                raise
             if not result.success:
+                blocked_lifecycle = (
+                    _publish_sp_stage_lifecycle_event(
+                        flow_scope_id=flow_scope_id,
+                        execution_receipt_id=expected_receipt_id,
+                        route_id=resolved_route_id,
+                        stage=lookup_stage,
+                        step_index=target_step_index,
+                        lifecycle="blocked",
+                        reason_code="skill_execution_failed",
+                    )
+                    if started_lifecycle.get("state") == "durable"
+                    else {
+                        "schema_version": "sp-stage-lifecycle-handoff/v1",
+                        "state": "deferred",
+                        "persistent": False,
+                        "lifecycle": "blocked",
+                        "reason": "workflow_stage_started_not_durable",
+                        "canonical_memory_effect": "none",
+                    }
+                )
                 return [
                     TextContent(
                         type="text",
                         text=json.dumps(
-                            {"stage": stage, "success": False, "errors": result.errors},
+                            {
+                                "stage": stage,
+                                "success": False,
+                                "errors": result.errors,
+                                "collaboration_lifecycle": {
+                                    "started": started_lifecycle,
+                                    "blocked": blocked_lifecycle,
+                                },
+                            },
                             ensure_ascii=False,
                         ),
                     )
@@ -4016,6 +5953,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         )
                     ]
                 if not parent_entity_id:
+                    blocked_lifecycle = (
+                        _publish_sp_stage_lifecycle_event(
+                            flow_scope_id=flow_scope_id,
+                            execution_receipt_id=expected_receipt_id,
+                            route_id=resolved_route_id,
+                            stage=lookup_stage,
+                            step_index=target_step_index,
+                            lifecycle="blocked",
+                            reason_code="composite_tracking_failed",
+                        )
+                        if started_lifecycle.get("state") == "durable"
+                        else {
+                            "schema_version": "sp-stage-lifecycle-handoff/v1",
+                            "state": "deferred",
+                            "persistent": False,
+                            "lifecycle": "blocked",
+                            "reason": "workflow_stage_started_not_durable",
+                            "canonical_memory_effect": "none",
+                        }
+                    )
                     return [
                         TextContent(
                             type="text",
@@ -4023,6 +5980,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                                 {
                                     "error": "composite_parent_tracking_failed",
                                     "stage": lookup_stage,
+                                    "collaboration_lifecycle": {
+                                        "started": started_lifecycle,
+                                        "blocked": blocked_lifecycle,
+                                    },
                                 },
                                 ensure_ascii=False,
                             ),
@@ -4035,16 +5996,43 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         skill_names=list(receipt["evidence"]["invoked_skills"]),
                         task_description=task_desc,
                         receipt_id=expected_receipt_id,
+                        project_id=project_id,
+                        stage_session_id=str(public_stage_session_id),
+                        flow_line_id=str(flow_line_id or ""),
                     )
-                except (KeyError, RuntimeError, json.JSONDecodeError) as exc:
+                except (KeyError, RuntimeError, json.JSONDecodeError):
+                    blocked_lifecycle = (
+                        _publish_sp_stage_lifecycle_event(
+                            flow_scope_id=flow_scope_id,
+                            execution_receipt_id=expected_receipt_id,
+                            route_id=resolved_route_id,
+                            stage=lookup_stage,
+                            step_index=target_step_index,
+                            lifecycle="blocked",
+                            reason_code="composite_tracking_failed",
+                        )
+                        if started_lifecycle.get("state") == "durable"
+                        else {
+                            "schema_version": "sp-stage-lifecycle-handoff/v1",
+                            "state": "deferred",
+                            "persistent": False,
+                            "lifecycle": "blocked",
+                            "reason": "workflow_stage_started_not_durable",
+                            "canonical_memory_effect": "none",
+                        }
+                    )
                     return [
                         TextContent(
                             type="text",
                             text=json.dumps(
                                 {
                                     "error": "composite_skill_tracking_failed",
-                                    "reason": str(exc),
+                                    "reason": "composite_tracking_failed",
                                     "stage": lookup_stage,
+                                    "collaboration_lifecycle": {
+                                        "started": started_lifecycle,
+                                        "blocked": blocked_lifecycle,
+                                    },
                                 },
                                 ensure_ascii=False,
                             ),
@@ -4061,15 +6049,39 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         current_stage=lookup_stage,
                         parent_entity_id=parent_entity_id,
                     )
-                except ValueError as exc:
+                except ValueError:
+                    blocked_lifecycle = (
+                        _publish_sp_stage_lifecycle_event(
+                            flow_scope_id=flow_scope_id,
+                            execution_receipt_id=expected_receipt_id,
+                            route_id=resolved_route_id,
+                            stage=lookup_stage,
+                            step_index=target_step_index,
+                            lifecycle="blocked",
+                            reason_code="workflow_transition_conflict",
+                        )
+                        if started_lifecycle.get("state") == "durable"
+                        else {
+                            "schema_version": "sp-stage-lifecycle-handoff/v1",
+                            "state": "deferred",
+                            "persistent": False,
+                            "lifecycle": "blocked",
+                            "reason": "workflow_stage_started_not_durable",
+                            "canonical_memory_effect": "none",
+                        }
+                    )
                     return [
                         TextContent(
                             type="text",
                             text=json.dumps(
                                 {
                                     "error": "execution_receipt_conflict",
-                                    "reason": str(exc),
+                                    "reason": "workflow_receipt_conflict",
                                     "stage": lookup_stage,
+                                    "collaboration_lifecycle": {
+                                        "started": started_lifecycle,
+                                        "blocked": blocked_lifecycle,
+                                    },
                                 },
                                 ensure_ascii=False,
                             ),
@@ -4094,6 +6106,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     receipt["evidence"]["invoked_skills"]
                 )
                 result_data["composite_child_entity_ids"] = composite_child_entity_ids
+            result_data["collaboration_handoff"] = _publish_sp_stage_collaboration_events(
+                flow_scope_id=flow_scope_id,
+                execution_receipt_id=receipt_id,
+                route_id=resolved_route_id,
+                stage=lookup_stage,
+                step_index=target_step_index,
+            )
+            result_data["collaboration_lifecycle"] = {
+                "started": started_lifecycle,
+                "blocked": {
+                    "state": "not_applicable",
+                    "lifecycle": "blocked",
+                    "canonical_memory_effect": "none",
+                },
+            }
             guidance_level = str(arguments.get("guidance_level") or "summary").strip().casefold()
             if guidance_level not in {"summary", "full"}:
                 guidance_level = "summary"
@@ -4112,6 +6139,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                             "invocation_source_authenticated": False,
                             "execution_status": "completed",
                             "execution_receipt_id": receipt_id,
+                            "collaboration_event_status": result_data["collaboration_handoff"][
+                                "state"
+                            ],
                             "guidance_level": guidance_level,
                             "data": result_data,
                         },
@@ -4380,6 +6410,12 @@ async def main():
     """MCP Server 启动入口 — 支持 stdio 和 Streamable HTTP 双模式。"""
     import sys
 
+    # The canonical backend is never an inference execution plane.  Set this
+    # before any lazy engine/provider construction so cloud provider factories
+    # fail closed even when a deployment manifest forgot the same declaration.
+    configured_endpoint_role = os.environ.setdefault("PP_ENDPOINT_ROLE", "pp-server-backend")
+    if configured_endpoint_role != "pp-server-backend":
+        raise RuntimeError("mcp_endpoint_role_mismatch")
     configure_default_environment(_PROJECT_ROOT)
     # A directly launched server does not pass through ``init_and_start.py``.
     # Apply coupled switches for an explicit mode so reported and effective
@@ -4390,25 +6426,6 @@ async def main():
         from plastic_promise.launcher.runtime_mode import apply_runtime_mode
 
         applied_mode = apply_runtime_mode(explicit_mode)
-    if applied_mode is not None and applied_mode.runs_lancedb_warmup:
-        import asyncio as _asyncio
-
-        refresh = await _asyncio.to_thread(
-            get_engine().refresh_runtime_mode,
-            initialize_heavy=True,
-            synchronize_index=True,
-        )
-        index_sync = refresh.get("index_sync") if isinstance(refresh, dict) else None
-        if not isinstance(index_sync, dict) or not index_sync.get("ready"):
-            # Full mode remains available as a diagnosed text-only service when
-            # the derived vector index cannot be synchronized.  The engine has
-            # already fail-closed the vector channel; refusing to start here
-            # would make a recoverable index repair take the whole MCP offline.
-            logging.warning(
-                "Runtime mode %s started degraded: derived index requires maintenance (%s)",
-                applied_mode.key,
-                index_sync.get("status") if isinstance(index_sync, dict) else "unknown",
-            )
 
     transport_flag, port = _parse_streamable_http_port(sys.argv)
     if transport_flag:
@@ -4416,8 +6433,37 @@ async def main():
         os.environ.setdefault("PLASTIC_MCP_TRANSPORT", "streamable_http")
         if transport_flag == "--sse":
             os.environ.setdefault("PLASTIC_MCP_LEGACY_TRANSPORT_ALIAS", "sse")
-        await run_streamable_http(port)
+        # Full-mode initialization can invoke the configured cloud embedding
+        # provider.  It must not happen before Uvicorn owns the loopback port:
+        # an unavailable provider used to leave systemd "active" while no
+        # health endpoint could answer.  Streamable HTTP schedules it after
+        # startup and reports a bounded initializing state until it finishes.
+        startup_warmup_mode = (
+            applied_mode.key
+            if applied_mode is not None and applied_mode.runs_lancedb_warmup
+            else None
+        )
+        if startup_warmup_mode is None:
+            await run_streamable_http(port)
+        else:
+            await run_streamable_http(port, startup_warmup_mode=startup_warmup_mode)
     else:
+        if applied_mode is not None and applied_mode.runs_lancedb_warmup:
+            refresh = await asyncio.to_thread(
+                get_engine().refresh_runtime_mode,
+                initialize_heavy=True,
+                synchronize_index=True,
+            )
+            index_sync = refresh.get("index_sync") if isinstance(refresh, dict) else None
+            if not isinstance(index_sync, dict) or not index_sync.get("ready"):
+                # Stdio has no independent health endpoint to publish an
+                # initializing state, so retain its historical eager warmup
+                # semantics while keeping Streamable HTTP non-blocking.
+                logging.warning(
+                    "Runtime mode %s started degraded: derived index requires maintenance (%s)",
+                    applied_mode.key,
+                    index_sync.get("status") if isinstance(index_sync, dict) else "unknown",
+                )
         # stdio 模式 — 供 Claude Code 本地调用
         os.environ.setdefault("PLASTIC_MCP_TRANSPORT", "stdio")
         async with stdio_server() as (read_stream, write_stream):
@@ -4430,7 +6476,11 @@ async def main():
             )
 
 
-async def run_streamable_http(port: int = 9020):
+async def run_streamable_http(
+    port: int = 9020,
+    *,
+    startup_warmup_mode: str | None = None,
+):
     """启动 Streamable HTTP MCP 传输 — 多 Agent 共享记忆入口。
 
     Codex 和现代 MCP 客户端使用 /mcp。旧 /sse 和 /messages 端点保留为
@@ -4471,16 +6521,31 @@ async def run_streamable_http(port: int = 9020):
         "identity": None,
         "error": None,
     }
-    health_identity_cache_lock = threading.Lock()
+    health_identity_cache_lock = asyncio.Lock()
+    try:
+        configured_health_identity_timeout = float(
+            os.environ.get("PP_HEALTH_IDENTITY_TIMEOUT_SECONDS", "10")
+        )
+        if not math.isfinite(configured_health_identity_timeout):
+            raise ValueError("health_identity_timeout_not_finite")
+        health_identity_timeout = min(max(configured_health_identity_timeout, 0.05), 60.0)
+    except (TypeError, ValueError):
+        health_identity_timeout = 10.0
+    startup_warmup: dict[str, Any] = {
+        "mode": str(startup_warmup_mode or ""),
+        "state": "pending" if startup_warmup_mode else "not_requested",
+        "error": None,
+    }
+    startup_warmup_task: asyncio.Task[None] | None = None
 
     sse = SseServerTransport("/messages")
     streamable_http = StreamableHTTPSessionManager(app=server)
 
-    # Notification queue — issue transitions push here, /events streams
+    # Project-aware notification fan-out — issue transitions and /notify publish here.
     import asyncio as _asyncio
 
     global _notify_queue
-    _notify_queue = _asyncio.Queue()
+    _notify_queue = _ProjectNotificationHub()
 
     class _NoOpResponse(Response):
         """Sentinel response — the SSE transport already handled the send via request._send."""
@@ -4504,45 +6569,79 @@ async def run_streamable_http(port: int = 9020):
         """
         import json as _json
 
-        # Send SSE headers manually
-        await request._send(
-            {
-                "type": "http.response.start",
-                "status": 200,
-                "headers": [
-                    (b"content-type", b"text/event-stream"),
-                    (b"cache-control", b"no-cache"),
-                    (b"connection", b"keep-alive"),
-                ],
+        from starlette.responses import JSONResponse
+
+        try:
+            task_scope = _task_event_subscription_scope(request.query_params)
+        except ValueError as exc:
+            return JSONResponse(
+                {"ok": False, "error": str(exc)},
+                status_code=400,
+            )
+
+        from plastic_promise.core.task_event_bus import get_event_bus
+
+        assert task_scope is not None
+        connection_queue = _asyncio.Queue()
+        task_bus = get_event_bus()
+
+        async def task_send(payload: str) -> None:
+            connection_queue.put_nowait(payload)
+
+        _notify_queue.register(task_scope[0], connection_queue)
+        task_bus.register(task_scope[0], task_scope[1], task_send)
+
+        try:
+            # Send SSE headers manually
+            await request._send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"text/event-stream"),
+                        (b"cache-control", b"no-cache"),
+                        (b"connection", b"keep-alive"),
+                    ],
+                }
+            )
+
+            connected = {
+                "type": "connected",
+                "project_id": task_scope[0],
+                "agent_name": task_scope[1],
             }
-        )
+            body = f"data: {_json.dumps(connected)}\n\n".encode()
+            await request._send({"type": "http.response.body", "body": body, "more_body": True})
 
-        # Send initial connected event
-        body = f"data: {_json.dumps({'type': 'connected'})}\n\n".encode()
-        await request._send({"type": "http.response.body", "body": body, "more_body": True})
-
-        # Event loop — exits on client disconnect
-        while True:
-            disconnected = await request.is_disconnected()
-            if disconnected:
-                break
-            try:
-                data = await _asyncio.wait_for(_notify_queue.get(), timeout=1)
-                body = f"data: {_json.dumps(data, ensure_ascii=False)}\n\n".encode()
-                await request._send({"type": "http.response.body", "body": body, "more_body": True})
-            except _asyncio.TimeoutError:
-                # Send heartbeat to keep connection alive
-                body = b'data: {"type":"heartbeat"}\n\n'
+            # One private queue combines project-scoped TaskBus and general
+            # notifications, so subscribers never compete for a global item.
+            while True:
+                disconnected = await request.is_disconnected()
+                if disconnected:
+                    break
                 try:
+                    payload = await _asyncio.wait_for(connection_queue.get(), timeout=1)
+                    if isinstance(payload, str):
+                        body = f"data: {payload}\n\n".encode()
+                    else:
+                        body = f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n".encode()
                     await request._send(
                         {"type": "http.response.body", "body": body, "more_body": True}
                     )
-                except Exception:
-                    break
-
-        # Clean shutdown
-        with suppress(Exception):
-            await request._send({"type": "http.response.body", "body": b"", "more_body": False})
+                except _asyncio.TimeoutError:
+                    body = b'data: {"type":"heartbeat"}\n\n'
+                    try:
+                        await request._send(
+                            {"type": "http.response.body", "body": body, "more_body": True}
+                        )
+                    except Exception:
+                        break
+        finally:
+            task_bus.unregister(task_scope[0], task_scope[1], task_send)
+            _notify_queue.unregister(task_scope[0], connection_queue)
+            with suppress(Exception):
+                await request._send({"type": "http.response.body", "body": b"", "more_body": False})
+        return _NoOpResponse()
 
     async def handle_notify(request: Request):
         """接收外部推送并广播到 SSE /events。Daemon/Worker 状态变更入口。"""
@@ -4555,24 +6654,45 @@ async def run_streamable_http(port: int = 9020):
             event = _json.loads(body.decode())
             event_type = event.get("type")
             runtime_tool = _NOTIFICATION_RUNTIME_TOOL_BY_EVENT.get(event_type)
+            runtime_authority = _mutation_runtime_context(runtime_tool) if runtime_tool else None
+            event = _notification_event_with_project(event, runtime_authority)
             response = await _handle_notification_event(
                 _notify_queue,
                 event,
                 engine=get_engine() if runtime_tool else None,
-                runtime_authority=(
-                    _mutation_runtime_context(runtime_tool) if runtime_tool else None
-                ),
+                runtime_authority=runtime_authority,
             )
             return JSONResponse(response)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)})
 
     async def health(request):
         from starlette.responses import JSONResponse
 
+        warmup_state = str(startup_warmup["state"])
+        if warmup_state in {"pending", "running"}:
+            return JSONResponse(
+                {
+                    "status": "starting",
+                    "identity_valid": False,
+                    "initializing": True,
+                    "initialization": {
+                        "mode": startup_warmup["mode"],
+                        "state": warmup_state,
+                    },
+                    "uptime": round(_time.time() - start_time, 1),
+                    "pid": os.getpid(),
+                    "source_root": _SOURCE_ROOT,
+                    "source_revision": _SOURCE_REVISION or "",
+                },
+                status_code=503,
+            )
+
         now = _time.monotonic()
         config_key = _health_identity_config_key()
-        with health_identity_cache_lock:
+        async with health_identity_cache_lock:
             cache_valid = health_identity_cache["config_key"] == config_key and now < float(
                 health_identity_cache["expires_at"]
             )
@@ -4584,7 +6704,13 @@ async def run_streamable_http(port: int = 9020):
                 # short-lived critical section, and collapses simultaneous
                 # cache misses into one provider call.
                 try:
-                    identity = _server_process_identity()
+                    identity = await asyncio.wait_for(
+                        asyncio.to_thread(_server_process_identity),
+                        timeout=health_identity_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    cached_error = "health_identity_probe_timeout"
+                    identity = None
                 except (FusionConfigurationError, RuntimeError, ValueError) as exc:
                     cached_error = str(exc)
                     identity = None
@@ -4845,14 +6971,51 @@ setInterval(refresh, 5000);
             close_semantic_memory_runtime(_engine, timeout=5.0)
             close_proposal_promotion_runtime(_engine, timeout=5.0)
 
+    async def _run_startup_warmup() -> None:
+        startup_warmup["state"] = "running"
+        try:
+            refresh = await asyncio.to_thread(
+                get_engine().refresh_runtime_mode,
+                initialize_heavy=True,
+                synchronize_index=True,
+            )
+            index_sync = refresh.get("index_sync") if isinstance(refresh, dict) else None
+            if not isinstance(index_sync, dict) or not index_sync.get("ready"):
+                logging.warning(
+                    "Runtime mode %s started degraded: derived index requires maintenance (%s)",
+                    startup_warmup["mode"],
+                    index_sync.get("status") if isinstance(index_sync, dict) else "unknown",
+                )
+            startup_warmup["state"] = "complete"
+        except asyncio.CancelledError:
+            startup_warmup["state"] = "cancelled"
+            raise
+        except Exception as exc:
+            startup_warmup["state"] = "failed"
+            startup_warmup["error"] = exc.__class__.__name__
+            logging.exception(
+                "Runtime mode %s startup warmup failed; MCP remains available for diagnosis",
+                startup_warmup["mode"],
+            )
+
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def lifespan(_app):
         async with streamable_http.run():
+            # Creating the task without awaiting it lets Uvicorn bind the
+            # loopback socket before full-mode cloud calls begin.  The health
+            # route short-circuits with a fast 503 while this runs.
+            nonlocal startup_warmup_task
+            if startup_warmup_mode:
+                startup_warmup_task = asyncio.create_task(_run_startup_warmup())
             try:
                 yield
             finally:
+                if startup_warmup_task is not None and not startup_warmup_task.done():
+                    startup_warmup_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await startup_warmup_task
                 await shutdown()
 
     async def handle_messages(request: Request):

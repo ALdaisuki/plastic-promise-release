@@ -168,6 +168,8 @@ def test_release_push_is_explicit_opt_in_and_dry_run_default_is_unchanged():
     assert args.dry_run is True
     assert args.push is False
     assert args.release_evidence is None
+    assert args.release_manifest is None
+    assert args.server_deployment_receipt is None
     assert args.release_repo == "../plastic-promise-release"
 
 
@@ -181,6 +183,8 @@ def test_release_push_requires_full_validation_profile(profile):
             dry_run=False,
             validation_profile=profile,
             release_evidence="evidence.json",
+            release_manifest="manifest.json",
+            server_deployment_receipt="receipt.json",
         )
 
 
@@ -193,6 +197,8 @@ def test_release_live_requires_push_and_external_evidence():
             dry_run=False,
             validation_profile="full",
             release_evidence=None,
+            release_manifest=None,
+            server_deployment_receipt=None,
         )
     with pytest.raises(ValueError, match="release_push_requires_external_evidence"):
         release_sync.validate_publication_options(
@@ -200,6 +206,26 @@ def test_release_live_requires_push_and_external_evidence():
             dry_run=False,
             validation_profile="full",
             release_evidence=None,
+            release_manifest="manifest.json",
+            server_deployment_receipt="receipt.json",
+        )
+    with pytest.raises(ValueError, match="release_push_requires_release_manifest"):
+        release_sync.validate_publication_options(
+            push=True,
+            dry_run=False,
+            validation_profile="full",
+            release_evidence="evidence.json",
+            release_manifest=None,
+            server_deployment_receipt="receipt.json",
+        )
+    with pytest.raises(ValueError, match="release_push_requires_server_deployment_receipt"):
+        release_sync.validate_publication_options(
+            push=True,
+            dry_run=False,
+            validation_profile="full",
+            release_evidence="evidence.json",
+            release_manifest="manifest.json",
+            server_deployment_receipt=None,
         )
 
 
@@ -211,6 +237,8 @@ def _release_evidence(source_commit: str = "a" * 40) -> dict:
         "source_range": f"{'0' * 40}..{source_commit}",
         "audit_range": f"{'0' * 40}..{source_commit}",
         "release_scope_sha256": "c" * 64,
+        "release_manifest_sha256": "d" * 64,
+        "server_deployment_receipt_sha256": "e" * 64,
         "automated_audit_score": 0.60,
         "blocking_findings": 0,
         "major_findings": 0,
@@ -224,6 +252,7 @@ def _release_evidence(source_commit: str = "a" * 40) -> dict:
                 "restart_recovery",
                 "scoped_ruff",
                 "secret_scan",
+                "server_deployment_e2e",
                 "targeted_tests",
             },
             True,
@@ -243,6 +272,8 @@ def test_release_evidence_binds_version_source_ranges_scope_and_all_external_gat
         source_range=f"{'0' * 40}..{'a' * 40}",
         audit_range=f"{'0' * 40}..{'a' * 40}",
         release_scope_sha256="c" * 64,
+        release_manifest_sha256="d" * 64,
+        server_deployment_receipt_sha256="e" * 64,
     )
 
     assert len(digest) == 64
@@ -265,6 +296,10 @@ def test_release_evidence_binds_version_source_ranges_scope_and_all_external_gat
             "audit_range_mismatch",
         ),
         (lambda payload: payload.update(release_scope_sha256="d" * 64), "scope_mismatch"),
+        (
+            lambda payload: payload.update(server_deployment_receipt_sha256="f" * 64),
+            "server_deployment_receipt_sha256_mismatch",
+        ),
     ],
 )
 def test_release_evidence_rejects_incomplete_or_unbound_claims(tmp_path, mutation, error):
@@ -282,6 +317,8 @@ def test_release_evidence_rejects_incomplete_or_unbound_claims(tmp_path, mutatio
             source_range=f"{'0' * 40}..{'a' * 40}",
             audit_range=f"{'0' * 40}..{'a' * 40}",
             release_scope_sha256="c" * 64,
+            release_manifest_sha256="d" * 64,
+            server_deployment_receipt_sha256="e" * 64,
         )
 
 

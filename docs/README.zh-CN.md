@@ -2,6 +2,81 @@
 
 > 本文件是面向发行版用户的中文快速指南。英文默认入口见 [../README.md](../README.md)，更完整的项目目标与状态见 [GOAL.md](GOAL.md)。
 
+> **当前联合交付权威：**可组合部署与项目协作恢复线以机器可读的
+> [联合六 PR 合同](standards/union-six-pr-contract.json) revision `2026-08-18.1`
+> 为规范范围。只有每个交付范围（`delivery_scope`）、协作范围
+> （`collaboration_scope`）与所需证据（`required_evidence`）条目均通过证据门禁，
+> PR 才算完成；任一单侧完成都不等于 PR 完成。本文描述的源码合同不等于
+> runtime 或 production 证据。
+
+<div align="center">
+
+[![PyPI](https://img.shields.io/pypi/v/plastic-promise?style=flat-square&label=PyPI)](https://pypi.org/project/plastic-promise/)
+[![CI](https://img.shields.io/github/actions/workflow/status/ALdaisuki/plastic-promise/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ALdaisuki/plastic-promise/actions/workflows/ci.yml)
+[![Release verification](https://img.shields.io/github/actions/workflow/status/ALdaisuki/plastic-promise/release-verify.yml?branch=main&style=flat-square&label=release%20verification)](https://github.com/ALdaisuki/plastic-promise/actions/workflows/release-verify.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white&style=flat-square)](https://www.python.org/)
+[![Rust](https://img.shields.io/badge/rust-optional_core-000000?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org/)
+[![MCP](https://img.shields.io/badge/protocol-MCP_1.0-FF6B35?style=flat-square)](https://modelcontextprotocol.io/)
+[![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](../LICENSE)
+
+![SQLite](https://img.shields.io/badge/storage-SQLite_WAL-003B57?logo=sqlite&logoColor=white&style=flat-square)
+![LanceDB](https://img.shields.io/badge/vector_store-LanceDB-3B82F6?style=flat-square)
+![Local First](https://img.shields.io/badge/data-local_first_by_default-16A34A?style=flat-square)
+![Profiles](https://img.shields.io/badge/profiles-local_%7C_cloud_%7C_split-0F766E?style=flat-square)
+![Release Control](https://img.shields.io/badge/release-PR_verify_%E2%86%92_manual_publish-7C3AED?style=flat-square)
+
+</div>
+
+<p align="center">
+  <img src="../.github/readme-runtime-architecture.zh-CN.svg" alt="Plastic Promise 运行时所有权与派生推理边界" width="960">
+</p>
+
+<details>
+<summary>查看运行时架构图示说明</summary>
+
+```text
+画布：1280 x 640，深色基础设施配色，使用青色与紫色数据路径。
+目的：说明 canonical 数据所有权，不把 provider 或计算节点描述为数据库。
+
+区块：
+1. LOCAL EDGE：Dashboard、Deployment Center、MCP bridge 与 Codex Hook。
+2. SERVER BACKEND：MCP、治理、持久工作、Maintenance 与路由。
+3. TRUTH：只有 pp-server-backend 写 SQLite；LanceDB 可重建且属于派生状态。
+4. COMPUTE：pp-compute-node 只返回类型化派生结果；显式配置的云 provider 受同一 identity 合同约束。
+5. SAFETY：不存在第二 SQLite writer、公开推理 listener，也不让前端访问 Docker、SSH 私钥或任意 shell。
+
+样式：高对比度、紧凑矢量架构；不使用照片，不声明未经验证的运行状态。
+```
+
+</details>
+
+## 受控发行交付（目标/未验证）
+
+<p align="center">
+  <img src="../.github/readme-release-delivery.zh-CN.svg" alt="Plastic Promise 发行交付控制" width="960">
+</p>
+
+下图只描述目标/未验证的发行控制设计：证据从不可变源码经过 PR 验证和 RC 制品，才可能进入
+受保护的 stable 发布；它不表示 RC、签名、证明、PyPI/GHCR 发布或生产部署已经发生。
+
+<details>
+<summary>查看发行交付图示说明</summary>
+
+```text
+画布：1280 x 640，深色基础设施配色与青色流程箭头。
+目的：说明发行证据从不可变源码经过 PR 验证和 RC 制品，才会到达受保护的 stable 发布。
+
+区块：
+1. 标题：Plastic Promise — 证据优先；仅经显式批准后发布。
+2. 流程：源码 -> 不推送的 PR 验证 -> RC 制品 -> 受保护 GHCR -> stable 发行版仓库。
+3. 证据：源码 SHA、wheel/sdist 哈希、SBOM、OCI 摘要、证明。
+4. 边界：SQLite、LanceDB、模型、日志、密钥和运行时文件不进入发行制品。
+
+样式：高对比度、紧凑矢量排版；不使用照片，不暗示发行已经完成。
+```
+
+</details>
+
 ## 这是什么
 
 Plastic Promise 是一个本地优先的 MCP Agent 记忆、上下文、审计与任务调度系统。它把约定工程、记忆生命周期、信任分、自审计、任务调度和技能工作流组合成一个 Agent 治理底座。
@@ -28,11 +103,8 @@ Plastic Promise 面向需要长期上下文、明确治理规则和可审计任�
 
 ### 安装
 
-```bash
-pip install plastic-promise
-```
-
-源码安装：
+> 当前尚未发布到 PyPI。请使用源码安装，或使用经过审查的 wheel/OCI 制品。
+> 只有 stable PyPI 发行完成后，`pip install plastic-promise` 才是有效安装命令。
 
 ```bash
 git clone https://github.com/ALdaisuki/plastic-promise-release.git
@@ -55,6 +127,31 @@ pip install maturin
 maturin develop --release
 ```
 
+### 发行包与部署选择
+
+Endpoint Contract V2 现已把 `local-all-in-one`、`local-cloud` 与
+`split-accelerated` 三种部署档案表达为可验证的无 secret 契约；PR 3 的源码级
+`ContainerArtifactCompiler` 还能产生可检查的 role/platform/variant policy 与 descriptor。
+实际 image activation、部署执行、迁移与发行仍是 PR 4–6 的目标工作，不能据此宣称 image
+已经构建或生产已迁移。
+Endpoint image、生成的原生启动 asset 与 Dashboard timestamp formatter 统一使用逻辑
+`TZ=UTC`，canonical timestamp 保持 timezone-aware UTC；这不会修改 Linux、macOS 或 Windows
+宿主时区，也不会挂载宿主时区文件。
+当前用户应使用源码、经过审查的精确 wheel，或带 SHA-256、SBOM 和 OCI digest 的
+发行清单。服务器 OCI 镜像与 Linux NVIDIA 推理节点镜像都不包含 SQLite、
+LanceDB、模型、日志、密钥或运行态文件；这些内容只能在通过部署预检后由
+运行时挂载。
+
+PR 只验证构建，RC 只产生候选工件；TestPyPI 演练、GHCR stable digest、
+PyPI 发布和 `plastic-promise-release` 同步均要求独立的受保护环境审批，
+不会由普通 `main` 推送自动触发。部署、资源预检、节点身份和发行推广的中文
+操作面分别见 [部署与运行指南](deployment/README.zh-CN.md)、
+[发行交付与受控推广](release/delivery.zh-CN.md) 与
+[六 PR 就绪度与受控部署计划](release/six-pr-readiness.zh-CN.md)、
+[发行交付架构](architecture/release-delivery/architecture.zh-CN.md)、
+[Release Builder 规格](release-builder.zh-CN.md)；英文逐项参考
+保留在对应目录，便于与代码、模板和错误码交叉核对。
+
 ### 启动
 
 ```bash
@@ -64,7 +161,7 @@ python scripts/init_and_start.py
 # 自动化/后台启动时可显式指定运行模式
 python scripts/init_and_start.py --mode rust-full
 
-# Ollama 不可用时，使用 fallback embedder 降级模式
+# 仅兼容旧路径：跳过可选 Ollama 探针
 python scripts/init_and_start.py --skip-ollama-check
 ```
 
@@ -125,7 +222,38 @@ Windows 上执行 `python scripts/init_and_start.py --stop` 时，只读取当�
 `var/run/mcp_server.pid` 和 `var/run/maintenance_daemon.pid`，并再次核对进程命令行
 中的 source root；不会扫描或终止其他 Python 进程及其他工作树。
 
-连接排查时请用 `/health` 判断服务是否存活；`/mcp` 是 Streamable HTTP MCP 协议端点，浏览器直接 GET 或普通探针访问可能出现 404，这不等价于 MCP 断线。Windows 客户端关闭长连接时的 Proactor 断连 traceback 会在服务端过滤。真实端到端验证使用 `python scripts/smoke_http_mcp.py --expected-version <version> --timeout 60 --sse-read-timeout 360 --json`。本地默认启动会设置 `EMBEDDER_TIMEOUT=30`，避免 Ollama 冷启动或首次 embedding 请求在 5 秒默认值下误判失败；已有环境变量会被保留。重启 MCP Server 后，部分 Codex 会话不会热重载动态 MCP 工具句柄，需要刷新/重开会话让工具表重新注册。
+连接排查时请用 `/health` 判断服务是否存活；`/mcp` 是 Streamable HTTP MCP 协议端点，浏览器直接 GET 或普通探针访问可能出现 404，这不等价于 MCP 断线。Windows 客户端关闭长连接时的 Proactor 断连 traceback 会在服务端过滤。真实端到端验证使用 `python scripts/smoke_http_mcp.py --expected-version <version> --timeout 60 --sse-read-timeout 360 --json`。本地默认启动设置 `EMBEDDER_TIMEOUT=10`；已有环境变量会被保留。重启 MCP Server 后，部分 Codex 会话不会热重载动态 MCP 工具句柄，需要刷新/重开会话让工具表重新注册。
+
+### 本地模型配置推荐套餐
+
+针对 CUDA/WSL2 计算节点（例如 RTX 5080），Plastic Promise 推荐以下本地模型
+组合。默认计算档使用两个独立的本地 llama.cpp server 分别承担 embedding 与
+rerank。用户可以选择其他兼容 runtime，但必须返回结构化向量/分数并绑定精确模型
+身份与固定维度；任何文本生成（包括 prompt `yes`/`no`）都不能冒充 rerank。
+
+| 档位 | Embedding | 维度 | Rerank | 模型预算 | 适用场景 |
+| --- | --- | --- | --- | --- | --- |
+| CUDA 质量档 | llama.cpp + `Qwen3-Embedding-4B-GGUF` | 2560，L2 | llama.cpp 结构化 rerank endpoint + `Qwen3-Reranker-0.6B-GGUF`，或官方 CrossEncoder worker | 由量化与 runtime 决定 | 16 GB 级显存上的中英与代码检索默认选择 |
+| 低内存档 | llama.cpp + `Qwen3-Embedding-0.6B-GGUF` | 1024，L2 | `Qwen3-Reranker-0.6B-GGUF` | 较小量化制品 | 显存/时延压力场景 |
+| 兼容档 | BGE GGUF 或本地 BGE embedding worker | 模型原生维度，L2 | BGE sequence-classification reranker | 由制品决定 | 治理化兼容后备 |
+
+上游 revision 策略：
+
+- 仓库不会凭空生成或提交占位用的上游 revision。
+- 安装器根据操作者选择解析准确 revision 和模型层/制品 digest，并将结果写入本地
+  `model-manifest.json`。
+- 生产激活拒绝仅有可变 tag 或占位 revision 的配置；manifest 必须包含模型名、固定
+  revision、输出维度、归一化方式和观测到的 digest。
+- 生成的 manifest 保留在本地，不提交到 Git。某一真实节点的 manifest 只是该节点的
+  部署证据，不能冒充所有安装的统一上游 revision。
+
+revision 属于操作者部署配置而非仓库默认：请在节点 `.env` 中固定你已验证的上游
+revision，绝不能只依赖可变 tag。
+
+身份规则：embedding 输出固定为已声明的模型原生维度（推荐 4B 档 2560，推荐
+0.6B 档 1024）并做 L2 归一化。manifest 必须记录模型名、不可变 revision、
+artifact digest、维度、归一化和 backend。后续 MRL 降维属于新的
+embedding 身份，需要重新 shadow rebuild 与 generation promotion。
 
 ## MCP 配置
 
@@ -169,11 +297,17 @@ http://127.0.0.1:9020/sse
 
 ### 中文运维控制台
 
-设置 `PP_DASHBOARD_V2=1` 后，可直接打开：
+一键启动器默认开启 Dashboard V2 与有界检索解释
+（`PP_DASHBOARD_V2=1`、`PP_RETRIEVAL_EXPLAIN=1`），启动后直接打开：
 
 ```text
 http://127.0.0.1:9020/dashboard
 ```
+
+通过标准 SSH 转发访问服务器时使用 `http://127.0.0.1:19020/dashboard`。
+Dashboard 顶部提示区会显式展示结构化切片、语义富化、知识库语义和云推理的当前
+默认模式；“有效配置”用于查看实际生效值，“云端期望配置”用于受控暂存与校验
+provider 配置。API Key 始终留在 compute-node 的密钥通道，不会返回浏览器。
 
 Dashboard V2 是仅限本机回环地址、按项目隔离、只读且有界的运维界面。本机运维者可从
 服务器 SQLite 活动中发现并选择项目，但每次请求仍只绑定一个项目；该选择器不是远程
@@ -182,7 +316,7 @@ Dashboard V2 是仅限本机回环地址、按项目隔离、只读且有界的�
 显示 `structure-v1` 结构化切片的标题路径、块类型、父记忆、source span、内容哈希和
 截断状态；谱系页显示类型化节点、有向关系以及来源/目标切片锚点。
 
-设置 `PP_RETRIEVAL_EXPLAIN=1` 后，可查看词法、向量、图通道分数、排序/过滤原因、
+检索解释页可查看词法、向量、图通道分数、排序/过滤原因、
 切片证据和实际请求/阶段耗时。没有计时证据时界面显示“暂无数据”，不会伪造 `0 ms`。
 
 ## 核心能力
@@ -193,22 +327,28 @@ Dashboard V2 是仅限本机回环地址、按项目隔离、只读且有界的�
 | 上下文供给 | `context_supply` 根据当前任务生成核心、关联、发散三层上下文，并返回推荐原因与 project/global 来源标记。 |
 | 审计与防线 | `audit_pre_check`、`audit_run`、`defense` 在写操作和风险动作前提供检查；`defense(action="evaluate_tool")` 可解释工具语义决策。 |
 | 信任分驱动自治 | 信任分越高，自主权越大；信任分下降时需要更多显式确认。 |
-| Hunter Guild 委托系统 | 通过 `task_enqueue -> task_claim -> task_complete -> task_verify` 管理多 Agent 协作。 |
+| Hunter Guild 委托系统 | 通过同一 canonical `project_id` 下的 `task_enqueue -> task_claim -> task_heartbeat -> task_complete -> task_verify` 管理 legacy/current 多 Agent 委托队列；它不是 PR 5 的持久 `AgentRegistry` / `ProjectWorkBoard`。 |
 | Skills / 治理工作流 | `session-init`、`smart-remember`、`step-closure` 和官方工作流兼容入口 `sp-stage` 把调用链变成可追踪工具。 |
 | Maintenance Daemon | 执行扫描、恢复、GC、任务生命周期维护和调度健康检查。 |
 | P1 治理运行时 | 工具清单图、`runtime_events`、`mgp_shadow_bridge`、Context Recommender 为审计和推荐提供可解释元数据。 |
 | 插件与市场 | 通过 pack 元数据加载知识、工作流、能力和适配器扩展。 |
 
-长文本嵌入默认仍使用兼容的 legacy 切片。设置 `PP_MEMORY_CHUNKING=shadow` 时，正式向量请求和索引身份不变，只生成结构感知候选诊断；设置 `PP_MEMORY_CHUNKING=structure-v1` 才启用标题路径、段落、代码块、列表和表格感知的嵌入输入，并在有界请求预算内保留尾部。超过 `EMBEDDER_STRUCTURE_MAX_CHUNKS` 时会保留开头和尾部，并标记中间覆盖受资源限制。shadow 报告是只读观测，不调用 embedding 模型、不写 SQLite/LanceDB，也不能单独作为召回质量结论：
+Hunter Guild 的七个 Task Queue 工具（包括 `task_inbox` 与 `task_abandon`）都必须显式
+传入同一个 canonical `project_id`。成功的
+`session-init(project_id="project:example")` 会把项目绑定到可信 loopback MCP session。
+`agent_name`、`from_agent`、`trust_score`、`verified_by` 等调用方字段只用于路由、展示
+和审计；写操作权威来自服务器持有的 session actor，不能由这些字段自行取得。
+
+一键启动器默认使用 `PP_MEMORY_CHUNKING=structure-v1`：在把派生 embedding 请求发送给 compute node 前，先按标题路径、段落、代码块、列表和表格生成权威切片，并在有界预算内保留尾部。`shadow` 仍可用于只读对照，不调用 embedding 模型、不写 SQLite/LanceDB，也不能单独作为召回质量结论：
 
 ```powershell
 python scripts/benchmark_chunking_shadow.py --source data/db/plastic_memory.db
 python scripts/benchmark_chunking_shadow.py --source tests/fixtures/recall_quality/v1.json
 ```
 
-在 `structure-v1` 产生权威切片后，可选的本地语义富化层只生成派生索引元数据，不修改 chunk 正文、顺序、标题路径或 source span。`PP_MEMORY_CHUNK_ENRICHMENT=shadow` 使用有界 daemon 队列调用本地 Ollama `qwen3:8b`，正式向量和索引身份不变；验证通过的结果写入默认位于主数据库旁的内容寻址 SQLite 缓存。`PP_MEMORY_CHUNK_ENRICHMENT=on` 应先在离线窗口完成索引重建或迁移，之后保持开启以便新写入和索引修复同步生成同一份精确 embedding plan；查询 embedding 永远不会调用富化模型。摘要、关键词、实体和标识符通过验证后才会前置到 embedding 输入，同时模型、提示词和 schema 版本会绑定到索引身份。需要可复现部署时可设置 `PP_MEMORY_CHUNK_ENRICHMENT_MODEL_DIGEST` 固定 Ollama digest，否则从 `/api/tags` 解析。
+在 `structure-v1` 产生权威切片后，语义富化只生成派生索引元数据，不修改 chunk 正文、顺序、标题路径或 source span。一键启动器默认设置 `PP_MEMORY_CHUNK_ENRICHMENT=shadow` 与 `PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER=openai-compatible`；结构化 JSON 调用统一由 `pp-compute-node` 执行，server backend 不持有 provider endpoint 或 API Key。shadow 模式只运行有界队列和内容寻址缓存，不改变正式向量；`on` 仅在经过审查的离线重建/迁移后启用，并保持用于后续写入和修复。模型、不可变 revision、provider/backend、提示词、schema 与制品 digest 都会绑定到派生身份。
 
-本地调用固定 `think=false`、`temperature=0` 并请求严格 JSON Schema，但不会信任 schema 本身。未知或缺失字段、摘要/证据/关键词/实体无法逐字回指原文、标识符不一致、JSON 截断、超时和模型不可用都会 fail-closed 回退原 chunk。默认模式仍为 `off`，且没有同时启用 `PP_MEMORY_CHUNKING=structure-v1` 时富化不会生效。
+请求固定 `temperature=0` 并使用严格 JSON contract，但不会盲目信任 provider。未知或缺失字段、无法回指原文的摘要/证据、标识符不一致、JSON 截断、超时和模型不可用都会显式 defer/retry/reconcile，不会冒充成功，也不会静默在服务器回退到本地模型。没有同时启用 `PP_MEMORY_CHUNKING=structure-v1` 时富化不会生效。
 
 当前 `plastic_promise/mcp/server.py` 暴露 58 个 MCP 工具，包含 `session_init` / `sp_stage` 等兼容别名。`mgp_shadow_bridge` 是 MGP 兼容语义桥；P1 阶段只做 off/shadow/inject 模式管理与审计映射，不直接改写长期记忆。
 
@@ -250,11 +390,15 @@ python scripts/smoke_restart_recovery.py --artifact-dir .artifacts/recovery-smok
 
 `maintenance-heartbeat/v1` 将心跳绑定到 daemon PID；旧心跳仅保留 mtime 兼容。索引重放继续读取既有合法 `memory-index/v2` upsert，但所有新 upsert/delete 都写为带 action、project、memory version、material revision 和 expected embedding hash 的 `memory-index/v3`。
 
-升级到 `0.1.20` 时，应先保持治理综合记忆、提案、Dashboard、检索解释、云推理、被动语义捕获与自动晋升开关为默认值，同时重启所有已启用的写入服务，避免不同版本的进程混用事务和派生工作约定。公开 MCP 工具和参数没有删除；已有 SQLite 记忆继续作为权威数据，LanceDB 可由持久化校验任务修复。LanceDB 最低版本仍为 `0.34.0`，固定在更早版本的环境必须先升级依赖。重启后按需逐项启用功能，再执行：
+升级到 `0.2.15rc1` RC 时，应先保持治理综合记忆、提案、Dashboard、检索解释、云推理、被动语义捕获与自动晋升开关为默认值，同时重启所有已启用的写入服务，避免不同版本的进程混用事务和派生工作约定。公开 MCP 工具和参数没有删除；已有 SQLite 记忆继续作为权威数据，LanceDB 可由持久化校验任务修复。LanceDB 最低版本仍为 `0.34.0`，固定在更早版本的环境必须先升级依赖。重启后按需逐项启用功能，再执行：
 
 ```bash
-python scripts/smoke_http_mcp.py --expected-version 0.1.20 --expected-mode rust-full
+python scripts/smoke_http_mcp.py --expected-version 0.2.15rc1 --expected-mode rust-full
 ```
+
+只有在受保护的 stable promotion 已把包与运行时版本切换为 `0.2.15` 后，才将
+上述命令替换为 `--expected-version 0.2.15`。RC 不能在 stable 推广之前用最终
+版本号做精确 smoke 校验。
 
 回滚时关闭四个开关即可，不要删除 SQLite 中的控制、来源、提案、lineage 或审计记录：
 
@@ -298,30 +442,40 @@ python scripts/rebuild_lancedb.py
   <img src="architecture/plastic-promise-flow.zh-CN.svg" alt="Plastic Promise 本地治理运行时架构" width="960">
 </p>
 
-上方矢量图把运行时分成五层：参与者、MCP 入口、治理核心、自动化闭环、本地持久化与加速。README 中保留的是一眼可读的总览；更细的 C4、时序和组件图仍放在架构目录中。
+上方矢量图展示三个端模块及其状态所有权。Endpoint Contract V2 与 PR 3 的源码级
+artifact policy 已可验证
+`pp-server-backend` 的 canonical SQLite 单写者、promotion/receipt 权威，
+`pp-local-edge` 的净化状态投影以及 `pp-compute-node` 的类型化派生结果边界。
+`ContainerArtifactCompiler` 只产生 plan/descriptor/evidence，不在本地 activation Docker、
+Compose、tunnel 或 deployment；受保护 CI 可以执行不 push OCI build verification。独立端
+容器、实际 Deployment Center 执行、迁移与生产 cutover 仍是目标架构，不表示 image 已构建
+或生产环境已经完成迁移。
 
-### C4 部署视图
+### C4 部署视图（V2 契约和制品策略当前已实现；运行时部署仍为目标）
 
-标准发行版共用一套模块，只改变客户端与 Runtime 的部署位置。
-`local-all-in-one` 中上下两个框位于同一台本机；默认 `split-async` 中，
-上框位于客户端，下框位于通过安全本地隧道访问的服务器。
+标准发行版共用三个端模块，只改变放置位置，不改变所有权。V2 契约不接受 SSH
+host、私有地址、路径或密钥；实际镜像、Compose、宿主 `ppctl`、迁移与 promotion
+仍须在后续 PR 完成。
 
 ```text
-+-------------------------- 客户端主机 --------------------------+
-| Codex / MCP Client | 仪表盘 | 可选有界本地缓存               |
-+------------------------------+---------------------------------+
-                               | loopback HTTP 或 SSH LocalForward
++-------------------------- 用户主机 --------------------------+
+| Browser / Codex Hooks -> pp-local-edge                       |
+| Dashboard + Deployment Center + MCP bridge                   |
+|                      仅宿主 validated plan -> ppctl           |
++------------------------------+-------------------------------+
+                               | loopback / 受限 SSH
                                v
-+-------------------------- Runtime 主机 ------------------------+
-| MCP Gateway | 治理核心 | 异步控制面                           |
-| Context Engine | Memory Pipeline | Maintenance Daemon          |
-+----------------------+--------------------+---------------------+
-                       |                    |
-                       v                    v
-             +----------------+    +----------------+
-             | SQLite WAL     |    | LanceDB        |
-             | canonical 真相 |    | 派生索引       |
-             +----------------+    +----------------+
++-------------------------- 服务器 ----------------------------+
+| pp-server-backend                                             |
+| MCP + 治理 + durable work + Maintenance + routing             |
+| SQLite WAL：唯一写入者 | LanceDB：派生 generation             |
++------------------------------+-------------------------------+
+                               | 受限 reverse SSH
+                               v
++-------------------------- 运算主机 --------------------------+
+| pp-compute-node：类型化 embedding / rerank / 可选 JSON        |
+| 无 SQLite、LanceDB promotion、文件、Shell 或任意 Prompt       |
++--------------------------------------------------------------+
 ```
 
 <p align="center">
@@ -333,13 +487,13 @@ python scripts/rebuild_lancedb.py
 
 ```text
 画布：1280 x 760，深色高对比架构信息图。
-目标：对比同一发行契约下的两种部署 profile。
+目标：对比端模块放置方式，同时保持相同的所有权规则。
 
 分区：
 1. 标题：Plastic Promise 发行部署 Profile。
-2. 全本地：客户端、仪表盘、MCP Worker、SQLite 真相源、LanceDB 索引。
-3. 前后端分离：有界客户端缓存、安全隧道、服务器 Runtime 与状态。
-4. 异步链：canonical enqueue => durable outbox ~> bounded batch => retry/reconcile。
+2. 本地：pp-local-edge、pp-server-backend 和可选 pp-compute-node。
+3. 分离：local edge、server backend 和 compute node 位于不同主机。
+4. 异步链：manifest -> ppctl -> durable queue -> typed result -> reconcile。
 
 约束：SQLite 是 canonical；LanceDB 是派生索引；客户端缓存不是可写真相源；
 部署只改变模块位置，不改变模块所有权。
@@ -350,19 +504,18 @@ python scripts/rebuild_lancedb.py
 ### 持久异步时序
 
 ```text
-客户端/Hook => MCP Gateway       : 提交捕获或派生工作请求
-MCP Gateway => SQLite transaction: 持久化 canonical intent + outbox
-SQLite      => MCP Gateway       : commit + request_id
-MCP Gateway => 客户端/Hook       : 持久准入后返回 accepted
-Maintenance ~> SQLite            : 认领有界、按项目隔离的批次
-Maintenance => Provider Adapter  : embedding / 富化 / rerank
-Provider    => Maintenance       : 返回结果或显式失败
-Maintenance => SQLite + LanceDB  : 提交任务状态并更新派生索引
-Reconcile   ~> SQLite            : 重试未完成工作，不混合不同项目
+pp-local-edge     => pp-server-backend : 提交 MCP 或部署请求
+pp-server-backend => SQLite            : canonical transaction + durable work
+pp-server-backend => pp-compute-node   : 带租约的类型化推理请求
+pp-compute-node   => pp-server-backend : identity-bound 结果或失败
+失败              ~> durable queue     : 保留任务并使用文本退化
+健康轮询          ~> 本地 + 云端       : 连续探针稳定后恢复
+pp-server-backend => LanceDB           : 只更新 verified derived generation
 ```
 
 客户端缓存永远不能成为第二个可写真相源。SQLite 保存 canonical 记忆与治理状态，
-LanceDB 始终是可重建派生索引。
+LanceDB 始终是可重建派生索引。V2 manifest、端点准入、receipt 与 fencing schema
+当前可验证；图中的运行时执行和生产恢复路径仍是目标态。
 
 更多架构文档：
 
@@ -372,9 +525,15 @@ LanceDB 始终是可重建派生索引。
 - [architecture/plastic-promise-flow.zh-CN.svg](architecture/plastic-promise-flow.zh-CN.svg)
 - [architecture/distribution-profiles.svg](architecture/distribution-profiles.svg)
 - [architecture/distribution-profiles.zh-CN.svg](architecture/distribution-profiles.zh-CN.svg)
+- [三端目标架构中文规格](architecture/three-endpoint-deployment/architecture.zh-CN.md)
+- [Three-endpoint target architecture](architecture/three-endpoint-deployment/architecture.md)
 - [architecture/diagrams/c4-level1-context.txt](architecture/diagrams/c4-level1-context.txt)
 - [architecture/diagrams/c4-level2-container.txt](architecture/diagrams/c4-level2-container.txt)
 - [architecture/diagrams/c4-level3-component.txt](architecture/diagrams/c4-level3-component.txt)
+- [deployment/README.zh-CN.md](deployment/README.zh-CN.md)
+- [可组合部署路线图](roadmap/composable-deployment.zh-CN.md)
+- [release/delivery.zh-CN.md](release/delivery.zh-CN.md)
+- [release/six-pr-readiness.zh-CN.md](release/six-pr-readiness.zh-CN.md)
 
 ## 核心概念
 
@@ -396,10 +555,12 @@ LanceDB 始终是可重建派生索引。
 
 ### 云 embedding、重排与切片分析
 
-云 Provider 默认关闭。评审完成前保持 `EMBEDDER_PROVIDER=ollama`、
-`PP_RERANK_PROVIDERS=ollama,cosine` 和
-`PP_MEMORY_CHUNK_ENRICHMENT=off`。托管调用统一经过 OpenAI-compatible
-传输层，具备输入/输出大小限制、重试、deadline、熔断、响应校验、内容
+推荐基线让 embedding 与 rerank 在 compute node 本地执行，同时把结构化语义富化
+显式开启为安全 shadow 模式。一键启动器设置
+`PP_MEMORY_CHUNK_ENRICHMENT=shadow` 和
+`PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER=openai-compatible`；在 compute node 的
+provider、不可变模型 revision、API root 和费用策略通过校验前，不会把网络调用视为
+已激活。托管调用具备输入/输出大小限制、重试、deadline、熔断、响应校验、内容
 hash 缓存和脱敏诊断。API Key 只能放在权限为 `600` 的环境文件或交互式
 密钥存储中，不能提交、写进命令行或日志。
 
@@ -414,9 +575,9 @@ hash 缓存和脱敏诊断。API Key 只能放在权限为 `600` 的环境文件
 分析。本地 loopback Provider 传输只保留为后续部署的兼容代码，不作为云优先配置的
 健康或验收条件。
 
-必须配置 API 根地址，不能把文档站当 API。`https://wiki.syuan.org/` 会被
-主动拒绝；应从服务商文档获得真正的 `/v1` API 根地址，再配置
-`EMBEDDER_BASE_URL`、`PP_RERANK_BASE_URL` 或 `PP_INFERENCE_BASE_URL`。
+必须配置 API 根地址，不能把文档站、Wiki 或产品首页当 API。应从服务商官方 API
+文档获得真正的 `/v1` 根地址，例如 `https://provider.example/v1`，再写入 compute
+node 的 `EMBEDDER_BASE_URL`、`PP_RERANK_BASE_URL` 或 `PP_INFERENCE_BASE_URL`。
 地址可用不代表认证和模型权限可用，运行时只报告 provider、model、revision、
 dimension、有限 usage 和安全 reason，不会把失败伪装成成功。
 
@@ -434,19 +595,21 @@ python scripts/smoke_cloud_providers.py
 该 smoke 只通过隐藏提示读取 Key，不输出凭据、向量或原文。`--keys-from-stdin`
 仅用于受保护的交互管道；脚本刻意不接受命令行 Key 参数或环境变量 Key。
 
-后端输入契约与 Provider 解耦。前端只提交规范化的 `id`、`text`、`base_score`，
-`embedding` 可以省略；后端仅对缺失项批量调用当前配置的云或本地 embedder。
-前端提供的向量只有在维度、有限非零值、完整 embedding 身份和原文 SHA-256
+server dispatch contract 与 Provider 解耦。前端只提交规范化的 `id`、`text`、
+`base_score`，`embedding` 可以省略；server 只记录有界 operation intent 与 identity
+requirement，任何 local 或 hosted provider 调用都由认证的 `pp-compute-node` 执行。
+前端提供的向量只有在维度、有限非零值、完整 embedding identity 和原文 SHA-256
 全部匹配时，才允许在本次请求中复用。这只是结构和声明校验，并不能以密码学方式
-证明该向量真的由所声明的模型生成；因此它不会获得正式 LanceDB 写入权限，正式
-索引物料仍由后端生成。Provider、模型、base URL、path 和 Key 都属于后端配置，
-输入 DTO 会拒绝这些字段。
+证明该向量真的由所声明的模型生成；因此它不会获得正式 LanceDB 写入权限。Provider、
+模型、base URL、path、prompt、response 与 credential 都留在 compute-node 边界内，
+frontend 与 collaboration input 会拒绝这些字段。
 
-结构化 JSON 分析对 OpenAI-compatible 云端和 loopback-only Ollama 使用同一份
-Mapping 输入。本地传输不需要 Key，不读取系统代理、拒绝重定向，并受总超时和
-响应大小限制。DeepSeek 官方默认使用 `https://api.deepseek.com` 与
-`deepseek-v4-flash`；后端为确定性 JSON 分析显式关闭 thinking，业务 schema 仍在
-本地严格校验。
+PR 5 源码现在把 structured JSON 与 embedding、rerank 一样作为 `pp-compute-node` 的
+一等 capability。它默认关闭，只有 backend、model、固定 revision 与有界 provider 配置
+完成激活和 identity revalidation 后才启用。compute node 强制 prompt、payload、token、
+timeout、UTF-8 与 response 限制；`pp-server-backend` 可以请求该 capability，但不得构造或
+调用其 local、hosted 或 raw provider。该 source/test capability 不证明真实 provider
+activation、runtime evidence、production acceptance 或 publication。
 
 同步 rerank 作为无状态请求本身不会造成多设备冲突，危险发生在旧结果覆盖新状态。
 后端结果会绑定 project、query、candidate set、embedding 物料、Provider policy 和
@@ -479,7 +642,7 @@ project、当前 request ID、query、`top_k`、candidate-set version/hash、emb
 不能直接暴露完整 MCP 路由面。在该 gateway 完成前，这些前端 DTO 是核心集成契约，
 并不是浏览器可直接调用的 API。
 
-切片语义富化也是显式 opt-in。`PP_MEMORY_CHUNKING=structure-v1` 下先使用
+切片语义富化默认开启为有界 `shadow` 模式。`PP_MEMORY_CHUNKING=structure-v1` 下使用
 `PP_MEMORY_CHUNK_ENRICHMENT=shadow`，它只运行有界队列而不改变正式向量；
 通过 shadow 证据评审后，才在离线窗口设置 `on` 并重建派生索引。后续写入和
 修复必须保持相同的 Provider/model/prompt/schema 身份；查询 embedding 永远
@@ -495,8 +658,15 @@ project、当前 request ID、query、`top_k`、candidate-set version/hash、emb
 
 Dashboard V2 是唯一的运维前端：记忆、检索和运行证据继续来自 9020，服务器状态、
 desired config、修订和审计由浏览器经 19040 直接调用 9040。控制 Token 只保留在
-浏览器内存，不经过 MCP。产品前端只能使用更窄的 inference gateway 合同，不能
-获得控制面 Token。
+浏览器内存，不经过 MCP。旧 inference-gateway package 仅可作为完整开发安装中的兼容
+测试资料，不能作为受治理 PR5 server runtime 或生产 provider 路径；Provider credential、
+选择、prompt 和 response 只能留在经认证的 `pp-compute-node`，server 只记录有界 intent、
+identity、lease 和 typed receipt。
+
+Dashboard V2 当前已具备 PR 5 的只读 Agent topology、`ProjectWorkBoard` 与 collaboration
+event timeline 投影，并支持 project/session/role filter 和浏览器内存 cursor 增量刷新；它不提供
+协作 mutation 控件，也不推进 canonical collaboration cursor。仓库级 route/repository/static
+测试已覆盖 empty/error/stale 与字段脱敏，但真实浏览器 smoke 和生产 runtime 证据仍待补齐。
 
 普通变更使用 `GET safe config/ETag -> validate -> immutable stage -> If-Match
 CAS activate -> 主机运维重启与 smoke`。所有 POST 都需要 JSON 和当前
@@ -518,6 +688,24 @@ Embedding 精确运行索引身份变化（包括 structure-v1 切片预算）�
 smoke。`/status` 同时显示 desired 与 current 的 generation ID 和完整 manifest
 SHA-256；两者任一不一致都表示尚未完成切换。完整 API、systemd、SSH 隧道和验收
 说明见 [Remote Configuration Control Plane](remote-control-plane.md)。
+
+### 离线 index-material 迁移恢复
+
+`scripts/migrate_index_material.py` 是显式的 canonical SQLite 离线迁移工具，
+不是日常索引重建命令。未提供 `--apply` 时，它只检查现有数据库，并输出将来写入
+所需的精确行数、源指纹、目标模型 digest 和 index-outbox 快照：
+
+```bash
+.venv/bin/python scripts/migrate_index_material.py \
+  --db data/db/plastic_memory.db \
+  --target-policy compact-v2
+```
+
+经批准的 `--apply` 必须提供现有备份目录，并带上该检查输出的全部 expectation。
+它会在修改 canonical 行之前创建并验证在线备份。`--allow-unresolved-index-outbox`
+是针对 `pending`、`blocked` 或 `failed` 索引任务的显式恢复模式；它仍会拒绝
+`processing` 任务，也会在 outbox 快照变化时 fail closed。不要把这个命令用于普通
+服务重启、shadow rebuild，或未经单独迁移授权的生产操作。
 
 ### 不可变 LanceDB generation
 
@@ -589,7 +777,18 @@ outbox；除非明确要这些副作用，否则不要对生产数据库运行�
 
 ### 多 Agent 可追踪协作
 
-Hunter Guild 把任务发布、认领、心跳、完成、验收变成可追踪状态机，避免多 Agent 工作变成不可审计的提示词堆叠。
+Hunter Guild 把 legacy/current 委托的发布、认领、心跳、完成、验收变成可追踪状态机，
+避免多 Agent 工作变成不可审计的提示词堆叠，但它不等同于 PR 5 的新协作运行时。
+
+PR 5 当前 **source/test slice** 已包含 server-only durable collaboration store、可跨重启的认证
+Hook continuation、服务器拥有的有界 work issuance/operation、普通 tool reconcile、有界 Stop
+progress/submitted event、formal ResultReceipt 与类型化 `sp-stage` event、Maintenance
+composition、shadow/inject awareness、只读 Dashboard collaboration projection，以及 accepted
+result 到 pending-only outbox 的原子 promotion enqueue。`pp-compute-node` 独占 embedding、
+rerank 与 structured JSON 执行，并受项目级 `local`/`cloud`/`hybrid` 路由控制；structured
+JSON 默认关闭。真实 browser/runtime lifecycle、migration 执行、provider activation、
+production acceptance 与 publication 仍未验证。PR 5、runtime 与 production 均不得据此标为
+完成；PR 6 的最终跨 Agent 与发行工作也未提前完成。
 
 ## 配置要点
 
@@ -601,12 +800,13 @@ Hunter Guild 把任务发布、认领、心跳、完成、验收变成可追踪�
 | 启动模式 | `light`、`normal`、`rust-normal`、`full`、`rust-full`，非交互默认 `rust-full` |
 | 守护进程 | `daemons/maintenance_daemon.py` |
 | 远程配置 | 独立回环 `127.0.0.1:9040`；Mac SSH forward `19040`；只写 desired state，重启和 generation promote 由主机运维执行 |
-| 默认 embedding | Ollama `mxbai-embed-large`，长文本切块池化，可降级 fallback embedder |
-| 默认 embedding 超时 | `EMBEDDER_TIMEOUT=30`，可用环境变量覆盖 |
-| 可选切片富化 | 默认关闭；本地 Ollama `qwen3:8b`、严格来源校验、SQLite 缓存；先离线重建启用 `on`，服务期间保持 `on` |
-| Dashboard V2 | `PP_DASHBOARD_V2=1`；中文、仅本机、按项目隔离、只读，入口 `/dashboard` |
+| 默认 compute-node embedding | llama.cpp + 操作者固定的 `Qwen3-Embedding-4B-GGUF`，2560 维，L2；Ollama 仅作兼容模式 |
+| 默认 embedding 超时 | `EMBEDDER_TIMEOUT=10`，可用环境变量覆盖 |
+| 结构化切片 | 一键启动器默认 `PP_MEMORY_CHUNKING=structure-v1`；保留权威正文和 source span |
+| 语义切片富化 | 一键启动器默认 `shadow`，推荐在 `pp-compute-node` 使用 OpenAI-compatible 云 provider；`on` 需先完成受审查的离线重建/迁移 |
+| Dashboard V2 | 一键启动器默认开启；中文、仅本机、按项目隔离、只读，入口 `/dashboard` |
 | 检索解释 | `PP_RETRIEVAL_EXPLAIN=1`；保存有界快照并显示真实请求/阶段耗时，不生成虚假零耗时 |
-| 默认 reranker | Ollama `qwen2.5:3b`，失败时回退 cosine/original 排序 |
+| 默认 compute-node rerank | llama.cpp 结构化 rerank endpoint + 固定的 `Qwen3-Reranker-0.6B-GGUF`；拒绝生成文本冒充分数 |
 | SQLite | `data/db/plastic_memory.db`，可用 `PLASTIC_DB_PATH` 覆盖 |
 | LanceDB | `data/lancedb`，可用 `PLASTIC_LANCEDB_PATH` 覆盖 |
 | 运行日志 | `var/log/` |
@@ -614,7 +814,7 @@ Hunter Guild 把任务发布、认领、心跳、完成、验收变成可追踪�
 
 ## 路线图快照
 
-当前路线图入口仍是 [TODO List/README.md](TODO%20List/README.md)。高层方向包括：
+当前路线图入口仍是 [TODO List/README.zh-CN.md](TODO%20List/README.zh-CN.md)。高层方向包括：
 
 | 方向 | 当前重点 |
 |---|---|
@@ -622,7 +822,7 @@ Hunter Guild 把任务发布、认领、心跳、完成、验收变成可追踪�
 | Rust 加速 | 继续让可选 Rust Context Core 与 Python 权威管线语义收敛。 |
 | Hunter Guild | 强化任务队列策略、扫描质量、重派、验收和信任分影响。 |
 | 插件市场 | 稳定 pack 校验、安装、启用、禁用和元数据边界。 |
-| 公开文档 | 让 README、架构图、快速开始和路线图与源码真相保持一致；后续发布文档需要英文和中文同步维护。 |
+| 公开文档 | README、架构图、快速开始和路线图必须与源码真相一致；部署/发行不变量由中英文文档与自动化 parity 测试共同约束。 |
 
 ## 开发与贡献
 
@@ -633,16 +833,52 @@ Hunter Guild 把任务发布、认领、心跳、完成、验收变成可追踪�
 配置名称、禁止进入发行版的运行状态、构建制品和发布证明门禁。它是发行版变体，
 不是独立的知识库版本。
 
-同一份标准发行契约支持两种部署 profile：
+同一份标准发行契约的目标态支持三种部署 profile；PR 1/2 已建立受治理检索路由与
+endpoint contract，PR 3 的 `ContainerArtifactCompiler` 只建立 source-level policy、
+descriptor 与 immutable evidence。三端容器 activation、部署 profile 应用、迁移和发行推广
+仍属于 PR 4–6：
 
-- `local-all-in-one`：前端、MCP Runtime、SQLite、LanceDB 和异步 worker 全部
-  运行在一台本地机器上，只通过 loopback HTTP 连接。
-- `split-async`（默认）：客户端承载 Codex/仪表盘访问和可选有界缓存，服务器独占
-  可写 SQLite、LanceDB 与异步 worker，客户端通过安全隧道访问。
+- `local-all-in-one`：`pp-local-edge`、`pp-server-backend` 和
+  `pp-compute-node` 作为独立端容器运行在同一台本机。
+- `local-cloud`：local edge 与 server backend 保持本地；显式配置云推理，并以
+  云端 embedding identity 为权威。
+- `split-accelerated`：local edge 位于用户主机，server backend 独占可写 SQLite
+  和派生 LanceDB generation，compute node 经受限反向隧道提供类型化推理。
 
-两种 profile 共用同一异步准入契约：canonical enqueue 成功后才确认请求，后台使用
+交付后三种 profile 共用同一异步准入契约：canonical enqueue 成功后才确认请求，后台使用
 durable outbox、有限批处理、持久重试状态和 reconcile，并强制项目隔离。分离模式的
 客户端缓存不得包含可写 canonical database。
+
+### 跨平台本地部署控制器
+
+`plastic-promise deploy` 是主部署入口；`plastic-promise-deploy` 与
+`scripts/plastic-promise-deploy.sh` / `scripts/plastic-promise-deploy.ps1` 是等价的薄入口。
+它只管理用户明确选择的**本地**状态目录、
+canonical SQLite、安装记录和已验证备份。先生成 plan 并通过资源预检；预检会确保
+安装后仍至少保留 `max(20%, 10 GiB)` 空间。它不会启动/停止 systemd、Compose、
+launchd 或 Windows 服务，不会创建 SSH 账户或隧道，也不会下载模型。
+
+```bash
+plastic-promise-deploy plan \
+  --manifest deploy/manifests/local-all-in-one.example.json \
+  --state-root ./var/deployment \
+  --json
+plastic-promise-deploy preflight \
+  --manifest deploy/manifests/local-all-in-one.example.json \
+  --state-root ./var/deployment \
+  --json
+```
+
+每份计划都绑定具体操作、manifest/profile/module 意图、安装记录，以及 SQLite 主文件、
+精确 `-wal`/`-shm` sidecar 和恢复源的非秘密指纹。操作、数据库、安装记录或恢复源在
+审核后漂移都会被拒绝，不能把 install 计划拿去执行 migration/restore。空目标仅在已审核
+的非 dry-run `apply`/`install` 中创建数据库；已有数据库默认执行完整性验证和在线备份后
+才迁移。预检会计入控制器实际会写入的 online backup、sidecar、恢复候选与迁移临时空间。
+已安装数据库的 `upgrade`/`repair` 绝不会在主库缺失时新建空库；需要恢复时必须使用单独的
+`restore`/`replace-db` 高风险路径、在计划中声明同 profile 恢复源，并显式确认相关服务已经
+停止。主库替换失败会还原旧 sidecar；恢复后的迁移失败会自动恢复本次 restore 前的备份。
+更多示例、平台 doctor、模块管理和回退边界见
+[`deployment/deploy-controller.md`](deployment/deploy-controller.md)。
 
 该配置只记录环境变量名称，不记录秘密值。密码、Token、私钥、数据库、派生索引、
 日志、备份和生产 EnvironmentFile 均禁止进入发行仓库。可在本地执行：
@@ -677,7 +913,7 @@ live HTTP、重启恢复、diff check 与 release-sync preview 全部通过。�
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.20 --release-repo ../plastic-promise-release \
+  --version v0.2.15 --release-repo ../plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \
@@ -697,4 +933,4 @@ python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<me
 
 ## 路线图
 
-当前未完成事项见 [TODO List/README.md](TODO%20List/README.md)。长期目标和系统状态见 [GOAL.md](GOAL.md)。
+当前未完成事项见 [TODO List/README.zh-CN.md](TODO%20List/README.zh-CN.md)。长期目标和系统状态见 [GOAL.md](GOAL.md)。

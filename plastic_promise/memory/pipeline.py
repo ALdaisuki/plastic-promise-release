@@ -26,6 +26,7 @@ from plastic_promise.core.memory_index import (
     read_persisted_index_material,
     resolve_index_material,
 )
+from plastic_promise.core.project_identity import canonical_project_id
 from plastic_promise.core.synthesis_retrieval import (
     engine_memory_is_governed_synthesis,
 )
@@ -398,15 +399,39 @@ class MemoryPipeline:
         if self.embedder is None:
             raise RuntimeError("correction_embedder_unavailable")
 
+        project_id = canonical_project_id(current.get("project_id"), allow_legacy=True)
+        if not project_id:
+            raise RuntimeError("correction_project_id_invalid")
+        embed_for_project = getattr(self.embedder, "embed_for_project", None)
+        project_identity_ready = False
+
+        def prime_project_identity() -> None:
+            nonlocal project_identity_ready
+            if project_identity_ready or not callable(embed_for_project):
+                return
+            try:
+                embed_for_project(
+                    "plastic promise correction identity probe",
+                    project_id=project_id,
+                )
+            except Exception as exc:
+                raise RuntimeError("correction_embedding_failed") from exc
+            project_identity_ready = True
+
         previous_material = read_persisted_index_material(current)
         if previous_material is None:
             try:
+                # Governed adapters resolve model identity only after a
+                # project-scoped route has been exercised.  Never probe their
+                # legacy global default while reconstructing old material.
+                prime_project_identity()
                 previous_material, _needs_persist = resolve_index_material(
                     current,
                     model_name=self._embedding_model_name(self.embedder),
                 )
             except Exception as exc:
                 raise RuntimeError("correction_index_material_unavailable") from exc
+        prime_project_identity()
         if effective_embedding_model_name(self.embedder) != previous_material.model_name:
             raise RuntimeError("correction_embedding_model_mismatch")
 
@@ -440,7 +465,11 @@ class MemoryPipeline:
             model_name=previous_material.model_name,
         )
         try:
-            vector = tuple(float(value) for value in self.embedder.embed(material.vector_text))
+            if callable(embed_for_project):
+                vector_values = embed_for_project(material.vector_text, project_id=project_id)
+            else:
+                vector_values = self.embedder.embed(material.vector_text)
+            vector = tuple(float(value) for value in vector_values)
         except Exception as exc:
             raise RuntimeError("correction_embedding_failed") from exc
         if not self._has_nonzero_vector(vector):

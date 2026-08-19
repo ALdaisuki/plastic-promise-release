@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -189,6 +190,8 @@ class ReviewEngine:
         trust_manager: Any = None,
         context_engine: Any = None,
         project_root: str | None = None,
+        security_scanner: Any = None,
+        evolution_evidence: Any = None,
     ) -> None:
         """初始化审查引擎。
 
@@ -202,13 +205,24 @@ class ReviewEngine:
         self._trust = trust_manager
         self._engine = context_engine
         self._project_root = project_root or os.getcwd()
+        if security_scanner is None:
+            from plastic_promise.core.security_scanner import DeepSecCliAdapter
+
+            security_scanner = DeepSecCliAdapter.from_environment()
+        self._security_scanner = security_scanner
+        self._evolution_evidence = evolution_evidence
         self._review_history: list[ReviewReport] = []
 
     # ═══════════════════════════════════════════════════════════
     # Phase 1: Prepare
     # ═══════════════════════════════════════════════════════════
 
-    def prepare(self, commit_range: str = "HEAD~1..HEAD", spec_path: str | None = None) -> dict:
+    def prepare(
+        self,
+        commit_range: str = "HEAD~1..HEAD",
+        spec_path: str | None = None,
+        project_id: str = "project:unknown",
+    ) -> dict:
         """准备审查上下文 — 获取 diff + 运行预检 + 生成审查 prompt。
 
         Args:
@@ -231,6 +245,7 @@ class ReviewEngine:
             "context_memories": [],
             "structured_prompt": "",
             "git_available": False,
+            "security_scan": {},
         }
 
         # 1. 获取 git diff
@@ -248,19 +263,127 @@ class ReviewEngine:
         # 2. 自动化预检
         result["pre_check_results"] = self._run_pre_checks()
 
-        # 3. 检索关联记忆
+        # 3. DeepSec is a bounded third evidence stream, never a source of raw evidence.
+        from plastic_promise.core.security_scanner import ScanRequest
+
+        base_revision, head_revision = self._resolve_review_range(commit_range)
+        source_revision = head_revision or self._resolve_git_revision("HEAD") or "unknown"
+        scan_request = ScanRequest(
+            project_id=project_id,
+            project_root=self._project_root,
+            source_revision=source_revision,
+            base_revision=base_revision,
+            head_revision=head_revision or source_revision,
+            changed_files=tuple(result["changed_files"]),
+            scan_id="review-scan-"
+            + hashlib.sha256(
+                f"{project_id}\x1f{source_revision}\x1f{commit_range}".encode()
+            ).hexdigest()[:20],
+            source_sha256=hashlib.sha256(result["diff_text"].encode("utf-8")).hexdigest(),
+        )
+        scan_result = self._security_scanner.scan(scan_request)
+        result["security_scan"] = scan_result.public_dict(scan_request)
+        result["security_evidence"] = self._submit_security_evidence(
+            project_id, result["diff_text"], result["security_scan"]
+        )
+
+        # 4. 检索关联记忆
         result["context_memories"] = self._recall_review_context(result["changed_files"])
 
-        # 4. 生成结构化审查 prompt
+        # 5. 生成结构化审查 prompt
         result["structured_prompt"] = self.generate_review_prompt(
             diff_text=result["diff_text"],
             changed_files=result["changed_files"],
             pre_check=result["pre_check_results"],
             context_memories=result["context_memories"],
             spec_path=spec_path,
+            security_scan=result["security_scan"],
         )
 
         return result
+
+    def _submit_security_evidence(
+        self, project_id: str, diff_text: str, security_scan: dict
+    ) -> list[dict]:
+        ledger = self._evolution_evidence
+        if ledger is None or not isinstance(security_scan, dict):
+            return []
+        findings = security_scan.get("findings")
+        if not isinstance(findings, list):
+            return []
+        from dataclasses import asdict
+
+        from plastic_promise.core.evolution_evidence import EvolutionEvidenceEvent
+
+        source_sha256 = str(security_scan.get("source_sha256") or "")
+        if len(source_sha256) != 64:
+            source_sha256 = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+        results: list[dict] = []
+        for finding in findings[:500]:
+            if not isinstance(finding, dict):
+                continue
+            evidence_id = str(finding.get("evidence_id") or "")
+            raw_sha = str(finding.get("evidence_sha256") or "")
+            if len(raw_sha) != 64:
+                raw_sha = hashlib.sha256(evidence_id.encode("utf-8")).hexdigest()
+            try:
+                event = EvolutionEvidenceEvent(
+                    project_id=project_id,
+                    causal_scope=str(security_scan.get("scan_id") or "review-scan"),
+                    origin_kind="security_scanner",
+                    sensor_name=str(security_scan.get("tool", {}).get("name") or "deepsec-shield"),
+                    sensor_version=str(
+                        security_scan.get("tool", {}).get("package_version") or "unknown"
+                    ),
+                    source_revision=str(security_scan.get("source_revision") or "unknown"),
+                    source_sha256=source_sha256,
+                    subject_type="source_file",
+                    subject_id=str(finding.get("path") or "unknown"),
+                    rule_id=str(finding.get("rule_id") or "unknown"),
+                    payload={
+                        key: finding.get(key)
+                        for key in (
+                            "type",
+                            "severity",
+                            "confidence",
+                            "path",
+                            "region",
+                            "message",
+                            "suggestion",
+                            "evidence_id",
+                            "evidence_sha256",
+                            "dismissed",
+                        )
+                    },
+                    raw_evidence_sha256=raw_sha,
+                    idempotency_key=(
+                        f"{security_scan.get('scan_id') or 'review-scan'}:{evidence_id or raw_sha}"
+                    ),
+                )
+                results.append(asdict(ledger.submit(event)))
+            except Exception:
+                results.append({"status": "degraded", "reason": "evidence_submission_failed"})
+        return results
+
+    def _resolve_git_revision(self, revision: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", self._project_root, "rev-parse", revision],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return completed.stdout.strip() if completed.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    def _resolve_review_range(self, commit_range: str) -> tuple[str, str]:
+        parts = str(commit_range or "").split("..", 1)
+        if len(parts) != 2:
+            return "", self._resolve_git_revision("HEAD")
+        return self._resolve_git_revision(parts[0]), self._resolve_git_revision(parts[1])
 
     def _run_git_diff(self, commit_range: str) -> str:
         """获取 git diff 文本。
@@ -421,7 +544,12 @@ class ReviewEngine:
     # ═══════════════════════════════════════════════════════════
 
     def evaluate(
-        self, diff_text: str, changed_files: list, pre_check: dict, review_output: str
+        self,
+        diff_text: str,
+        changed_files: list,
+        pre_check: dict,
+        review_output: str,
+        security_scan: dict | None = None,
     ) -> ReviewReport:
         """解析 LLM 审查输出，生成结构化 ReviewReport。
 
@@ -459,22 +587,32 @@ class ReviewEngine:
         else:
             observations = {}
 
+        llm_findings = list(findings)
+        security_findings = self._security_review_findings(security_scan)
+        findings.extend(security_findings)
+        security_mode = str((security_scan or {}).get("mode") or "shadow").lower()
+        security_enforced = security_mode == "on" and bool(security_findings)
+
         # 确定 status 和 recommendation
         status = parsed.get("status", "pass")
         if status not in ("pass", "fail"):
-            status = "fail" if findings else "pass"
+            status = "fail" if llm_findings else "pass"
 
         recommendation = parsed.get("recommendation", "approve")
         # 根据 findings 严重度自动修正 recommendation
-        has_blocker = any(f.severity == "blocker" for f in findings)
-        has_major = any(f.severity == "major" for f in findings)
-        if has_blocker:
+        verdict_findings = findings if security_enforced else llm_findings
+        has_blocker = any(f.severity == "blocker" for f in verdict_findings)
+        has_major = any(f.severity == "major" for f in verdict_findings)
+        if security_enforced:
+            status = "fail"
+            recommendation = "block"
+        elif has_blocker:
             recommendation = "block"
         elif has_major and recommendation == "approve":
             recommendation = "revise"
 
         # 计算信任分 delta
-        trust_delta = self._calculate_trust_delta(status, findings)
+        trust_delta = self._calculate_trust_delta(status, verdict_findings)
 
         # 生成摘要
         summary = parsed.get("summary", "")
@@ -494,6 +632,7 @@ class ReviewEngine:
             "major_count": sum(1 for f in findings if f.severity == "major"),
             "reviewer": parsed.get("metadata", {}).get("reviewer", "claude"),
             "timestamp": datetime.datetime.now().isoformat(),
+            "security_scan": self._bounded_security_scan_metadata(security_scan),
         }
 
         report = ReviewReport(
@@ -508,6 +647,95 @@ class ReviewEngine:
 
         self._review_history.append(report)
         return report
+
+    @staticmethod
+    def _security_review_findings(security_scan: dict | None) -> list[ReviewFinding]:
+        if not isinstance(security_scan, dict) or security_scan.get("status") != "findings":
+            return []
+        severity_map = {
+            "critical": "blocker",
+            "high": "major",
+            "medium": "minor",
+            "low": "nit",
+            "info": "nit",
+        }
+        findings: list[ReviewFinding] = []
+        for item in security_scan.get("findings", [])[:500]:
+            if not isinstance(item, dict) or item.get("dismissed") is True:
+                continue
+            severity = severity_map.get(str(item.get("severity") or "info").lower(), "minor")
+            region = item.get("region") if isinstance(item.get("region"), dict) else {}
+            start_line = region.get("start_line")
+            end_line = region.get("end_line")
+            if start_line and end_line and start_line != end_line:
+                line_range = f"L{start_line}-L{end_line}"
+            elif start_line:
+                line_range = f"L{start_line}"
+            else:
+                line_range = ""
+            evidence_id = str(item.get("evidence_id") or "")[:80]
+            rule_id = str(item.get("rule_id") or "unknown")[:120]
+            message = " ".join(str(item.get("message") or "Security finding").split())[:1000]
+            description = f"[DeepSec {rule_id}] {message}"
+            if evidence_id:
+                description += f" (evidence: {evidence_id})"
+            findings.append(
+                ReviewFinding(
+                    severity=severity,
+                    category="security",
+                    file=str(item.get("path") or "")[:500],
+                    line_range=line_range,
+                    description=description,
+                    suggestion=" ".join(str(item.get("suggestion") or "").split())[:1000],
+                    auto_fixable=False,
+                )
+            )
+        return findings
+
+    @staticmethod
+    def _bounded_security_scan_metadata(security_scan: dict | None) -> dict:
+        if not isinstance(security_scan, dict):
+            return {}
+        findings = security_scan.get("findings")
+        safe_findings = []
+        if isinstance(findings, list):
+            for item in findings[:100]:
+                if not isinstance(item, dict):
+                    continue
+                safe_findings.append(
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "evidence_id",
+                            "rule_id",
+                            "layer",
+                            "type",
+                            "severity",
+                            "confidence",
+                            "path",
+                            "region",
+                            "message",
+                            "suggestion",
+                            "evidence_sha256",
+                            "dismissed",
+                        )
+                    }
+                )
+        return {
+            "schema_version": security_scan.get("schema_version"),
+            "status": security_scan.get("status"),
+            "mode": security_scan.get("mode"),
+            "scan_id": security_scan.get("scan_id"),
+            "project_id": security_scan.get("project_id"),
+            "source_revision": security_scan.get("source_revision"),
+            "review_range": security_scan.get("review_range"),
+            "tool": security_scan.get("tool"),
+            "coverage": security_scan.get("coverage"),
+            "execution": security_scan.get("execution"),
+            "findings": safe_findings,
+            "findings_total": len(findings) if isinstance(findings, list) else 0,
+            "findings_truncated": isinstance(findings, list) and len(findings) > len(safe_findings),
+        }
 
     def _parse_review_output(self, review_output: str) -> dict:
         """解析审查输出 — JSON 优先，降级到 regex 提取。
@@ -925,6 +1153,7 @@ class ReviewEngine:
         pre_check: dict,
         context_memories: list,
         spec_path: str | None = None,
+        security_scan: dict | None = None,
     ) -> str:
         """生成结构化审查 prompt。
 
@@ -937,6 +1166,7 @@ class ReviewEngine:
             pre_check: 预检结果
             context_memories: 关联的历史审查记忆
             spec_path: spec 文件路径 (可选)
+            security_scan: bounded, redacted DeepSec evidence envelope
 
         Returns:
             结构化审查 prompt 字符串
@@ -950,6 +1180,7 @@ class ReviewEngine:
             )
 
         parts = []
+        security_scan = security_scan or {}
 
         # ── Header ──
         parts.append("""# 代码审查任务
@@ -993,6 +1224,13 @@ class ReviewEngine:
                 content = str(mem.get("content", ""))[:150]
                 tags = mem.get("tags", [])
                 parts.append(f"- [{','.join(tags[:3])}] {content}")
+
+        # ── DeepSec evidence ──
+        parts.append("\n## DeepSec Shield 安全证据（受治理的第三路证据）\n")
+        parts.append("```json")
+        parts.append(json.dumps(security_scan, ensure_ascii=False, indent=2))
+        parts.append("```")
+        parts.append("不得把 degraded/not_applicable 解释为安全通过；不得要求或还原原始匹配内容。")
 
         # ── Git Diff ──
         parts.append("\n## Git Diff\n")

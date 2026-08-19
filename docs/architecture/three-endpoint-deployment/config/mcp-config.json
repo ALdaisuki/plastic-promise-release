@@ -1,0 +1,107 @@
+{
+  "schema_version": "plastic-promise/mcp-client-config/v1",
+  "status": "target-architecture-example",
+  "mcpServers": {
+    "plastic-promise": {
+      "transport": "streamable-http",
+      "url": "http://127.0.0.1:19020/mcp",
+      "healthUrl": "http://127.0.0.1:19020/health",
+      "owner": "pp-server-backend",
+      "entryRole": "existing-server-backend-mcp-endpoint",
+      "canonicalWriter": "pp-server-backend",
+      "alwaysAllow": []
+    }
+  },
+  "deployment": {
+    "manifestAuthority": "plastic-promise/deployment-v2",
+    "activeManifestRef": "server-owned-active-revision",
+    "planningAdapter": "host-ppctl",
+    "executionStatus": "unavailable_deferred_to_pr5",
+    "ppctlOperationAllowlist": [
+      "inspect",
+      "preview"
+    ],
+    "mutationStatus": "deferred-to-pr5",
+    "ppctlBridge": {
+      "defaultStatus": "disabled_when_configuration_absent",
+      "configuredBasePattern": "http://127.0.0.1:<port>/ppctl/v1",
+      "method": "POST",
+      "edgeMayProxyBridge": false,
+      "configurationCache": "no-store"
+    },
+    "ppctlHttpBodies": {
+      "inspect": {
+        "path": "/inspect",
+        "body": {
+          "installation_ref": "opaque-installation-ref"
+        }
+      },
+      "preview": {
+        "path": "/preview",
+        "body": {
+          "installation_ref": "opaque-installation-ref",
+          "candidate_manifest": "EndpointManifestV2 JSON"
+        }
+      }
+    },
+    "candidateManifestInput": "endpoint-v2-only",
+    "edgeDeploymentState": "static-non-authoritative-projection",
+    "frontendMayExecuteArbitraryCommands": false,
+    "frontendMayAccessDockerSocket": false,
+    "frontendMayAccessSshPrivateKeys": false,
+    "frontendMayAccessHostPaths": false,
+    "frontendMayAccessCanonicalSqlite": false
+  },
+  "endpoints": {
+    "localEdge": {
+      "role": "projection-and-access",
+      "bind": "127.0.0.1",
+      "browserEntryUrl": "http://127.0.0.1:19021",
+      "browserContent": "static-only",
+      "hostsMcp": false,
+      "hostsHostProxy": false,
+      "persistentAuthority": false
+    },
+    "serverBackend": {
+      "role": "canonical-and-control",
+      "sqliteAccess": "sole-writer",
+      "runtimeStateAggregator": true
+    },
+    "computeNode": {
+      "role": "typed-derived-inference",
+      "capabilities": [
+        "embedding",
+        "rerank"
+      ],
+      "arbitraryPrompt": false,
+      "fileAccess": false,
+      "shellAccess": false,
+      "canonicalWrite": false
+    }
+  },
+  "transport": {
+    "sameHost": "private-compose-network",
+    "remoteEdge": "restricted-client-ssh-tunnel",
+    "remoteCompute": "restricted-reverse-ssh-tunnel",
+    "publicListenersAllowed": false
+  },
+  "routing": {
+    "splitAcceleratedPreference": "local-compute-first",
+    "cloudFallback": "explicit-when-configured-and-compatible",
+    "embeddingIdentityPolicy": "exact-match-or-profile-selects-one",
+    "unavailablePolicy": "durable-queue-and-text-degradation",
+    "recoveryPolicy": "consecutive-probes-plus-stable-window"
+  },
+  "security": {
+    "secretFreeManifest": true,
+    "secretFreeReceipts": true,
+    "credentialStorage": "host-or-server-secret-adapter",
+    "databaseContentInLogs": false,
+    "privateKeysInLogs": false,
+    "apiKeysInLogs": false
+  },
+  "verification": {
+    "memoryContextStatus": "unverified-mcp-http-502-at-spec-time",
+    "productionMigrationStatus": "not-executed"
+  }
+}

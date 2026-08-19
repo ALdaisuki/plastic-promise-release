@@ -406,7 +406,7 @@ def test_python_wrrf_populates_policy_and_complete_channel_debug(monkeypatch):
     monkeypatch.setattr(MultiProviderReranker, "rerank", lambda _self, _query, items: items)
     engine = ContextEngine(use_sqlite=False)
     engine._ensure_heavy_init = lambda: None
-    engine._activate_principles = lambda *_args: []
+    engine._activate_principles = lambda *_args, **_kwargs: []
     engine._inject_activated_to_graph = lambda *_args: 0
     engine._graph_traversal = lambda *_args: [("g", 0.9, "graph", "graph")]
     engine._text_retrieval = lambda *_args: [

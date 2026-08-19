@@ -1,58 +1,23 @@
-graph TD
-    Start(["👤 User / AI Agent"]) --> MCP["🔌 MCP Server :9020<br/>58 tools, 17 groups"]
+flowchart TB
+    Client["Codex Hook / MCP Client / Dashboard"] -->|"loopback HTTP or SSH LocalForward"| Gateway["MCP Gateway"]
+    Gateway --> Scope["Request scope and governance"]
+    Scope --> Context["Context Engine\nretrieve and fuse"]
+    Scope --> Pipeline["Memory / proposal admission"]
+    Context --> SQLite[("SQLite WAL\nonly canonical truth")]
+    Context --> Lance[("LanceDB generation\nderived retrieval")]
+    Pipeline -->|"canonical transaction + outbox"| SQLite
+    SQLite -. "bounded project-scoped work" .-> Maintenance["Maintenance\nretry + reconcile"]
+    Maintenance -->|"derived vector / JSON / rerank"| Inference{"Configured inference"}
+    Inference --> Cloud["Hosted provider\nconfigured egress only"]
+    Inference --> Node["Local heterogeneous node\nloopback / restricted tunnel"]
+    Maintenance -->|"derived projection"| Lance
+    Node -. "identity proof required" .-> Maintenance
+    Cloud -. "identity proof required" .-> Maintenance
+    Release["Release delivery\nPR -> RC -> protected stable"] -. "immutable software evidence only" .-> Gateway
 
-    MCP --> Memory["🧠 Memory Domain (9)<br/>Recall/CRUD/GC/Sync"]
-    MCP --> Principles["📜 Principles Domain (2)<br/>Activate/Evaluate"]
-    MCP --> Context["🔍 Context Domain (4)<br/>Supply/Inject/Graph/Auto"]
-    MCP --> Audit["🛡️ Audit & Defense (3)<br/>Run/PreCheck/Defense"]
-    MCP --> Reflection["🪞 Reflection (2)<br/>SCARF/Feedback"]
-    MCP --> System["⚙️ System + Runtime (5)<br/>Stats/Backup/Migrate/Issues/Mode"]
-    MCP --> Pack["📦 Experience Pack (2)<br/>Export/Import"]
-    MCP --> Domain["🌐 Domain Federation (1)"]
-    MCP --> Skill["📊 Skill Track (5)<br/>Start/Complete/Trace/Audit/Auto"]
-    MCP --> Skills["🎯 Programmatic Skills + SP<br/>session-init/smart-remember/step-closure/sp-stage"]
-    MCP --> Dispatch["🏹 Dispatch (7)<br/>Enqueue/Claim/Complete/Verify/Inbox/Heartbeat/Abandon"]
-
-    MCP --> Scope["Request Scope<br/>stage_session_id + flow_line_id + request_id"]
-    Scope --> CE["⚡ ContextEngine<br/>EntityGraph + RRF + Symbolic Rules"]
-    CE --> RustCore["Rust Snapshot Hot Path<br/>normal/debug recall + telemetry filter"]
-    Memory --> Scope
-    Principles --> CE
-    Context --> CE
-
-    CE --> SQLite["🗄️ SQLite WAL<br/>trust_scores + task_queue + memories"]
-    CE --> LanceDB["🔢 LanceDB<br/>ANN + FTS + RRF Fusion"]
-
-    MCP --> Daemon["🤖 Daemon Layer"]
-    Launcher["Launcher / ServiceManager<br/>runtime env + PYTHONPATH bootstrap"] --> Daemon
-    DaemonBootstrap["maintenance_daemon.py<br/>direct sys.path bootstrap"] --> Daemon
-    Daemon --> PiDaemon["pi_daemon.py<br/>Zero-Token Polling"]
-    Daemon --> AuditDaemon["audit_daemon.py<br/>Hourly 11-Dim Scan"]
-    Daemon --> SafetyNet["Safety-Net Daemon<br/>Orphan/Duplicate/Tier/Innovation"]
-
-    PiDaemon --> PiBuilder["🔨 Pi Builder<br/>(building)"]
-    PiDaemon --> PiFixer["🔧 Pi Fixer<br/>(fixing)"]
-    PiDaemon --> PiReviewer["👀 Pi Reviewer<br/>(reflecting)"]
-
-    PiBuilder --> TagSM["🏷️ Tag State Machine<br/>pending→active→done→review→reviewed"]
-    PiFixer --> TagSM
-    PiReviewer --> TagSM
-
-    TagSM --> SQLite
-
-    SafetyNet --> GC["MemoryGC.collect()<br/>~7 day cycle"]
-    GC --> LanceDB
-    GC --> SQLite
-
-    style Start fill:#90EE90,stroke:#2F4F2F,stroke-width:3px,color:#000
-    style MCP fill:#87CEEB,stroke:#1E3A5F,stroke-width:3px,color:#000
-    style Scope fill:#E6F7FF,stroke:#1E3A5F,stroke-width:2px,color:#000
-    style CE fill:#FFD700,stroke:#8B4513,stroke-width:3px,color:#000
-    style RustCore fill:#FFF8DC,stroke:#8B4513,stroke-width:2px,color:#000
-    style SQLite fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000
-    style LanceDB fill:#DDA0DD,stroke:#4B0082,stroke-width:2px,color:#000
-    style Daemon fill:#FFA07A,stroke:#8B0000,stroke-width:2px,color:#000
-    style Launcher fill:#FFE4B5,stroke:#8B4513,stroke-width:2px,color:#000
-    style DaemonBootstrap fill:#FFE4B5,stroke:#8B4513,stroke-width:2px,color:#000
-    style SafetyNet fill:#FF6347,stroke:#8B0000,stroke-width:2px,color:#000
-    style TagSM fill:#98FB98,stroke:#006400,stroke-width:2px,color:#000
+    classDef truth fill:#134e4a,stroke:#34d399,color:#f8fafc;
+    classDef derived fill:#312e81,stroke:#a78bfa,color:#f8fafc;
+    classDef runtime fill:#155e75,stroke:#67e8f9,color:#f8fafc;
+    class SQLite truth;
+    class Lance,Cloud,Node derived;
+    class Gateway,Scope,Context,Pipeline,Maintenance runtime;

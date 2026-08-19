@@ -38,10 +38,11 @@ def test_standard_release_variant_is_a_distribution_contract():
     }
     assert payload["storage"]["bundled_runtime_state"] is False
     assert payload["configuration"]["secret_values"] == "forbidden"
-    assert payload["deployment"]["default_profile"] == "split-async"
+    assert payload["deployment"]["default_profile"] == "local-all-in-one"
     assert set(payload["deployment"]["profiles"]) == {
         "local-all-in-one",
-        "split-async",
+        "local-cloud",
+        "split-accelerated",
     }
     assert payload["content_policy"]["engineering_pattern_allowlist"]
     assert {
@@ -51,7 +52,34 @@ def test_standard_release_variant_is_a_distribution_contract():
         "twine-check",
         "external-release-evidence",
         "atomic-push",
+        "exact-wheel-install",
+        "oci-build-contract",
+        "sbom",
+        "release-manifest",
+        "github-artifact-attestation",
+        "testpypi-exact-install",
+        "explicit-production-approval",
+        "server-deployment-e2e-receipt",
     } <= set(payload["release"]["required_gates"])
+    assert {
+        "server-oci-multiarch",
+        "inference-node-oci-linux-amd64",
+        "server-compose-template",
+        "server-systemd-template",
+        "cyclonedx-sbom",
+        "release-manifest",
+    } <= set(payload["release"]["artifacts"])
+
+
+def test_release_variant_topologies_match_the_deployment_catalog():
+    from plastic_promise.deployment import stable_profiles
+
+    payload = _standard_payload()
+
+    assert {
+        profile_id: profile["topology"]
+        for profile_id, profile in payload["deployment"]["profiles"].items()
+    } == {profile.id: profile.topology for profile in stable_profiles()}
 
 
 def test_release_variant_rejects_secret_values(tmp_path):
@@ -94,10 +122,25 @@ def test_release_variant_rejects_unknown_fields(tmp_path):
         validator.validate_release_variant(path, repo_root=tmp_path)
 
 
-def test_release_variant_requires_server_only_canonical_state_for_split_async(tmp_path):
+def test_release_variant_rejects_unreleased_deployment_profile(tmp_path):
     validator = _load_validator()
     payload = _standard_payload()
-    payload["deployment"]["profiles"]["split-async"]["canonical_state_location"] = (
+    payload["deployment"]["profiles"]["split-async"] = copy.deepcopy(
+        payload["deployment"]["profiles"]["split-accelerated"]
+    )
+    path = _write_variant(tmp_path, payload)
+
+    with pytest.raises(
+        validator.ReleaseVariantError,
+        match="deployment_profile_unexpected:split-async",
+    ):
+        validator.validate_release_variant(path, repo_root=tmp_path)
+
+
+def test_release_variant_requires_server_only_canonical_state_for_split_accelerated(tmp_path):
+    validator = _load_validator()
+    payload = _standard_payload()
+    payload["deployment"]["profiles"]["split-accelerated"]["canonical_state_location"] = (
         "client-and-server"
     )
     path = _write_variant(tmp_path, payload)
@@ -113,6 +156,16 @@ def test_release_variant_requires_all_in_one_state_to_remain_local(tmp_path):
     path = _write_variant(tmp_path, payload)
 
     with pytest.raises(validator.ReleaseVariantError, match="local_profile_invalid"):
+        validator.validate_release_variant(path, repo_root=tmp_path)
+
+
+def test_release_variant_requires_local_cloud_state_to_remain_local(tmp_path):
+    validator = _load_validator()
+    payload = _standard_payload()
+    payload["deployment"]["profiles"]["local-cloud"]["derived_index_location"] = "cloud"
+    path = _write_variant(tmp_path, payload)
+
+    with pytest.raises(validator.ReleaseVariantError, match="local_cloud_profile_invalid"):
         validator.validate_release_variant(path, repo_root=tmp_path)
 
 

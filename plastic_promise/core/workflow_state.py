@@ -210,7 +210,7 @@ def resolve_workflow_instance(
     route_id = str(requested_route or "").strip()
     had_transaction = bool(connection.in_transaction)
     ensure_workflow_state_schema(connection)
-    now = datetime.datetime.now(datetime.UTC).isoformat()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def active_instance() -> WorkflowInstance | None:
         row = connection.execute(
@@ -406,7 +406,7 @@ def _upsert_workflow_state(connection, state: WorkflowState) -> None:
             state.current_step_index,
             state.parent_entity_id or "",
             state.current_entity_id or "",
-            datetime.datetime.now(datetime.UTC).isoformat(),
+            datetime.datetime.now(datetime.timezone.utc).isoformat(),
         ),
     )
 
@@ -466,7 +466,7 @@ def commit_workflow_transition(
                 receipt["upstream_revision"],
                 receipt["content_sha256"],
                 evidence_json,
-                datetime.datetime.now(datetime.UTC).isoformat(),
+                datetime.datetime.now(datetime.timezone.utc).isoformat(),
             ),
         )
         row = connection.execute(

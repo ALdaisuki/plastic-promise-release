@@ -8,6 +8,7 @@
 """
 
 import json
+import os
 from typing import Any
 
 from mcp.types import TextContent
@@ -40,9 +41,12 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
     author_target = args.get("author_target", "pi_builder")
     reviewer_target = args.get("reviewer_target", "pi_reviewer")
     spec_path = args.get("spec_path")
+    project_id = args.get("project_id") or "project:unknown"
 
-    if action in {"prepare", "full"} and not args.get("project_id") and not args.get(
-        "allow_project_unknown"
+    if (
+        action in {"prepare", "full"}
+        and not args.get("project_id")
+        and not args.get("allow_project_unknown")
     ):
         return [
             TextContent(
@@ -77,14 +81,23 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
     except Exception:
         pass  # trust 不可用时降级 — 审查仍可执行
 
+    evolution_evidence = None
+    if os.environ.get("PP_EVOLUTION_EVIDENCE", "off").strip().lower() in {"shadow", "on"}:
+        database_path = str(getattr(engine, "_db_path", "") or "")
+        if database_path and database_path != ":memory:":
+            from plastic_promise.core.evolution_evidence import EvolutionEvidence
+
+            evolution_evidence = EvolutionEvidence(database_path)
+
     review_engine = ReviewEngine(
         trust_manager=trust_manager,
         context_engine=engine,
+        evolution_evidence=evolution_evidence,
     )
 
     try:
         if action == "prepare":
-            prep = review_engine.prepare(commit_range, spec_path=spec_path)
+            prep = review_engine.prepare(commit_range, spec_path=spec_path, project_id=project_id)
             return [
                 TextContent(
                     type="text",
@@ -95,6 +108,7 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
                             "files_changed": prep["changed_files"],
                             "files_count": len(prep["changed_files"]),
                             "pre_check": prep["pre_check_results"],
+                            "security_scan": prep["security_scan"],
                             "git_available": prep["git_available"],
                             "prompt": prep["structured_prompt"],
                             "prompt_length": len(prep["structured_prompt"]),
@@ -121,13 +135,14 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
                 ]
 
             # 需要先跑 prepare 获取 diff
-            prep = review_engine.prepare(commit_range, spec_path=spec_path)
+            prep = review_engine.prepare(commit_range, spec_path=spec_path, project_id=project_id)
 
             report = review_engine.evaluate(
                 diff_text=prep["diff_text"],
                 changed_files=prep["changed_files"],
                 pre_check=prep["pre_check_results"],
                 review_output=review_output,
+                security_scan=prep["security_scan"],
             )
             return [
                 TextContent(
@@ -164,12 +179,13 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
                     )
                 ]
 
-            prep = review_engine.prepare(commit_range, spec_path=spec_path)
+            prep = review_engine.prepare(commit_range, spec_path=spec_path, project_id=project_id)
             report = review_engine.evaluate(
                 diff_text=prep["diff_text"],
                 changed_files=prep["changed_files"],
                 pre_check=prep["pre_check_results"],
                 review_output=review_output,
+                security_scan=prep["security_scan"],
             )
             result = review_engine.apply(
                 report,
@@ -199,7 +215,7 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
 
         elif action == "full":
             # 完整管线: prepare → evaluate → apply
-            prep = review_engine.prepare(commit_range, spec_path=spec_path)
+            prep = review_engine.prepare(commit_range, spec_path=spec_path, project_id=project_id)
 
             if not review_output:
                 # 仅返回 prepare 结果 + 提示
@@ -214,6 +230,7 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
                                 "commit_range": commit_range,
                                 "files_changed": prep["changed_files"],
                                 "pre_check": prep["pre_check_results"],
+                                "security_scan": prep["security_scan"],
                                 "prompt": prep["structured_prompt"],
                                 "prompt_length": len(prep["structured_prompt"]),
                             },
@@ -228,6 +245,7 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
                 changed_files=prep["changed_files"],
                 pre_check=prep["pre_check_results"],
                 review_output=review_output,
+                security_scan=prep["security_scan"],
             )
             result = review_engine.apply(
                 report,

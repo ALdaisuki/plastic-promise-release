@@ -26,6 +26,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from plastic_promise.release_manifest import (
+    ReleaseManifestError,
+    release_manifest_sha256,
+    validate_release_manifest,
+    validate_server_deployment_receipt,
+)
+
 # ── Project root detection ──────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -35,6 +42,8 @@ DEFAULT_EXPECTED_ORIGIN = "https://github.com/ALdaisuki/plastic-promise-release.
 DEFAULT_EXPECTED_SOURCE_ORIGIN = "https://github.com/ALdaisuki/plastic-promise.git"
 MAX_VALIDATION_DIAGNOSTIC_CHARS = 12_000
 MAX_RELEASE_EVIDENCE_BYTES = 16_384
+MAX_RELEASE_MANIFEST_BYTES = 65_536
+MAX_SERVER_DEPLOYMENT_RECEIPT_BYTES = 16_384
 REQUIRED_RELEASE_EVIDENCE_GATES = frozenset(
     {
         "diff_check",
@@ -45,6 +54,7 @@ REQUIRED_RELEASE_EVIDENCE_GATES = frozenset(
         "restart_recovery",
         "scoped_ruff",
         "secret_scan",
+        "server_deployment_e2e",
         "targeted_tests",
     }
 )
@@ -218,6 +228,22 @@ def build_argparser() -> argparse.ArgumentParser:
             "allowed live mode (--push with full validation)."
         ),
     )
+    p.add_argument(
+        "--release-manifest",
+        default=None,
+        help=(
+            "Path to the immutable stable release-manifest JSON produced by the "
+            "protected OCI workflow. Required for live publication."
+        ),
+    )
+    p.add_argument(
+        "--server-deployment-receipt",
+        default=None,
+        help=(
+            "Path to the bounded server deployment receipt proving digest-pinned MCP "
+            "acceptance. Required for live publication."
+        ),
+    )
     return p
 
 
@@ -227,6 +253,8 @@ def validate_publication_options(
     dry_run: bool,
     validation_profile: str,
     release_evidence: str | None,
+    release_manifest: str | None,
+    server_deployment_receipt: str | None,
 ) -> None:
     """Reject publication modes that bypass the complete release evidence chain."""
     if dry_run and push:
@@ -237,6 +265,87 @@ def validate_publication_options(
         raise ValueError("release_push_requires_full_validation")
     if push and not release_evidence:
         raise ValueError("release_push_requires_external_evidence")
+    if push and not release_manifest:
+        raise ValueError("release_push_requires_release_manifest")
+    if push and not server_deployment_receipt:
+        raise ValueError("release_push_requires_server_deployment_receipt")
+
+
+def _load_bounded_json_object(
+    path: Path,
+    *,
+    label: str,
+    max_bytes: int,
+) -> tuple[dict[str, object], str]:
+    """Read one regular bounded JSON object and return it with its SHA-256."""
+
+    resolved_path = path.resolve()
+    if path.is_symlink() or not resolved_path.is_file():
+        raise ValueError(f"{label}_not_regular_file")
+    raw = resolved_path.read_bytes()
+    if not raw or len(raw) > max_bytes:
+        raise ValueError(f"{label}_size_invalid")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label}_json_invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label}_not_object")
+    return payload, hashlib.sha256(raw).hexdigest()
+
+
+def validate_stable_release_manifest_file(
+    path: Path,
+    *,
+    version: str,
+    source_commit: str,
+) -> str:
+    """Bind the live publication path to one protected stable manifest."""
+
+    payload, _raw_payload_sha256 = _load_bounded_json_object(
+        path,
+        label="release_manifest",
+        max_bytes=MAX_RELEASE_MANIFEST_BYTES,
+    )
+    try:
+        validate_release_manifest(payload)
+    except ReleaseManifestError as exc:
+        raise ValueError(str(exc)) from exc
+    release = payload["release"]
+    source = payload["source"]
+    if not isinstance(release, dict) or release.get("semver") != version:
+        raise ValueError("release_manifest_version_mismatch")
+    if release.get("channel") != "stable":
+        raise ValueError("release_manifest_stable_channel_required")
+    if not isinstance(source, dict) or source.get("commit") != source_commit:
+        raise ValueError("release_manifest_source_mismatch")
+    return release_manifest_sha256(payload)
+
+
+def validate_server_deployment_receipt_file(
+    path: Path,
+    *,
+    version: str,
+    source_commit: str,
+    release_manifest_sha256: str,
+) -> str:
+    """Validate a no-secret receipt that proves the server accepted one digest."""
+
+    payload, payload_sha256 = _load_bounded_json_object(
+        path,
+        label="server_deployment_receipt",
+        max_bytes=MAX_SERVER_DEPLOYMENT_RECEIPT_BYTES,
+    )
+    try:
+        validate_server_deployment_receipt(
+            payload,
+            release_version=version,
+            source_commit=source_commit,
+            release_manifest_sha256=release_manifest_sha256,
+        )
+    except ReleaseManifestError as exc:
+        raise ValueError(str(exc)) from exc
+    return payload_sha256
 
 
 def validate_release_evidence(
@@ -247,6 +356,8 @@ def validate_release_evidence(
     source_range: str,
     audit_range: str,
     release_scope_sha256: str,
+    release_manifest_sha256: str,
+    server_deployment_receipt_sha256: str,
 ) -> str:
     """Validate bounded external release gates and return the evidence SHA-256."""
     evidence_path = path.resolve()
@@ -269,6 +380,8 @@ def validate_release_evidence(
         "source_range",
         "audit_range",
         "release_scope_sha256",
+        "release_manifest_sha256",
+        "server_deployment_receipt_sha256",
         "automated_audit_score",
         "blocking_findings",
         "major_findings",
@@ -291,6 +404,12 @@ def validate_release_evidence(
         or payload["release_scope_sha256"] != release_scope_sha256
     ):
         raise ValueError("release_evidence_scope_mismatch")
+    for field, expected in (
+        ("release_manifest_sha256", release_manifest_sha256),
+        ("server_deployment_receipt_sha256", server_deployment_receipt_sha256),
+    ):
+        if re.fullmatch(r"[0-9a-f]{64}", expected) is None or payload[field] != expected:
+            raise ValueError(f"release_evidence_{field}_mismatch")
 
     score = payload["automated_audit_score"]
     if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0.60 <= score <= 1:
@@ -1606,6 +1725,8 @@ def main() -> None:
             dry_run=args.dry_run,
             validation_profile=args.validation_profile,
             release_evidence=args.release_evidence,
+            release_manifest=args.release_manifest,
+            server_deployment_receipt=args.server_deployment_receipt,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -1654,6 +1775,17 @@ def main() -> None:
             )
         )
         try:
+            release_manifest_sha256 = validate_stable_release_manifest_file(
+                Path(args.release_manifest),
+                version=args.version,
+                source_commit=source_commit,
+            )
+            server_deployment_receipt_sha256 = validate_server_deployment_receipt_file(
+                Path(args.server_deployment_receipt),
+                version=args.version,
+                source_commit=source_commit,
+                release_manifest_sha256=release_manifest_sha256,
+            )
             evidence_sha256 = validate_release_evidence(
                 Path(args.release_evidence),
                 version=args.version,
@@ -1661,6 +1793,8 @@ def main() -> None:
                 source_range=source_range_binding,
                 audit_range=audit_range_binding,
                 release_scope_sha256=release_scope_digest,
+                release_manifest_sha256=release_manifest_sha256,
+                server_deployment_receipt_sha256=server_deployment_receipt_sha256,
             )
         except (OSError, ValueError) as exc:
             print(f"ERROR: External release evidence failed: {exc}")
@@ -1676,6 +1810,8 @@ def main() -> None:
             f"(HEAD=origin/{preflight['branch']}={preflight['head']}; tag absent locally/remotely)"
         )
         print(f"  External evidence: verified sha256={evidence_sha256}")
+        print(f"  Stable manifest: verified sha256={release_manifest_sha256}")
+        print(f"  Server receipt: verified sha256={server_deployment_receipt_sha256}")
         print(
             "  Evidence binding: "
             f"source_range={source_range_binding}; audit_range={audit_range_binding}; "

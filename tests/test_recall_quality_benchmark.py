@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from dataclasses import replace
@@ -936,6 +937,134 @@ def test_live_report_uses_isolated_seeded_corpus_restores_environment_and_requir
     assert not paths.root.exists()
 
 
+def test_governed_live_isolation_snapshots_canonical_sqlite(monkeypatch, tmp_path):
+    source = tmp_path / "canonical.db"
+    from plastic_promise.deployment.sqlite_migrations import apply_node_governance_schema
+
+    connection = sqlite3.connect(source)
+    connection.execute("BEGIN")
+    apply_node_governance_schema(connection)
+    connection.execute("CREATE TABLE unrelated_memory (id TEXT PRIMARY KEY)")
+    connection.execute(
+        """
+        INSERT INTO inference_nodes (
+            node_id, node_kind, transport_id, transport_evidence,
+            expected_identity_json, declared_capabilities_json,
+            max_concurrency, state, queue_depth, reported_available_slots,
+            registration_source, registration_reference, verification_receipt,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "node:test",
+            "remote-node",
+            "transport:test",
+            "sha256:" + "a" * 64,
+            "{}",
+            "[]",
+            1,
+            "active",
+            0,
+            1,
+            "test",
+            "test",
+            "receipt:test",
+            "2026-08-16T00:00:00Z",
+            "2026-08-16T00:00:00Z",
+        ),
+    )
+    connection.commit()
+    connection.close()
+    monkeypatch.setenv("PP_CONTROL_PLANE", "1")
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(source))
+
+    with benchmark_recall_quality._isolated_live_environment(
+        "compact-v2",
+        "max-v1",
+        project_id="project:benchmark",
+    ) as paths:
+        assert paths.sqlite != source
+        isolated = sqlite3.connect(paths.sqlite)
+        assert isolated.execute("SELECT node_id FROM inference_nodes").fetchone() == (
+            "node:test",
+        )
+        assert (
+            isolated.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unrelated_memory'"
+            ).fetchone()
+            is None
+        )
+        isolated.close()
+
+
+def test_public_synthesis_seed_supplies_current_compact_summary(monkeypatch):
+    source = SimpleNamespace(
+        memory_id="source-fixture",
+        content="Canonical source content.",
+        domain="building",
+        category="fact",
+        l0_abstract="Canonical source",
+        l1_summary="The source is current and independently stored.",
+        project_id="project:benchmark",
+        memory_type="experience",
+        synthesis_status="not-synthesis",
+        metadata={},
+    )
+    synthesis = SimpleNamespace(
+        memory_id="synthesis-fixture",
+        content="A governed derived conclusion.",
+        domain="governing",
+        category="decision",
+        l0_abstract="Governed conclusion",
+        l1_summary="The conclusion remains hidden until it is verified.",
+        project_id="project:benchmark",
+        memory_type="synthesis",
+        synthesis_status="draft",
+        metadata={"source_ids": (source.memory_id,)},
+    )
+    payloads: list[dict[str, object]] = []
+
+    async def fake_call_tool_json(_url, tool_name, arguments):
+        assert tool_name == "memory_store"
+        payloads.append(arguments)
+        return {
+            "stored": True,
+            "memory_id": (
+                "actual-synthesis" if arguments["memory_type"] == "synthesis" else "actual-source"
+            ),
+        }
+
+    monkeypatch.setattr(benchmark_recall_quality, "call_tool_json", fake_call_tool_json)
+    mapping, evidence = asyncio.run(
+        benchmark_recall_quality._seed_public_corpus(
+            "http://127.0.0.1:19020/mcp",
+            SimpleNamespace(corpus=(source, synthesis)),
+            {
+                "memory_store": 0,
+                "feedback_apply": 0,
+                "memory_update": 0,
+            },
+        )
+    )
+
+    synthesis_payload = next(
+        payload for payload in payloads if payload["memory_type"] == "synthesis"
+    )
+    assert synthesis_payload["metadata_json"] == {
+        "fixture_id": synthesis.memory_id,
+        "domain": synthesis.domain,
+        "category": synthesis.category,
+        "l0_abstract": synthesis.l0_abstract,
+        "l1_summary": synthesis.l1_summary,
+    }
+    assert synthesis_payload["source_ids"] == ["actual-source"]
+    assert mapping == {
+        source.memory_id: "actual-source",
+        synthesis.memory_id: "actual-synthesis",
+    }
+    assert evidence["seeded"] is True
+
+
 def test_live_benchmark_binds_process_and_evidence_to_heldout_project():
     dataset = benchmark_recall_quality.load_dataset_bundle(HELDOUT_DATASET)
 
@@ -1614,6 +1743,34 @@ def test_live_adapter_consumes_complete_rankings_without_survivor_reconstruction
     assert states["graph"]["evidence_only"] is True
 
 
+def test_live_adapter_normalizes_optional_diagnostic_channels():
+    def pack(*, graph=None, code=None):
+        states = {
+            channel: _channel_state()
+            for channel in ("vector", "bm25", "fts")
+        }
+        if graph is not None:
+            states["graph"] = graph
+        if code is not None:
+            states["code"] = code
+        return SimpleNamespace(
+            channel_rankings={"vector": [], "bm25": [], "fts": []},
+            channel_states=states,
+        )
+
+    _, first = benchmark_recall_quality._channel_evidence_from_pack(
+        pack(graph=_channel_state(participating=True, evidence_only=True, reason="diagnostic")),
+        {},
+    )
+    _, second = benchmark_recall_quality._channel_evidence_from_pack(pack(code=_channel_state()), {})
+
+    assert set(first) == set(second)
+    assert first["graph"]["evidence_only"] is True
+    assert second["graph"]["evidence_only"] is True
+    assert first["graph"]["diagnostic"]["reason"] == "diagnostic"
+    assert second["graph"]["diagnostic"]["present"] is False
+
+
 @pytest.mark.parametrize(
     ("pack", "audit", "expected"),
     [
@@ -2169,6 +2326,11 @@ def test_live_backend_requires_health_pid_equal_spawned_process(tmp_path, monkey
         "PP_RERANK_API_KEY": "rerank-secret",
         "JINA_API_KEY": "jina-secret",
         "SILICONFLOW_API_KEY": "siliconflow-secret",
+        "PP_CONTROL_PLANE": "1",
+        "PP_CONTROL_ROOT": "/srv/plastic-promise/state/control",
+        "PP_DEPLOYMENT_MANIFEST_PATH": "/srv/plastic-promise/state/deployment-manifest.json",
+        "PP_NODE_PRIVATE_ENDPOINTS_FILE": "/srv/plastic-promise/state/secrets/private-nodes.json",
+        "PP_NODE_AUTH_COMPUTE_LOCAL": "Bearer private-node-secret",
         "UNRELATED_SECRET": "must-not-leak",
     }.items():
         monkeypatch.setenv(name, value)
@@ -2219,6 +2381,17 @@ def test_live_backend_requires_health_pid_equal_spawned_process(tmp_path, monkey
     assert started_env["PP_RERANK_PROVIDERS"] == "cloud,original"
     assert started_env["PP_RERANK_CLOUD_MODEL_REVISION"] == "revision-a"
     assert started_env["PP_RERANK_API_KEY"] == "rerank-secret"
+    assert started_env["PP_CONTROL_PLANE"] == "1"
+    assert started_env["PP_CONTROL_ROOT"] == "/srv/plastic-promise/state/control"
+    assert (
+        started_env["PP_DEPLOYMENT_MANIFEST_PATH"]
+        == "/srv/plastic-promise/state/deployment-manifest.json"
+    )
+    assert (
+        started_env["PP_NODE_PRIVATE_ENDPOINTS_FILE"]
+        == "/srv/plastic-promise/state/secrets/private-nodes.json"
+    )
+    assert started_env["PP_NODE_AUTH_COMPUTE_LOCAL"] == "Bearer private-node-secret"
     assert "JINA_API_KEY" not in started_env
     assert "SILICONFLOW_API_KEY" not in started_env
     assert "UNRELATED_SECRET" not in started_env

@@ -8,6 +8,10 @@ from collections import defaultdict
 from plastic_promise.core.paths import get_db_path
 from plastic_promise.core.synthesis import ensure_synthesis_schema
 from plastic_promise.core.synthesis_retrieval import ordinary_memory_sql_predicate
+from plastic_promise.cron.project_scope import (
+    ProjectScopeResolutionError,
+    resolve_memory_project_id,
+)
 
 
 def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
@@ -64,7 +68,7 @@ def _get_tag_blacklist() -> set[str]:
     return builtin
 
 
-async def scan_architecture(engine) -> dict:
+async def scan_architecture(engine, *, project_id: str | None = None) -> dict:
     """Scan architecture for structural signals:
     1. Domain cycles — domains that reference each other bidirectionally
     2. God modules — domains with disproportionate memory count (dynamic threshold)
@@ -79,13 +83,25 @@ async def scan_architecture(engine) -> dict:
     findings = []
 
     try:
+        project_id = resolve_memory_project_id(conn, project_id)
+    except ProjectScopeResolutionError as exc:
+        conn.close()
+        return {
+            "scanner": "scan_architecture",
+            "findings": 0,
+            "dispatched": 0,
+            "failure_code": exc.reason,
+        }
+
+    try:
         # 1. Domain cycles: detect bidirectional domain references in memory content
         #    We look at entity_ids (JSON array) for cross-domain references
         domain_counts = conn.execute(
             "SELECT domain, COUNT(*) as cnt FROM memories "
             "WHERE domain IS NOT NULL AND domain != '' "
-            f"AND {ordinary_guard} "
-            "GROUP BY domain"
+            f"AND {ordinary_guard} AND project_id = ? "
+            "GROUP BY domain",
+            (project_id,),
         ).fetchall()
 
         if len(domain_counts) >= 2:
@@ -96,8 +112,8 @@ async def scan_architecture(engine) -> dict:
                 rows = conn.execute(
                     "SELECT entity_ids, content FROM memories "
                     "WHERE domain=? AND entity_ids IS NOT NULL AND entity_ids != '' "
-                    f"AND {ordinary_guard}",
-                    (domain,),
+                    f"AND {ordinary_guard} AND project_id = ?",
+                    (domain, project_id),
                 ).fetchall()
                 for row in rows:
                     try:
@@ -141,8 +157,9 @@ async def scan_architecture(engine) -> dict:
             "AVG(activation_weight) as avg_weight "
             "FROM memories "
             "WHERE domain IS NOT NULL AND domain != '' "
-            f"AND {ordinary_guard} "
-            "GROUP BY domain"
+            f"AND {ordinary_guard} AND project_id = ? "
+            "GROUP BY domain",
+            (project_id,),
         ).fetchall()
 
         if len(domain_sizes) >= 3:
@@ -173,7 +190,8 @@ async def scan_architecture(engine) -> dict:
             "SELECT tags, domain FROM memories "
             "WHERE tags IS NOT NULL AND tags != '[]' AND tags != '' "
             "AND domain IS NOT NULL AND domain != '' "
-            f"AND {ordinary_guard}"
+            f"AND {ordinary_guard} AND project_id = ?",
+            (project_id,),
         ).fetchall()
 
         if tag_domain_rows:
@@ -230,6 +248,7 @@ async def scan_architecture(engine) -> dict:
                     "to_agent": f["to_agent"],
                     "priority": f["priority"],
                     "source_scan": "scan_architecture",
+                    "project_id": project_id,
                     "payload": f,
                 },
             )

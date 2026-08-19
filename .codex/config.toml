@@ -1,10 +1,10 @@
 [mcp_servers.plastic_promise]
-url = "http://127.0.0.1:9020/mcp"
+url = "http://127.0.0.1:19020/mcp"
 startup_timeout_sec = 120
 tool_timeout_sec = 120
 
 [profiles.stdio-fallback.mcp_servers.plastic_promise]
-command = "python"
+command = ".venv/bin/python"
 args = ["-m", "plastic_promise"]
 startup_timeout_sec = 120
 tool_timeout_sec = 120

@@ -420,7 +420,9 @@ def _process_create_time(pid: int) -> float | None:
             )
             value = completed.stdout.strip()
             if completed.returncode == 0 and value:
-                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+                normalized = value.replace("Z", "+00:00")
+                normalized = re.sub(r"(\.\d{6})\d+(?=[+-]\d{2}:\d{2}$)", r"\1", normalized)
+                return datetime.fromisoformat(normalized).timestamp()
         except (OSError, subprocess.SubprocessError, ValueError):
             return None
         return None
@@ -575,7 +577,7 @@ def run_lancedb_warmup_maintenance():
 def run_startup_recovery():
     """Run best-effort storage/task recovery before services start."""
     try:
-        result = release_stale_claims()
+        result = release_stale_claims(system_authority=True)
         released = result.get("released_count", 0)
         escalated = result.get("escalated_count", 0)
         return True, f"stale_claims_released={released}, escalated={escalated}"

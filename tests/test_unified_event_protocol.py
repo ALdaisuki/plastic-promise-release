@@ -53,6 +53,38 @@ def test_runtime_events_schema_records_status_transitions(tmp_path):
     conn.close()
 
 
+def test_runtime_event_does_not_commit_caller_owned_transaction(tmp_path):
+    from plastic_promise.core.event_protocol import record_runtime_event
+
+    db_path = tmp_path / "events.db"
+    conn = sqlite3.connect(db_path)
+    ensure_traceability_schema(conn)
+    conn.execute("CREATE TABLE transaction_marker (value TEXT NOT NULL)")
+    conn.commit()
+
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("INSERT INTO transaction_marker (value) VALUES ('pending')")
+    event_id = record_runtime_event(
+        conn,
+        event_kind="task",
+        event_name="task_claim",
+        status="running",
+        project_id="project:test",
+        actor="codex",
+    )
+    assert conn.in_transaction is True
+    conn.rollback()
+
+    assert conn.execute("SELECT COUNT(*) FROM transaction_marker").fetchone()[0] == 0
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM runtime_events WHERE event_id = ?", (event_id,)
+        ).fetchone()[0]
+        == 0
+    )
+    conn.close()
+
+
 def test_mcp_call_tool_records_completed_and_error_events(tmp_path, monkeypatch):
     monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "plastic.db"))
     monkeypatch.setattr(mcp_server, "_engine", None)
@@ -108,6 +140,7 @@ def test_task_enqueue_records_task_runtime_event(tmp_path, monkeypatch):
         handle_task_enqueue(
             MockEngine(),
             {
+                "project_id": "project:test",
                 "task_type": "build_feature",
                 "title": "Build runtime event test",
                 "to_agent": "pi_builder",

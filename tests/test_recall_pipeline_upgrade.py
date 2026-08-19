@@ -14,7 +14,7 @@ def _engine_with_result(monkeypatch, result, memory=None, vector_results=None):
     _patch_rerank_identity(monkeypatch)
     engine = ContextEngine(use_sqlite=False)
     engine._ensure_heavy_init = lambda: None
-    engine._activate_principles = lambda task_type, task_description: []
+    engine._activate_principles = lambda task_type, task_description, **_kwargs: []
     engine._inject_activated_to_graph = lambda activated, task_type: 0
     engine._graph_traversal = lambda task_type: []
     engine._text_retrieval = lambda query, trust_boost=1.0, domain_hint=None: []
@@ -669,7 +669,11 @@ class TestRequestScope:
             return []
 
         monkeypatch.setattr(engine, "_ensure_heavy_init", lambda: None)
-        monkeypatch.setattr(engine, "_activate_principles", lambda task_type, task: [])
+        monkeypatch.setattr(
+            engine,
+            "_activate_principles",
+            lambda task_type, task, **_kwargs: [],
+        )
         monkeypatch.setattr(engine, "_inject_activated_to_graph", lambda activated, task_type: 0)
         monkeypatch.setattr(engine, "_graph_traversal", lambda task_type: [])
         monkeypatch.setattr(engine, "_text_retrieval", fake_text)
@@ -800,7 +804,7 @@ class TestQueryExpansionIntegration:
         seen = {}
         engine = ContextEngine(use_sqlite=False)
         engine._ensure_heavy_init = lambda: None
-        engine._activate_principles = lambda task_type, task_description: []
+        engine._activate_principles = lambda task_type, task_description, **_kwargs: []
         engine._inject_activated_to_graph = lambda activated, task_type: 0
         engine._graph_traversal = lambda task_type: []
         engine._vector_retrieval = lambda vector, scope=None: []

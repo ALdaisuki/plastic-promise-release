@@ -66,7 +66,11 @@ _ASYNC_PIPELINE_FIELDS = {
     "project_isolation",
     "client_delivery",
 }
-_REQUIRED_DEPLOYMENT_PROFILES = {"local-all-in-one", "split-async"}
+_REQUIRED_DEPLOYMENT_PROFILES = {
+    "local-all-in-one",
+    "local-cloud",
+    "split-accelerated",
+}
 _REQUIRED_CAPABILITIES = {
     "shared-memory",
     "context-supply",
@@ -97,6 +101,14 @@ _REQUIRED_GATES = {
     "twine-check",
     "external-release-evidence",
     "atomic-push",
+    "exact-wheel-install",
+    "oci-build-contract",
+    "sbom",
+    "release-manifest",
+    "github-artifact-attestation",
+    "testpypi-exact-install",
+    "explicit-production-approval",
+    "server-deployment-e2e-receipt",
 }
 _REQUIRED_PROVENANCE = {
     "source-head-bound",
@@ -104,6 +116,9 @@ _REQUIRED_PROVENANCE = {
     "commit-tree-attested",
     "annotated-tag-attested",
     "atomic-push",
+    "oci-digest-bound",
+    "artifact-sha256-bound",
+    "github-artifact-attestation",
 }
 _ALLOWED_RUNTIME_MODES = {"light", "normal", "rust-normal", "full", "rust-full"}
 _ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -247,13 +262,18 @@ def validate_release_variant(path: Path, *, repo_root: Path) -> dict[str, Any]:
         raise ReleaseVariantError("release_variant_runtime_state_must_not_be_bundled")
 
     deployment = sections["deployment"]
-    if deployment["default_profile"] != "split-async":
+    if deployment["default_profile"] != "local-all-in-one":
         raise ReleaseVariantError("release_variant_default_deployment_invalid")
     profiles = _require_mapping(deployment["profiles"], "deployment.profiles")
     missing_profiles = sorted(_REQUIRED_DEPLOYMENT_PROFILES - set(profiles))
     if missing_profiles:
         raise ReleaseVariantError(
             "release_variant_deployment_profile_missing:" + ",".join(missing_profiles)
+        )
+    unexpected_profiles = sorted(set(profiles) - _REQUIRED_DEPLOYMENT_PROFILES)
+    if unexpected_profiles:
+        raise ReleaseVariantError(
+            "release_variant_deployment_profile_unexpected:" + ",".join(unexpected_profiles)
         )
     for profile_id, profile_value in profiles.items():
         if _VARIANT_ID.fullmatch(profile_id) is None:
@@ -281,9 +301,23 @@ def validate_release_variant(path: Path, *, repo_root: Path) -> dict[str, Any]:
     if local_profile != expected_local:
         raise ReleaseVariantError("release_variant_local_profile_invalid")
 
-    split_profile = profiles["split-async"]
+    local_cloud_profile = profiles["local-cloud"]
+    expected_local_cloud = {
+        "topology": "single-host-cloud-inference",
+        "frontend_location": "local",
+        "runtime_location": "local",
+        "canonical_state_location": "local-runtime",
+        "derived_index_location": "local-runtime",
+        "client_cache": "optional-bounded",
+        "transport": "loopback-http",
+        "async_worker_location": "local-runtime",
+    }
+    if local_cloud_profile != expected_local_cloud:
+        raise ReleaseVariantError("release_variant_local_cloud_profile_invalid")
+
+    split_profile = profiles["split-accelerated"]
     expected_split = {
-        "topology": "client-server",
+        "topology": "server-local-inference-node",
         "frontend_location": "client",
         "runtime_location": "server",
         "canonical_state_location": "server-only",
@@ -353,7 +387,20 @@ def validate_release_variant(path: Path, *, repo_root: Path) -> dict[str, Any]:
 
     release = sections["release"]
     artifacts = set(_require_string_list(release["artifacts"], "release.artifacts"))
-    if not {"wheel", "sdist", "annotated-source-tag"} <= artifacts:
+    if (
+        not {
+            "wheel",
+            "sdist",
+            "annotated-source-tag",
+            "server-oci-multiarch",
+            "inference-node-oci-linux-amd64",
+            "server-compose-template",
+            "server-systemd-template",
+            "cyclonedx-sbom",
+            "release-manifest",
+        }
+        <= artifacts
+    ):
         raise ReleaseVariantError("release_variant_artifact_missing")
     provenance = set(_require_string_list(release["provenance"], "release.provenance"))
     if not provenance >= _REQUIRED_PROVENANCE:

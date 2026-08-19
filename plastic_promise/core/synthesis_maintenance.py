@@ -12,13 +12,14 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from plastic_promise.core.memory_index import (
     effective_embedding_model_name,
     read_persisted_index_material,
 )
-from plastic_promise.core.provider_http import ProviderHTTPError
+from plastic_promise.core.memory_index_node_runtime import MemoryIndexNodeRuntimeError
+from plastic_promise.core.provider_errors import ProviderHTTPError
 from plastic_promise.core.synthesis import SynthesisStore
 from plastic_promise.core.synthesis_retrieval import (
     read_memory_version,
@@ -29,6 +30,9 @@ from plastic_promise.core.traceability import (
     record_memory_lineage,
     utc_now,
 )
+
+if TYPE_CHECKING:
+    from plastic_promise.core.memory_index_node_runtime import MemoryIndexNodeRuntime
 
 _INDEX_ACTIONS = frozenset({"upsert", "delete"})
 _CONTRADICTION_CODES = frozenset({"SYNTHESIS_CONTRADICTION_OPEN"})
@@ -713,6 +717,8 @@ def _replay_memory_index_job(
     *,
     job_schema: str = _MEMORY_INDEX_JOB_SCHEMA,
     lease_owner: tuple[str, str] | None = None,
+    outbox_id: str | None = None,
+    node_runtime: MemoryIndexNodeRuntime | None = None,
 ) -> None:
     conn = _canonical_connection(engine)
     if conn is None:
@@ -765,10 +771,23 @@ def _replay_memory_index_job(
     ):
         return
 
-    embedder, model_name, embedding_dimension = _runtime_embedder(
-        engine,
-        unavailable_reason="memory_index_embedder_unavailable",
-    )
+    if node_runtime is None:
+        embedder, model_name, embedding_dimension = _runtime_embedder(
+            engine,
+            unavailable_reason="memory_index_embedder_unavailable",
+        )
+        vector: list[float] | None = None
+    else:
+        if not isinstance(outbox_id, str) or not outbox_id:
+            raise RuntimeError("memory_index_node_outbox_id_missing")
+        node_embedding = node_runtime.embedding_for_outbox(
+            engine=engine,
+            outbox_id=outbox_id,
+            project_id=job.project_id,
+        )
+        model_name = node_embedding.model
+        embedding_dimension = node_embedding.dimension
+        vector = list(node_embedding.vector)
     state, memory, material = _ordinary_index_state(
         engine,
         conn,
@@ -784,15 +803,21 @@ def _replay_memory_index_job(
             lease_owner=lease_owner,
         )
         return
-    if state != "valid" or not _memory_index_job_matches_current(
-        conn,
-        job,
-        memory,
-        material,
+    if (
+        state != "valid"
+        or memory is None
+        or material is None
+        or not _memory_index_job_matches_current(
+            conn,
+            job,
+            memory,
+            material,
+        )
     ):
         return
 
-    vector = embedder.embed(material.vector_text)
+    if node_runtime is None:
+        vector = embedder.embed(material.vector_text)
     if not isinstance(vector, list) or len(vector) != embedding_dimension or not any(vector):
         raise RuntimeError("memory_index_embedding_invalid")
 
@@ -811,6 +836,8 @@ def _replay_memory_index_job(
             return
         if (
             locked_state != "valid"
+            or locked_memory is None
+            or locked_material is None
             or locked_material != material
             or not _memory_index_job_matches_current(
                 conn,
@@ -837,6 +864,7 @@ def _replay_index_job(
     *,
     job_schema: str = _SYNTHESIS_INDEX_JOB_SCHEMA,
     lease_owner: tuple[str, str] | None = None,
+    outbox_id: str | None = None,
 ) -> None:
     conn = _canonical_connection(engine)
     if conn is None:
@@ -1055,6 +1083,7 @@ def _replay_outbox_jobs(
                 payload,
                 job_schema=str(schema),
                 lease_owner=(outbox_id, claimed_at),
+                outbox_id=outbox_id,
             )
         except Exception as exc:
             attempts = max(0, int(attempt_count_raw or 0)) + 1
@@ -1214,6 +1243,9 @@ def _safe_outbox_error(exc: Exception) -> tuple[str, str]:
     if isinstance(exc, ProviderHTTPError):
         reason = exc.reason
         allowed_reasons = _SAFE_PROVIDER_REASONS
+    elif isinstance(exc, MemoryIndexNodeRuntimeError):
+        reason = exc.code
+        allowed_reasons = frozenset({exc.code})
     elif isinstance(exc, IndexJobValidationError):
         reason = str(exc)
         allowed_reasons = _SAFE_INDEX_JOB_REASONS
@@ -1332,13 +1364,24 @@ def replay_memory_index_jobs(
     *,
     limit: int = 100,
     lease_seconds: int | None = None,
+    node_runtime: MemoryIndexNodeRuntime | None = None,
 ) -> ReplayReport:
     """Replay durable ordinary-memory index jobs against canonical material."""
     validate_test_index_failure_configuration()
+    if node_runtime is None:
+        getter = getattr(engine, "memory_index_node_runtime", None)
+        candidate = getter() if callable(getter) else None
+        if candidate is not None and callable(getattr(candidate, "embedding_for_outbox", None)):
+            node_runtime = candidate
     return _replay_outbox_jobs(
         engine,
         tool_name="memory_index",
-        replay_job=_replay_memory_index_job,
+        replay_job=lambda target, payload, **kwargs: _replay_memory_index_job(
+            target,
+            payload,
+            node_runtime=node_runtime,
+            **kwargs,
+        ),
         job_schema=frozenset({_LEGACY_MEMORY_INDEX_JOB_SCHEMA, _MEMORY_INDEX_JOB_SCHEMA}),
         invalid_payload_reason="invalid_memory_index_payload",
         limit=limit,

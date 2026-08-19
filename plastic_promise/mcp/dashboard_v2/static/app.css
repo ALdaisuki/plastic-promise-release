@@ -271,7 +271,8 @@ a {
   color: var(--text-muted);
 }
 
-.nav-item span {
+.nav-item > span {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -390,6 +391,18 @@ a {
   min-width: 0;
   align-items: baseline;
   gap: 8px;
+}
+
+.page-identity .page-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  color: var(--teal-700);
+  stroke-width: 2;
+}
+
+.page-identity .page-icon[hidden] {
+  display: none;
 }
 
 .eyebrow {
@@ -545,6 +558,10 @@ a {
   border-radius: 0;
   background: var(--surface-page);
   scrollbar-gutter: stable;
+}
+
+.main-panel:focus {
+  outline: none;
 }
 
 .view-root,
@@ -2665,4 +2682,8 @@ a {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.nav-item.is-hidden {
+  display: none;
 }

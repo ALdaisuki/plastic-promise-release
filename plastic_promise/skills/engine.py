@@ -411,6 +411,14 @@ class SkillEngine:
         task_description = params.get("task_description", skill_def.description)
         track_start_memory = skill_def.track_start_memory
         stage_session_id = params.get("stage_session_id") or params.get("stage_id")
+        project_id = str(params.get("project_id") or "").strip()
+        flow_line_id = str(params.get("flow_line_id") or params.get("flow_id") or "").strip()
+        # Official workflow callers always provide a project field.  When it
+        # is unresolved, retain entity-only evidence but do not create a
+        # persistent skill-session memory under an unknown/global identity.
+        persist_start_memory = track_start_memory and not (
+            "project_id" in params and project_id in {"", "project:unknown"}
+        )
 
         # 3. skill_session_start — skip if hook already created one (via /api/skill-track)
         tracking_degraded = False
@@ -441,13 +449,17 @@ class SkillEngine:
                     }
                     if stage_session_id:
                         start_args["stage_session_id"] = stage_session_id
+                    if flow_line_id:
+                        start_args["flow_line_id"] = flow_line_id
+                    if "project_id" in params:
+                        start_args["project_id"] = project_id
                     if parent_entity_id:
                         start_args["parent_entity_id"] = parent_entity_id
                     if params.get("tracking_idempotency_key"):
                         start_args["tracking_idempotency_key"] = params["tracking_idempotency_key"]
                     if params.get("tracking_basis"):
                         start_args["tracking_basis"] = params["tracking_basis"]
-                    if not track_start_memory:
+                    if not persist_start_memory:
                         start_args["record_memory"] = False
                     start_result = await self._call_lifecycle(
                         skill_def,
@@ -511,7 +523,7 @@ class SkillEngine:
                                 "entity_id": entity_id,
                                 "tracking_degraded": tracking_degraded,
                                 "tracking_persistence": "memory"
-                                if track_start_memory
+                                if persist_start_memory
                                 else "entity_only",
                             },
                             errors=errors,
@@ -537,7 +549,7 @@ class SkillEngine:
                             "entity_id": entity_id,
                             "tracking_degraded": tracking_degraded,
                             "tracking_persistence": "memory"
-                            if track_start_memory
+                            if persist_start_memory
                             else "entity_only",
                         },
                         errors=errors,
@@ -579,7 +591,7 @@ class SkillEngine:
                                     "entity_id": entity_id,
                                     "tracking_degraded": True,
                                     "tracking_persistence": "memory"
-                                    if track_start_memory
+                                    if persist_start_memory
                                     else "entity_only",
                                 },
                                 errors=errors,
@@ -591,7 +603,7 @@ class SkillEngine:
             result.audit_trail = {
                 "entity_id": entity_id,
                 "tracking_degraded": tracking_degraded,
-                "tracking_persistence": "memory" if track_start_memory else "entity_only",
+                "tracking_persistence": "memory" if persist_start_memory else "entity_only",
             }
             result.degrade_log = result.degrade_log or degrade_log
             result.errors = result.errors or errors
@@ -645,7 +657,7 @@ class SkillEngine:
                 audit_trail={
                     "entity_id": entity_id,
                     "tracking_degraded": tracking_degraded,
-                    "tracking_persistence": "memory" if track_start_memory else "entity_only",
+                    "tracking_persistence": "memory" if persist_start_memory else "entity_only",
                 },
                 errors=errors,
             )

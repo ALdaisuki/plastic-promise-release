@@ -9,7 +9,7 @@ import os
 import re
 from contextlib import nullcontext
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from plastic_promise.core.memory_proposals import (
@@ -18,14 +18,21 @@ from plastic_promise.core.memory_proposals import (
     ProposalPolicyError,
     ensure_memory_proposal_schema,
 )
+from plastic_promise.core.proposal_promotion_tasks import (
+    PromotionTaskLease,
+    PromotionTaskStore,
+    risk_tier_for_proposal,
+)
 
 AUTO_PROMOTION_MODE_ENV = "PP_MEMORY_PROPOSAL_AUTO_ADOPT"
 AUTO_PROMOTION_THRESHOLD_ENV = "PP_MEMORY_PROPOSAL_AUTO_THRESHOLD"
+PROMOTION_QUEUE_ENV = "PP_MEMORY_PROPOSAL_PROMOTION_QUEUE"
 DEFAULT_AUTO_PROMOTION_THRESHOLD = 0.82
 MAX_SIGNAL_METADATA_BYTES = 2048
 SIGNAL_TYPES = frozenset(
     {
         "user_observation",
+        "shadow_observation",
         "quality_score",
         "principle_relevance",
         "principle_similarity",
@@ -83,6 +90,15 @@ class VectorEvidenceRequest:
 def auto_promotion_mode() -> str:
     mode = os.environ.get(AUTO_PROMOTION_MODE_ENV, "off").strip().casefold()
     return mode if mode in {"off", "shadow", "on"} else "off"
+
+
+def promotion_queue_enabled() -> bool:
+    return os.environ.get(PROMOTION_QUEUE_ENV, "off").strip().casefold() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
 
 
 def ensure_proposal_automation_schema(conn: Any) -> None:
@@ -159,7 +175,10 @@ class ProposalAutomation:
         candidate: ProposalCandidate,
         *,
         now: datetime | str | None = None,
+        observation_signal_type: str = "user_observation",
     ) -> ObservationResult:
+        if observation_signal_type not in {"user_observation", "shadow_observation"}:
+            raise ProposalPolicyError("proposal_observation_signal_invalid")
         content_hash = _content_hash(candidate.content)
         existing = self.conn.execute(
             """
@@ -193,13 +212,18 @@ class ProposalAutomation:
         )
         self.record_signal(
             proposal["proposal_id"],
-            signal_type="user_observation",
+            signal_type=observation_signal_type,
             evidence_key=observation_key,
             value=1.0,
             session_id=session_id,
             turn_id=turn_id or candidate.origin_turn_hash,
             call_id=call_id,
-            metadata={"origin": "user", "category": candidate.category},
+            metadata={
+                "origin": "security_shield"
+                if observation_signal_type == "shadow_observation"
+                else "user",
+                "category": candidate.category,
+            },
             now=now,
         )
         self.record_signal(
@@ -848,6 +872,26 @@ def evaluate_auto_promotion(engine: Any, proposal_id: str) -> dict[str, Any]:
                 conn.commit()
                 return {**result, "status": "would_promote", "reason": None}
 
+            proposal = MemoryProposalStore(conn).get(proposal_id)
+            if proposal is None:
+                conn.rollback()
+                return {**result, "reason": "proposal_not_found"}
+            if promotion_queue_enabled():
+                task = PromotionTaskStore(conn).enqueue(
+                    proposal_id=proposal_id,
+                    project_id=str(proposal["project_id"]),
+                    risk_tier=risk_tier_for_proposal(proposal),
+                    idempotency_key=evidence_key,
+                )
+                conn.commit()
+                return {
+                    **result,
+                    "status": "queued",
+                    "reason": None,
+                    "task_id": task.task_id,
+                    "risk_tier": task.risk_tier,
+                }
+
             conn.commit()
             from plastic_promise.core.memory_proposals import promote_memory_proposal
 
@@ -870,6 +914,77 @@ def evaluate_auto_promotion(engine: Any, proposal_id: str) -> dict[str, Any]:
             if conn.in_transaction:
                 conn.rollback()
             raise
+
+
+def execute_promotion_task(
+    engine: Any,
+    lease: PromotionTaskLease,
+    *,
+    actor: str = "system:auto-proposal-promoter",
+) -> dict[str, Any]:
+    """Run one leased promotion task and persist success/failure evidence."""
+
+    conn = getattr(getattr(engine, "_sqlite", None), "_conn", None)
+    if conn is None:
+        raise ProposalPolicyError("canonical_store_unavailable")
+    tasks = PromotionTaskStore(conn)
+    call_id = f"auto-proposal-task:{lease.task.task_id}:{lease.task.fencing_generation}"
+    if lease.task.risk_tier in {"high", "critical"}:
+        blocked = tasks.fail(
+            lease,
+            failure_code="risk_gate_required",
+            failure_detail="high-risk proposal requires an explicit governance gate",
+            retryable=False,
+        )
+        return {
+            "status": blocked.status,
+            "task_id": blocked.task_id,
+            "failure_code": blocked.last_failure_code,
+            "attempt_count": blocked.attempt_count,
+        }
+
+    def _safe_failure_detail(error: Exception) -> str:
+        """Keep retry evidence useful without persisting provider/path secrets."""
+
+        name = type(error).__name__.casefold()
+        if "timeout" in name:
+            return "provider_timeout"
+        if isinstance(error, ProposalPolicyError):
+            return "governance_policy_blocked"
+        if "connection" in name or "network" in name:
+            return "provider_unavailable"
+        return "promotion_execution_failed"
+
+    try:
+        from plastic_promise.core.memory_proposals import promote_memory_proposal
+
+        promoted = promote_memory_proposal(
+            engine,
+            lease.task.proposal_id,
+            actor=actor,
+            call_id=call_id,
+        )
+    except Exception as exc:
+        retryable = not isinstance(exc, ProposalPolicyError)
+        failed = tasks.fail(
+            lease,
+            failure_code=type(exc).__name__[:128],
+            failure_detail=_safe_failure_detail(exc),
+            retryable=retryable,
+        )
+        return {
+            "status": failed.status,
+            "task_id": failed.task_id,
+            "failure_code": failed.last_failure_code,
+            "attempt_count": failed.attempt_count,
+        }
+    completed = tasks.complete(lease, memory_id=promoted.memory_id)
+    return {
+        "status": completed.status,
+        "task_id": completed.task_id,
+        "memory_id": completed.memory_id,
+        "attempt_count": completed.attempt_count,
+    }
 
 
 def _blocked_reason(
@@ -991,10 +1106,10 @@ def _utc_text(value: datetime | str | None) -> str:
     elif isinstance(value, datetime):
         parsed = value
     else:
-        parsed = datetime.now(UTC)
+        parsed = datetime.now(timezone.utc)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _bounded_score(value: object, default: float) -> float:

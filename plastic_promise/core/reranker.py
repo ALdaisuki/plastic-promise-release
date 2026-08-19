@@ -1,7 +1,10 @@
 """Multi-provider reranker with explicit, observable degradation.
 
-The default chain remains local-first for backward compatibility. Hosted cloud
-reranking is opt-in::
+The governed default is compute-node routing.  This legacy facade therefore
+does not probe Ollama: its default is the truthful ``original`` ordering
+fallback.  Hosted or local compatibility providers remain available only when
+the operator explicitly sets ``PP_RERANK_PROVIDERS`` (or selects them in the
+compute-node projection).
 
     PP_RERANK_PROVIDERS = cloud, original
 
@@ -38,9 +41,9 @@ from plastic_promise.core.cost_telemetry import TokenCostPolicy
 
 logger = logging.getLogger("plastic-promise.reranker")
 
-# Keep the legacy default spelling because a few callers inspect the private
-# list. Dispatch canonicalizes ``cosine`` to the truthful ``original`` name.
-_DEFAULT_PROVIDERS = ["ollama", "cosine"]
+# Dispatch canonicalizes ``cosine`` to the truthful ``original`` name.  Do not
+# silently discover an Ollama daemon from a server or developer shell.
+_DEFAULT_PROVIDERS = ["original"]
 _DEFAULT_PROVIDER_TIMEOUT = 5.0
 _DEFAULT_TOTAL_TIMEOUT = 10.0
 _DEFAULT_MAX_CANDIDATES = 30
@@ -293,9 +296,27 @@ class MultiProviderReranker:
     configuration has passed fail-closed validation.
     """
 
-    def __init__(self, *, http_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        http_client: Any | None = None,
+        providers: Sequence[str] | None = None,
+    ) -> None:
         disabled = os.environ.get("PP_RERANK_DISABLED", "0") == "1"
-        provider_str = os.environ.get("PP_RERANK_PROVIDERS", ",".join(_DEFAULT_PROVIDERS))
+        provider_str = (
+            ",".join(providers)
+            if providers is not None
+            else os.environ.get("PP_RERANK_PROVIDERS", ",".join(_DEFAULT_PROVIDERS))
+        )
+        endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+        if endpoint_role == "pp-server-backend":
+            # Server-side reranking is intentionally reduced to stable
+            # original ordering.  Registered compute nodes are invoked by
+            # MemoryIndexNodeRuntime; this legacy facade must not rediscover
+            # cloud, Ollama, Jina or SiliconFlow transports.
+            provider_str = "original"
+        elif endpoint_role and endpoint_role != "pp-compute-node":
+            raise ValueError("inference_requires_compute_node")
         self._providers = [p.strip().casefold() for p in provider_str.split(",") if p.strip()] or [
             "cosine"
         ]

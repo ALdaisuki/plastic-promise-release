@@ -701,6 +701,7 @@ async def run_session_checks(
     canary: str,
 ) -> dict[str, Any] | None:
     await session.initialize()
+    report["checks"]["initialize"] = {"success": True}
     expect_text_only = (
         report.get("checks", {}).get("health", {}).get("retrieval_status") == "degraded_text_only"
     )

@@ -1,106 +1,49 @@
-Title: Plastic Promise C4 Level 3 Component
-Focus: memory_recall/context_supply path plus daemon startup bootstrap
-Last updated: 2026-07-06
+Title: Plastic Promise C4 Level 3 — Recall and Derived-Work Components
+Focus: request scope, canonical admission, and project-isolated asynchronous work
+Last updated: 2026-08-07
 
-memory_recall(query) / context_supply(task, stage_session_id, flow_line_id, request_id)
-        |
-        v
-+--------------------+
-| MCP Tool Handler   |
-+---------+----------+
+context_supply / memory_recall
           |
           v
-+--------------------+
-| Request Scope      |
-| request_scope_id   |
-| cache + audit key  |
-+---------+----------+
++----------------------+      +----------------------+      +--------------------+
+| MCP Tool Handler     | =>   | Request Scope        | =>   | Context Engine     |
+| schema + auth        |      | project + call + flow |      | retrieve + fuse    |
++----------------------+      +----------------------+      +---------+----------+
+                                                                    |       |
+                                         canonical facts / metadata |       | derived search
+                                                                    v       v
+                                                        +----------------+ +----------------+
+                                                        | SQLite WAL     | | LanceDB live  |
+                                                        | canonical      | | generation     |
+                                                        +----------------+ +----------------+
+                                                                    \       /
+                                                                     v     v
+                                                            +--------------------+
+                                                            | ranked context      |
+                                                            | core / related /    |
+                                                            | divergent + audit   |
+                                                            +--------------------+
+
+capture / proposal / derived-work request
           |
           v
-+--------------------------------------------------+
-| Context Engine                                   |
-|                                                  |
-| +----------------+                               |
-| | Recall Noise   |                               |
-| | Guard          |                               |
-| | audit telemetry|                               |
-| +-------+--------+                               |
-|         |                                        |
-| +----------------+   +-------------------------+ |
-| | Vector Search  |   | Symbolic/Graph Search   | |
-| | LanceDB ANN    |   | entities, tags, edges   | |
-| +-------+--------+   +-----------+-------------+ |
-|         |                        |               |
-|         v                        v               |
-| +------------------------------------------------+ |
-| | Rust Snapshot Hot Path                         | |
-| | rust-full normal + debug recall                | |
-| +----------------------+-------------------------+ |
-|                        |                           |
-| +------------------------------------------------+ |
-| | Rank Fusion / Rerank                           | |
-| | ANN + FTS + symbolic + worth + decay           | |
-| +----------------------+-------------------------+ |
-|                        |                           |
-| +----------------------+-------------------------+ |
-| | Rust/Python Result Boundary Guard              | |
-| | drops stale native AUDIT trust telemetry        | |
-| +----------------------+-------------------------+ |
-|                        |                           |
-+------------------------+---------------------------+
-                         |
-                         v
-          +------------------------------+
-          | Context Package              |
-          | core / related / divergent   |
-          +------------------------------+
++----------------------+      +----------------------------------------------+
+| MCP Tool Handler     | =>   | SQLite transaction                           |
++----------------------+      | canonical record + durable outbox admission  |
+                              +----------------------+-----------------------+
+                                                     | commit + request id
+                                                     v
+                              +----------------------------------------------+
+                              | Maintenance                                  |
+                              | ~> claim bounded project/config/provider key |
+                              | => provider/node derived request              |
+                              +----------------------+-----------------------+
+                                                     | result or explicit failure
+                                                     v
+                              +----------------------------------------------+
+                              | SQLite job/outbox state + LanceDB projection  |
+                              | retry / reconcile; no cross-project batches   |
+                              +----------------------------------------------+
 
-
-memory_store(content)
-        |
-        v
-+--------------------+
-| MCP Tool Handler   |
-+---------+----------+
-          |
-          v
-+--------------------------------------------------+
-| Memory Pipeline                                  |
-|                                                  |
-| extract -> classify -> embed -> deduplicate      |
-|        -> QualityGate -> decay init -> dual write |
-+------------------------+-------------------------+
-                         |
-                         v
-          +------------------------------+
-          | SQLite metadata + LanceDB    |
-          | vectors, text, tags, graph   |
-          +------------------------------+
-
-Legend:
-  ->  synchronous in-process call or data pipeline step
-  Context Engine Python path is the canonical full fallback and write-side pipeline.
-  Rust context-engine-core is optional, keeps rust-full debug recall on the hot path,
-  and is guarded at snapshot ingestion plus Python conversion.
-
-
-Launcher-managed service startup
-        |
-        v
-+---------------------------+
-| ServiceManager            |
-| runtime env inheritance   |
-| PYTHONPATH project root   |
-+------------+--------------+
-             |
-             v
-+---------------------------+
-| maintenance_daemon.py     |
-| direct sys.path bootstrap |
-+------------+--------------+
-             |
-             v
-+---------------------------+
-| Cron scanners             |
-| scheduler/trust/quality   |
-+---------------------------+
+Rust acceleration may serve a healthy recall snapshot path. Python remains the
+canonical write path and complete fallback. No provider or node can write SQLite.

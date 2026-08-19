@@ -108,6 +108,10 @@ class SourceSnapshot:
     index_text_policy: str
     index_material_sha256: str
     index_outbox: dict[str, Any]
+    # Legacy fixture databases did not carry project metadata.  Keep their
+    # snapshot constructor readable while all new generation manifests remain
+    # explicitly project-bound.
+    project_id: str = "project:legacy-global"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -120,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Private root containing generations/ and the current pointer",
     )
     parser.add_argument("--generation-id", help="Immutable identifier for the inactive build")
+    parser.add_argument(
+        "--project-id",
+        default=os.environ.get("PLASTIC_PROJECT_ID"),
+        help="Canonical project scope bound into the generation manifest",
+    )
     parser.add_argument(
         "--source-db",
         type=Path,
@@ -156,7 +165,7 @@ def _legacy_rebuild() -> int:
 
 def _generation_arguments(
     arguments: argparse.Namespace,
-) -> tuple[Path, str, Path, Path, Path | None] | None:
+) -> tuple[Path, str, str, Path, Path, Path | None] | None:
     values = (
         arguments.generation_root,
         arguments.generation_id,
@@ -167,7 +176,16 @@ def _generation_arguments(
         return None
     if any(value is None for value in values):
         raise ShadowBuildError("generation_mode_requires_root_id_source_db_and_quality_report")
-    return (*values, arguments.candidate_manifest)
+    if not isinstance(arguments.project_id, str) or not arguments.project_id.strip():
+        raise ShadowBuildError("generation_mode_requires_project_id")
+    return (
+        values[0],
+        values[1],
+        arguments.project_id.strip(),
+        values[2],
+        values[3],
+        arguments.candidate_manifest,
+    )
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:
@@ -324,24 +342,34 @@ def _assert_quality_report_runtime_configuration(report: Mapping[str, Any]) -> N
     expected_embedding = environment.get("embedding_configuration")
     if not isinstance(expected_embedding, Mapping):
         raise ShadowBuildError("quality_report_runtime_configuration_missing")
-    model = os.environ.get("EMBEDDER_MODEL", "mxbai-embed-large").strip()
-    revision = os.environ.get("EMBEDDER_MODEL_REVISION", model).strip()
-    raw_dimension = os.environ.get(
-        "PP_EMBEDDING_DIM",
-        os.environ.get("EMBEDDER_DIMENSION", "1024"),
-    )
-    try:
-        dimension = int(raw_dimension)
-    except (TypeError, ValueError) as exc:
-        raise ShadowBuildError("quality_report_embedding_configuration_not_current") from exc
-    current_embedding = {
-        "provider": canonical_embedding_provider(os.environ.get("EMBEDDER_PROVIDER", "ollama")),
-        "model": model,
-        "model_revision": revision,
-        "dimension": dimension,
-    }
-    if dict(expected_embedding) != current_embedding:
-        raise ShadowBuildError("quality_report_embedding_configuration_not_current")
+    governed_embedding = expected_embedding.get("provider") == "governed-node"
+    if governed_embedding:
+        # A governed server deliberately does not carry the compute model
+        # name/revision in EMBEDDER_* environment variables.  The active
+        # private node identity is revalidated against the report immediately
+        # after the generation embedder is bootstrapped below; requiring the
+        # legacy provider variables here would reject a valid governed build.
+        if os.environ.get("PP_CONTROL_PLANE", "0").strip() != "1":
+            raise ShadowBuildError("quality_report_embedding_configuration_not_current")
+    else:
+        model = os.environ.get("EMBEDDER_MODEL", "mxbai-embed-large").strip()
+        revision = os.environ.get("EMBEDDER_MODEL_REVISION", model).strip()
+        raw_dimension = os.environ.get(
+            "PP_EMBEDDING_DIM",
+            os.environ.get("EMBEDDER_DIMENSION", "1024"),
+        )
+        try:
+            dimension = int(raw_dimension)
+        except (TypeError, ValueError) as exc:
+            raise ShadowBuildError("quality_report_embedding_configuration_not_current") from exc
+        current_embedding = {
+            "provider": canonical_embedding_provider(os.environ.get("EMBEDDER_PROVIDER", "ollama")),
+            "model": model,
+            "model_revision": revision,
+            "dimension": dimension,
+        }
+        if dict(expected_embedding) != current_embedding:
+            raise ShadowBuildError("quality_report_embedding_configuration_not_current")
 
     # Live evidence deliberately replaces stateful retrieval controls with an
     # isolated benchmark profile.  Keep the embedding identity bound to the
@@ -580,10 +608,50 @@ def _get_embedder():
     return get_embedder(fallback_on_error=False)
 
 
-def _create_lancedb_store(index_path: Path, embedder: object):
+def _generation_embedder(engine: object, *, project_id: str):
+    """Select the governed node embedder for a generation build.
+
+    The production server may keep only the server-side managed projection,
+    so a generation build must bootstrap the same private node runtime used by
+    MCP before it can create vectors.  A blocked governed route fails closed;
+    it never silently falls back to the legacy process-wide provider.
+    """
+
+    runtime_reader = getattr(engine, "memory_index_node_runtime", None)
+    runtime = runtime_reader() if callable(runtime_reader) else None
+    if runtime is None and os.environ.get("PP_CONTROL_PLANE", "0").strip() == "1":
+        from plastic_promise.core.node_runtime_bootstrap import (
+            bootstrap_memory_index_node_runtime,
+        )
+
+        report = bootstrap_memory_index_node_runtime(engine)
+        if getattr(report, "state", None) == "blocked":
+            raise ShadowBuildError(str(getattr(report, "reason", "node_routing_blocked")))
+        runtime = runtime_reader() if callable(runtime_reader) else None
+    if runtime is not None:
+        try:
+            from plastic_promise.core.memory_index_node_runtime import GovernedRetrievalEmbedder
+
+            return GovernedRetrievalEmbedder(runtime, default_project_id=project_id)
+        except Exception as exc:
+            raise ShadowBuildError("governed_generation_embedder_unavailable") from exc
+    return _get_embedder()
+
+
+def _create_lancedb_store(
+    index_path: Path,
+    embedder: object,
+    *,
+    persist_index_material: bool = True,
+):
     from plastic_promise.core.lancedb_store import LanceDBStore
 
-    return LanceDBStore(str(index_path), embedder, read_only=False)
+    return LanceDBStore(
+        str(index_path),
+        embedder,
+        read_only=False,
+        persist_index_material=persist_index_material,
+    )
 
 
 def _close_shadow_resources(engine: object | None, embedder: object | None) -> None:
@@ -681,24 +749,20 @@ def _runtime_embedder_identity(embedder: object) -> tuple[str, str, int]:
 def _configured_embedding_index_identity() -> str | None:
     """Return the environment-bound derived-index identity when configured."""
 
-    if (
-        "EMBEDDER_PROVIDER" not in os.environ
-        and "EMBED_MODEL" not in os.environ
-        and os.environ.get("PP_MEMORY_CHUNKING", "off").strip().casefold() != "structure-v1"
-    ):
-        return None
+    from plastic_promise.core.embedding_index_identity import (
+        EmbeddingIndexIdentityError,
+        configured_embedding_index_identity,
+    )
+
     try:
-        from plastic_promise.core.memory_index import effective_embedding_model_name
-
-        identity = effective_embedding_model_name()
-    except (TypeError, ValueError) as exc:
+        return configured_embedding_index_identity()
+    except EmbeddingIndexIdentityError as exc:
         raise ShadowBuildError(str(exc)) from exc
-    if not isinstance(identity, str) or not identity.strip():
-        raise ShadowBuildError("runtime_embedding_identity_invalid")
-    return identity.strip()
 
 
-def _eligible_memories(engine: object) -> dict[str, dict[str, Any]]:
+def _eligible_memories(
+    engine: object, *, project_id: str | None = None
+) -> dict[str, dict[str, Any]]:
     from plastic_promise.core.lancedb_store import LanceDBStore
 
     store = object.__new__(LanceDBStore)
@@ -712,7 +776,33 @@ def _eligible_memories(engine: object) -> dict[str, dict[str, Any]]:
     eligible = eligibility_filter(engine, canonical)
     if not isinstance(eligible, dict):
         raise ShadowBuildError("eligible_memories_unavailable")
-    return eligible
+    if project_id is None:
+        return eligible
+    scoped: dict[str, dict[str, Any]] = {}
+    for memory_id, memory in eligible.items():
+        owner = str(memory.get("project_id") or "").strip()
+        if owner != project_id:
+            continue
+        scoped[memory_id] = memory
+    return scoped
+
+
+def _project_eligible_memories(engine: object, project_id: str) -> dict[str, dict[str, Any]]:
+    """Load only records with an explicit, matching project binding."""
+    try:
+        return _eligible_memories(engine, project_id=project_id)
+    except TypeError as exc:
+        if "project_id" not in str(exc):
+            raise
+        legacy = _eligible_memories(engine)
+        if not isinstance(legacy, dict):
+            raise ShadowBuildError("eligible_memories_unavailable") from exc
+        return {
+            key: value
+            for key, value in legacy.items()
+            if isinstance(value, Mapping)
+            and str(value.get("project_id") or "").strip() == project_id
+        }
 
 
 def _source_index_material_sha256(
@@ -746,7 +836,7 @@ def _source_index_material_sha256(
 
 
 def _assert_source_index_material(snapshot: SourceSnapshot, engine: object) -> None:
-    eligible = _eligible_memories(engine)
+    eligible = _project_eligible_memories(engine, snapshot.project_id)
     if frozenset(eligible) != snapshot.eligible_memory_ids:
         raise ShadowBuildError("shadow_source_eligibility_changed")
     observed = _source_index_material_sha256(
@@ -757,7 +847,9 @@ def _assert_source_index_material(snapshot: SourceSnapshot, engine: object) -> N
         raise ShadowBuildError("shadow_index_material_mismatch")
 
 
-def _index_outbox_evidence(connection: sqlite3.Connection) -> dict[str, Any]:
+def _index_outbox_evidence(
+    connection: sqlite3.Connection, *, project_id: str | None = None
+) -> dict[str, Any]:
     table = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_outbox'"
     ).fetchone()
@@ -800,18 +892,19 @@ def _index_outbox_evidence(connection: sqlite3.Connection) -> dict[str, Any]:
         }
     from plastic_promise.core.index_outbox_reconciliation import snapshot_index_outbox
 
-    return snapshot_index_outbox(connection)
+    return snapshot_index_outbox(connection, project_id=project_id)
 
 
 def _prepare_source_snapshot(
     clone_path: Path,
     *,
+    project_id: str,
     expected_index_text_policy: str,
 ) -> SourceSnapshot:
     snapshot_sha256 = _sha256_file(clone_path)
     with closing(sqlite3.connect(clone_path)) as connection:
         total_rows = _memory_row_count(connection)
-        outbox = _index_outbox_evidence(connection)
+        outbox = _index_outbox_evidence(connection, project_id=project_id)
 
     engine: object | None = None
     with _temporary_environment(
@@ -825,7 +918,7 @@ def _prepare_source_snapshot(
     ):
         try:
             engine = _create_context_engine()
-            eligible = _eligible_memories(engine)
+            eligible = _project_eligible_memories(engine, project_id)
             eligible_ids = frozenset(eligible)
             material_sha256 = _source_index_material_sha256(
                 eligible,
@@ -835,6 +928,7 @@ def _prepare_source_snapshot(
             _close_shadow_resources(engine, None)
     return SourceSnapshot(
         path=clone_path,
+        project_id=project_id,
         sha256=snapshot_sha256,
         memory_row_count=total_rows,
         eligible_memory_ids=eligible_ids,
@@ -849,6 +943,7 @@ def _build_callback(
     snapshot: SourceSnapshot,
     quality_report: Mapping[str, Any],
     expected_identity: Mapping[str, Any],
+    project_id: str,
     expected_index_identity: str | None = None,
     require_index_identity_binding: bool = False,
     runtime_environment_validator: Callable[[], None] | None = None,
@@ -901,7 +996,7 @@ def _build_callback(
                 engine = _create_context_engine()
                 _assert_shadow_source_fingerprint(snapshot, engine)
                 _assert_source_index_material(snapshot, engine)
-                embedder = _get_embedder()
+                embedder = _generation_embedder(engine, project_id=project_id)
                 observed_identity = _runtime_embedder_identity(embedder)
                 required_identity = (
                     expected_identity["embedding_model"],
@@ -930,8 +1025,16 @@ def _build_callback(
                         or observed_index_identity.strip() != expected_index_identity
                     ):
                         raise ShadowBuildError("runtime_embedding_index_identity_mismatch")
-                store = _create_lancedb_store(index_path, embedder)
-                rebuilt = store.rebuild_all(engine)
+                # A shadow build may derive a new chunk/model material but
+                # must never write it back to canonical SQLite. Promotion
+                # binds the derived generation to the original snapshot;
+                # canonical material migration belongs to maintenance.
+                store = _create_lancedb_store(
+                    index_path,
+                    embedder,
+                    persist_index_material=False,
+                )
+                rebuilt = store.rebuild_all(engine, memory_ids=expected_ids)
                 rebuilt += repair_missing_rows(store, engine, expected_ids)
                 _assert_shadow_source_fingerprint(snapshot, engine)
                 _assert_source_index_material(snapshot, engine)
@@ -964,12 +1067,20 @@ def _load_default_artifact_verifier() -> ArtifactVerifier:
 def _shadow_generation_build(
     generation_root: Path,
     generation_id: str,
+    project_id: str | Path,
     source_db: Path,
-    quality_report_path: Path,
-    candidate_manifest_path: Path | None,
+    quality_report_path: Path | None = None,
+    candidate_manifest_path: Path | None = None,
     *,
     artifact_verifier: ArtifactVerifier | None,
 ) -> dict[str, Any]:
+    # Keep the pre-project-binding call shape rejected; generation identity is
+    # never safe to infer from a legacy/global default.
+    if quality_report_path is None and isinstance(project_id, Path):
+        raise ShadowBuildError("generation_mode_requires_project_id")
+    if quality_report_path is None:
+        raise ShadowBuildError("generation_mode_requires_quality_report")
+    project_id = str(project_id)
     raw_report = _load_json_object(quality_report_path)
     candidate_manifest = None
     if raw_report.get("schema_version") == RECALL_QUALITY_REPORT_SCHEMA:
@@ -1010,6 +1121,7 @@ def _shadow_generation_build(
         with _private_sqlite_backup(source) as clone_path:
             snapshot = _prepare_source_snapshot(
                 clone_path,
+                project_id=project_id,
                 expected_index_text_policy=identity["index_text_policy"],
             )
             has_outbox_snapshot = snapshot.index_outbox.get("status") == "snapshot"
@@ -1034,6 +1146,7 @@ def _shadow_generation_build(
                 raise ShadowBuildError("generation_mode_requires_embedding_index_identity_binding")
             spec = GenerationSpec(
                 generation_id=generation_id,
+                project_id=project_id,
                 index_schema=INDEX_SCHEMA,
                 source_db_sha256=snapshot.sha256,
                 source_row_count=len(snapshot.eligible_memory_ids),
@@ -1074,6 +1187,7 @@ def _shadow_generation_build(
                         expected_identity=identity,
                         expected_index_identity=spec.embedding_index_identity,
                         require_index_identity_binding=not has_outbox_snapshot,
+                        project_id=project_id,
                         runtime_environment_validator=runtime_environment_validator,
                     ),
                 )

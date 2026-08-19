@@ -1,0 +1,24 @@
+Plastic Promise release and deployment authority
+
+  +------------------------ Windows / WSL2 -------------------------+
+  | build cache + GPU smoke                                         |
+  | derived embedding/rerank only; no canonical write authority     |
+  +----------------------------+------------------------------------+
+                               | local preflight only
+                               v
+  +------------------- GitHub protected workflows ------------------+
+  | RC/stable OCI + SBOM + attestation => immutable manifest digest |
+  +----------------------------+------------------------------------+
+                               | exact ghcr.io/...@sha256 digest
+                               v
+  +---------------------------- Server -----------------------------+
+  | MCP + SQLite canonical truth + LanceDB derived state            |
+  | digest pull + MCP E2E => bounded deployment receipt             |
+  +----------------------------+------------------------------------+
+                               | manifest, receipt, audit evidence
+                               v
+  +------------------ stable-only release repository ---------------+
+  | atomic tag/source sync + protected PyPI OIDC publication        |
+  +------------------------------------------------------------------+
+
+  Maintenance is server-owned but starts only through its own approved control.

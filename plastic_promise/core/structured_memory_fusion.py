@@ -931,10 +931,30 @@ def structured_fusion_mode() -> str:
     return mode if mode in {"off", "shadow", "on"} else "off"
 
 
-def _create_structured_fusion() -> StructuredMemoryFusion:
-    from plastic_promise.core.inference_provider import OpenAICompatibleJSONProvider
+def durable_fusion_runtime_snapshot(engine: object) -> dict[str, str]:
+    """Return the bounded process-local worker state for health projection."""
 
-    provider = OpenAICompatibleJSONProvider(
+    engine_id = id(engine)
+    with _RUNTIME_BATCHERS_LOCK:
+        if engine_id in _DURABLE_RUNTIME_FAILURES:
+            return {
+                "state": "degraded",
+                "reason": "structured_memory_fusion_runtime_unavailable",
+            }
+        if engine_id in _DURABLE_RUNTIMES:
+            return {"state": "ready", "reason": ""}
+    return {
+        "state": "pending",
+        "reason": "structured_memory_fusion_runtime_pending",
+    }
+
+
+def _create_structured_fusion() -> StructuredMemoryFusion:
+    from plastic_promise.core.server_structured_json import (
+        create_structured_json_provider,
+    )
+
+    provider = create_structured_json_provider(
         api_key=_first_env(
             "PP_STRUCTURED_MEMORY_FUSION_API_KEY", "PP_MEMORY_CHUNK_ENRICHMENT_API_KEY"
         ),

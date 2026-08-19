@@ -1,0 +1,467 @@
+name: Release Verification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release-*.yml"
+      - ".github/readme-release-delivery.svg"
+      - ".github/readme-release-delivery.zh-CN.svg"
+      - ".dockerignore"
+      - "MANIFEST.in"
+      - "README.md"
+      - "deploy/**"
+      - "docs/README.zh-CN.md"
+      - "docs/deployment/**"
+      - "docs/architecture/release-delivery/**"
+      - "docs/architecture/three-endpoint-deployment/**"
+      - "docs/release/**"
+      - "plastic_promise/deployment/**"
+      - "plastic_promise/release_manifest.py"
+      - "plastic_promise/release_readiness.py"
+      - "pyproject.toml"
+      - "release/**"
+      - "scripts/create_release_manifest.py"
+      - "scripts/create_release_bundle.py"
+      - "scripts/init_and_start.py"
+      - "scripts/plastic-promise-deploy.sh"
+      - "scripts/plastic-promise-deploy.ps1"
+      - "scripts/resolve_container_artifact_identity.py"
+      - "scripts/validate_container_artifact_policy.py"
+      - "scripts/verify_oci_artifact_evidence.py"
+      - "scripts/verify_release_deployment.py"
+      - "scripts/validate_release_variant.py"
+      - "tests/test_deployment*.py"
+      - "tests/test_container_artifacts.py"
+      - "tests/test_oci_artifact_evidence.py"
+      - "tests/test_packaging_metadata.py"
+      - "tests/test_model_catalog.py"
+      - "tests/test_release_bundle.py"
+      - "tests/test_release*.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PP_PR_VERIFY_MODEL_CATALOG_REFERENCE: pr-verify-model-catalog
+  PP_PR_VERIFY_MODEL_CATALOG_DIGEST: sha256:bb32706f1224df4e3c03d00ed03dd5baafac6576ac4caafc9cecf7d0450f3cf6
+  PP_STATIC_RECIPE_POLICY_PYTHON_REQUIREMENT: "PyYAML>=6.0.1,<7.0.0"
+
+jobs:
+  python-distribution:
+    name: Build and install exact Python distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build --outdir dist
+          python -m twine check dist/*
+      - name: Verify source distribution contains public activation templates and linked docs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdist="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$sdist"
+
+          has_member() {
+            tar -tzf "$sdist" | awk -v suffix="/$1" '
+              length($0) >= length(suffix) && substr($0, length($0) - length(suffix) + 1) == suffix {
+                found = 1
+              }
+              END { exit !found }
+            '
+          }
+
+          required_members=(
+            deploy/manifests/local-all-in-one.example.json
+            deploy/manifests/local-cloud.example.json
+            deploy/manifests/split-accelerated.example.json
+            deploy/oci-base-images.json
+            deploy/server/Dockerfile
+            deploy/server/compose.yaml
+            deploy/server/plastic-promise-server.env.example
+            deploy/server/plastic-promise-server.service.example
+            deploy/local-edge/Dockerfile
+            deploy/local-edge/compose.yaml
+            deploy/local-edge/entrypoint.sh
+            deploy/local-edge/nginx.conf
+            deploy/local-inference-node/Dockerfile
+            deploy/local-inference-node/compose.yaml
+            deploy/local-inference-node/compose.cpu.yaml
+            deploy/local-inference-node/compose.cuda.yaml
+            deploy/local-inference-node/local-inference-cache-plan.env.example
+            deploy/local-inference-node/local-inference-tunnel.env.example
+            deploy/local-inference-node/pp-local-inference-cache-plan.service.example
+            deploy/local-inference-node/pp-local-inference-cache-plan.timer.example
+            deploy/local-inference-node/pp-local-inference-tunnel.service.example
+            deploy/release-builder/windows-install.ps1
+            scripts/init_and_start.py
+            scripts/plastic-promise-deploy.sh
+            scripts/plastic-promise-deploy.ps1
+            scripts/resolve_container_artifact_identity.py
+            scripts/validate_container_artifact_policy.py
+            scripts/verify_oci_artifact_evidence.py
+            scripts/verify_release_deployment.py
+            scripts/create_release_bundle.py
+            docs/release/delivery.md
+            docs/architecture/three-endpoint-deployment/container-artifacts.md
+          )
+          required_members+=(docs/deployment/*.md)
+          required_members+=(docs/architecture/three-endpoint-deployment/*.md)
+
+          for member in "${required_members[@]}"; do
+            has_member "$member"
+          done
+      - name: Run source-only deployment proofs from the extracted source distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdist="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$sdist"
+
+          extract_root="$(mktemp -d)"
+          tar -xzf "$sdist" -C "$extract_root"
+          source_root="$(find "$extract_root" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$source_root"
+          test -f "$source_root/scripts/verify_release_deployment.py"
+
+          source_venv="$extract_root/source-only-venv"
+          python -m venv "$source_venv"
+          "$source_venv/bin/python" -m pip install --no-deps "$sdist"
+          "$source_venv/bin/python" -c 'import plastic_promise; print(plastic_promise.__version__)'
+
+          for manifest in deploy/manifests/*.example.json; do
+            state_root="$(mktemp -d)/plastic-promise-release-verify"
+            "$source_venv/bin/python" "$source_root/scripts/verify_release_deployment.py" \
+              --manifest "$source_root/$manifest" \
+              --state-root "$state_root"
+            test ! -e "$state_root"
+          done
+      - name: Install the exact locally built wheel into an isolated environment
+        run: |
+          python -m venv .release-wheel-venv
+          .release-wheel-venv/bin/python -m pip install --no-deps --only-binary=:all: dist/*.whl
+          .release-wheel-venv/bin/python -c 'import plastic_promise; print(plastic_promise.__version__)'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distribution
+          path: dist/
+          if-no-files-found: error
+
+  release-contract:
+    name: Validate release variant and manifest contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]"
+      - run: python scripts/validate_release_variant.py --repo-root . release/variants/standard.json
+      - run: python scripts/validate_container_artifact_policy.py --repository-root . --output /tmp/container-recipe-policy.json
+      - name: Verify every release profile without creating deployment state
+        shell: bash
+        run: |
+          set -euo pipefail
+          for manifest in deploy/manifests/*.example.json; do
+            state_root="$(mktemp -d)/plastic-promise-release-verify"
+            python scripts/verify_release_deployment.py --manifest "$manifest" --state-root "$state_root"
+            test ! -e "$state_root"
+          done
+      - run: python -m pytest -q --no-cov tests/test_container_artifacts.py tests/test_oci_artifact_evidence.py tests/test_model_catalog.py tests/test_release_bundle.py tests/test_create_release_bundle.py tests/test_release_variant.py tests/test_release_workflow.py tests/test_release_manifest.py tests/test_release_readiness.py tests/test_release_delivery_assets.py tests/test_packaging_metadata.py tests/test_release_sync_filter.py tests/test_oci_build_preflight.py
+      - run: ruff check plastic_promise/deployment/container_artifacts.py plastic_promise/deployment/release_bundle.py plastic_promise/release_manifest.py plastic_promise/release_readiness.py scripts/create_release_manifest.py scripts/create_release_bundle.py scripts/prepare_oci_build.py scripts/resolve_container_artifact_identity.py scripts/validate_container_artifact_policy.py scripts/verify_oci_artifact_evidence.py scripts/verify_release_deployment.py tests/test_container_artifacts.py tests/test_oci_artifact_evidence.py tests/test_model_catalog.py tests/test_release_bundle.py tests/test_create_release_bundle.py tests/test_release_manifest.py tests/test_release_readiness.py tests/test_release_delivery_assets.py tests/test_packaging_metadata.py tests/test_oci_build_preflight.py
+      - run: ruff format --check plastic_promise/deployment/container_artifacts.py plastic_promise/deployment/release_bundle.py plastic_promise/release_manifest.py plastic_promise/release_readiness.py scripts/create_release_manifest.py scripts/create_release_bundle.py scripts/prepare_oci_build.py scripts/resolve_container_artifact_identity.py scripts/validate_container_artifact_policy.py scripts/verify_oci_artifact_evidence.py scripts/verify_release_deployment.py tests/test_container_artifacts.py tests/test_oci_artifact_evidence.py tests/test_model_catalog.py tests/test_release_bundle.py tests/test_create_release_bundle.py tests/test_release_manifest.py tests/test_release_readiness.py tests/test_release_delivery_assets.py tests/test_packaging_metadata.py tests/test_oci_build_preflight.py
+
+  local-edge-image:
+    name: Build multi-architecture local-edge image without pushing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install static recipe policy dependency
+        run: python -m pip install --disable-pip-version-check "$PP_STATIC_RECIPE_POLICY_PYTHON_REQUIREMENT"
+      - name: Validate static recipe policy
+        run: python scripts/validate_container_artifact_policy.py --repository-root . --output /tmp/local-edge.recipe-policy.json
+      - name: Resolve immutable local-edge build identity
+        run: |
+          python scripts/resolve_container_artifact_identity.py \
+            --repository-root . \
+            --profile-id split-accelerated \
+            --source-revision "${{ github.sha }}" \
+            --package-version pr-verify \
+            --platform linux/amd64 --platform linux/arm64 \
+            --compute-variant cpu --compute-variant cuda \
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST" \
+            --artifact-role pp-local-edge \
+            --artifact-platform linux/amd64 \
+            --output /tmp/local-edge.identity.json >/dev/null
+          jq -r '.build_args | to_entries[] | "\(.key)=\(.value)"' /tmp/local-edge.identity.json >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with:
+          name: plastic-promise-oci
+          use: true
+      - name: Reclaim disposable CI runner space
+        run: bash scripts/reclaim_ci_runner_space.sh
+      - name: Run protected OCI prebuild cleanup
+        run: python scripts/prepare_oci_build.py --execute
+      - name: Build OCI layout with SBOM and provenance attestations
+        run: |
+          # This non-routable OCI name is never pushed. BuildKit needs it to
+          # bind the in-toto self-subject to each exported image manifest.
+          docker buildx build --builder plastic-promise-oci \
+            --platform linux/amd64,linux/arm64 \
+            --sbom=true --provenance=mode=max \
+            --tag "plastic-promise.invalid/local-edge:pr-verify-${{ github.sha }}" \
+            --output type=oci,dest=/tmp/plastic-promise-local-edge.oci.tar \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg BASE_IMAGE_DIGEST="$BASE_IMAGE_DIGEST" \
+            --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
+            --build-arg PACKAGE_VERSION="$PACKAGE_VERSION" \
+            --build-arg BUILD_POLICY_DIGEST="$BUILD_POLICY_DIGEST" \
+            --build-arg RECIPE_POLICY_DIGEST="$RECIPE_POLICY_DIGEST" \
+            --file deploy/local-edge/Dockerfile .
+      - name: Verify plan-bound local-edge OCI evidence
+        run: |
+          common=(
+            --repository-root . --profile-id split-accelerated
+            --source-revision "${{ github.sha }}" --package-version pr-verify
+            --plan-platform linux/amd64 --plan-platform linux/arm64
+            --compute-variant cpu --compute-variant cuda
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE"
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST"
+            --role pp-local-edge --variant standard
+            --oci-layout /tmp/plastic-promise-local-edge.oci.tar
+          )
+          python scripts/verify_oci_artifact_evidence.py "${common[@]}" \
+            --platform linux/amd64 --output /tmp/local-edge-linux-amd64.evidence.json
+          python scripts/verify_oci_artifact_evidence.py "${common[@]}" \
+            --platform linux/arm64 --output /tmp/local-edge-linux-arm64.evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-edge-pr-verify-evidence
+          path: /tmp/local-edge-*.evidence.json
+          if-no-files-found: error
+
+  server-image:
+    name: Build multi-architecture runtime image without pushing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install static recipe policy dependency
+        run: python -m pip install --disable-pip-version-check "$PP_STATIC_RECIPE_POLICY_PYTHON_REQUIREMENT"
+      - name: Validate static recipe policy
+        run: python scripts/validate_container_artifact_policy.py --repository-root . --output /tmp/server.recipe-policy.json
+      - name: Resolve immutable server build identity
+        run: |
+          python scripts/resolve_container_artifact_identity.py \
+            --repository-root . \
+            --profile-id split-accelerated \
+            --source-revision "${{ github.sha }}" \
+            --package-version pr-verify \
+            --platform linux/amd64 --platform linux/arm64 \
+            --compute-variant cpu --compute-variant cuda \
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST" \
+            --artifact-role pp-server-backend \
+            --artifact-platform linux/amd64 \
+            --output /tmp/server.identity.json >/dev/null
+          jq -r '.build_args | to_entries[] | "\(.key)=\(.value)"' /tmp/server.identity.json >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with:
+          name: plastic-promise-oci
+          use: true
+      - name: Reclaim disposable CI runner space
+        run: bash scripts/reclaim_ci_runner_space.sh
+      - name: Run protected OCI prebuild cleanup
+        run: python scripts/prepare_oci_build.py --execute
+      - name: Build OCI layout with SBOM and provenance attestations
+        run: |
+          docker buildx build --builder plastic-promise-oci \
+            --platform linux/amd64,linux/arm64 \
+            --sbom=true --provenance=mode=max \
+            --tag "plastic-promise.invalid/server:pr-verify-${{ github.sha }}" \
+            --output type=oci,dest=/tmp/plastic-promise-server.oci.tar \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg BASE_IMAGE_DIGEST="$BASE_IMAGE_DIGEST" \
+            --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
+            --build-arg PACKAGE_VERSION="$PACKAGE_VERSION" \
+            --build-arg BUILD_POLICY_DIGEST="$BUILD_POLICY_DIGEST" \
+            --build-arg RECIPE_POLICY_DIGEST="$RECIPE_POLICY_DIGEST" \
+            --file deploy/server/Dockerfile .
+      - name: Verify plan-bound server OCI evidence
+        run: |
+          common=(
+            --repository-root . --profile-id split-accelerated
+            --source-revision "${{ github.sha }}" --package-version pr-verify
+            --plan-platform linux/amd64 --plan-platform linux/arm64
+            --compute-variant cpu --compute-variant cuda
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE"
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST"
+            --role pp-server-backend --variant standard
+            --oci-layout /tmp/plastic-promise-server.oci.tar
+          )
+          python scripts/verify_oci_artifact_evidence.py "${common[@]}" \
+            --platform linux/amd64 --output /tmp/server-linux-amd64.evidence.json
+          python scripts/verify_oci_artifact_evidence.py "${common[@]}" \
+            --platform linux/arm64 --output /tmp/server-linux-arm64.evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-pr-verify-evidence
+          path: /tmp/server-*.evidence.json
+          if-no-files-found: error
+
+  compute-node-cpu-image:
+    name: Build multi-architecture CPU compute-node image without pushing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install static recipe policy dependency
+        run: python -m pip install --disable-pip-version-check "$PP_STATIC_RECIPE_POLICY_PYTHON_REQUIREMENT"
+      - name: Validate static recipe policy
+        run: python scripts/validate_container_artifact_policy.py --repository-root . --output /tmp/compute-cpu.recipe-policy.json
+      - name: Resolve immutable CPU compute build identity
+        run: |
+          python scripts/resolve_container_artifact_identity.py \
+            --repository-root . \
+            --profile-id split-accelerated \
+            --source-revision "${{ github.sha }}" \
+            --package-version pr-verify \
+            --platform linux/amd64 --platform linux/arm64 \
+            --compute-variant cpu --compute-variant cuda \
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST" \
+            --artifact-role pp-compute-node \
+            --artifact-platform linux/amd64 \
+            --artifact-variant cpu \
+            --output /tmp/compute-cpu.identity.json >/dev/null
+          jq -r '.build_args | to_entries[] | "\(.key)=\(.value)"' /tmp/compute-cpu.identity.json >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with:
+          name: plastic-promise-oci
+          use: true
+      - name: Reclaim disposable CI runner space
+        run: bash scripts/reclaim_ci_runner_space.sh
+      - name: Run protected OCI prebuild cleanup
+        run: python scripts/prepare_oci_build.py --execute
+      - name: Build OCI layout with SBOM and provenance attestations
+        run: |
+          docker buildx build --builder plastic-promise-oci \
+            --platform linux/amd64,linux/arm64 \
+            --sbom=true --provenance=mode=max \
+            --tag "plastic-promise.invalid/compute-node-cpu:pr-verify-${{ github.sha }}" \
+            --output type=oci,dest=/tmp/plastic-promise-compute-node-cpu.oci.tar \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg BASE_IMAGE_DIGEST="$BASE_IMAGE_DIGEST" \
+            --build-arg COMPUTE_VARIANT="$COMPUTE_VARIANT" \
+            --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
+            --build-arg PACKAGE_VERSION="$PACKAGE_VERSION" \
+            --build-arg BUILD_POLICY_DIGEST="$BUILD_POLICY_DIGEST" \
+            --build-arg RECIPE_POLICY_DIGEST="$RECIPE_POLICY_DIGEST" \
+            --file deploy/local-inference-node/Dockerfile .
+      - name: Verify plan-bound CPU compute OCI evidence
+        run: |
+          common=(
+            --repository-root . --profile-id split-accelerated
+            --source-revision "${{ github.sha }}" --package-version pr-verify
+            --plan-platform linux/amd64 --plan-platform linux/arm64
+            --compute-variant cpu --compute-variant cuda
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE"
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST"
+            --role pp-compute-node --variant cpu
+            --oci-layout /tmp/plastic-promise-compute-node-cpu.oci.tar
+          )
+          python scripts/verify_oci_artifact_evidence.py "${common[@]}" \
+            --platform linux/amd64 --output /tmp/compute-cpu-linux-amd64.evidence.json
+          python scripts/verify_oci_artifact_evidence.py "${common[@]}" \
+            --platform linux/arm64 --output /tmp/compute-cpu-linux-arm64.evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compute-cpu-pr-verify-evidence
+          path: /tmp/compute-cpu-*.evidence.json
+          if-no-files-found: error
+
+  compute-node-cuda-image:
+    name: Build Linux CUDA compute-node image without pushing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install static recipe policy dependency
+        run: python -m pip install --disable-pip-version-check "$PP_STATIC_RECIPE_POLICY_PYTHON_REQUIREMENT"
+      - name: Validate static recipe policy
+        run: python scripts/validate_container_artifact_policy.py --repository-root . --output /tmp/compute-cuda.recipe-policy.json
+      - name: Resolve immutable CUDA compute build identity
+        run: |
+          python scripts/resolve_container_artifact_identity.py \
+            --repository-root . \
+            --profile-id split-accelerated \
+            --source-revision "${{ github.sha }}" \
+            --package-version pr-verify \
+            --platform linux/amd64 \
+            --compute-variant cpu --compute-variant cuda \
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST" \
+            --artifact-role pp-compute-node \
+            --artifact-platform linux/amd64 \
+            --artifact-variant cuda \
+            --output /tmp/compute-cuda.identity.json >/dev/null
+          jq -r '.build_args | to_entries[] | "\(.key)=\(.value)"' /tmp/compute-cuda.identity.json >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+        with:
+          name: plastic-promise-oci
+          use: true
+      - name: Reclaim disposable CI runner space
+        run: bash scripts/reclaim_ci_runner_space.sh
+      - name: Run protected OCI prebuild cleanup
+        run: python scripts/prepare_oci_build.py --execute
+      - name: Build OCI layout with SBOM and provenance attestations
+        run: |
+          docker buildx build --builder plastic-promise-oci \
+            --platform linux/amd64 \
+            --sbom=true --provenance=mode=max \
+            --tag "plastic-promise.invalid/compute-node-cuda:pr-verify-${{ github.sha }}" \
+            --output type=oci,dest=/tmp/plastic-promise-compute-node-cuda.oci.tar \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg BASE_IMAGE_DIGEST="$BASE_IMAGE_DIGEST" \
+            --build-arg COMPUTE_VARIANT="$COMPUTE_VARIANT" \
+            --build-arg SOURCE_REVISION="$SOURCE_REVISION" \
+            --build-arg PACKAGE_VERSION="$PACKAGE_VERSION" \
+            --build-arg BUILD_POLICY_DIGEST="$BUILD_POLICY_DIGEST" \
+            --build-arg RECIPE_POLICY_DIGEST="$RECIPE_POLICY_DIGEST" \
+            --file deploy/local-inference-node/Dockerfile .
+      - name: Verify plan-bound CUDA compute OCI evidence
+        run: |
+          python scripts/verify_oci_artifact_evidence.py \
+            --repository-root . --profile-id split-accelerated \
+            --source-revision "${{ github.sha }}" --package-version pr-verify \
+            --plan-platform linux/amd64 \
+            --compute-variant cpu --compute-variant cuda \
+            --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
+            --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST" \
+            --role pp-compute-node --platform linux/amd64 --variant cuda \
+            --oci-layout /tmp/plastic-promise-compute-node-cuda.oci.tar \
+            --output /tmp/compute-cuda-linux-amd64.evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compute-cuda-pr-verify-evidence
+          path: /tmp/compute-cuda-*.evidence.json
+          if-no-files-found: error

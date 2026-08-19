@@ -16,6 +16,7 @@ from datetime import datetime
 from plastic_promise.core.paths import get_db_path
 from plastic_promise.core.synthesis import ensure_synthesis_schema
 from plastic_promise.core.synthesis_retrieval import ordinary_memory_sql_predicate
+from plastic_promise.cron.project_scope import SYSTEM_GOVERNANCE_PROJECT_ID
 
 
 async def scan_scheduler_health(engine) -> dict:
@@ -209,16 +210,20 @@ async def scan_scheduler_health(engine) -> dict:
         degradations = []
         follow_up_tasks = []
 
-        prev_rows = conn.execute(f"""
+        prev_rows = conn.execute(
+            f"""
             SELECT id, content, created_at FROM memories
             WHERE memory_type = 'experience'
               AND content LIKE '%"audit_id"%'
               AND content LIKE '%"scanner":"scan_scheduler_health"%'
               AND created_at >= datetime('now', '-14 days')
+              AND project_id = ?
               AND {ordinary_guard}
             ORDER BY created_at DESC
             LIMIT 1
-        """).fetchall()
+        """,
+            (SYSTEM_GOVERNANCE_PROJECT_ID,),
+        ).fetchall()
 
         if prev_rows:
             try:
@@ -408,6 +413,7 @@ async def scan_scheduler_health(engine) -> dict:
                     "to_agent": "pi_fixer",
                     "priority": 2,  # A-level — red findings need immediate fix
                     "source_scan": "scan_scheduler_health",
+                    "project_id": SYSTEM_GOVERNANCE_PROJECT_ID,
                     "description": json.dumps(f, ensure_ascii=False, indent=2),
                     "payload": {"finding": f, "audit_id": audit_id},
                 },
@@ -427,6 +433,7 @@ async def scan_scheduler_health(engine) -> dict:
                 "to_agent": "claude",
                 "priority": 3,
                 "source_scan": "scan_scheduler_health",
+                "project_id": SYSTEM_GOVERNANCE_PROJECT_ID,
                 "description": (
                     f"6-dimension scheduler self-audit complete.\n"
                     f"Findings: {total_issues} | Fix tasks: {dispatched} | Auto-actions: {len(auto_actions)}\n"
@@ -452,6 +459,7 @@ async def scan_scheduler_health(engine) -> dict:
                     "to_agent": "claude",
                     "priority": 2,
                     "source_scan": "scan_scheduler_health",
+                    "project_id": SYSTEM_GOVERNANCE_PROJECT_ID,
                     "description": json.dumps(auto_actions, ensure_ascii=False, indent=2),
                     "payload": {
                         "auto_actions": auto_actions,

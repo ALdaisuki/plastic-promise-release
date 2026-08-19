@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Plastic Promise PR 3 容器制品验证矩阵</title>
+  <desc id="desc">联合六 PR 合同 revision 2026-08-18.1 的端点制品源码与 CI 验证边界；不声称已执行发布、部署、runtime 或 production 操作。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .title{font:700 32px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#f8fafc}
+      .subtitle{font:400 16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#cbd5e1}
+      .section{font:700 13px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#67e8f9;letter-spacing:.08em}
+      .label{font:700 16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#f8fafc}
+      .body{font:400 13px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#dbeafe}
+      .small{font:400 12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#94a3b8}
+      .request{fill:#172554;stroke:#60a5fa;stroke-width:1.5}
+      .contract{fill:#052e2b;stroke:#2dd4bf;stroke-width:1.5}
+      .matrix{fill:#052e16;stroke:#4ade80;stroke-width:1.5}
+      .deferred{fill:#450a0a;stroke:#f87171;stroke-width:1.5}
+      .arrow{stroke:#94a3b8;stroke-width:2;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" rx="28" fill="#0b1220"/>
+  <text x="56" y="58" class="title">PR 3 容器制品边界</text>
+  <text x="56" y="86" class="subtitle">联合合同 2026-08-18.1 · 仅源码/CI 证据 · 不声称 image/runtime/production 已完成</text>
+  <text x="56" y="124" class="section">源码合同</text>
+
+  <rect x="56" y="146" width="204" height="112" rx="16" class="request"/>
+  <text x="76" y="178" class="label">ArtifactRequest</text>
+  <text x="76" y="202" class="body">pinned revision</text>
+  <text x="76" y="221" class="body">platform · variant · profile</text>
+  <text x="76" y="240" class="small">opaque catalog reference/digest</text>
+
+  <rect x="298" y="146" width="212" height="112" rx="16" class="contract"/>
+  <text x="318" y="178" class="label">ContainerArtifactCompiler</text>
+  <text x="318" y="202" class="body">preflight / prepare / materialize</text>
+  <text x="318" y="226" class="small">recipe + base-policy seam</text>
+
+  <rect x="548" y="146" width="204" height="112" rx="16" class="contract"/>
+  <text x="568" y="178" class="label">ArtifactBuildPlan</text>
+  <text x="568" y="202" class="body">matrix · label · base digest</text>
+  <text x="568" y="226" class="small">recipe · plan · collaboration surface</text>
+
+  <rect x="790" y="146" width="204" height="112" rx="16" class="contract"/>
+  <text x="810" y="178" class="label">ArtifactBuildExecutor</text>
+  <text x="810" y="202" class="body">local / verify-only CI / test</text>
+  <text x="810" y="226" class="small">返回 bound receipt evidence</text>
+
+  <rect x="1032" y="146" width="192" height="112" rx="16" class="contract"/>
+  <text x="1052" y="178" class="label">ArtifactBundle</text>
+  <text x="1052" y="202" class="body">body-free receipt set</text>
+  <text x="1052" y="226" class="small">surface · inventory · SBOM · provenance</text>
+
+  <path class="arrow" d="M260 202 H298"/>
+  <path class="arrow" d="M510 202 H548"/>
+  <path class="arrow" d="M752 202 H790"/>
+  <path class="arrow" d="M994 202 H1032"/>
+
+  <text x="56" y="314" class="section">ROLE × PLATFORM × VARIANT 策略</text>
+  <rect x="56" y="336" width="268" height="112" rx="16" class="matrix"/>
+  <text x="78" y="370" class="label">pp-local-edge / standard</text>
+  <text x="78" y="394" class="body">仅 loopback status projection</text>
+  <text x="78" y="418" class="small">仅静态资产；不含 collaboration package</text>
+
+  <rect x="348" y="336" width="268" height="112" rx="16" class="matrix"/>
+  <text x="370" y="370" class="label">pp-server-backend / standard</text>
+  <text x="370" y="394" class="body">collaboration 仅源码 / 未接线</text>
+  <text x="370" y="418" class="small">server allowlist；无 compute/release worker</text>
+
+  <rect x="640" y="336" width="268" height="112" rx="16" class="matrix"/>
+  <text x="662" y="370" class="label">pp-compute-node / cpu</text>
+  <text x="662" y="394" class="body">embedding/v1 · rerank/v1</text>
+  <text x="662" y="418" class="small">compute allowlist；不含 collaboration package</text>
+
+  <rect x="932" y="336" width="292" height="112" rx="16" class="matrix"/>
+  <text x="954" y="370" class="label">pp-compute-node / cuda</text>
+  <text x="954" y="394" class="body">相同 typed contract；amd64 policy</text>
+  <text x="954" y="418" class="small">同一 compute package；CUDA variant</text>
+
+  <text x="56" y="500" class="section">静态 PREFLIGHT 与权限边界</text>
+  <rect x="56" y="522" width="1168" height="62" rx="16" class="request"/>
+  <text x="78" y="550" class="label">静态 recipe preflight</text>
+  <text x="310" y="550" class="body">Dockerfile · Compose · .dockerignore · pinned base-image catalog</text>
+  <text x="78" y="572" class="small">拒绝 writer 配置、完整源码 final copy、跨角色 package path 与不安全 image state。</text>
+
+  <rect x="56" y="610" width="1168" height="62" rx="16" class="deferred"/>
+  <text x="78" y="638" class="label">verify-only CI / 延后的 runtime</text>
+  <text x="355" y="638" class="body">不 push/sign/attestation claim · 不启动/activation/listener/tunnel/deployment</text>
+  <text x="78" y="660" class="small">不执行 runtime mutation。receipt 绑定 OCI/image、surface inventory、label、SBOM 与 provenance。</text>
+</svg>

@@ -2,7 +2,7 @@
 
 > Release-facing overview. This document describes the system shape and operating principles without exposing private planning artifacts.
 >
-> 版本: 0.1.20 | 日期: 2026-08-04
+> 版本: 0.2.15 | 日期: 2026-08-19
 
 ## 1. What this system is
 
@@ -149,7 +149,7 @@ Never replace this attested path with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.20 --release-repo ../plastic-promise-release \
+  --version v0.2.15 --release-repo ../plastic-promise-release \
   --expected-source-branch main --validation-profile full --dry-run
 # Repeat with the same bound origin arguments, --push, and
 # --release-evidence <path-to-release-evidence.json> only after all gates pass.

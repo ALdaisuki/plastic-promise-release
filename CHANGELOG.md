@@ -7,11 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Released version: `0.1.20`.
+Released version: `0.2.15`.
 
-## [0.1.20] - 2026-08-04
+## [0.2.15] - 2026-08-19
 
 ### Added
+
+- Added composable deployment profiles, module contracts, a governed local
+  heterogeneous inference-node protocol, node leases and scheduling,
+  Dashboard observability, a cross-platform deploy controller, and attested
+  release artifacts for the server and inference-node OCI images.
 
 - Added a loopback-only hosted inference gateway with governed embedding,
   server-side reranking, durable idempotent jobs, optional client-local rerank
@@ -72,7 +77,7 @@ Released version: `0.1.20`.
 ### Verification
 
 - Merged source range covers PRs #74 through #85 on development `main`.
-- Release status for `0.1.20` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+- Release status for `0.2.15` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
 
 ## [0.1.19] - 2026-07-21
 
@@ -562,7 +567,7 @@ Released version: `0.1.20`.
 - Duplicate memory handling through vector similarity and quality gates.
 - LanceDB/SQLite consistency paths for common memory operations.
 
-[0.1.20]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.19...v0.1.20
+[0.2.15]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.2.14...v0.2.15
 [0.1.19]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/ALdaisuki/plastic-promise-release/compare/v0.1.16...v0.1.17

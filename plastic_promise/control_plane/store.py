@@ -284,11 +284,14 @@ class ControlPlaneConfigStore:
             [ConfigRevision, Mapping[str, object] | None], Mapping[str, object]
         ]
         | None = None,
+        _read_only_existing: bool = False,
     ) -> None:
         self.root = Path(root).expanduser()
         self.revisions_dir = self.root / "revisions"
+        self.compute_revisions_dir = self.root / "compute-revisions"
         self.database_path = self.root / "control-plane.sqlite3"
         self.managed_env_path = self.root / "managed.env"
+        self.compute_managed_env_path = self.root / "compute.managed.env"
         self._activation_lock_path = self.root / ".activation.lock"
         self._base_env = dict(os.environ if base_env is None else base_env)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -296,15 +299,45 @@ class ControlPlaneConfigStore:
             generation_evidence_verifier or self._verify_generation_evidence
         )
         self._thread_lock = threading.RLock()
+        if _read_only_existing:
+            self._validate_existing_readonly()
+            return
         self._initialize()
         with self._thread_lock, self._activation_file_lock():
             self._recover_activation_locked()
+
+    @classmethod
+    def open_existing_readonly(
+        cls,
+        root: str | Path,
+        base_env: Mapping[str, object] | None = None,
+    ) -> ControlPlaneConfigStore:
+        """Open existing control metadata without creating or recovering state.
+
+        Runtime bootstrap needs only the active safe revision.  It must never
+        create control-plane files, complete a pending activation, or repair a
+        deployment implicitly while constructing an inference-node runtime.
+        """
+
+        return cls(root, base_env, _read_only_existing=True)
 
     def safe_config(self) -> SafeConfigSnapshot:
         """Return the active safe config without touching provider or mutable state."""
 
         with self._connect(read_only=True) as connection:
             return self._current_snapshot(connection)
+
+    def compute_profile_digest(self, revision_id: str | None = None) -> str:
+        """Return a secret-free digest for the active private compute profile."""
+
+        with self._connect(read_only=True) as connection:
+            current = self._current_snapshot(connection)
+            selected = revision_id or current.revision_id
+            if not isinstance(selected, str) or not selected:
+                raise ControlPlaneStorageError("control_compute_profile_unavailable")
+            row = self._revision_row(connection, selected)
+            content = self._verified_compute_revision_content(row)
+        return "sha256:" + hashlib.sha256(content).hexdigest()
 
     def validate(
         self,
@@ -411,6 +444,10 @@ class ControlPlaneConfigStore:
                     env_content = _environment_file(revision_id, prepared.environment)
                     env_sha256 = _bytes_sha256(env_content)
                     created_path = self._write_new_revision(revision_id, env_content)
+                    self._write_compute_revision(
+                        revision_id,
+                        _environment_file(revision_id, prepared.compute_environment),
+                    )
                     runtime_index_identity = runtime_embedding_index_identity(
                         prepared.safe_config,
                         self._base_env,
@@ -654,6 +691,7 @@ class ControlPlaneConfigStore:
 
             self._activation_checkpoint("intent_committed")
             self._atomic_write_managed_env(private_content)
+            self._atomic_write_compute_env(self._verified_compute_revision_content(row))
             return self._finalize_activation_locked(recovered=False)
 
     def retarget_current_generation(
@@ -844,14 +882,18 @@ class ControlPlaneConfigStore:
     def _initialize(self) -> None:
         _private_directory(self.root)
         _private_directory(self.revisions_dir)
+        _private_directory(self.compute_revisions_dir)
         _private_file(self._activation_lock_path)
         if self.database_path.is_symlink():
             raise ControlPlaneStorageError("control_metadata_path_unsafe")
 
-        base_config = safe_config_from_environment(self._base_env)
-        base_values = secret_values_from_environment(self._base_env)
-        prepared = prepare_configuration(base_config, base_values, {}, {})
-        base_etag = _opaque_etag()
+        prepared = None
+        base_etag = None
+        if not self._existing_control_state():
+            base_config = safe_config_from_environment(self._base_env)
+            base_values = secret_values_from_environment(self._base_env)
+            prepared = prepare_configuration(base_config, base_values, {}, {})
+            base_etag = _opaque_etag()
 
         with self._connect() as connection:
             connection.executescript(
@@ -1012,22 +1054,63 @@ class ControlPlaneConfigStore:
                 connection.execute(
                     "ALTER TABLE activations ADD COLUMN desired_generation_manifest_sha256 TEXT"
                 )
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO control_state(
-                    singleton, active_revision_id, etag, base_safe_json,
-                    base_secret_state_json, base_embedding_identity
-                ) VALUES (1, NULL, ?, ?, ?, ?)
-                """,
-                (
-                    base_etag,
-                    canonical_json(prepared.safe_config),
-                    canonical_json(prepared.secret_state),
-                    prepared.embedding_identity,
-                ),
-            )
+            state_exists = connection.execute(
+                "SELECT 1 FROM control_state WHERE singleton = 1"
+            ).fetchone()
+            if state_exists is None:
+                # Only a brand-new control store may derive its base safe
+                # configuration from the process environment.  Once the
+                # canonical state exists, the server-only managed projection
+                # is intentionally incomplete (provider fields are owned by
+                # pp-compute-node) and must never be reparsed as a full safe
+                # configuration during restart.
+                if prepared is None or base_etag is None:
+                    raise ControlPlaneStorageError("control_state_missing")
+                connection.execute(
+                    """
+                    INSERT INTO control_state(
+                        singleton, active_revision_id, etag, base_safe_json,
+                        base_secret_state_json, base_embedding_identity
+                    ) VALUES (1, NULL, ?, ?, ?, ?)
+                    """,
+                    (
+                        base_etag,
+                        canonical_json(prepared.safe_config),
+                        canonical_json(prepared.secret_state),
+                        prepared.embedding_identity,
+                    ),
+                )
             connection.commit()
         os.chmod(self.database_path, 0o600)
+
+    def _existing_control_state(self) -> bool:
+        """Check the durable initialization marker without mutating SQLite."""
+
+        if not self.database_path.is_file():
+            return False
+        try:
+            uri = f"file:{self.database_path}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=5.0) as connection:
+                table = connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'control_state'"
+                ).fetchone()
+                if table is None:
+                    return False
+                return (
+                    connection.execute(
+                        "SELECT 1 FROM control_state WHERE singleton = 1"
+                    ).fetchone()
+                    is not None
+                )
+        except sqlite3.Error as exc:
+            raise ControlPlaneStorageError("control_metadata_invalid") from exc
+
+    def _validate_existing_readonly(self) -> None:
+        if self.root.is_symlink() or self.database_path.is_symlink():
+            raise ControlPlaneStorageError("control_metadata_path_unsafe")
+        if not self.root.is_dir() or not self.database_path.is_file():
+            raise ControlPlaneStorageError("control_metadata_unavailable")
 
     def _recover_activation_locked(self) -> None:
         """Roll forward a durable activation intent before serving or mutating."""
@@ -1046,6 +1129,7 @@ class ControlPlaneConfigStore:
             )
             target_row = self._revision_row(connection, revision_id)
             target_content = self._verified_revision_content(target_row)
+            target_compute_content = self._verified_compute_revision_content(target_row)
             observed = self._managed_env_state()
             if not self._managed_state_matches(observed, target_row):
                 if previous_revision_id is None:
@@ -1059,6 +1143,8 @@ class ControlPlaneConfigStore:
             else:
                 # A crash may have happened after rename but before directory fsync.
                 _fsync_directory(self.root)
+
+            self._atomic_write_compute_env(target_compute_content)
 
         self._finalize_activation_locked(recovered=True)
 
@@ -1474,6 +1560,12 @@ class ControlPlaneConfigStore:
             row = self._revision_row(connection, current.revision_id)
             environment = _parse_environment_file(self._verified_revision_content(row))
             values = secret_values_from_environment(environment)
+            compute_path = self.compute_revisions_dir / f"{current.revision_id}.env"
+            if compute_path.is_file() and not compute_path.is_symlink():
+                compute_environment = _parse_environment_file(compute_path.read_bytes())
+                values["compute_node_cloud_api_key"] = str(
+                    compute_environment.get("PP_LOCAL_NODE_CLOUD_API_KEY") or ""
+                )
             values["gateway_token"] = secret_values_from_environment(self._base_env)[
                 "gateway_token"
             ]
@@ -1636,6 +1728,23 @@ class ControlPlaneConfigStore:
         _fsync_directory(self.revisions_dir)
         return path
 
+    def _write_compute_revision(self, revision_id: str, content: bytes) -> Path:
+        path = self.compute_revisions_dir / f"{revision_id}.env"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(descriptor)
+        _fsync_directory(self.compute_revisions_dir)
+        return path
+
     def _verified_revision_content(self, row: sqlite3.Row) -> bytes:
         revision_id = str(row["revision_id"])
         _validate_revision_id(revision_id)
@@ -1650,6 +1759,19 @@ class ControlPlaneConfigStore:
         environment = _parse_environment_file(content)
         if BOOTSTRAP_ONLY_ENV_NAMES.intersection(environment):
             raise ControlPlaneStorageError("control_revision_bootstrap_boundary_invalid")
+        return content
+
+    def _verified_compute_revision_content(self, row: sqlite3.Row) -> bytes:
+        revision_id = _validate_revision_id(row["revision_id"])
+        path = self.compute_revisions_dir / f"{revision_id}.env"
+        if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o777 != 0o600:
+            raise ControlPlaneStorageError("control_compute_profile_material_missing")
+        content = path.read_bytes()
+        environment = _parse_environment_file(content)
+        if environment.get("PP_ENDPOINT_ROLE") not in {None, "pp-compute-node"}:
+            raise ControlPlaneStorageError("control_compute_profile_role_invalid")
+        if "PP_LOCAL_NODE_CLOUD_API_KEY" in environment and not environment["PP_LOCAL_NODE_CLOUD_API_KEY"]:
+            raise ControlPlaneStorageError("control_compute_profile_secret_invalid")
         return content
 
     def _atomic_write_managed_env(self, content: bytes) -> None:
@@ -1673,6 +1795,31 @@ class ControlPlaneConfigStore:
             os.chmod(self.managed_env_path, 0o600)
             _fsync_directory(self.root)
             self._activation_checkpoint("managed_fsynced")
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+
+    def _atomic_write_compute_env(self, content: bytes) -> None:
+        """Atomically activate the private compute-only environment projection."""
+
+        if self.compute_managed_env_path.is_symlink() or (
+            self.compute_managed_env_path.exists() and not self.compute_managed_env_path.is_file()
+        ):
+            raise ControlPlaneStorageError("control_compute_profile_path_unsafe")
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".compute.managed.env.", dir=self.root)
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.close(descriptor)
+            descriptor = -1
+            os.replace(temporary, self.compute_managed_env_path)
+            os.chmod(self.compute_managed_env_path, 0o600)
+            _fsync_directory(self.root)
         finally:
             if descriptor >= 0:
                 os.close(descriptor)

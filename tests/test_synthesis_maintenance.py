@@ -229,6 +229,254 @@ def test_cloud_index_identity_and_runtime_dimension_replay_end_to_end(synthesis_
     assert synthesis_engine._ldb.rows["ordinary-cloud"]["vector"] == [0.1, 0.2, 0.3]
 
 
+def test_memory_index_outbox_reuses_completed_remote_node_vector_after_index_retry(
+    synthesis_engine,
+) -> None:
+    """The canonical outbox retries projection, not the successful node inference."""
+
+    from dataclasses import dataclass
+
+    from plastic_promise.core.derived_work import DerivedWorkStore
+    from plastic_promise.core.memory_index_node_runtime import MemoryIndexNodeRuntime
+    from plastic_promise.core.node_governance import (
+        NodeHealthEvidence,
+        NodeIdentityEvidence,
+        NodeInferenceWorkCoordinator,
+        NodeRegistration,
+        _open_node_governance_for_test,
+        _open_node_registration_authority_for_test,
+    )
+    from plastic_promise.core.node_governance_schema import apply_node_governance_schema
+    from plastic_promise.core.node_private_transport import (
+        PrivateNodeEndpoint,
+        PrivateNodeTransportProbe,
+    )
+    from plastic_promise.core.node_task_authority import (
+        _open_memory_index_node_task_authority_for_test,
+    )
+    from plastic_promise.core.synthesis_maintenance import replay_memory_index_jobs
+    from plastic_promise.core.traceability import enqueue_memory_index_upsert
+
+    identity = NodeIdentityEvidence(
+        protocol_version="local-inference-node/v1",
+        embedding_model="BAAI/bge-m3",
+        embedding_revision="a" * 40,
+        embedding_dimension=1024,
+        embedding_normalization="l2",
+        embedding_artifact_sha256="sha256:" + "c" * 64,
+        rerank_model="BAAI/bge-reranker-v2-m3",
+        rerank_revision="b" * 40,
+        rerank_artifact_sha256="sha256:" + "d" * 64,
+    )
+
+    @dataclass(frozen=True)
+    class Revision:
+        revision_id: str
+        config: dict[str, object]
+
+    @dataclass(frozen=True)
+    class Snapshot:
+        revision_id: str
+        config: dict[str, object]
+
+    class ControlledConfig:
+        revision_id = "cfg-20260806T000000Z-000000000000"
+
+        def get_revision(self, revision_id: str) -> Revision:
+            assert revision_id == self.revision_id
+            return Revision(
+                revision_id,
+                {
+                    "node_routing": {
+                        "enabled": True,
+                        "embedding_policy": "pinned-node",
+                        "embedding_required_identity": identity.embedding_key,
+                        "embedding_pinned_node_id": "remote-a",
+                        "allowed_node_ids": ["remote-a"],
+                    }
+                },
+            )
+
+        def safe_config(self) -> Snapshot:
+            return Snapshot(
+                self.revision_id,
+                {
+                    "node_routing": {
+                        "enabled": True,
+                        "embedding_policy": "pinned-node",
+                        "embedding_required_identity": identity.embedding_key,
+                        "embedding_pinned_node_id": "remote-a",
+                        "allowed_node_ids": ["remote-a"],
+                    }
+                },
+            )
+
+    class Resolver:
+        def resolve(self, node_id: str) -> PrivateNodeEndpoint:
+            assert node_id == "remote-a"
+            return PrivateNodeEndpoint(
+                node_id=node_id,
+                transport_id="transport:remote-a",
+                base_url="http://127.0.0.1:19130",
+                authorization="Bearer private-only",
+            )
+
+    class Response:
+        def __init__(self, payload: object) -> None:
+            self.status_code = 200
+            self._payload = payload
+            self.content = json.dumps(payload).encode("utf-8")
+
+        def json(self) -> object:
+            return self._payload
+
+    class Http:
+        post_count = 0
+
+        def get(self, url: str, **_kwargs: object) -> Response:
+            if url.endswith("/v1/identity"):
+                return Response(
+                    {
+                        "protocol_version": "local-inference-node/v1",
+                        "node_id": "remote-a",
+                        "capabilities": ["embeddings", "rerank"],
+                        "embedding": {
+                            "model": "BAAI/bge-m3",
+                            "revision": "a" * 40,
+                            "dimension": 1024,
+                            "normalization": "l2",
+                            "artifact_sha256": "sha256:" + "c" * 64,
+                        },
+                        "rerank": {
+                            "model": "BAAI/bge-reranker-v2-m3",
+                            "revision": "b" * 40,
+                            "artifact_sha256": "sha256:" + "d" * 64,
+                        },
+                    }
+                )
+            raise AssertionError(url)
+
+        def post(self, url: str, **kwargs: object) -> Response:
+            assert url.endswith("/v1/embeddings")
+            assert kwargs["json"] == {"input": ["Canonical remote-node index material."]}
+            self.post_count += 1
+            return Response(
+                {
+                    "embedding_identity": "BAAI/bge-m3@" + "a" * 40,
+                    "dimension": 1024,
+                    "data": [{"index": 0, "embedding": [0.25] * 1024}],
+                }
+            )
+
+    class GenerationSpec:
+        embedding_index_identity = identity.embedding_key
+        embedding_model = identity.embedding_model
+        model_revision = identity.embedding_revision
+        embedding_dimension = identity.embedding_dimension
+
+    class GenerationManifest:
+        spec = GenerationSpec()
+
+    storage = synthesis_engine._sqlite
+    conn = storage._conn
+    conn.execute("BEGIN IMMEDIATE")
+    apply_node_governance_schema(conn)
+    conn.commit()
+    path = storage._db_path
+    derived = DerivedWorkStore(path)
+    registry = _open_node_governance_for_test(path)
+    registration_authority = _open_node_registration_authority_for_test()
+    controlled = ControlledConfig()
+    registration = NodeRegistration(
+        node_id="remote-a",
+        node_kind="remote-node",
+        transport_id="transport:remote-a",
+        transport_evidence="sha256:" + "c" * 64,
+        expected_identity=identity,
+        capabilities=("embedding", "rerank"),
+        max_concurrency=1,
+    )
+    health = NodeHealthEvidence(
+        node_id="remote-a",
+        observed_identity=identity,
+        capabilities=("embedding", "rerank"),
+        queue_depth=0,
+        available_slots=1,
+    )
+    registry.register(
+        registration_authority.verify_controlled_revision(
+            controlled,
+            config_revision=controlled.revision_id,
+            registration=registration,
+            health=health,
+        )
+    )
+    registry.observe_health(health)
+    http = Http()
+    runtime = MemoryIndexNodeRuntime(
+        coordinator=NodeInferenceWorkCoordinator(
+            registry=registry,
+            derived_work=derived,
+            authority=_open_memory_index_node_task_authority_for_test(path, controlled),
+            retry_delay_seconds=0,
+        ),
+        derived_work=derived,
+        transport=PrivateNodeTransportProbe(Resolver(), http_client=http),
+        canonical_db_path=path,
+    )
+
+    material = build_index_material(
+        {"content": "Canonical remote-node index material."},
+        policy="legacy",
+        model_name=identity.embedding_model,
+    )
+    storage.upsert(
+        "ordinary-remote",
+        {
+            "id": "ordinary-remote",
+            "content": "Canonical remote-node index material.",
+            "memory_type": "experience",
+            "source": "agent",
+            "source_class": "experience",
+            "project_id": "project:test",
+            "visibility": "project",
+            "tier": "L1",
+            "category": "fact",
+            "scope": "global",
+            "embedding_text": material.vector_text,
+            "embedding_hash": material.embedding_hash,
+            "search_text": material.search_text,
+            "metadata_json": metadata_with_index_material({}, material),
+        },
+    )
+    job_id = enqueue_memory_index_upsert(
+        conn,
+        memory_id="ordinary-remote",
+        project_id="project:test",
+        expected_embedding_hash=material.embedding_hash,
+        call_id="call-remote-node-index",
+    )
+    synthesis_engine._lancedb_generation_manifest = GenerationManifest()
+    synthesis_engine._ldb.fail_insert = True
+
+    first = replay_memory_index_jobs(synthesis_engine, node_runtime=runtime)
+    conn.execute("UPDATE store_outbox SET next_attempt_at = '' WHERE outbox_id = ?", (job_id,))
+    conn.commit()
+    synthesis_engine._ldb.fail_insert = False
+    second = replay_memory_index_jobs(synthesis_engine, node_runtime=runtime)
+
+    assert first.failed == 1
+    assert second.succeeded == 1
+    assert len(synthesis_engine._ldb.rows["ordinary-remote"]["vector"]) == 1024
+    assert http.post_count == 1
+    rows = conn.execute(
+        "SELECT status, result_json FROM derived_work_jobs WHERE project_id = 'project:test'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "completed"
+    assert json.loads(rows[0][1])["result"]["embedding_identity"] == identity.embedding_key
+
+
 def test_cloud_synthesis_replay_uses_index_identity_and_runtime_dimension(
     synthesis_engine,
 ) -> None:

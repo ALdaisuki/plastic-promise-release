@@ -100,7 +100,8 @@ class TestSafetyNetImports:
 
         calls = []
 
-        async def lifecycle(_engine):
+        async def lifecycle(_engine, *, project_id):
+            assert project_id == "project:test"
             calls.append("memory_lifecycle")
             raise RuntimeError("lifecycle failed")
 
@@ -125,16 +126,41 @@ class TestSafetyNetImports:
             return {"score": 1.0}
 
         monkeypatch.setattr(maintenance_daemon, "scan_memory_decay", lifecycle)
+        monkeypatch.setattr(
+            maintenance_daemon,
+            "run_collaboration_maintenance",
+            lambda _engine: calls.append("collaboration_maintenance")
+            or {
+                "schema_version": "collaboration-maintenance/v1",
+                "status": "success",
+                "canonical_memory_mutation": False,
+                "event_delete": False,
+            },
+        )
         monkeypatch.setattr(maintenance_daemon, "expire_pending_memory_proposals", expiry)
         monkeypatch.setattr(maintenance_daemon, "scan_synthesis_integrity", synthesis_scan)
         monkeypatch.setattr(maintenance_daemon, "replay_memory_index_jobs", replay_memory)
         monkeypatch.setattr(maintenance_daemon, "replay_synthesis_index_jobs", replay)
         monkeypatch.setattr(maintenance_daemon, "run_audit", audit)
+        monkeypatch.setattr(
+            maintenance_daemon,
+            "_maintenance_project_ids",
+            lambda _engine=None: ("project:test",),
+        )
+        monkeypatch.setattr(
+            maintenance_daemon,
+            "run_periodic_memory_maintenance",
+            lambda _engine, *, system_authority: {
+                "decay_updated": 0,
+                "system_authority": system_authority,
+            },
+        )
 
         report = await maintenance_daemon.run_governed_maintenance_cycle(object())
 
         assert calls == [
             "memory_lifecycle",
+            "collaboration_maintenance",
             "proposal_expiry",
             "synthesis_integrity",
             "memory_index_replay",
@@ -142,7 +168,8 @@ class TestSafetyNetImports:
             "audit",
         ]
         assert report["order"] == calls
-        assert report["errors"] == {"memory_lifecycle": "RuntimeError"}
+        assert report["errors"] == {}
+        assert report["degradations"] == {"memory_lifecycle": ["project_scanner_failed"]}
 
     def test_proposal_expiry_bridge_redacts_pending_plaintext(self):
         from daemons.maintenance_daemon import expire_pending_memory_proposals

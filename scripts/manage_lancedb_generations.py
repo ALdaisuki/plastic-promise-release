@@ -12,11 +12,8 @@ import json
 import os
 import sqlite3
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -41,14 +38,27 @@ def _load_default_artifact_verifier() -> ArtifactVerifier:
 def _validate_runtime_environment(spec: GenerationSpec, report: Mapping[str, object]) -> None:
     """Recheck evidence under the same environment intended for the MCP unit."""
 
-    from plastic_promise.core.memory_index import effective_embedding_model_name
     from scripts.rebuild_lancedb import _assert_quality_report_runtime_environment
 
     _assert_quality_report_runtime_environment(report)
-    if (
-        spec.embedding_index_identity is not None
-        and effective_embedding_model_name() != spec.embedding_index_identity
-    ):
+    if spec.embedding_index_identity is None:
+        return
+    backend = report.get("backend")
+    provider = backend.get("provider") if isinstance(backend, Mapping) else None
+    if provider == "governed-node":
+        # Governed nodes own the stable index identity.  The process-level
+        # legacy model helper may decorate EMB_MODEL with local chunking
+        # settings and is not authoritative for a routed node.
+        from plastic_promise.core.embedding_index_identity import (
+            configured_embedding_index_identity,
+        )
+
+        observed_identity = configured_embedding_index_identity()
+    else:
+        from plastic_promise.core.memory_index import effective_embedding_model_name
+
+        observed_identity = effective_embedding_model_name()
+    if observed_identity != spec.embedding_index_identity:
         raise ValueError("runtime_embedding_index_identity_not_current")
 
 

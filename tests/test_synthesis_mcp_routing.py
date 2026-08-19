@@ -1165,7 +1165,7 @@ def test_smart_remember_runtime_caller_preserves_skill_role_boundary(
 
 
 @pytest.mark.asyncio
-async def test_step_closure_internal_smart_remember_uses_server_authority(
+async def test_step_closure_reflection_does_not_use_trusted_memory_route(
     monkeypatch,
 ):
     from plastic_promise.loop import soul_loop
@@ -1224,13 +1224,9 @@ async def test_step_closure_internal_smart_remember_uses_server_authority(
         },
     )
 
-    assert runtime_requests == ["memory_update"]
-    assert len(skill_calls) == 1
-    skill_name, params, caller = skill_calls[0]
-    assert skill_name == "smart-remember"
-    assert params["_runtime_context"] == runtime
-    assert caller == "pi"
-    assert trusted_origins == [True]
+    assert runtime_requests == []
+    assert skill_calls == []
+    assert trusted_origins == []
 
 
 def test_existing_tools_expose_governed_synthesis_fields_without_new_tool() -> None:

@@ -80,10 +80,14 @@ from plastic_promise.core.traceability import (
     new_call_id,
     record_call_span,
 )
+from plastic_promise.cron.project_scope import list_memory_project_ids
 from plastic_promise.cron.scan_architecture import scan_architecture
 from plastic_promise.cron.scan_coupling import scan_coupling
 from plastic_promise.cron.scan_data_quality import scan_data_quality
-from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+from plastic_promise.cron.scan_memory_decay import (
+    run_periodic_memory_maintenance,
+    scan_memory_decay,
+)
 from plastic_promise.cron.scan_quality_trends import scan_quality_trends
 from plastic_promise.cron.scan_scheduler_health import scan_scheduler_health
 from plastic_promise.cron.scan_trust import scan_trust
@@ -1725,6 +1729,75 @@ def _engine_connection(engine):
     return getattr(sqlite_store, "_conn", None)
 
 
+def _maintenance_project_ids(engine=None) -> tuple[str, ...]:
+    """Return canonical projects for one maintenance cycle without guessing."""
+
+    conn = _engine_connection(engine)
+    owns_connection = conn is None
+    if owns_connection:
+        try:
+            conn = _connect_memory_db()
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error:
+            return ()
+    try:
+        return list_memory_project_ids(conn)
+    except sqlite3.Error:
+        return ()
+    finally:
+        if owns_connection and conn is not None:
+            conn.close()
+
+
+async def _run_project_scanner_group(name, scanner, engine, project_ids):
+    """Run one project scanner for every explicit project and aggregate results."""
+
+    aggregate = {
+        "scanner": name,
+        "project_count": len(project_ids),
+        "projects": {},
+        "findings": 0,
+        "dispatched": 0,
+    }
+    if not project_ids:
+        aggregate["failure_code"] = "project_scope_unavailable"
+        return aggregate
+
+    lifecycle: dict[str, int] = {}
+    for project_id in project_ids:
+        try:
+            result = scanner(engine, project_id=project_id)
+            if inspect.isawaitable(result):
+                result = await result
+            if not isinstance(result, dict):
+                result = {
+                    "scanner": name,
+                    "findings": 0,
+                    "dispatched": 0,
+                    "failure_code": "scanner_result_invalid",
+                }
+        except Exception as exc:
+            result = {
+                "scanner": name,
+                "findings": 0,
+                "dispatched": 0,
+                "failure_code": "project_scanner_failed",
+                "error_class": exc.__class__.__name__,
+            }
+
+        aggregate["projects"][project_id] = result
+        for counter in ("findings", "dispatched"):
+            with suppress(TypeError, ValueError):
+                aggregate[counter] += max(0, int(result.get(counter, 0) or 0))
+        for key, value in (result.get("lifecycle") or {}).items():
+            if type(value) is int:
+                lifecycle[key] = lifecycle.get(key, 0) + value
+
+    if lifecycle:
+        aggregate["lifecycle"] = lifecycle
+    return aggregate
+
+
 def _trace_connection(engine):
     primary = _engine_connection(engine)
     if primary is None:
@@ -1761,6 +1834,18 @@ def _result_failure_codes(result):
                 )[:200]
                 if code:
                     codes.add(code)
+            raw_codes = current.get("failure_codes")
+            if isinstance(raw_codes, (list, tuple)):
+                for raw_item in raw_codes:
+                    if not isinstance(raw_item, str):
+                        continue
+                    code = "".join(
+                        character
+                        for character in raw_item.strip()
+                        if character.isalnum() or character in "._:-"
+                    )[:200]
+                    if code:
+                        codes.add(code)
             stack.extend(
                 value for value in current.values() if isinstance(value, (dict, list, tuple))
             )
@@ -1769,12 +1854,122 @@ def _result_failure_codes(result):
     return sorted(codes)
 
 
+def _maintenance_stage_failure_code(exc):
+    code = str(getattr(exc, "code", "") or "").strip()
+    if code:
+        return code
+    if str(exc) == "maintenance_stage_left_open_transaction":
+        return "maintenance_stage_left_open_transaction"
+    return "maintenance_stage_failed"
+
+
+def run_collaboration_maintenance(engine):
+    """Run server-owned durable collaboration cleanup on canonical SQLite.
+
+    Runtime construction is verify-only: this stage never installs or migrates
+    collaboration schema and never opens another writable database.  The
+    outer server writer transaction makes lifecycle reconcile and pending-only
+    promotion reconcile atomic even though the runtime exposes them as two
+    independently guarded operations.
+    """
+
+    from plastic_promise.collaboration.durable_runtime import DurableCollaborationRuntime
+    from plastic_promise.collaboration.runtime_binding import (
+        _authority_bundle,
+        _safe_failure,
+        _server_clock,
+        _server_storage,
+        _source_revision,
+        _transaction_factory,
+    )
+
+    storage = _server_storage(engine)
+    if storage is None:
+        return {
+            "schema_version": "collaboration-maintenance-stage/v1",
+            "status": "degraded",
+            "failure_code": "durable_collaboration_server_writer_unavailable",
+            "canonical_memory_mutation": False,
+            "event_delete": False,
+        }
+    _storage, connection, batch, write_lock = storage
+    transaction_factory = _transaction_factory(write_lock=write_lock, batch=batch)
+    try:
+        with transaction_factory():
+            bundle = _authority_bundle(
+                engine,
+                connection=connection,
+                transaction_factory=transaction_factory,
+                clock=_server_clock,
+                source_revision=_source_revision(),
+            )
+            runtime = DurableCollaborationRuntime(
+                connection,
+                transaction_factory=transaction_factory,
+                clock=_server_clock,
+                policy_authority=bundle.policy_authority,
+                role_assignment_repository=bundle.role_assignment_repository,
+                role_assignment_authority=bundle.role_assignment_authority,
+                acceptance_authority=bundle.acceptance_authority,
+            )
+            result = runtime.maintenance()
+    except Exception as exc:
+        return {
+            "schema_version": "collaboration-maintenance-stage/v1",
+            "status": "degraded",
+            "failure_code": _safe_failure(exc),
+            "canonical_memory_mutation": False,
+            "event_delete": False,
+        }
+
+    promotion_failures = sorted(
+        {
+            str(item.get("reason") or "").strip()
+            for item in result.get("promotion", ())
+            if isinstance(item, dict)
+            and item.get("status") == "failed"
+            and str(item.get("reason") or "").strip()
+        }
+    )
+    if promotion_failures:
+        result["status"] = "degraded"
+        result["failure_codes"] = promotion_failures
+    else:
+        result["status"] = "success"
+    return result
+
+
 async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=None):
-    """Run and durably trace the six governed maintenance stages."""
+    """Run and durably trace the governed maintenance stages."""
     if engine is None:
         from plastic_promise.core.context_engine import ContextEngine
 
         engine = ContextEngine()
+
+    # Maintenance creates its own ContextEngine rather than importing the MCP
+    # singleton.  Apply the same fail-closed node-runtime bootstrap here so a
+    # governed ``memory_index`` outbox can never fall through to the legacy
+    # embedder just because it was replayed by the daemon.  Bootstrap failures
+    # block derived indexing only; the rest of the maintenance cycle remains
+    # independently observable.
+    try:
+        from plastic_promise.core.node_runtime_bootstrap import (
+            bootstrap_memory_index_node_runtime,
+        )
+
+        bootstrap_memory_index_node_runtime(engine)
+    except Exception:
+        with suppress(Exception):
+            updater = getattr(engine, "set_memory_index_node_runtime_status", None)
+            if callable(updater):
+                updater(
+                    {
+                        "state": "blocked",
+                        "reason": "node_routing_bootstrap_unavailable",
+                        "registered_nodes": 0,
+                        "config_revision": None,
+                    }
+                )
 
     cycle_call_id = new_call_id()
     parent_call_id = str(outer_parent_call_id or "")
@@ -1784,6 +1979,7 @@ async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=No
         "order": [],
         "results": {},
         "errors": {},
+        "failure_codes": {},
         "degradations": {},
     }
     primary_conn = _engine_connection(engine)
@@ -1798,11 +1994,25 @@ async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=No
             stage_name="maintenance_cycle",
             caller="maintenance-daemon",
             status="running",
-            metadata={"stage_count": 6, "completed_count": 0, "error_count": 0},
+            metadata={"stage_count": 7, "completed_count": 0, "error_count": 0},
         )
 
+    project_ids = _maintenance_project_ids(engine)
+
+    async def run_memory_lifecycle():
+        aggregate = await _run_project_scanner_group(
+            "scan_memory_decay", scan_memory_decay, engine, project_ids
+        )
+        if project_ids:
+            aggregate["routine"] = run_periodic_memory_maintenance(
+                engine,
+                system_authority=True,
+            )
+        return aggregate
+
     stages = (
-        ("memory_lifecycle", lambda: scan_memory_decay(engine)),
+        ("memory_lifecycle", run_memory_lifecycle),
+        ("collaboration_maintenance", lambda: run_collaboration_maintenance(engine)),
         ("proposal_expiry", lambda: expire_pending_memory_proposals(engine)),
         ("synthesis_integrity", lambda: scan_synthesis_integrity(engine)),
         ("memory_index_replay", lambda: replay_memory_index_jobs(engine)),
@@ -1832,8 +2042,14 @@ async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=No
                 primary_conn.rollback()
             error_class = exc.__class__.__name__
             report["errors"][stage] = error_class
+            report["failure_codes"][stage] = _maintenance_stage_failure_code(exc)
             stage_status = "error"
-            stage_metadata["error_class"] = error_class
+            stage_metadata.update(
+                {
+                    "error_class": error_class,
+                    "failure_code": report["failure_codes"][stage],
+                }
+            )
         if conn is not None:
             record_call_span(
                 conn,
@@ -1870,6 +2086,7 @@ async def run_governed_maintenance_cycle(engine=None, *, outer_parent_call_id=No
                 "error_count": len(report["errors"]),
                 "degraded_count": len(report["degradations"]),
                 "error_classes": dict(report["errors"]),
+                "failure_codes": dict(report["failure_codes"]),
                 "degradation_codes": dict(report["degradations"]),
             },
         )
@@ -1897,13 +2114,27 @@ async def _isolated_job(results, name, runner):
 async def run_safety_net_cycle(engine=None):
     """Run safety-net scanners without allowing one failure to stop later work."""
     engine = engine or _maintenance_engine()
+    project_ids = _maintenance_project_ids(engine)
     results = {}
     discovery = (
         ("scan_trust", lambda: scan_trust(engine)),
-        ("scan_architecture", lambda: scan_architecture(engine)),
+        (
+            "scan_architecture",
+            lambda: _run_project_scanner_group(
+                "scan_architecture", scan_architecture, engine, project_ids
+            ),
+        ),
         ("scan_quality_trends", lambda: scan_quality_trends(engine)),
-        ("scan_coupling", lambda: scan_coupling(engine)),
-        ("scan_memory_decay", lambda: scan_memory_decay(engine)),
+        (
+            "scan_coupling",
+            lambda: _run_project_scanner_group("scan_coupling", scan_coupling, engine, project_ids),
+        ),
+        (
+            "scan_memory_decay",
+            lambda: _run_project_scanner_group(
+                "scan_memory_decay", scan_memory_decay, engine, project_ids
+            ),
+        ),
     )
     for name, runner in discovery:
         await _isolated_job(results, name, runner)

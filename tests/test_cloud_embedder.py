@@ -269,6 +269,9 @@ def test_generic_provider_never_reuses_supplier_specific_api_keys(monkeypatch):
 
 def test_legacy_openai_provider_is_pinned_to_official_endpoint(monkeypatch):
     reset_embedder()
+    # Cloud providers are compute-node-only; the server/backend path must
+    # fail closed before constructing a provider client.
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-compute-node")
     monkeypatch.setenv("EMBEDDER_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "legacy-openai-test-key")
     monkeypatch.setenv("EMBEDDER_API_KEY", "generic-key-must-not-win")
@@ -551,6 +554,29 @@ def test_factory_cloud_failure_does_not_probe_ollama(monkeypatch):
     assert selected.model_name == "fallback-zero"
     assert selected.dim == 7
     reset_embedder()
+
+
+def test_factory_without_provider_defaults_to_cloud_contract(monkeypatch):
+    import plastic_promise.core.embedder as embedder_module
+
+    reset_embedder()
+    monkeypatch.delenv("EMBEDDER_PROVIDER", raising=False)
+    monkeypatch.delenv("EMBEDDER_BASE_URL", raising=False)
+    monkeypatch.delenv("EMBEDDER_API_KEY", raising=False)
+    monkeypatch.setenv("PP_EMBEDDING_DIM", "7")
+    monkeypatch.setenv("EMBEDDER_CACHE_SIZE", "0")
+    monkeypatch.setattr(
+        embedder_module,
+        "OllamaEmbedder",
+        lambda *args, **kwargs: pytest.fail("default facade must not probe Ollama"),
+    )
+
+    try:
+        selected = embedder_module.get_embedder(fallback_on_error=True)
+        assert isinstance(selected, FallbackEmbedder)
+        assert selected.dim == 7
+    finally:
+        reset_embedder()
 
 
 def test_factory_normalizes_fallback_provider_and_uses_schema_dimension(monkeypatch):

@@ -195,7 +195,9 @@ def test_recall_envelope_trace_uses_single_top_level_projection():
 
     assert payload["trace"] == {
         "call_id": "call_fixed",
-        "request_scope_id": "stage:codex:test::flow:normal-development::req:req:trace",
+        "request_scope_id": (
+            "project:a172cedcae47474b::stage:codex:test::flow:normal-development::req:req:trace"
+        ),
         "project_id": "project:app",
     }
     assert "data" not in payload

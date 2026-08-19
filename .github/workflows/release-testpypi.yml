@@ -1,0 +1,110 @@
+name: TestPyPI Release Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Immutable full 40-character RC source commit SHA"
+        required: true
+        type: string
+      package_version:
+        description: "Exact PEP 440 package version to publish and install"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  resolve-source:
+    name: Resolve and bind the immutable RC source commit
+    runs-on: ubuntu-latest
+    outputs:
+      source_commit: ${{ steps.resolve.outputs.commit }}
+      package_version: ${{ steps.resolve.outputs.package_version }}
+    steps:
+      - id: validate-input
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+          REQUESTED_PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          if ! [[ "$REQUESTED_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "testpypi_source_commit_sha_required" >&2
+            exit 1
+          fi
+          if ! [[ "$REQUESTED_PACKAGE_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.!+_-]{0,127}$ ]]; then
+            echo "testpypi_package_version_invalid" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - id: resolve
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+          REQUESTED_PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          resolved="$(git rev-parse HEAD)"
+          if [ "$resolved" != "$REQUESTED_SOURCE_REF" ]; then
+            echo "testpypi_source_commit_resolution_mismatch" >&2
+            exit 1
+          fi
+          echo "commit=$resolved" >> "$GITHUB_OUTPUT"
+          echo "package_version=$REQUESTED_PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+  publish-testpypi:
+    name: Publish RC only to TestPyPI after environment approval
+    runs-on: ubuntu-latest
+    environment: testpypi
+    needs: resolve-source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify requested package version before upload
+        env:
+          EXPECTED_PACKAGE_VERSION: ${{ needs.resolve-source.outputs.package_version }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          expected = os.environ["EXPECTED_PACKAGE_VERSION"]
+          if version != expected:
+              raise SystemExit(f"package_version_mismatch:{version}!={expected}")
+          PY
+      - name: Build release-candidate distribution
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build --outdir dist
+          python -m twine check dist/*
+      - name: Publish only to TestPyPI with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+
+  install-exact-wheel:
+    name: Install the published RC exactly from TestPyPI
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment: testpypi
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - env:
+          PACKAGE_VERSION: ${{ needs.resolve-source.outputs.package_version }}
+        run: |
+          python -m venv .testpypi-wheel-venv
+          .testpypi-wheel-venv/bin/python -m pip install --no-deps --only-binary=:all: \
+            --index-url https://test.pypi.org/simple/ \
+            "plastic-promise==${PACKAGE_VERSION}"
+          .testpypi-wheel-venv/bin/python -c 'import plastic_promise; print(plastic_promise.__version__)'

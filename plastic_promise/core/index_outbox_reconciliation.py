@@ -313,6 +313,7 @@ def _rows(
     connection: sqlite3.Connection,
     *,
     watermark: int | None = None,
+    project_id: str | None = None,
 ) -> list[tuple[Any, ...]]:
     placeholders = ",".join("?" for _ in INDEX_OUTBOX_TOOLS)
     suffix = ""
@@ -320,6 +321,9 @@ def _rows(
     if watermark is not None:
         suffix = " AND rowid <= ?"
         params.append(watermark)
+    if project_id is not None:
+        suffix += " AND project_id = ?"
+        params.append(project_id)
     query = (
         "SELECT rowid, status, "
         + ", ".join(IMMUTABLE_COLUMNS)
@@ -349,7 +353,9 @@ def immutable_digest(rows: list[tuple[Any, ...]]) -> str:
     return digest.hexdigest()
 
 
-def snapshot_index_outbox(connection: sqlite3.Connection) -> dict[str, Any]:
+def snapshot_index_outbox(
+    connection: sqlite3.Connection, *, project_id: str | None = None
+) -> dict[str, Any]:
     """Capture a rowid watermark and a digest of immutable index-job fields."""
 
     _require_schema(connection)
@@ -359,7 +365,13 @@ def snapshot_index_outbox(connection: sqlite3.Connection) -> dict[str, Any]:
     # generation builds always have memories and therefore carry the binding.
     if _source_table_exists(connection, "memories"):
         source_fingerprint = canonical_source_fingerprint(connection)
-    rows = _rows(connection)
+    rows = _rows(connection, project_id=project_id)
+    if project_id is None:
+        observed_projects = {
+            str(row[4]).strip() for row in rows if len(row) > 4 and str(row[4]).strip()
+        }
+        if len(observed_projects) == 1:
+            project_id = observed_projects.pop()
     watermark = max((int(row[0]) for row in rows), default=0)
     status_counts: dict[str, int] = {}
     for row in rows:
@@ -379,6 +391,8 @@ def snapshot_index_outbox(connection: sqlite3.Connection) -> dict[str, Any]:
         "reconciled": False,
         "required_action": "run explicit reconcile after reviewing the source watermark",
     }
+    if project_id is not None:
+        evidence["project_id"] = project_id
     if source_fingerprint is not None:
         evidence["source_fingerprint"] = source_fingerprint
     return evidence
@@ -409,7 +423,19 @@ def _validate_evidence(evidence: Mapping[str, Any]) -> tuple[int, str, int]:
         not isinstance(source_fingerprint, str) or _SHA256.fullmatch(source_fingerprint) is None
     ):
         raise IndexOutboxReconciliationError("generation_outbox_evidence_invalid")
+    project_id = evidence.get("project_id")
+    if (
+        not isinstance(project_id, str)
+        or not project_id.strip()
+        or project_id.casefold() in {"project:unknown", "unknown"}
+    ):
+        raise IndexOutboxReconciliationError("generation_outbox_evidence_invalid")
     return watermark, digest, job_count
+
+
+def _evidence_project_id(evidence: Mapping[str, Any]) -> str | None:
+    value = evidence.get("project_id")
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def validate_reconciliation_receipt(
@@ -523,6 +549,7 @@ def reconcile_index_outbox(
     ):
         raise IndexOutboxReconciliationError("reconciliation_identity_invalid")
     watermark, expected_digest, expected_count = _validate_evidence(evidence)
+    project_id = _evidence_project_id(evidence)
     _require_schema(connection)
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -531,10 +558,17 @@ def reconcile_index_outbox(
             observed_source_fingerprint = canonical_source_fingerprint(connection)
             if observed_source_fingerprint != expected_source_fingerprint:
                 raise IndexOutboxReconciliationError("generation_source_snapshot_mismatch")
-        rows = _rows(connection, watermark=watermark)
+        rows = _rows(connection, watermark=watermark, project_id=project_id)
         if len(rows) != expected_count or immutable_digest(rows) != expected_digest:
             raise IndexOutboxReconciliationError("generation_outbox_snapshot_mismatch")
-        newer = _rows(connection)
+        unscoped_newer = _rows(connection)
+        if any(
+            int(row[0]) > watermark
+            and str(row[4]).strip().casefold() in {"", "project:unknown", "unknown"}
+            for row in unscoped_newer
+        ):
+            raise IndexOutboxReconciliationError("generation_outbox_newer_jobs_make_stale")
+        newer = _rows(connection, project_id=project_id)
         if any(int(row[0]) > watermark for row in newer):
             raise IndexOutboxReconciliationError("generation_outbox_newer_jobs_make_stale")
         statuses = {str(row[1]) for row in rows}
@@ -552,14 +586,19 @@ def reconcile_index_outbox(
             set_parts.append("next_attempt_at = ''")
         if "updated_at" in columns:
             set_parts.append("updated_at = ?")
-            update_params: list[Any] = [_utc_now(), watermark]
+            update_params: list[Any] = [_utc_now()]
         else:
-            update_params = [watermark]
+            update_params = []
+        update_scope = " AND project_id = ?" if project_id is not None else ""
+        update_params.extend((*INDEX_OUTBOX_TOOLS, watermark))
+        if project_id is not None:
+            update_params.append(project_id)
         updated = connection.execute(
             "UPDATE store_outbox SET "
             + ", ".join(set_parts)
-            + " WHERE tool_name IN (?, ?) AND rowid <= ? AND status <> 'done'",
-            (*update_params[:-1], *INDEX_OUTBOX_TOOLS, update_params[-1]),
+            + " WHERE tool_name IN (?, ?) AND rowid <= ? AND status <> 'done'"
+            + update_scope,
+            tuple(update_params),
         ).rowcount
         connection.execute(
             """
@@ -621,18 +660,19 @@ def assert_index_outbox_fresh(
     if not isinstance(evidence, Mapping) or evidence.get("reconciled") is not True:
         raise IndexOutboxReconciliationError("generation_outbox_reconciliation_required")
     watermark, expected_digest, expected_count = _validate_evidence(evidence)
+    project_id = _evidence_project_id(evidence)
     _require_schema(connection)
     expected_source_fingerprint = evidence.get("source_fingerprint")
     if expected_source_fingerprint is not None:
         observed_source_fingerprint = canonical_source_fingerprint(connection)
         if observed_source_fingerprint != expected_source_fingerprint:
             raise IndexOutboxReconciliationError("generation_source_snapshot_stale")
-    rows = _rows(connection, watermark=watermark)
+    rows = _rows(connection, watermark=watermark, project_id=project_id)
     if any(str(row[1]) != "done" for row in rows):
         raise IndexOutboxReconciliationError("generation_outbox_status_not_done")
     if len(rows) != expected_count or immutable_digest(rows) != expected_digest:
         raise IndexOutboxReconciliationError("generation_outbox_snapshot_stale")
-    if any(int(row[0]) > watermark for row in _rows(connection)):
+    if any(int(row[0]) > watermark for row in _rows(connection, project_id=project_id)):
         raise IndexOutboxReconciliationError("generation_outbox_newer_jobs_make_stale")
 
 
@@ -646,8 +686,9 @@ def assert_index_outbox_base_covered(
     if not isinstance(evidence, Mapping) or evidence.get("reconciled") is not True:
         raise IndexOutboxReconciliationError("generation_outbox_reconciliation_required")
     watermark, expected_digest, expected_count = _validate_evidence(evidence)
+    project_id = _evidence_project_id(evidence)
     _require_schema(connection)
-    rows = _rows(connection, watermark=watermark)
+    rows = _rows(connection, watermark=watermark, project_id=project_id)
     if any(str(row[1]) != "done" for row in rows):
         raise IndexOutboxReconciliationError("generation_outbox_base_status_not_done")
     if len(rows) != expected_count or immutable_digest(rows) != expected_digest:

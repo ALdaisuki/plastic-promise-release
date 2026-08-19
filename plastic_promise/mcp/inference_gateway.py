@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+import httpx
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
@@ -46,6 +47,7 @@ from plastic_promise.core.backend_inference import (
     accept_authoritative_client_local_rerank,
     validate_rerank_submission,
 )
+from plastic_promise.core.execution_plane import current_endpoint_role
 from plastic_promise.core.paths import get_db_path, inference_jobs_path_for
 from plastic_promise.core.provider_http import ProviderHTTPClient, ProviderHTTPError
 
@@ -489,6 +491,15 @@ def _create_gateway_runtime(
     rerank_service_factory: Callable[[], BackendInferenceService] | None,
     store_factory: Callable[[Path], Any] | None,
 ) -> _GatewayRuntime:
+    # The legacy gateway owns BackendInferenceService factories and therefore
+    # is not an inference execution plane.  In the composed deployment the
+    # server may schedule a governed compute-node lease, but it must not
+    # instantiate this legacy cloud/local executor.  Keep the old API
+    # available for isolated library callers and tests with no endpoint role;
+    # an explicitly launched server fails closed until its private-node lease
+    # adapter is wired in.
+    if current_endpoint_role() == "pp-server-backend":
+        raise InferenceGatewayConfigurationError("inference_requires_compute_node")
     if InferenceJobStore is None:
         raise InferenceGatewayConfigurationError("inference_job_store_unavailable")
     try:
@@ -1741,7 +1752,17 @@ def _provider_endpoint_is_cloud(*, provider: str, base_url: str, api_key: str) -
     ):
         return False
     try:
-        client = ProviderHTTPClient(provider=provider, base_url=base_url, api_key=api_key)
+        # This helper validates the endpoint contract only; it must not be
+        # treated as an actual provider construction that bypasses the
+        # compute-node role gate.  An injected no-op transport keeps the
+        # validation side-effect free while retaining the constructor's
+        # schema checks.
+        client = ProviderHTTPClient(
+            provider=provider,
+            base_url=base_url,
+            api_key=api_key,
+            transport=httpx.MockTransport(lambda _request: httpx.Response(599)),
+        )
     except ProviderHTTPError:
         return False
     client.close()

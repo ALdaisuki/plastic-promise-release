@@ -355,6 +355,7 @@ def test_unfinished_workflow_instance_resumes_until_a_new_root_is_selected(engin
 
 
 def test_ambiguous_workflow_text_can_select_a_model_authority_route(engine, monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-compute-node")
     monkeypatch.setenv("PP_PASSIVE_CONTEXT", "on")
     monkeypatch.setenv("PP_PASSIVE_TOOL_ROUTING", "on")
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_ROUTING", "on")
@@ -399,6 +400,7 @@ def test_ambiguous_workflow_text_can_select_a_model_authority_route(engine, monk
 
 
 def test_semantic_workflow_routing_cannot_grant_user_only_authority(engine, monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-compute-node")
     monkeypatch.setenv("PP_PASSIVE_CONTEXT", "on")
     monkeypatch.setenv("PP_PASSIVE_TOOL_ROUTING", "on")
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_ROUTING", "on")
@@ -478,6 +480,7 @@ def test_deterministic_workflow_route_never_calls_semantic_provider(engine, monk
 
 @pytest.mark.parametrize("failure", ["invalid_json", "timeout"])
 def test_semantic_route_failure_falls_back_to_ask_matt(engine, monkeypatch, failure):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-compute-node")
     monkeypatch.setenv("PP_PASSIVE_CONTEXT", "on")
     monkeypatch.setenv("PP_PASSIVE_TOOL_ROUTING", "on")
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_ROUTING", "on")
@@ -739,6 +742,7 @@ def test_assistant_text_never_creates_passive_candidate(engine, monkeypatch):
 
 
 def test_rule_miss_enqueues_idempotent_semantic_work_without_calling_provider(engine, monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_CAPTURE", "on")
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_WORKER_AUTOSTART", "0")
     monkeypatch.setenv("PP_MEMORY_CHUNK_ENRICHMENT_API_KEY", "test-semantic-key")
@@ -775,6 +779,7 @@ def test_rule_miss_enqueues_idempotent_semantic_work_without_calling_provider(en
 
 
 def test_public_after_invoke_only_removes_injected_material_from_semantic_text(engine, monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_CAPTURE", "on")
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_WORKER_AUTOSTART", "0")
     monkeypatch.setenv("PP_MEMORY_CHUNK_ENRICHMENT_API_KEY", "test-semantic-key")
@@ -898,6 +903,7 @@ def test_passive_hook_semantic_job_auto_promotes_governed_fact(engine, monkeypat
 
 
 def test_rule_miss_enqueues_semantic_shadow_work_when_legacy_gates_are_shadow(engine, monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
     monkeypatch.setenv("PP_PASSIVE_MEMORY", "shadow")
     monkeypatch.setenv("PP_MEMORY_PROPOSALS", "shadow")
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_CAPTURE", "shadow")

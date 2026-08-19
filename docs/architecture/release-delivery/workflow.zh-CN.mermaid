@@ -1,0 +1,41 @@
+flowchart TD
+    source[不可变源码 ref] --> pr[PR 验证]
+    pr --> py[Wheel + sdist + 精确本地安装]
+    pr --> oci[不推送 OCI build]
+    py --> review{审查与合并批准}
+    oci --> review
+    review --> rcGate{受保护默认分支 SHA + release-candidate 批准}
+    rcGate --> rc[手动 RC candidate workflow]
+    rc --> catalog[干净、受跟踪、fixed-revision Model Catalog]
+    catalog --> matrix{仅 split-accelerated remote matrix}
+    matrix --> rcOci[Edge/server/CPU 多架构 + CUDA amd64 OCI layout]
+    rcOci --> embedded[Buildx 内嵌 SBOM/provenance attestation]
+    embedded --> subjectVerify[校验 attestation subject 等于精确 image digest]
+    subjectVerify --> planReceipts[plan-bound OCI evidence receipt]
+    rcOci --> rcSboms[opaque 逐 artifact CycloneDX SBOM + 已验证 descriptor 字节]
+    rcSboms --> sbomReceipts[attested receipt set：layout root + image + platform + SBOM digest/size]
+    planReceipts --> rcManifest[包 manifest + canonical catalog/binding v2]
+    sbomReceipts --> rcManifest
+    rcManifest --> rcVerify[对 pre-bundle subject 做证明与验证]
+    rcVerify --> rcBundle[Release Bundle + 最终 attestation]
+    rcBundle --> rcArtifacts[短期 candidate artifact + SBOM]
+    rcArtifacts --> testpypi{TestPyPI environment 批准}
+    testpypi --> rehearsal[OIDC 上传 + 精确版本安装]
+    rehearsal -. 未来必须验证 selected evidence .-> selectedGate{PR6 Bundle/catalog/attestation gate}
+    selectedGate -. 当前 publisher 尚未接线 .-> stable{production-release 批准}
+    review --> currentStable[当前 stable publisher：仅 source_ref + version]
+    currentStable --> stable
+    stable --> images[推送 GHCR digest + convenience tag]
+    stable --> dist[构建 Python artifact + SBOM]
+    images --> manifest[Release manifest + attestation]
+    dist --> manifest
+    manifest --> sync{发行仓库批准}
+    sync --> releaseRepo[仅 stable 同步 + PyPI OIDC]
+
+    style pr fill:#dbeafe,stroke:#2563eb,color:#111827
+    style rc fill:#fef3c7,stroke:#d97706,color:#111827
+    style selectedGate fill:#fef3c7,stroke:#d97706,color:#111827
+    style currentStable fill:#fee2e2,stroke:#dc2626,color:#111827
+    style stable fill:#fee2e2,stroke:#dc2626,color:#111827
+    style sync fill:#fee2e2,stroke:#dc2626,color:#111827
+    style releaseRepo fill:#dcfce7,stroke:#16a34a,color:#111827

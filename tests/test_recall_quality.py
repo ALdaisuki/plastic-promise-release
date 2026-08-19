@@ -1,4 +1,10 @@
-"""End-to-end recall quality verification for Phase 1."""
+"""Offline recall quality regression plus an explicit live diagnostic.
+
+The live diagnostic intentionally talks to the configured embedding provider and
+the current database.  It is kept behind the module entry point so ordinary
+pytest runs remain deterministic and do not silently depend on Ollama or a
+developer's local LanceDB contents.
+"""
 
 import os
 import sys
@@ -14,7 +20,98 @@ pytestmark = [
 ]
 
 
-def test_recall_quality():
+class _OfflineLanceDB:
+    def __init__(self, memory_ids):
+        self._memory_ids = tuple(memory_ids)
+
+    def search(self, vector, k=20, scope=None):
+        del vector, scope
+        return [
+            (memory_id, 0.95 - index * 0.03) for index, memory_id in enumerate(self._memory_ids[:k])
+        ]
+
+    def fts_search(self, query, k=20, scope=None):
+        del query, scope
+        return [
+            (memory_id, 0.92 - index * 0.03) for index, memory_id in enumerate(self._memory_ids[:k])
+        ]
+
+    def count_rows(self):
+        return len(self._memory_ids)
+
+    def list_memory_ids(self):
+        return list(self._memory_ids)
+
+    def consume_search_diagnostics(self):
+        return []
+
+
+class _OfflineEmbedder:
+    def embed(self, text):
+        del text
+        return [0.1] * 1024
+
+
+def _offline_engine():
+    from plastic_promise.core.context_engine import ContextEngine
+
+    engine = ContextEngine(use_sqlite=False)
+    engine._code_index = None
+    engine._embedder = _OfflineEmbedder()
+    engine._memories = {}
+    for index in range(8):
+        memory_id = f"recall-quality-{index}"
+        engine._memories[memory_id] = {
+            "id": memory_id,
+            "content": (
+                f"Code review scanner data quality fix pattern {index} with durable "
+                "engineering evidence"
+            ),
+            "memory_type": "experience",
+            "source": "offline-recall-quality-fixture",
+            "tier": "L1" if index < 3 else "L2",
+            "category": "fact",
+            "scope": "global",
+            "visibility": "global",
+            "project_id": "project:recall-quality",
+            "tags": ["domain:building"],
+            "domain": "building",
+            "access_count": 0,
+            "worth_success": 1,
+            "worth_failure": 0,
+        }
+    engine._ldb = _OfflineLanceDB(engine._memories)
+    return engine
+
+
+def test_recall_quality_offline(monkeypatch):
+    """Exercise the full recall projection without external providers or data."""
+
+    monkeypatch.setenv("PP_FORCE_PYTHON_SUPPLY", "1")
+    monkeypatch.setenv("PP_RERANK_DISABLED", "1")
+    monkeypatch.setenv("PP_CANONICAL_HOT_LOOKUP", "0")
+    monkeypatch.setenv("PP_CODE_MEMORY_ENABLED", "0")
+    monkeypatch.setenv("PP_SYNTHESIS_ARTIFACTS", "off")
+    engine = _offline_engine()
+    query = "code review scanner data quality fix"
+    pack = engine.supply(query, [0.1] * 1024, "code_generation", "global")
+
+    audit = pack.audit_metadata
+    assert int(audit["ldb_rows"]) <= int(audit["memory_pool_size"])
+    assert audit["vector_search"] == "active"
+    assert len(pack.core) >= 1
+    assert len(pack.core) + len(pack.related) >= 3
+    assert "Performance test memory" not in " ".join(
+        item.content for item in pack.core + pack.related
+    )
+    assert len(pack.activated_principles) >= 2
+    assert len(engine._text_retrieval(query)) >= 3
+    assert audit.get("rerank_status")
+
+
+def run_live_recall_quality():
+    """Run the real provider/database diagnostic when explicitly requested."""
+
     from plastic_promise.core.context_engine import ContextEngine
     from plastic_promise.core.embedder import get_embedder
 
@@ -103,4 +200,4 @@ def test_recall_quality():
 
 
 if __name__ == "__main__":
-    sys.exit(test_recall_quality())
+    sys.exit(run_live_recall_quality())

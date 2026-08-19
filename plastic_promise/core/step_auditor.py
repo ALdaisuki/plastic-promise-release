@@ -68,10 +68,17 @@ class StepAuditor:
         audit_log_path: str | None = None,
         engine=None,
         target: str = "claude",
+        persist_reflection_memory: bool = False,
     ):
         self._trust = trust_manager
         self._engine = engine  # optional ContextEngine for reflection memory storage
         self._target = target
+        # Ordinary step-closure is an observation/reflection boundary.  It
+        # must not silently promote its own output into canonical memory;
+        # accepted collaboration work uses the separate promotion pipeline.
+        # Keep an explicit opt-in for standalone legacy callers, while the
+        # governed SoulLoop path leaves this disabled.
+        self._persist_reflection_memory = bool(persist_reflection_memory)
         self._history: list[StepAuditResult] = []
         self._audit_log_path = audit_log_path or "step_audit_log.jsonl"
         self._load_history()
@@ -154,7 +161,7 @@ class StepAuditor:
         # 7. 反思记忆存储 — 将教训提炼自动存入记忆池（原则 #10 自演化闭环）
         derived_lesson = self._derive_lesson(task_description)
         derived_improvement = self._derive_improvement(task_description)
-        if self._engine is not None:
+        if self._engine is not None and self._persist_reflection_memory:
             # 当调用方传入的 lesson/improvement 比自动推导更有价值时，存储调用方的版本
             content_to_store = lesson or derived_lesson
             if content_to_store:

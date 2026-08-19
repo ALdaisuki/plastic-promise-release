@@ -12,9 +12,16 @@ from plastic_promise.mcp.tools.context import handle_context_supply
 from plastic_promise.mcp.tools.memory import handle_memory_recall
 
 
+def _healthy_embedding():
+    """Return a 2560-dimensional, unit-L2 test embedding."""
+    return [1.0] + [0.0] * 2559
+
+
 class FakeEmbedder:
     async def aembed(self, text):
-        return [0.0]
+        # Match the governed 2560-dimensional embedding contract used by the
+        # current compute-node profile, including its non-zero L2 contract.
+        return _healthy_embedding()
 
 
 class PlannerPack(ContextPack):
@@ -47,6 +54,17 @@ class FakeEngine:
 
     def supply(self, *args, **kwargs):
         return PlannerPack()
+
+    def retrieval_embedding_probe(self, text, *, project_id):
+        """Expose the governed retrieval seam used by context_supply.
+
+        The production MCP boundary no longer rediscovers a legacy embedder
+        provider.  Keep this fixture on that seam so latency tests exercise a
+        healthy, contract-compliant 2560-dimensional route instead of the
+        intentional text-only degradation path.
+        """
+        assert project_id == "project:app"
+        return _healthy_embedding()
 
 
 class SlowEngine(FakeEngine):

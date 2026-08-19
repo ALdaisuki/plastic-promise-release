@@ -29,20 +29,20 @@ languages: Python, Rust
 中文版本: [docs/README.zh-CN.md](docs/README.zh-CN.md)
 
 [![PyPI](https://img.shields.io/pypi/v/plastic-promise?style=flat-square&label=PyPI)](https://pypi.org/project/plastic-promise/)
+[![CI](https://img.shields.io/github/actions/workflow/status/ALdaisuki/plastic-promise/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ALdaisuki/plastic-promise/actions/workflows/ci.yml)
+[![Release verification](https://img.shields.io/github/actions/workflow/status/ALdaisuki/plastic-promise/release-verify.yml?branch=main&style=flat-square&label=release%20verification)](https://github.com/ALdaisuki/plastic-promise/actions/workflows/release-verify.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white&style=flat-square)](https://www.python.org/)
 [![Rust](https://img.shields.io/badge/rust-optional_core-000000?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org/)
 [![MCP](https://img.shields.io/badge/protocol-MCP_1.0-FF6B35?style=flat-square)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
-[![Status](https://img.shields.io/badge/status-alpha-red?style=flat-square)](#status)
 
 ![SQLite](https://img.shields.io/badge/storage-SQLite_WAL-003B57?logo=sqlite&logoColor=white&style=flat-square)
 ![LanceDB](https://img.shields.io/badge/vector_store-LanceDB-3B82F6?style=flat-square)
-![Ollama](https://img.shields.io/badge/default_embedding-Ollama_mxbai--embed--large-111827?style=flat-square)
 ![Local First](https://img.shields.io/badge/data-local_first_by_default-16A34A?style=flat-square)
-![Deployment](https://img.shields.io/badge/deployment-local--all--in--one_%7C_split--async-0F766E?style=flat-square)
-![Async](https://img.shields.io/badge/async-durable_outbox-7C3AED?style=flat-square)
+![Profiles](https://img.shields.io/badge/profiles-local_%7C_cloud_%7C_split-0F766E?style=flat-square)
+![Release Control](https://img.shields.io/badge/release-PR_verify_%E2%86%92_manual_publish-7C3AED?style=flat-square)
 
-[Quick Start](#quick-start) · [Architecture](#architecture) · [Core Modules](#core-modules) · [Documentation](#documentation) · [Roadmap](docs/TODO%20List/README.md)
+[Quick Start](#quick-start) · [Architecture](#architecture) · [Deployment](docs/deployment/README.md) · [Release Delivery](docs/release/delivery.md) · [Release Builder](docs/release-builder.md) · [Core Modules](#core-modules) · [Documentation](#documentation) · [Roadmap](docs/TODO%20List/README.md)
 
 </div>
 
@@ -51,6 +51,74 @@ languages: Python, Rust
 **Plastic Promise** is a local-first governance runtime for AI agents. It exposes memory, context supply, audit, trust, skill tracking, and task-dispatch capabilities through an MCP server, backed by SQLite and LanceDB.
 
 The project is built around **Commitment Engineering**: instead of relying only on hard gates, an agent retrieves the relevant agreements, prior decisions, trust state, and verification rituals before it acts. The goal is not to block every mistake at the edge; the goal is to make useful behavior repeatable, traceable, reviewable, and self-improving.
+
+> **Current integrated delivery authority:** the machine-readable
+> [Union Six-PR Contract](docs/standards/union-six-pr-contract.json), revision
+> `2026-08-18.1`, is the
+> canonical scope for the composable-deployment and project-collaboration
+> restoration line. A PR is complete only when every `delivery_scope`,
+> `collaboration_scope`, and `required_evidence` item passes the evidence gates;
+> one-sided completion is not PR completion. Source-level contracts described
+> here are not runtime or production evidence.
+
+<p align="center">
+  <img src=".github/readme-runtime-architecture.svg" alt="Plastic Promise runtime ownership and derived-inference boundary" width="960">
+</p>
+
+<details>
+<summary>View runtime architecture infographic brief</summary>
+
+```text
+Canvas: 1280 x 640, dark infrastructure palette with cyan and violet paths.
+Purpose: communicate canonical data ownership without presenting providers or
+nodes as databases.
+
+Sections:
+1. LOCAL EDGE: Dashboard, Deployment Center, MCP bridge, and Codex hooks.
+2. SERVER BACKEND: MCP, governance, durable work, maintenance, and routing.
+3. TRUTH: only pp-server-backend writes SQLite; LanceDB is derived/rebuildable.
+4. COMPUTE: pp-compute-node returns typed derived results only; an explicitly
+   configured cloud provider may be used under the same identity contract.
+5. SAFETY: no second SQLite writer, public inference listener, or frontend
+   access to Docker, SSH private keys, or arbitrary shell execution.
+
+Style: compact vector architecture, high contrast, no photos, no status claims.
+Palette: #0F172A → #1E293B, cyan #22D3EE, violet #A78BFA, green #34D399.
+```
+
+</details>
+
+## Controlled release delivery (target / unverified)
+
+<p align="center">
+  <img src=".github/readme-release-delivery.svg" alt="Plastic Promise release delivery controls" width="960">
+</p>
+
+This diagram describes a **target/unverified** release-control design. It does
+not assert that an RC, signature, attestation, PyPI/GHCR publication, or
+production deployment has occurred. The current `release-publish.yml` stable
+publisher is not yet connected to the PR 6 selected Release Bundle/Model
+Catalog/RC-attestation gate.
+
+<details>
+<summary>View release-delivery infographic brief</summary>
+
+```text
+Canvas: 1280 x 640, dark infrastructure palette with cyan flow arrows.
+Purpose: show that release evidence progresses from immutable source through
+PR verification and RC artifacts to protected stable publication.
+
+Sections:
+1. HEADER: Plastic Promise — evidence first, publication by explicit approval.
+2. FLOW: source -> no-push PR verification -> RC artifact -> protected GHCR -> stable release repo.
+3. EVIDENCE: source SHA, wheel/sdist hashes, SBOM, OCI digests, attestation.
+4. BOUNDARY: no SQLite, LanceDB, models, logs, keys, or runtime files in artifacts.
+
+Style: architectural, high contrast, compact vector typography; no photos and
+no status claims that imply a release has already been published.
+```
+
+</details>
 
 ---
 
@@ -90,35 +158,55 @@ It is intentionally biased toward operational traceability:
   <img src="docs/architecture/plastic-promise-flow.svg" alt="Plastic Promise local governance runtime architecture" width="960">
 </p>
 
-The README-level vector diagram shows the runtime in five layers: actors, MCP entrypoints, governance core, automation loop, and local persistence/acceleration. It is intentionally higher level than the C4 files so the first architecture view stays readable on GitHub.
+The README-level vector diagram shows the three endpoint modules and their state
+ownership. It is intentionally higher level than the detailed specification so
+the first architecture view stays readable on GitHub. **Endpoint Contract V2
+and the PR 3 source-level artifact policy are current in this worktree:** they
+resolve the secret-free topology, role ownership, typed admission, result
+fencing, and inspectable role/platform/variant descriptors. The independently
+running endpoint containers and production cutover shown by the diagram remain
+target work; this is not a claim that an image was built or production migrated.
 
-### C4 deployment view
+The endpoint images, generated native launch assets, and Dashboard timestamp formatter use
+logical `TZ=UTC`; canonical timestamps remain timezone-aware UTC. This does not change the
+Linux, macOS, or Windows host timezone and does not mount host timezone files.
 
-The standard distribution keeps one module architecture and changes only where
-the client and runtime are placed. In `local-all-in-one`, both boxes below are
-the same host. In the default `split-async` profile, the upper box is the client
-machine and the lower box is the server reached through a secure local tunnel.
+### C4 deployment view — Contract V2 and artifact policy current; runtime deployment target
+
+The target standard distribution will keep three endpoint modules and change
+only their placement. Contract V2 now assigns `pp-server-backend` as the sole
+canonical SQLite, LanceDB-promotion, and deployment-receipt authority;
+`pp-local-edge` receives only a sanitised status projection; and
+`pp-compute-node` returns typed derived inference only. The PR 3
+`ContainerArtifactCompiler` resolves inspectable base/CPU/CUDA policy but does
+not run Docker, Compose, a tunnel, or a deployment. Existing V1 manifests and
+node endpoints remain compatibility paths. Runtime activation, `ppctl`
+execution, migrations, promotion, and release publication remain work for PRs
+4–6.
 
 ```text
-+------------------------- Client Host --------------------------+
-| Codex / MCP client | Dashboard | optional bounded local cache |
-+------------------------------+---------------------------------+
-                               | loopback HTTP or SSH LocalForward
-                               v
-+------------------------- Runtime Host -------------------------+
-| MCP Gateway | Governance Core | Async Control Plane           |
-| Context Engine | Memory Pipeline | Maintenance Daemon          |
-+----------------------+--------------------+---------------------+
-                       |                    |
-                       v                    v
-             +----------------+    +----------------+
-             | SQLite WAL     |    | LanceDB        |
-             | canonical      |    | derived index  |
-             +----------------+    +----------------+
++-------------------------- User host --------------------------+
+| Browser / Codex Hooks -> pp-local-edge                        |
+| Dashboard + Deployment Center + MCP bridge                    |
+|                       host-only validated plans -> ppctl       |
++-------------------------------+-------------------------------+
+                                | loopback / restricted SSH
+                                v
++------------------------- Server host -------------------------+
+| pp-server-backend                                              |
+| MCP + governance + durable work + Maintenance + routing        |
+| SQLite WAL: sole canonical writer | LanceDB: derived generation|
++-------------------------------+-------------------------------+
+                                | restricted reverse SSH
+                                v
++------------------------- Compute host ------------------------+
+| pp-compute-node: typed embedding / rerank / optional JSON      |
+| no SQLite, LanceDB promotion, file, shell, or arbitrary prompt |
++---------------------------------------------------------------+
 ```
 
 <p align="center">
-  <img src="docs/architecture/distribution-profiles.svg" alt="Plastic Promise local and split-async distribution profiles" width="960">
+  <img src="docs/architecture/distribution-profiles.svg" alt="Plastic Promise local and split-accelerated deployment topologies" width="960">
 </p>
 
 <details>
@@ -126,13 +214,13 @@ machine and the lower box is the server reached through a secure local tunnel.
 
 ```text
 Canvas: 1280 x 760, dark high-contrast architecture infographic.
-Purpose: compare one release contract across two deployment profiles.
+Purpose: compare endpoint placement while preserving the same ownership rules.
 
 Sections:
 1. HEADER: Plastic Promise Distribution Profiles.
-2. LOCAL: client, dashboard, MCP workers, SQLite truth, LanceDB index.
-3. SPLIT: bounded client cache, secure tunnel, server runtime and state.
-4. ASYNC: canonical enqueue => durable outbox ~> bounded batch => retry/reconcile.
+2. LOCAL: pp-local-edge, pp-server-backend, and optional pp-compute-node.
+3. SPLIT: local edge, server backend, and compute node on separate hosts.
+4. ASYNC: manifest -> ppctl -> durable queue -> typed result -> reconcile.
 
 Rules: SQLite is canonical; LanceDB is derived; client cache is never a writable
 truth source; deployment changes placement, not ownership.
@@ -140,22 +228,50 @@ truth source; deployment changes placement, not ownership.
 
 </details>
 
-### Durable async sequence
+### Contracted durable async sequence
 
 ```text
-Client/Hook => MCP Gateway       : submit capture or derived-work request
-MCP Gateway => SQLite transaction: persist canonical intent + outbox row
-SQLite      => MCP Gateway       : commit + request_id
-MCP Gateway => Client/Hook       : accepted after durable admission
-Maintenance ~> SQLite            : claim a bounded project-scoped batch
-Maintenance => Provider adapter  : embed / enrich / rerank
-Provider    => Maintenance       : result or explicit failure
-Maintenance => SQLite + LanceDB  : commit job state; update derived index
-Reconcile   ~> SQLite            : retry unfinished work without cross-project mix
+pp-local-edge     => pp-server-backend : submit MCP or deployment request
+pp-server-backend => SQLite            : canonical transaction + durable work
+pp-server-backend => pp-compute-node   : leased typed inference request
+pp-compute-node   => pp-server-backend : identity-bound result or failure
+failure           ~> durable queue     : retain work and use text degradation
+health poll       ~> local + cloud     : recover after consecutive stable probes
+pp-server-backend => LanceDB           : update only verified derived generation
 ```
 
 The client cache never becomes a second writable truth source. SQLite owns
-canonical memory and governance state; LanceDB remains rebuildable.
+canonical memory and governance state; LanceDB remains rebuildable. The V2
+manifest, endpoint admission, receipt, and fencing schema are current; the
+runtime execution and production recovery path in this diagram are target-only.
+
+### C4 release-delivery context
+
+```text
++---------------- Developer / reviewer ----------------+
+| reviewed source ref + release decision                |
++--------------------------+----------------------------+
+                           | PR: build verification only
+                           v
++---------------- GitHub Actions -----------------------+
+| wheel/sdist + exact install | OCI build (no push)      |
++--------------------------+----------------------------+
+                           | manual RC
+                           v
++---------------- Candidate evidence -------------------+
+| SBOM + short-lived artifacts | TestPyPI rehearsal      |
++--------------------------+----------------------------+
+                           | protected stable approval
+                           v
++---------------- Release authority --------------------+
+| GHCR immutable digests -> manifest -> release repo    |
+| PyPI OIDC only after a separate stable-only approval   |
++--------------------------------------------------------+
+```
+
+The release path has no MCP write authority. It records public release evidence
+only; canonical SQLite, derived LanceDB, models, logs, keys, and runtime state
+remain outside source distributions and OCI images.
 
 Full architecture diagrams:
 
@@ -163,11 +279,20 @@ Full architecture diagrams:
 - [Vector overview - Chinese](docs/architecture/plastic-promise-flow.zh-CN.svg)
 - [Distribution profiles - English](docs/architecture/distribution-profiles.svg)
 - [Distribution profiles - Chinese](docs/architecture/distribution-profiles.zh-CN.svg)
+- [Three-endpoint target architecture - English](docs/architecture/three-endpoint-deployment/architecture.md)
+- [Three-endpoint target architecture - Chinese](docs/architecture/three-endpoint-deployment/architecture.zh-CN.md)
+- [Composable deployment roadmap](docs/roadmap/composable-deployment.md)
+- [可组合部署路线图](docs/roadmap/composable-deployment.zh-CN.md)
 - [C4 Level 1 — Context](docs/architecture/diagrams/c4-level1-context.txt)
 - [C4 Level 2 — Container](docs/architecture/diagrams/c4-level2-container.txt)
 - [C4 Level 3 — Component](docs/architecture/diagrams/c4-level3-component.txt)
 - [Sequence diagram](docs/architecture/diagrams/sequence.mermaid)
 - [Component diagram](docs/architecture/diagrams/components.mermaid)
+- [Release-delivery architecture](docs/architecture/release-delivery/architecture.md)
+- [Release-delivery architecture - Chinese](docs/architecture/release-delivery/architecture.zh-CN.md)
+- [Release-delivery workflow](docs/architecture/release-delivery/workflow.mermaid)
+- [Release-delivery workflow - Chinese](docs/architecture/release-delivery/workflow.zh-CN.mermaid)
+- [Release delivery and installation profiles](docs/release/delivery.md)
 
 ---
 
@@ -175,10 +300,11 @@ Full architecture diagrams:
 
 ### Install
 
-```bash
-# From PyPI
-pip install plastic-promise
+> PyPI publication is not available yet. Use a source checkout or a reviewed
+> wheel/OCI artifact. The command `pip install plastic-promise` becomes valid
+> only after the stable PyPI release is published.
 
+```bash
 # From source
 git clone https://github.com/ALdaisuki/plastic-promise-release.git
 cd plastic-promise-release
@@ -210,7 +336,7 @@ python scripts/init_and_start.py
 # Non-interactive startup can pin a runtime mode
 python scripts/init_and_start.py --mode rust-full
 
-# If Ollama is unavailable, use fallback embedding mode
+# Legacy compatibility only: skip the optional Ollama probe
 python scripts/init_and_start.py --skip-ollama-check
 ```
 
@@ -271,6 +397,44 @@ On Windows, `python scripts/init_and_start.py --stop` reads only
 checkout, then verifies the command line contains that checkout's source root.
 It does not scan for or terminate other Python processes or other worktrees.
 
+### Recommended local model profiles
+
+For a CUDA/WSL2 compute node (for example an RTX 5080) Plastic Promise
+recommends the following local profiles. The default compute profile uses
+separate local llama.cpp servers for embedding and reranking. Operators may
+select another compatible runtime, but Plastic Promise requires structured
+vectors/scores, exact model identity, and a fixed output dimension. Text
+generation, including prompt-based `yes`/`no`, is never accepted as reranking.
+
+| Profile | Embedding | Dimensions | Rerank | Model budget | Recommended for |
+| --- | --- | --- | --- | --- | --- |
+| CUDA quality | `Qwen3-Embedding-4B-GGUF` via llama.cpp | 2560, L2 | `Qwen3-Reranker-0.6B-GGUF` via llama.cpp structured rerank endpoint, or an official CrossEncoder worker | Operator-selected quantization + runtime workspace | Default for English, Chinese and code retrieval on a 16 GB-class GPU |
+| Low memory | `Qwen3-Embedding-0.6B-GGUF` via llama.cpp | 1024, L2 | `Qwen3-Reranker-0.6B-GGUF` | Smaller operator-selected quantization | GPU-capacity or latency pressure |
+| Compatibility | BGE GGUF or a local BGE embedding worker | Native dimension, L2 | BGE sequence-classification reranker | Depends on selected artifacts | Governed compatibility fallback |
+
+Upstream revision policy:
+
+- The repository never fabricates or ships a placeholder upstream revision.
+- The installer resolves the exact revision and artifact/layer digest selected by
+  the operator, then writes the result to a local `model-manifest.json`.
+- Production activation rejects mutable-only tags and placeholder revisions;
+  the manifest must contain the model name, fixed revision, output dimension,
+  normalization, and observed digest.
+- Generated manifests stay local and are not committed to Git. A real node's
+  manifest is deployment evidence for that node, not a universal upstream
+  revision for every installation.
+
+Revisions are operator deployment configuration, not repository defaults: pin the
+exact upstream revision you verified in your node `.env` and never rely on a
+mutable tag alone.
+
+Identity rules: fix the embedding output at the model's declared native
+dimension (2560 for the recommended 4B profile and 1024 for the recommended
+0.6B profile) with L2 normalization. The manifest records model name, immutable
+revision, artifact digest, dimension, normalization, and backend. A later MRL
+dimension reduction is a new embedding identity that requires a fresh shadow
+rebuild and generation promotion.
+
 ### Connect an MCP client
 
 Stdio example:
@@ -288,12 +452,15 @@ Stdio example:
 
 Claude Code project config example (`.mcp.json` in a trusted checkout):
 
+On a Mac client using the standard SSH LocalForward, use the local forwarded
+port `19020`; the server-side listener remains private on `9020`.
+
 ```json
 {
   "mcpServers": {
     "plastic-promise": {
       "type": "http",
-      "url": "http://127.0.0.1:9020/mcp"
+      "url": "http://127.0.0.1:19020/mcp"
     }
   }
 }
@@ -303,12 +470,12 @@ Codex project config example (`.codex/config.toml` in a trusted checkout):
 
 ```toml
 [mcp_servers.plastic_promise]
-url = "http://127.0.0.1:9020/mcp"
+url = "http://127.0.0.1:19020/mcp"
 startup_timeout_sec = 120
 tool_timeout_sec = 120
 
 [profiles.stdio-fallback.mcp_servers.plastic_promise]
-command = "python"
+command = ".venv/bin/python"
 args = ["-m", "plastic_promise"]
 startup_timeout_sec = 120
 tool_timeout_sec = 120
@@ -322,13 +489,13 @@ PLASTIC_LANCEDB_PATH = "data\\lancedb"
 Modern shared MCP clients should connect to:
 
 ```text
-http://127.0.0.1:9020/mcp
+http://127.0.0.1:19020/mcp
 ```
 
 Legacy SSE clients can still connect to:
 
 ```text
-http://127.0.0.1:9020/sse
+http://127.0.0.1:19020/sse
 ```
 
 ---
@@ -336,7 +503,7 @@ http://127.0.0.1:9020/sse
 ## First useful calls
 
 ```text
-session-init(task_description="start a governed coding session", context_mode="light")
+session-init(task_description="start a governed coding session", context_mode="light", project_id="project:example")
 memory_recall(query="release documentation", task_type="architecture")
 context_supply(task_description="update README", task_type="architecture")
 audit_pre_check(action_description="write docs", action_type="write")
@@ -347,25 +514,44 @@ step-closure(task_description="completed docs update", mode="full", ...)
 Hunter Guild lifecycle:
 
 ```text
-task_enqueue -> task_claim -> task_heartbeat -> task_complete -> task_verify
+session-init(project_id="project:example")
+  -> task_enqueue(project_id="project:example")
+  -> task_claim(project_id="project:example")
+  -> task_heartbeat(project_id="project:example")
+  -> task_complete(project_id="project:example")
+  -> task_verify(project_id="project:example")
 ```
+
+All seven Task Queue tools require the same canonical `project_id`, including
+`task_inbox` and `task_abandon`. A successful `session-init` binds that project
+to the trusted loopback MCP session. Caller fields such as `agent_name`,
+`from_agent`, `trust_score`, and `verified_by` remain routing/display claims;
+mutation authority comes from the server-owned session actor and cannot be
+granted by those fields.
 
 ### Local operator dashboard
 
-With `PP_DASHBOARD_V2=1`, open the Chinese operator console after starting the
-Streamable HTTP server:
+The one-click launcher enables Dashboard V2 and bounded retrieval explanations
+by default (`PP_DASHBOARD_V2=1`, `PP_RETRIEVAL_EXPLAIN=1`). Open the operator
+console after starting the Streamable HTTP server:
 
 ```text
 http://127.0.0.1:9020/dashboard
 ```
+
+When the server is reached through the standard SSH forward, use
+`http://127.0.0.1:19020/dashboard`. The notice area shows the active defaults
+for structured slicing, semantic enrichment, knowledge semantics, and cloud
+inference. Inspect them under **Effective configuration** and stage provider
+changes under **Cloud desired configuration**. API keys stay in the
+compute-node secret channel and are never returned to the browser.
 
 The dashboard is loopback-only and project-scoped. A local operator can select
 a project discovered from canonical server activity; each request remains
 bound to one selected project, and this selector is not a remote tenant-auth
 boundary. It is read-only by default and now includes passive-context/capture
 traces, proposal and outbox health,
-trace-only hit@k/MRR summaries, plus the governed memory-proposal queue. Set
-`PP_RETRIEVAL_EXPLAIN=1` to expose the bounded retrieval explanation route.
+trace-only hit@k/MRR summaries, plus the governed memory-proposal queue.
 Missing duration evidence is shown as unavailable; the UI never substitutes a
 synthetic `0 ms`.
 
@@ -376,6 +562,23 @@ with a non-simple confirmation header, and delegates to `feedback_apply` with
 server-owned actor, call ID, project scope, trust score, and defense decision.
 The browser cannot supply or widen those authority fields. Leaving the flag at
 its default `0` keeps every Dashboard V2 route read-only.
+
+When an authenticated loopback control-plane forward is also configured, the
+same Dashboard exposes **推理节点** and **部署预检** views. The node view is a
+bounded, read-only projection of server-governed health, capacity, model
+identity, queue state, latency, and stable routing/degradation codes; it never
+reveals endpoints, credentials, receipts, task payloads, or provider results.
+The preflight view is only a resource-planning preview of stable profiles and
+available capacity. It does not download models, create state, migrate SQLite,
+or approve an installation plan; the future deploy controller remains the only
+hard installation gate.
+
+The **脱敏诊断** page has no background telemetry. Only an authenticated operator
+click can create its browser-local JSON download, and the server constructs it
+from a strict allowlist of component states, bounded counters, and
+configuration-presence booleans. It excludes endpoints, hosts, paths,
+credentials, configuration values, node/model identities, raw task or request
+data, receipts, and SQLite rows.
 
 ---
 
@@ -424,7 +627,7 @@ The current source exposes **58 MCP tools** in `plastic_promise/mcp/server.py`, 
 
 `sp-stage` keeps its public name for existing clients, but its registered stages and routes come only from pinned `mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d`. The `UserPromptSubmit` Hook injects the selected official flow, full chain, declared branches, current and next stage, `[user]`/`[model]` invocation authority, and the project/session/flow IDs that must be reused by `session-init` and every later `sp-stage` call. The combined memory, temporary-proposal, and route rendering has one strict total budget: whole optional sections may be omitted, but partial XML-like contracts are never emitted. Scope values are XML-text escaped, and the default budget preserves an exact scoped route call even with a 300-character project ID. Every explicit `/skill-name` selects a route rooted at that official Skill. A natural-language Skill phrase counts as user intent only when it is a positive command at the start of the prompt. Questions, negations, status statements, and mentions never create a user attestation. Ordinary code-generation commands, including positive command clauses parsed from `general` Hook input, enter `tdd-to-review`; architecture and refactoring tasks enter `codebase-design`; other recognized command families enter their reachable model routes. Read-only explanations, status statements, and negated prompts without a later positive action stay on `routing`; a trailing negative scope constraint does not erase an earlier affirmative task. `implement` and `grill-me` are composite Skills, so their internal test/review or questioning loops are not repeated as outer cursor stages. Their receipts must attest actual internal calls in `evidence.invoked_skills`; the server records deterministic entity-only child chains with `tracking_basis=composite_receipt` rather than claiming independent Hook observation. A persisted parent route may hand off only to a declared branch at an aligned adjacent stage; both `small-build` and `prototype-detour` share the parent `grill-with-docs` branch point, while unrelated route switches remain rejected. A call without `execution_receipt` returns pinned execution guidance only. After the client actually runs the named Codex Skill, it submits a bounded caller attestation containing the skill, upstream revision, `SKILL.md` SHA256, completed status, and non-secret JSON evidence. The server cannot cryptographically prove that a client ran the Skill. A valid receipt runs the governance adapter, then receipt and cursor commit atomically in SQLite under a project/session/flow scope. Receipt-scoped tracking IDs make adapter retries entity-idempotent across the post-adapter commit window; identical receipt replays are idempotent, and conflicting material for the same scope/route step is rejected. `skill_auto_track` remains an explicit compatibility endpoint for external clients and cannot advance this cursor; Codex does not currently expose automatic `PreToolUse`/`PostToolUse` Skill tracking. Production permits one MCP writer per SQLite database; the process-local lock is not a distributed exactly-once lease.
 
-The local parser deliberately supports a bounded command grammar and fails closed to `routing` for ambiguous prose. A future structured-JSON cloud classifier may shadow or enrich model-route selection, but it cannot create user-only attestations and must fall back to the local result when the provider is unavailable.
+The local parser deliberately supports a bounded command grammar and fails closed to `routing` for ambiguous prose. A future semantic-routing classifier may consume the current compute-node structured-JSON capability to shadow or enrich model-route selection, but it cannot create user-only attestations and must fall back to the deterministic local result when compute routing is unavailable.
 
 ---
 
@@ -442,50 +645,52 @@ capture -> extract -> classify -> embed -> deduplicate -> quality gate -> decay 
 
 Memory is admitted only when it passes quality checks. Reuse increases worth; stale or duplicated memories can decay, merge, or be forgotten.
 
-Long memories are embedded through bounded chunks before they are written to
-LanceDB. The default local embedding model remains Ollama `mxbai-embed-large`,
-but oversized review/audit text is split by `EMBEDDER_CHUNK_CHARS`, capped by
-`EMBEDDER_MAX_CHUNKS`, mean-pooled, and normalized so a single large record does
-not turn into an Ollama 500 during launcher warmup or backfill.
+Long memories are embedded through bounded chunks before derived vectors are
+written to LanceDB. The server owns canonical text and index promotion but does
+not execute embedding, rerank, or structured inference. Those operations are
+routed to an authenticated `pp-compute-node`; the recommended local backend is
+llama.cpp, while cloud and Ollama remain explicit operator-selected adapters.
 
 `PP_MEMORY_CHUNKING=shadow` keeps the legacy embedding requests and index identity,
 while recording a deterministic structure-aware candidate manifest for comparison.
-`PP_MEMORY_CHUNKING=structure-v1` enables that structural baseline for Ollama
-embedding input. It recognizes Markdown heading paths,
+`PP_MEMORY_CHUNKING=structure-v1` is the launcher default and enables that
+structural baseline before embedding input is sent to the compute node. It
+recognizes Markdown heading paths,
 paragraphs, fenced code, lists, and tables; isolates atomic blocks; preserves
 verbatim source spans; and processes the complete tail within the bounded
 `EMBEDDER_STRUCTURE_MAX_CHUNKS` request budget. When the budget is exceeded, it
 keeps the beginning and tail and marks the middle coverage as resource-limited.
 `EMBEDDER_CHUNK_CHARS` becomes the soft packing target and
 `EMBEDDER_STRUCTURE_HARD_CHARS` is the oversized-block limit. The current budget
-unit is explicitly `characters-fallback` because the Ollama embeddings endpoint
-does not expose model tokenizer counts. `EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS`
-is a hard input guard. The mode remains off by default; shadow does not create
-child rows or change retrieval identity, while structure-v1 binds all chunking
+unit remains explicitly `characters-fallback` when a provider does not expose
+tokenizer counts. `EMBEDDER_STRUCTURE_MAX_SOURCE_CHARS` is a hard input guard.
+Shadow does not create child rows or change retrieval identity, while
+`structure-v1` binds all chunking
 configuration into the persisted embedding model identity so enabling or
 rolling back the active baseline triggers derived-index migration.
 
-After `structure-v1` has produced canonical chunks, an optional local semantic
-enrichment layer can add retrieval-only metadata without changing chunk text,
-order, heading paths, or source spans. Set `PP_MEMORY_CHUNK_ENRICHMENT=shadow`
-to enqueue bounded daemon analysis with Ollama `qwen3:8b`; vectors and index
-identity remain unchanged. Valid results are stored in a content-addressed
-SQLite cache adjacent to the canonical database by default. Set the mode to
-`on` for the initial offline rebuild or migration. Once that derived index
-identity is serving, keep `on` enabled so new document writes and index repairs
-synchronously prepare the same exact plan; query embeddings never invoke the
-enrichment model. Validated summaries, keywords, entities, and identifiers are
-prepended to derived embedding input, and the model, prompt, and schema versions
-are bound into index identity. Pin `PP_MEMORY_CHUNK_ENRICHMENT_MODEL_DIGEST`
-when reproducible deployment identity is required; otherwise the digest is
-resolved from Ollama `/api/tags`.
+After `structure-v1` has produced canonical chunks, semantic enrichment adds
+retrieval-only metadata without changing chunk text, order, heading paths, or
+source spans. The launcher defaults to
+`PP_MEMORY_CHUNK_ENRICHMENT=shadow` with
+`PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER=openai-compatible`; the actual structured
+JSON call is owned by `pp-compute-node`, not the server backend. Shadow mode
+queues bounded analysis and stores validated, content-addressed derived cache
+entries without changing active vectors or canonical chunks. Use `on` only
+after a reviewed offline rebuild/migration, then keep it enabled for matching
+writes and repairs. Model, immutable revision, provider/backend, prompt, schema,
+and artifact digest are bound into the derived identity.
 
-The Ollama `/api/chat` request disables thinking, uses temperature zero, and
-requests a strict JSON Schema. The response is still independently validated:
+Semantic chunk enrichment is therefore enabled by default in bounded shadow
+mode; it does not imply that unconfigured cloud credentials are used. The
+provider request uses temperature zero and a strict JSON response contract.
+The response is still independently validated:
 unknown or missing fields, a non-verbatim summary/evidence/keyword/entity,
 identifier mismatches, invalid JSON, timeouts, and unavailable models all fail
 closed to the original chunk. The
-default remains `off`; enrichment is inactive unless
+If the cloud API is absent, unhealthy, or rejected, the work is explicitly
+deferred for retry/reconcile; it is not reported as successful and it does not
+silently switch to a server-local model. Enrichment remains inactive unless
 `PP_MEMORY_CHUNKING=structure-v1` is also enabled.
 
 The read-only shadow report can be run against the canonical SQLite memories
@@ -539,9 +744,9 @@ When explicit extraction misses, `PP_PASSIVE_SEMANTIC_CAPTURE=shadow|on` queues 
 
 #### Codex passive-memory hooks
 
-The project-level `.codex/hooks.json` maps Codex `UserPromptSubmit`, `Stop`, and `SessionEnd` events to the project `.venv` Python on every platform. This avoids silently using the macOS system Python, which may be older than the package's Python 3.10 minimum. Registration alone does no memory work. `UserPromptSubmit` calls `auto_context_inject(event="before_invoke")` only when passive context is `shadow` or `on`; it saves a bounded, short-lived turn record only when both passive capture and proposals are non-`off`. `Stop` calls `after_invoke` only for that capture-enabled state and removes the record after the governed request succeeds. If capture is disabled between prompt and Stop, the matching temporary record is discarded without an MCP call. With all three gates off, the Hook makes no MCP call and creates no turn file. `SessionEnd` always removes matching temporary records without contacting MCP.
+The project-level `.codex/hooks.json` maps Codex `UserPromptSubmit`, `Stop`, and `SessionEnd` events to the project `.venv` Python on every platform. This avoids silently using the macOS system Python, which may be older than the package's Python 3.10 minimum. Registration alone does no memory work. `UserPromptSubmit` opens an authenticated durable Agent session and stores a short-lived, server-issued HMAC continuation in a session-scoped `0600` state file. `Stop` and `SessionEnd` resume that exact session across fresh MCP transports; the continuation is project/flow/actor/Hook scoped, expires after a bounded interval, is revoked on successful SessionEnd, and never grants caller-selected role, policy, lease, or durable-session authority. `Stop` keeps passive capture pending-only and separate from canonical memory. `SessionEnd` removes local state only after a durable closed receipt; deferred closure keeps retry state. The source and isolated E2E prove cursor resume and lease release, but production activation and live runtime evidence remain separate PR 5 gates.
 
-The hook is fail-open: MCP connection, timeout, malformed response, or state-file errors never block Codex. It calls the Streamable HTTP MCP endpoint directly and never starts another Codex process. Create `.venv` with Python 3.10+ and install the project editable before enabling/trusting the hooks. Set `PP_CODEX_HOOK_MCP_URL` when the MCP server is not available at `http://127.0.0.1:9020/mcp`. Remote bearer credentials belong in `PP_CODEX_HOOK_BEARER_TOKEN`, not in `.codex/hooks.json`.
+The hook is fail-open: MCP connection, timeout, malformed response, or state-file errors never block Codex. It calls the Streamable HTTP MCP endpoint directly and never starts another Codex process. Create `.venv` with Python 3.10+ and install the project editable before enabling/trusting the hooks. On a Mac client using the standard SSH LocalForward, the default endpoint is `http://127.0.0.1:19020/mcp`; the server-side listener remains `http://127.0.0.1:9020/mcp`. Set `PP_CODEX_HOOK_MCP_URL` only when an explicitly provisioned local-development or alternate-forward endpoint is intended. Remote bearer credentials belong in `PP_CODEX_HOOK_BEARER_TOKEN`, not in `.codex/hooks.json`.
 
 Turn state defaults to the ignored project path `var/codex-hooks`, uses a mode-0700 directory and mode-0600 files, is bounded by `PP_CODEX_HOOK_MAX_TEXT_CHARS`, expires through `PP_CODEX_HOOK_STATE_TTL_SEC`, and contains only the redacted original prompt needed to join `UserPromptSubmit` to `Stop`. Bounded cleanup persists a non-secret cursor so later files cannot be starved by an earlier live batch. On macOS, install the independent 15-minute cleanup timer after creating `.venv`:
 
@@ -588,34 +793,69 @@ Tool calls and Hunter Guild task transitions are recorded as `runtime_events` wi
 
 Local storage is the default. Optional external calls depend on configured agents, embedding providers, rerankers, or LLM integrations. If optional services are unavailable, Plastic Promise uses degraded mode and should label uncertainty instead of silently pretending the full path ran.
 
-Embedding and reranking are separate local model roles. `mxbai-embed-large` is an
-embedding-only model used for vectors; the default local Ollama reranker uses a
-generation-capable model (`qwen2.5:3b`) before falling back to cosine/original
-ordering. Hosted rerankers remain opt-in through `PP_RERANK_PROVIDERS`.
+Embedding and reranking are separate compute-node roles. The recommended local
+profile uses llama.cpp for both, with an embedding GGUF and a reranker GGUF
+exposed through separate structured endpoints. Ollama and in-process
+CrossEncoder/BGE adapters remain explicit compatibility choices. If reranking
+is unavailable, the server preserves original order; it never asks a generation
+model to invent scores.
+
+#### Resource-aware local inference
+
+The local compute node is deliberately non-competitive. Its runtime resource
+guard is enabled by default (`PP_LOCAL_NODE_RESOURCE_GUARD=on`) and samples
+aggregate GPU utilization before admitting a new request. The default admission
+limit is 70% (`PP_LOCAL_NODE_RESOURCE_GPU_UTILIZATION_LIMIT=70`), avoiding false
+deferrals from ordinary desktop GPU activity while still yielding to sustained
+games, rendering, or accelerator work. When another device,
+game, renderer, or accelerator workload is active, the node returns a bounded
+HTTP 429 `node_overloaded` response with `Retry-After` instead of fighting for
+the same GPU. Embedding and structured JSON defer for retry/reconcile; rerank keeps
+the server contract of preserving original order. The health response exposes
+only a redacted `resource_guard` projection.
+
+The external llama.cpp launcher uses the same ten-second read-only gate before
+creating workers and supports reversible operations:
+
+```bash
+scripts/start_llama_cpp_compute_workers.sh --status
+scripts/start_llama_cpp_compute_workers.sh --stop
+scripts/start_llama_cpp_compute_workers.sh --start
+```
+
+Set `PP_LLAMA_CPP_RESOURCE_GATE=off` only for an explicitly controlled
+maintenance window. Normal local, split-accelerated, and release profiles keep
+both resource gates enabled. This is especially important on a 16 GiB-class
+GPU when the quality profile keeps two 4B models resident.
 
 ### Hosted embedding, reranking, and chunk analysis
 
-Cloud providers are disabled by default. Keep `EMBEDDER_PROVIDER=ollama`,
-`PP_RERANK_PROVIDERS=ollama,cosine`, and
-`PP_MEMORY_CHUNK_ENRICHMENT=off` until a provider, model revision, dimension,
-and cost policy have been reviewed. Hosted calls use the OpenAI-compatible
-transport with bounded input/output sizes, retries, deadlines, circuit
-breaking, response validation, content-hash caching, and redacted diagnostics.
-The API key belongs in a permission-600 environment file or an interactive
-secret store; it must never be committed, put in a command line, or logged.
+The recommended baseline keeps embedding and reranking local on a compute node,
+while structured semantic enrichment is visible and enabled in safe shadow
+mode. The launcher sets `PP_MEMORY_CHUNK_ENRICHMENT=shadow` and
+`PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER=openai-compatible`; no network call is
+considered active until a compute-node provider, immutable model revision, API
+root, and cost policy are validated. Hosted calls use bounded input/output
+sizes, retries, deadlines, circuit breaking, response validation,
+content-hash caching, and redacted diagnostics.
+Any provider API key belongs only in a permission-600 compute-node environment
+file or an interactive secret store; it must never be committed, put in a
+command line, copied into the server environment, or logged.
 
-For the cloud-first server profile, do not install or start Ollama on the
-server. Configure hosted embedding, hosted reranking, and hosted structured
-analysis only after their credentials have been rotated and installed through
-the protected server environment file. Loopback local-provider transports
-remain compatibility code for a later deployment, not a cloud-profile health
-or acceptance requirement.
+For a server-backend profile, do not install or start Ollama on the server and
+do not place hosted-provider credentials in the server environment. Hosted
+embedding, reranking, and structured analysis are compute-node capabilities;
+their credentials and provider endpoints stay in the private compute-node
+projection. The server records bounded intent and accepts identity-bound
+derived results. If no eligible compute node is healthy, the operation remains
+durable and reports a bounded defer/retry or terminal-order degradation reason;
+it never constructs a server-local provider.
 
-Use an API root, not a documentation site. For example,
-`https://wiki.syuan.org/` is intentionally rejected as a documentation URL;
-obtain the supplier's documented API endpoint (such as an `/v1` API root) and
-verify it independently before configuring `EMBEDDER_BASE_URL`,
-`PP_RERANK_BASE_URL`, or `PP_INFERENCE_BASE_URL`. A configured endpoint is not
+Use an API root, not a documentation site, wiki, or product homepage. Obtain the
+supplier's documented endpoint, typically an `/v1` root such as
+`https://provider.example/v1`, and verify it independently before configuring
+the compute-node projection (`EMBEDDER_BASE_URL`, `PP_RERANK_BASE_URL`, or
+`PP_INFERENCE_BASE_URL`). A configured endpoint is not
 evidence that authentication or model access works; the runtime reports
 `provider`, `model`, `revision`, `dimension`, bounded usage, and a safe failure
 reason instead of claiming success.
@@ -638,25 +878,26 @@ prints neither credentials, vectors, nor source material. `--keys-from-stdin`
 is reserved for a protected interactive pipeline; keys are intentionally not
 accepted through command-line options or environment variables.
 
-The backend input contract is provider-neutral. A frontend may submit normalized
-`id`, `text`, and `base_score` fields and omit `embedding`; the backend batches
-only the missing material through its configured cloud or local embedder. A
-provided vector is accepted for that request only when its dimension, finite
+The server dispatch contract is provider-neutral. A frontend may submit
+normalized `id`, `text`, and `base_score` fields and omit `embedding`; the
+server records only bounded operation intent and identity requirements, while
+an authenticated `pp-compute-node` performs any local or hosted provider call.
+A provided vector is accepted for that request only when its dimension, finite
 nonzero values, declared embedding identity, and SHA-256 material receipt all
 match. This is structural validation, not cryptographic proof that the claimed
 model produced the vector. Frontend vectors therefore remain request-scoped
-and never receive authority to write the formal LanceDB index; formal index
-material is generated by the backend. Provider names, models, base URLs, paths,
-and credentials are backend configuration and are rejected from this input
-contract.
+and never receive authority to write the formal LanceDB index. Provider names,
+models, base URLs, paths, prompts, responses, and credentials remain inside the
+compute-node boundary and are rejected from frontend and collaboration input.
 
-Structured JSON analysis uses the same `Mapping` input for an
-OpenAI-compatible cloud provider or a loopback-only Ollama provider. The local
-transport has no API key, ignores system proxy settings, rejects redirects, and
-keeps bounded time and response budgets. The official DeepSeek default is
-`https://api.deepseek.com` with `deepseek-v4-flash`; the backend explicitly
-disables thinking for deterministic JSON analysis and still validates the
-returned domain schema locally.
+PR 5 source now treats structured JSON as a first-class `pp-compute-node`
+capability alongside embedding and rerank. It is disabled by default until a
+backend, model, fixed revision, and bounded provider configuration are
+activated and identity-revalidated. The compute node enforces prompt, payload,
+token, timeout, UTF-8, and response limits; `pp-server-backend` may request the
+capability but cannot construct or invoke its local, hosted, or raw provider.
+This source/test capability does not establish live provider activation,
+runtime evidence, production acceptance, or publication.
 
 Synchronous reranking is safe as a stateless request, but applying an old result
 to shared state is not. Backend results bind the request to query, candidate-set,
@@ -692,16 +933,14 @@ a stateless design needs a server signature or HMAC instead. The pure core
 validator deliberately does not pretend to provide those storage guarantees.
 
 This is a backend service boundary, not an unauthenticated public endpoint.
-The inference gateway is now available as a separate loopback-only process on
-port `9030`. It requires one server-owned project and a Bearer token from the
-protected environment file. Provider credentials, provider selection and
-`project_id` never come from a request. The gateway keeps its job queue in a
-separate SQLite database, reserves idempotency keys before calling a provider,
-stores the authoritative client-local package, and uses lease/CAS completion.
-Project-scoped active, retained-row and retained-JSON limits are enforced in
-the same SQLite write transactions; elapsed retention is pruned on write paths
-as well as explicit maintenance, so a POST-only workload cannot grow the job
-database without a bound.
+The old standalone inference-gateway package may remain in a full development
+installation for compatibility tests, but it is not part of the governed PR5
+server runtime and must not be started as a production provider path. Provider
+credentials, provider selection, prompts, and responses belong to the
+authenticated `pp-compute-node`; `pp-server-backend` records only bounded
+intent, identity expectations, leases, and typed result receipts. The server
+keeps the single-writer canonical SQLite/LanceDB authority and never creates a
+second inference-job truth source.
 
 All canonical data remains on the server: the memory SQLite database, LanceDB,
 audit state, outbox and inference job database are never replicated to a
@@ -742,9 +981,41 @@ identity and text, while the Agent supplies `HotMemoryCacheSelection`
 separately; any server-returned `cache_hint` is non-authoritative and cannot
 override the local Agent choice or the system cadence/capacity decision.
 
-For the cloud-only server profile, configure hosted embedding and reranking,
-then add the gateway settings to the same mode-600 server EnvironmentFile. Do
-not place real values in `.env`, Git, browser storage, or a frontend bundle:
+Provider execution is owned by `pp-compute-node`, never by `pp-server-backend`.
+The server records bounded operation intent, accepts only validated derived
+results, and remains the sole canonical SQLite/LanceDB writer. Configure a
+compute node with either local models or explicitly approved hosted providers;
+credentials and provider endpoints stay in the compute-node environment and
+are never copied into server configuration, browser storage, or a frontend
+bundle. A minimal private node environment is:
+
+```bash
+PP_ENDPOINT_ROLE=pp-compute-node
+PP_LOCAL_NODE_AUTHORIZATION="Bearer <random node token>"
+PP_LOCAL_NODE_EMBEDDING_BACKEND=llama.cpp
+PP_LOCAL_NODE_EMBEDDING_MODEL=Qwen3-Embedding-4B-GGUF
+PP_LOCAL_NODE_EMBEDDING_REVISION=<fixed-40-hex-revision>
+PP_LOCAL_NODE_EMBEDDING_DIMENSION=2560
+PP_LOCAL_NODE_EMBEDDING_NORMALIZATION=l2
+PP_LOCAL_NODE_EMBEDDING_LLAMA_CPP_BASE_URL=http://127.0.0.1:19131
+PP_LOCAL_NODE_RERANK_BACKEND=llama.cpp
+PP_LOCAL_NODE_RERANK_MODEL=Qwen3-Reranker-0.6B-GGUF
+PP_LOCAL_NODE_RERANK_REVISION=<fixed-40-hex-revision>
+PP_LOCAL_NODE_RERANK_LLAMA_CPP_BASE_URL=http://127.0.0.1:19132
+```
+
+The server-to-node transport references the authorization variable by name
+(`PP_NODE_AUTH_*`) in its private endpoint document. The token itself remains
+process-local. Hosted embedding, reranking, and structured JSON are optional
+compute-node capabilities; if no eligible node is available, the server keeps
+the canonical write durable and reports a stable degraded reason instead of
+constructing a provider locally. Use the dedicated compute-node build and
+smoke scripts for provider activation and identity evidence.
+
+<!-- Legacy standalone inference-gateway material below is retained only for
+historical contract references. It is not part of the current
+pp-server-backend artifact and must not be deployed from the server profile.
+All provider calls must be routed through an authenticated pp-compute-node.
 
 ```bash
 PP_INFERENCE_GATEWAY=1
@@ -846,6 +1117,7 @@ persisted authoritative package and constructs only the reranker, so it does
 not depend on embedding availability. Jobs beyond that startup bound remain
 durable for a client retry or a later restart. CAS still prevents a late result
 from overwriting the first accepted completion.
+-->
 
 ### Remote configuration control plane
 
@@ -861,6 +1133,41 @@ MCP `9020`; its server-status and configuration views call the headless `9040`
 API directly through the `19040` forward. The control token stays in browser
 memory and never transits the MCP listener. Product frontends use the narrower
 inference-gateway contract and must never receive a control-plane token.
+
+The authenticated control plane also serves a bounded node-governance
+projection and a planning-only resource preflight projection. The Dashboard
+uses these read-only routes to explain health, identity, capacity, queue and
+stable routing/degradation outcomes without receiving node endpoints,
+transport evidence, task references, result payloads, or secrets. Preflight
+reports catalog policy and free-capacity status only; it cannot mutate state or
+act as an installer approval.
+
+The same node page projects `accelerator-max` from the existing durable
+derived-work ledger: today’s admitted count and a bounded history of admitted,
+claimed, completed, retry, and terminal outcomes. A separate, daily-deduplicated
+decision ledger records only denied or deferred policy gates (disabled, queue,
+daily, capacity, memory, foreground, or concurrency). It is not another work
+queue and intentionally exposes only task-kind, audit/lifecycle code, stable
+reason code, and normalized time; it never exposes project identifiers,
+subjects, providers, payloads, results, evidence, lease tokens, transports, or
+model endpoints. Like all node-governance tables, that ledger is created only
+by the explicit backup-backed deployment migration, never by Dashboard or MCP
+startup.
+
+An authenticated, explicit `POST /diagnostics/bundle` creates a browser-local
+support document using a separate strict allowlist rather than serializing the
+control-plane responses. The endpoint is not telemetry and has no persistent
+side effect; it omits transport and identity material, paths, values, payloads,
+receipts, and SQLite content.
+
+For an automated browser regression against the exact Dashboard bundle, first
+ensure `127.0.0.1:19020` and `127.0.0.1:19040` are unused, then run
+`PP_PYTHON=.venv/bin/python node scripts/dashboard_browser_regression.mjs`.
+It starts isolated loopback fixtures and a disposable headless Chromium-family
+profile, verifies the node view, CPU title icon, refresh/scroll preservation,
+explicit diagnostic-bundle POST/download, and browser errors. It has no
+database, provider, service-manager, or production endpoint. The fixture is a
+test helper, never an installer or runtime launcher.
 
 The ordered roles are `viewer`, `operator`, and `secret-admin`. Provider keys
 are write-only and never returned; Dashboard keeps its control token in
@@ -907,6 +1214,27 @@ changing vectors. Only after the shadow evidence is accepted should
 `PP_MEMORY_CHUNK_ENRICHMENT=on` be enabled for an offline rebuild. The same
 provider/model/prompt/schema identity must remain active for subsequent writes
 and repairs; query embedding never calls the enrichment model.
+
+### Offline index-material migration recovery
+
+`scripts/migrate_index_material.py` is an explicit offline canonical-SQLite
+migration, not a routine rebuild command. Without `--apply` it only inspects
+the existing database and reports the exact row count, source fingerprint,
+target model digest, and index-outbox snapshot required by an eventual write:
+
+```bash
+.venv/bin/python scripts/migrate_index_material.py \
+  --db data/db/plastic_memory.db \
+  --target-policy compact-v2
+```
+
+An approved `--apply` must provide an existing backup directory and every
+expectation emitted by that inspection. It creates and verifies an online
+backup before modifying canonical rows. `--allow-unresolved-index-outbox` is a
+deliberate recovery mode for `pending`, `blocked`, or `failed` index jobs; it
+still rejects `processing` jobs and refuses a changed outbox snapshot. Do not
+use this command for a normal service restart, shadow rebuild, or production
+operation without the separate migration authorization.
 
 ### Immutable LanceDB generations
 
@@ -1087,7 +1415,7 @@ Also unset `PP_RETRIEVAL_RRF_K`, `PP_RETRIEVAL_RRF_WEIGHTS_JSON`, and
 restart both processes, run one-shot maintenance to replay the default checked
 index policy, then run the HTTP and restart-recovery smokes.
 
-For an upgrade to `0.1.20`, leave these gates at their defaults until the live
+For an upgrade to `0.2.15`, leave these gates at their defaults until the live
 deployment passes its project-isolated smoke checks. Restart the MCP server and
 Maintenance Daemon together so every writer uses the same canonical mutation
 contract. No public MCP tool or parameter was removed; existing SQLite memory
@@ -1135,14 +1463,15 @@ python scripts/rebuild_lancedb.py
 | Launcher modes | `light`, `normal`, `rust-normal`, `full`, `rust-full`; non-interactive default is `rust-full` |
 | Maintenance daemon | `daemons/maintenance_daemon.py` |
 | Remote configuration | Separate loopback-only `127.0.0.1:9040`; Mac SSH forward `19040`; immutable revision metadata activates `managed.env`, stale private material is retired, and an external restart is required |
-| Default local embedding path | Ollama `mxbai-embed-large`, with chunked long-text pooling and fallback embedder when configured |
-| Optional chunk enrichment | Off by default; local Ollama `qwen3:8b`, strict grounded schema, SQLite cache; `on` is activated with an offline rebuild and stays enabled for matching writes/repairs |
-| Dashboard V2 | `PP_DASHBOARD_V2=1`; Chinese, loopback-only, project-scoped, bounded, and read-only by default at `/dashboard`; optional governed proposal review uses `PP_DASHBOARD_REVIEW_ACTIONS=1` |
+| Default compute-node embedding | llama.cpp + operator-pinned `Qwen3-Embedding-4B-GGUF`, 2560 dimensions, L2 normalization; Ollama is compatibility-only |
+| Structured slicing | `PP_MEMORY_CHUNKING=structure-v1` by launcher default; canonical text/source spans are preserved |
+| Semantic chunk enrichment | `shadow` by launcher default with an OpenAI-compatible cloud provider recommended on `pp-compute-node`; `on` requires a reviewed offline rebuild/migration |
+| Dashboard V2 | Enabled by the one-click launcher; Chinese, loopback-only, project-scoped, bounded, and read-only by default at `/dashboard`; optional governed proposal review uses `PP_DASHBOARD_REVIEW_ACTIONS=1` |
 | Retrieval explanation | `PP_RETRIEVAL_EXPLAIN=1`; stored bounded snapshots with measured request/stage durations and no synthetic zero timing |
 | Structured database | `data/db/plastic_memory.db` unless `PLASTIC_DB_PATH` overrides it |
 | Vector database | `data/lancedb` unless `PLASTIC_LANCEDB_PATH` overrides it |
 | Codex repo skills | `.agents/skills/*/SKILL.md` |
-| Reranker providers | Local Ollama generation model `qwen2.5:3b` plus cosine fallback by default; hosted providers require `PP_RERANK_PROVIDERS` opt-in |
+| Default compute-node rerank | llama.cpp structured rerank endpoint + operator-pinned `Qwen3-Reranker-0.6B-GGUF`; generation text is rejected |
 | Runtime logs and PIDs | `var/log/`, `var/run/` |
 
 Service subprocesses inherit the launcher's runtime-mode environment and receive the project root at the front of `PYTHONPATH`; this keeps direct script entrypoints and hidden Windows subprocesses aligned with source-checkout execution.
@@ -1177,19 +1506,40 @@ platforms and runtime modes, canonical and derived storage roles, configuration
 names, excluded runtime state, build artifacts, and release provenance gates.
 It is a distribution variant, not a separate knowledge-base edition.
 
-The standard distribution supports two deployment profiles from the same code
-and release contract:
+Endpoint Contract V2 and the PR 3 source-level `ContainerArtifactCompiler` now
+represent three deployment profiles from one code and release contract. The
+compiler records policy/descriptors and immutable evidence only; actual artifact
+activation remains target work for PRs 4–6:
 
-- `local-all-in-one`: frontend, MCP runtime, SQLite, LanceDB, and asynchronous
-  workers run on one local host over loopback HTTP.
-- `split-async` (default): the client runs Codex/dashboard access and an optional
-  bounded cache, while the server exclusively owns writable SQLite, LanceDB,
-  and asynchronous workers behind a secure tunnel.
+- `local-all-in-one`: `pp-local-edge`, `pp-server-backend`, and
+  `pp-compute-node` run as separate endpoint containers on one local host.
+- `local-cloud`: local edge and server backend remain local; configured cloud
+  inference is explicit and the cloud embedding identity is authoritative.
+- `split-accelerated`: local edge runs on the user host, server backend owns the
+  sole writable SQLite and derived LanceDB generation, and compute node supplies
+  typed embedding/reranking through a restricted reverse tunnel.
 
-Both profiles use the same asynchronous admission contract: acknowledge only
-after canonical enqueue, process through a durable outbox with bounded batching,
-persist retry state, reconcile unfinished work, and preserve project isolation.
-The split profile never places a writable canonical database in the client cache.
+When delivered, all three profiles use the same asynchronous admission contract: acknowledge
+only after canonical enqueue, process through a durable outbox with bounded
+batching, persist retry state, reconcile unfinished work, and preserve project
+isolation. No client cache or inference node receives writable canonical
+database access. `split-async` is retained as roadmap terminology only and is
+not a first-release stable profile.
+
+The profile and manifest contracts are documented in
+[`docs/deployment/profiles.md`](docs/deployment/profiles.md). The current PR 2
+contract can be checked without starting a service:
+
+```bash
+python scripts/check_module_layers.py
+python scripts/validate_release_variant.py release/variants/standard.json --repo-root .
+```
+
+The local cross-platform deploy controller is documented in
+[`docs/deployment/deploy-controller.md`](docs/deployment/deploy-controller.md).
+It plans, preflights, backs up and performs explicit local SQLite migrations,
+but never starts or migrates an existing systemd, Compose, launchd or Windows
+service.
 
 The contract contains environment variable names only. Secret values, private
 keys, databases, derived indexes, logs, backups, and deployment EnvironmentFiles
@@ -1227,12 +1577,17 @@ Optional service checks:
 python scripts/init_and_start.py --check-only
 python scripts/init_and_start.py --skip-ollama-check --check-only
 
-# Verify the live Streamable HTTP MCP process after startup or release restart.
-python scripts/smoke_http_mcp.py --expected-version 0.1.20 --expected-mode rust-full
+# Verify the live Streamable HTTP MCP process for the v0.2.15 RC artifact.
+python scripts/smoke_http_mcp.py --expected-version 0.2.15rc1 --expected-mode rust-full
 
 # Run only after explicitly enabling PP_MEMORY_SUMMARY_INDEX=1 and compact-v2.
-python scripts/smoke_http_mcp.py --expected-version 0.1.20 --expected-mode rust-full --check-summary-index
+python scripts/smoke_http_mcp.py --expected-version 0.2.15rc1 --expected-mode rust-full --check-summary-index
 ```
+
+After the separate protected stable-promotion change updates the package and
+runtime version to `0.2.15`, repeat the same commands with
+`--expected-version 0.2.15`. An RC artifact must not be verified as the stable
+version before that promotion exists.
 
 Live release sync has a fail-closed preflight: the release repository must be
 clean, on `main`, bound to the expected `origin`, and the current version tag
@@ -1252,7 +1607,7 @@ not replace the attested push with a manual push or `git push --tags`.
 
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
-  --version v0.1.20 --release-repo ../plastic-promise-release \
+  --version v0.2.15 --release-repo ../plastic-promise-release \
   --expected-source-branch main \
   --expected-source-origin https://github.com/ALdaisuki/plastic-promise.git \
   --expected-origin https://github.com/ALdaisuki/plastic-promise-release.git \
@@ -1281,10 +1636,11 @@ Conventions:
 | Operator dashboard | Active | Chinese Dashboard V2 exposes bounded views for passive memory, proposals, structured chunks, lineage, request traces, retrieval quality, trust, operations, and runtime configuration; proposal review is separately gated and governed. |
 | Remote configuration | Active | The same Dashboard consumes a role-separated, headless loopback control API for server status and governed validate/stage/CAS activation without giving the API service-manager authority. |
 | Hunter Guild | Experimental | Task lifecycle is wired; policy and scanner quality are still evolving. |
+| Persistent collaboration and compute runtime | Source implemented / focused tests passed / runtime evidence pending | Current PR 5 source includes durable server-only collaboration stores, restart-safe authenticated Hook continuation, server-owned bounded work issuance/operations, ordinary tool reconcile, bounded Stop progress/submitted events, formal result/stage receipts, Maintenance composition, shadow/inject awareness, read-only Dashboard projections, and atomic accepted-result-to-pending-only promotion enqueue. `pp-compute-node` alone executes embedding, rerank, and structured JSON under project-scoped `local`/`cloud`/`hybrid` routing; structured JSON is off by default. Real browser/runtime lifecycle, migration execution, provider activation, production acceptance, and publication remain unverified. Hunter Guild is the legacy/current task queue, not the PR 5 `ProjectWorkBoard`. |
 | Skills and governed workflow | Active | `session-init`, `smart-remember`, `step-closure`, and a pinned official `sp-stage` guidance/receipt contract are exposed; detailed Skill execution remains client-owned. |
 | Extension market | Experimental | Pack validation and market commands exist; ecosystem is early. |
-| Release pipeline | Active | PyPI and GitHub Actions release sync are configured. |
-| Documentation | Active | English and Chinese quickstarts, runtime operations, Dashboard V2, structured chunking, lineage, retrieval explanation, and release procedures are aligned with source truth. |
+| Release delivery | Target / unverified | PR verification, RC artifacts, TestPyPI rehearsal, protected OCI evidence, stable-only sync, and OIDC publishing are separated by design; the current stable publisher is not yet connected to the PR 6 selected-evidence gate, and no workflow publishes from a normal push. |
+| Documentation | Active / parity receipt pending | English and Chinese documentation is being aligned to the PR 5 source boundary. This status is documentation/source alignment only; the governed parity receipt and PR 5 runtime/production evidence remain outstanding. |
 
 ---
 
@@ -1293,11 +1649,21 @@ Conventions:
 | Document | Purpose |
 |---|---|
 | [docs/README.zh-CN.md](docs/README.zh-CN.md) | Chinese quickstart and user guide. |
+| [docs/deployment/README.md](docs/deployment/README.md) | Deployment profiles, ownership boundaries, preflight, node identity, and recovery. |
+| [docs/deployment/README.zh-CN.md](docs/deployment/README.zh-CN.md) | Chinese deployment, resource, node-identity, and recovery guide. |
+| [docs/release/delivery.zh-CN.md](docs/release/delivery.zh-CN.md) | Chinese controlled-release and production-promotion guide. |
+| [docs/release/six-pr-readiness.zh-CN.md](docs/release/six-pr-readiness.zh-CN.md) | Chinese six-PR readiness and rehearsal checklist. |
 | [docs/GOAL.md](docs/GOAL.md) | Chinese canonical goals, current status, and operating philosophy. |
 | [docs/SYSTEM_FULL_CHAIN.md](docs/SYSTEM_FULL_CHAIN.md) | Release-facing architecture and operating chain. |
 | [docs/DEVELOPER.md](docs/DEVELOPER.md) | Extension and plugin development guide. |
 | [docs/remote-control-plane.md](docs/remote-control-plane.md) | Secure remote cloud configuration, status, SSH tunnel, and systemd operations. |
+| [docs/deployment/deploy-controller.md](docs/deployment/deploy-controller.md) | Cross-platform local deployment plans, preflight, safe SQLite lifecycle and doctor. |
+| [docs/release/delivery.md](docs/release/delivery.md) | Installation choices, release channels, protected approval, OIDC, and manifest evidence. |
+| [docs/release-builder.md](docs/release-builder.md) | Maintainer-only immutable release requests, desktop confirmation, resource gates, and receipts. |
+| [docs/release-builder.zh-CN.md](docs/release-builder.zh-CN.md) | 中文 Release Builder 规格与受控发布边界。 |
 | [docs/architecture/architecture.md](docs/architecture/architecture.md) | Detailed architecture reference. |
+| [docs/architecture/release-delivery/architecture.md](docs/architecture/release-delivery/architecture.md) | Release-delivery module boundaries and evidence flow. |
+| [docs/architecture/release-delivery/architecture.zh-CN.md](docs/architecture/release-delivery/architecture.zh-CN.md) | Chinese release-delivery module boundaries and evidence flow. |
 | [docs/architecture/implementation-notes.md](docs/architecture/implementation-notes.md) | Practical implementation and operation notes. |
 | [docs/TODO List/README.md](docs/TODO%20List/README.md) | Current unfinished roadmap items. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow. |

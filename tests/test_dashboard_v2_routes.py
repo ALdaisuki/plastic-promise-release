@@ -58,6 +58,29 @@ class FakeRepository:
             "warnings": [],
         }
 
+    def collaboration_snapshot(self, **kwargs):
+        self.calls.append(("collaboration_snapshot", kwargs))
+        return {
+            "schema_version": "dashboard-collaboration-projection/v1",
+            "availability": "available",
+            "authority_effect": "none",
+            "filters": {"role_effect": "result_narrowing_only"},
+            "filter_options": {
+                "coordination_sessions": ["coordination:a"],
+                "agent_sessions": [
+                    {"session_id": "session:a", "agent_id": "agent:a"}
+                ],
+                "roles": ["worker"],
+            },
+            "topology": {"data": [], "returned": 0, "truncated": False},
+            "work_board": {"data": [], "returned": 0, "truncated": False},
+            "event_timeline": {
+                "data": [],
+                "next_cursor": "cursor:a",
+                "has_more": False,
+            },
+        }
+
     def get_request(self, call_id):
         self.calls.append(("get_request", call_id))
         if call_id == "missing":
@@ -282,6 +305,88 @@ async def test_scope_route_returns_server_owned_project_options_without_memory_r
         "project:a",
     ]
     assert repositories == []
+
+
+@pytest.mark.asyncio
+async def test_scope_route_preserves_collaboration_only_project_metadata():
+    app, _ = build_app(
+        settings(),
+        project_scope_provider=lambda: [
+            {
+                "project_id": "project:collaboration-only",
+                "latest_at": "2026-08-13T12:00:00Z",
+                "agent_session_count": 2,
+                "work_item_count": 1,
+                "collaboration_event_count": 4,
+            }
+        ],
+    )
+
+    response = await request(app, "/api/dashboard/v2/scopes")
+
+    assert response.status_code == 200
+    collaboration_scope = response.json()["data"]["scopes"][0]
+    assert collaboration_scope == {
+        "project_id": "project:collaboration-only",
+        "latest_at": "2026-08-13T12:00:00Z",
+        "agent_session_count": 2,
+        "work_item_count": 1,
+        "collaboration_event_count": 4,
+    }
+
+
+@pytest.mark.asyncio
+async def test_collaboration_route_forwards_bounded_filters_and_cursor():
+    app, repositories = build_app(settings())
+
+    response = await request(
+        app,
+        "/api/dashboard/v2/collaboration?coordination_session_id=coordination%3Aa"
+        "&agent_session_id=session%3Aa&role=worker&cursor=cursor%3Aone&limit=12",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["authority_effect"] == "none"
+    assert repositories[0].calls == [
+        (
+            "collaboration_snapshot",
+            {
+                "coordination_session_id": "coordination:a",
+                "agent_session_id": "session:a",
+                "role": "worker",
+                "event_cursor": "cursor:one",
+                "event_limit": 12,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", ["not-a-number", "0", "21"])
+async def test_collaboration_route_rejects_invalid_limit_before_repository_read(limit):
+    app, repositories = build_app(settings())
+
+    response = await request(app, f"/api/dashboard/v2/collaboration?limit={limit}")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_limit"
+    assert repositories == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_collaboration_assets_keep_cursor_browser_memory_only_and_read_only():
+    app, _ = build_app(settings())
+
+    script = (await request(app, "/dashboard/assets/v2/app.js")).text
+
+    assert 'attrs: { href: "#/collaboration" }' in script
+    assert 'dataset: { view: "collaboration" }' in script
+    assert 'endpoint: "/collaboration"' in script
+    assert 'collaboration: {\n      cursor: null' in script
+    assert 'role_effect' not in script
+    assert "pp_dashboard_collaboration_cursor" not in script
+    assert "sessionStorage" not in script
+    assert 'apiRequest(definition.endpoint' in script
 
 
 @pytest.mark.asyncio
@@ -734,8 +839,8 @@ async def test_dashboard_shell_and_assets_use_a_strict_read_only_surface():
     unknown = await request(app, "/dashboard/assets/v2/unknown.js")
 
     assert shell.status_code == 200
-    assert "/dashboard/assets/v2/app.js?v=20260803-passive-jobs-v1" in shell.text
-    assert "/dashboard/assets/v2/app.css?v=20260803-passive-jobs-v1" in shell.text
+    assert "/dashboard/assets/v2/app.js?v=20260816-default-feature-surfaces-v1" in shell.text
+    assert "/dashboard/assets/v2/app.css?v=20260816-knowledge-nav-consistency-v1" in shell.text
     assert 'lang="zh-CN"' in shell.text
     for label in (
         "概览",
@@ -748,6 +853,7 @@ async def test_dashboard_shell_and_assets_use_a_strict_read_only_surface():
         "综合记忆",
         "运行运维",
         "信任与问题",
+        "脱敏诊断",
         "有效配置",
         "服务器状态",
         "云端期望配置",
@@ -820,9 +926,9 @@ async def test_dashboard_control_views_keep_credentials_memory_only_and_api_head
         "resetControlSession();",
         'data-control-secret": "token"',
         'textButton("载入推荐云配置"',
-        'base_url: "https://api.syuan.org"',
-        'path: "/v1/embeddings"',
-        'model: "Qwen3-Embedding-8B"',
+        'base_url: "https://provider.example/v1"',
+        'path: "/embeddings"',
+        'model: "Qwen3-Embedding-4B"',
         "cost_per_million_tokens: null",
         'cost_currency: ""',
         'pricing_revision: ""',
@@ -836,6 +942,38 @@ async def test_dashboard_control_views_keep_credentials_memory_only_and_api_head
     assert "sessionStorage" not in script.text
     assert 'localStorage.setItem("control' not in script.text
     assert 'localStorage.setItem("token' not in script.text
+    assert repositories == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_knowledge_navigation_uses_consistent_text_and_svg_icons():
+    app, repositories = build_app(settings())
+
+    shell = await request(app, "/dashboard")
+    stylesheet = await request(app, "/dashboard/assets/v2/app.css")
+
+    assert shell.status_code == 200
+    assert stylesheet.status_code == 200
+    knowledge_navigation = shell.text.split(
+        '<div class="nav-label">知识</div>', 1
+    )[1].split('<div class="nav-label">运维</div>', 1)[0]
+    for legacy_emoji in ("&#128218;", "&#128228;", "&#9881;", "📚", "📤", "⚙"):
+        assert legacy_emoji not in knowledge_navigation
+    for view, icon in (
+        ("knowledge-sources", "book-open"),
+        ("knowledge-semantic", "activity"),
+        ("knowledge-domains", "git-branch"),
+        ("knowledge-artifacts", "scroll-text"),
+        ("knowledge-upload", "upload"),
+        ("knowledge-jobs", "list-check"),
+    ):
+        item = knowledge_navigation.split(f'data-view="{view}"', 1)[1].split("</a>", 1)[0]
+        assert '<svg class="icon">' in item
+        assert f'href="#icon-{icon}"' in item
+        assert 'class="nav-label"' not in item
+    assert 'app.css?v=20260816-knowledge-nav-consistency-v1' in shell.text
+    assert "font-size: 12px;" in stylesheet.text.split(".nav-item {", 1)[1].split("}", 1)[0]
+    assert "line-height: 18px;" in stylesheet.text.split(".nav-item {", 1)[1].split("}", 1)[0]
     assert repositories == []
 
 
@@ -926,7 +1064,7 @@ async def test_dashboard_control_refreshes_cas_and_projects_revision_eligibility
     app, _ = build_app(settings())
 
     script = (await request(app, "/dashboard/assets/v2/app.js")).text
-    loader = script.split("function loadControlCurrentView()", 1)[1].split(
+    loader = script.split("function loadControlCurrentView(options)", 1)[1].split(
         "function renderPayload", 1
     )[0]
     revisions = script.split("function renderControlRevisions(payload)", 1)[1].split(
@@ -962,6 +1100,103 @@ async def test_dashboard_project_selector_propagates_scope_to_reads_and_reviews(
     assert "applyProjectScopeToUrl" in request_helper
     assert "applyProjectScopeToUrl" in mutation_helper
     assert "pp_dashboard_project_id" not in script
+
+
+@pytest.mark.asyncio
+async def test_dashboard_manual_refresh_preserves_rendered_content_to_avoid_flicker():
+    app, _ = build_app(settings())
+
+    script = (await request(app, "/dashboard/assets/v2/app.js")).text
+    loading = script.split("function showLoading(options)", 1)[1].split("function showError", 1)[0]
+    loader = script.split("function loadCurrentView(options)", 1)[1].split(
+        "function parseRoute", 1
+    )[0]
+    initializer = script.split("function initialize()", 1)[1].split("initialize();", 1)[0]
+
+    assert "var preserveContent = options && options.preserveContent === true;" in loading
+    assert "if (!preserveContent || !refs.viewRoot.childElementCount)" in loading
+    assert "showLoading({ preserveContent: preserveContent });" in loader
+    assert "loadControlCurrentView({ preserveContent: preserveContent });" in loader
+    assert 'mainPanel: document.getElementById("main-panel")' in script
+    assert "function captureMainPanelScroll()" in script
+    assert "function restoreMainPanelScroll(position)" in script
+    assert "function routeMainPanelKeyboardScroll(event)" in script
+    assert 'document.addEventListener("keydown", routeMainPanelKeyboardScroll);' in script
+    assert "restoreMainPanelScroll(scrollPosition);" in loader
+    refresh_handler = initializer.split('refs.refreshButton.addEventListener("click"', 1)[1].split(
+        'refs.detailClose.addEventListener("click"', 1
+    )[0]
+    assert "loadCurrentView({ preserveContent: true });" in refresh_handler
+    assert (
+        'var controlView = state.currentView === "control-status" || state.currentView === "control-nodes";'
+        in script
+    )
+    assert "loadCurrentView({ background: true, preserveContent: true });" in script
+
+
+@pytest.mark.asyncio
+async def test_dashboard_nodes_view_uses_safe_control_projection_and_scrollable_panel():
+    app, _ = build_app(settings())
+
+    page = (await request(app, "/dashboard")).text
+    script = (await request(app, "/dashboard/assets/v2/app.js")).text
+    styles = (await request(app, "/dashboard/assets/v2/app.css")).text
+    renderer = script.split("function renderControlNodes(payload)", 1)[1].split(
+        "function renderControlConfig", 1
+    )[0]
+    diagnostics = script.split("function renderControlDiagnostics(payload)", 1)[1].split(
+        "function renderControlConfig", 1
+    )[0]
+
+    assert 'data-view="control-nodes"' in page
+    assert '<use href="#icon-cpu"' in page
+    assert 'id="icon-cpu"' in page
+    assert 'id="topbar-view-icon"' in page
+    assert 'id="topbar-view-icon-use"' in page
+    assert 'data-view="control-diagnostics"' in page
+    assert 'id="main-panel" tabindex="-1"' in page
+    assert '"control-nodes": {' in script
+    assert 'endpoint: "/nodes"' in script
+    assert 'topbarIcon: "cpu"' in script
+    assert 'refs.topbarViewIconUse.setAttribute("href", "#icon-" + iconName);' in script
+    assert 'case "control-nodes": renderControlNodes(payload); break;' in script
+    assert "function downloadControlDiagnosticBundle" in script
+    assert 'controlRequest("/diagnostics/bundle", { method: "POST" })' in script
+    assert 'text: "生成并下载诊断包"' in diagnostics
+    assert "transport" not in renderer.casefold()
+    assert "quarantine_reason" in renderer
+    assert "median_ms" in renderer
+    assert "recent_routes" in renderer
+    assert "selection_reason" in renderer
+    assert "accelerator_max_enabled" in renderer
+    assert "derived_work" in renderer
+    assert "accelerator_max" in renderer
+    assert "var acceleratorAudit = isObject(payload.accelerator_audit)" in renderer
+    assert 'sectionHeader("accelerator-max 审计"' in renderer
+    assert '"今日已准入"' in renderer
+    assert '"后台审计"' in renderer
+    main_panel = styles.split(".main-panel {", 1)[1].split("}", 1)[0]
+    assert "overflow-y: auto;" in main_panel
+
+
+@pytest.mark.asyncio
+async def test_dashboard_resource_preflight_is_policy_only_and_read_only():
+    app, _ = build_app(settings())
+
+    page = (await request(app, "/dashboard")).text
+    script = (await request(app, "/dashboard/assets/v2/app.js")).text
+    renderer = script.split("function renderControlPreflight(payload)", 1)[1].split(
+        "function renderControlConfig", 1
+    )[0]
+
+    assert 'data-view="control-preflight"' in page
+    assert '"control-preflight": {' in script
+    assert 'endpoint: "/deployment/preflight"' in script
+    assert 'case "control-preflight": renderControlPreflight(payload); break;' in script
+    assert "hard_gate" in renderer
+    assert "satisfies_policy" in renderer
+    assert "planning_only" in renderer
+    assert "apply" not in renderer.casefold()
 
 
 @pytest.mark.asyncio

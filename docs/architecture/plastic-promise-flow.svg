@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
-  <title id="title">Plastic Promise local governance runtime architecture</title>
-  <desc id="desc">Layered vector architecture diagram showing actors, MCP entrypoints, governance core modules, automation loop, and local persistence for Plastic Promise.</desc>
+  <title id="title">Plastic Promise union endpoint, collaboration, and runtime target architecture</title>
+  <desc id="desc">Union Six-PR Contract revision 2026-08-18.1 defines pp-local-edge, pp-server-backend, pp-compute-node, server-only canonical and collaboration authority, and derived LanceDB state. This source/design map does not prove runtime or production activation.</desc>
   <defs>
     <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
       <stop offset="0" stop-color="#0b1220"/>
@@ -36,7 +36,7 @@
   <rect x="36" y="104" width="1208" height="552" rx="22" fill="url(#band)" stroke="#1e3a8a" stroke-width="1"/>
 
   <text x="64" y="58" class="title">Plastic Promise Architecture</text>
-  <text x="64" y="86" class="subtitle">Local-first MCP governance runtime for memory, context, audit, trust, skills, and task dispatch</text>
+  <text x="64" y="86" class="subtitle">Union contract 2026-08-18.1 · three endpoints · server-only canonical and coordination authority</text>
 
   <text x="64" y="136" class="layer">ACTORS</text>
   <rect x="64" y="154" width="190" height="82" rx="14" class="actor"/>
@@ -51,63 +51,63 @@
   <text x="88" y="401" class="label">Agent Team</text>
   <text x="88" y="424" class="small">Builder, Fixer, Reviewer</text>
 
-  <text x="316" y="136" class="layer">MCP ENTRYPOINTS</text>
+  <text x="316" y="136" class="layer">LOCAL EDGE</text>
   <rect x="316" y="176" width="206" height="96" rx="14" class="entry"/>
-  <text x="344" y="210" class="label">MCP Server</text>
-  <text x="344" y="234" class="small">stdio / HTTP / SSE legacy</text>
-  <text x="344" y="252" class="tiny">58 tools + aliases</text>
+  <text x="344" y="210" class="label">pp-local-edge</text>
+  <text x="344" y="234" class="small">Dashboard + deploy UI</text>
+  <text x="344" y="252" class="tiny">MCP bridge + bounded cache</text>
 
   <rect x="316" y="322" width="206" height="96" rx="14" class="entry"/>
-  <text x="344" y="356" class="label">Tool Surface</text>
-  <text x="344" y="380" class="small">schemas, prompts, health</text>
-  <text x="344" y="398" class="tiny">runtime_mode, request_scope_id</text>
+  <text x="344" y="356" class="label">Host ppctl</text>
+  <text x="344" y="380" class="small">validated plans only</text>
+  <text x="344" y="398" class="tiny">UI has no socket or shell</text>
 
-  <text x="584" y="136" class="layer">GOVERNANCE CORE</text>
+  <text x="584" y="136" class="layer">SERVER BACKEND</text>
   <rect x="584" y="150" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="181" class="label">Context Engine</text>
-  <text x="612" y="204" class="small">recall, graph, ranking</text>
+  <text x="612" y="181" class="label">MCP + Governance</text>
+  <text x="612" y="204" class="small">memory, context, collaboration</text>
 
   <rect x="584" y="252" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="283" class="label">Memory Pipeline</text>
-  <text x="612" y="306" class="small">extract, dedup, decay</text>
+  <text x="612" y="283" class="label">Durable Work</text>
+  <text x="612" y="306" class="small">outbox, leases, events, reconcile</text>
 
   <rect x="584" y="354" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="385" class="label">Principles + Graph</text>
-  <text x="612" y="408" class="small">activate, evaluate, link</text>
+  <text x="612" y="385" class="label">Maintenance</text>
+  <text x="612" y="408" class="small">scan, retry, recover</text>
 
   <rect x="584" y="456" width="214" height="82" rx="14" class="core"/>
-  <text x="612" y="487" class="label">Trust + Defense</text>
-  <text x="612" y="510" class="small">audit, tiers, pre-checks</text>
+  <text x="612" y="487" class="label">Generation Control</text>
+  <text x="612" y="510" class="small">verify, promote, rollback</text>
 
-  <text x="862" y="136" class="layer">AUTOMATION LOOP</text>
+  <text x="862" y="136" class="layer">COMPUTE NODE</text>
   <rect x="862" y="176" width="214" height="82" rx="14" class="loop"/>
-  <text x="890" y="207" class="label">Skills + Closure</text>
-  <text x="890" y="230" class="small">session-init, sp-stage</text>
+  <text x="890" y="207" class="label">Embedding</text>
+  <text x="890" y="230" class="small">fixed identity + schema</text>
 
   <rect x="862" y="298" width="214" height="82" rx="14" class="loop"/>
-  <text x="890" y="329" class="label">Hunter Guild</text>
-  <text x="890" y="352" class="small">claim, heartbeat, verify</text>
+  <text x="890" y="329" class="label">Rerank</text>
+  <text x="890" y="352" class="small">typed derived results</text>
 
   <rect x="862" y="420" width="214" height="82" rx="14" class="loop"/>
-  <text x="890" y="451" class="label">Maintenance Daemon</text>
-  <text x="890" y="474" class="small">scan, recover, GC</text>
+  <text x="890" y="451" class="label">Optional Typed JSON</text>
+  <text x="890" y="474" class="small">no prompt, file, or shell</text>
 
-  <text x="64" y="586" class="layer">LOCAL PERSISTENCE AND ACCELERATION</text>
+  <text x="64" y="586" class="layer">STATE AND EXECUTION OWNERSHIP</text>
   <rect x="64" y="604" width="246" height="60" rx="14" class="store"/>
   <text x="90" y="631" class="label">SQLite WAL</text>
-  <text x="90" y="651" class="small">structured truth source</text>
+  <text x="90" y="651" class="small">server-only canonical writer</text>
 
   <rect x="342" y="604" width="246" height="60" rx="14" class="store"/>
   <text x="368" y="631" class="label">LanceDB</text>
-  <text x="368" y="651" class="small">vectors and similarity search</text>
+  <text x="368" y="651" class="small">derived generation only</text>
 
   <rect x="620" y="604" width="246" height="60" rx="14" class="rust"/>
-  <text x="646" y="631" class="label">Rust Context Core</text>
-  <text x="646" y="651" class="small">optional acceleration path</text>
+  <text x="646" y="631" class="label">Host ppctl</text>
+  <text x="646" y="651" class="small">validated execution adapter</text>
 
   <rect x="898" y="604" width="246" height="60" rx="14" class="store"/>
-  <text x="924" y="631" class="label">Logs + Runtime State</text>
-  <text x="924" y="651" class="small">health, events, audit trail</text>
+  <text x="924" y="631" class="label">Model Cache</text>
+  <text x="924" y="651" class="small">compute-local, no canonical data</text>
 
   <path class="arrow" d="M254 195 H316"/>
   <path class="arrow" d="M254 303 H316"/>
@@ -124,5 +124,5 @@
   <path class="softArrow" d="M969 502 V604"/>
   <path class="softArrow" d="M743 604 C743 570 742 552 742 538"/>
 
-  <text x="64" y="692" class="tiny">Flow: clients call scoped MCP tools, governance modules retrieve context and enforce agreements, automation loops close work, local stores keep state inspectable.</text>
+  <text x="64" y="692" class="tiny">Union contract 2026-08-18.1: source/design map only; runtime, migration, promotion, cutover, and production need separate receipts.</text>
 </svg>

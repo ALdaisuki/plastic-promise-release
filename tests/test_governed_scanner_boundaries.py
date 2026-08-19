@@ -33,7 +33,8 @@ def _create_db(db_path: str, *, include_scheduler_tables: bool = False) -> sqlit
             worth_failure INTEGER DEFAULT 0,
             activation_weight REAL DEFAULT 0,
             access_count INTEGER DEFAULT 0,
-            category TEXT
+            category TEXT,
+            project_id TEXT NOT NULL DEFAULT 'project:test'
         )
         """
     )
@@ -53,7 +54,8 @@ def _create_db(db_path: str, *, include_scheduler_tables: bool = False) -> sqlit
                 claimed_by TEXT,
                 escalation_count INTEGER,
                 verified_at TEXT,
-                verified_by TEXT
+                verified_by TEXT,
+                project_id TEXT NOT NULL DEFAULT 'project:system-governance'
             )
             """
         )
@@ -356,9 +358,7 @@ async def test_maintenance_audit_ignores_reserved_statistics(
 
     monkeypatch.setattr(maintenance_daemon, "DB_PATH", db_path)
     monkeypatch.setattr(maintenance_daemon.httpx, "AsyncClient", _AsyncClient)
-    monkeypatch.setattr(
-        "plastic_promise.defense.soul_enforcer.TrustManager", _TrustManager
-    )
+    monkeypatch.setattr("plastic_promise.defense.soul_enforcer.TrustManager", _TrustManager)
     monkeypatch.setattr("plastic_promise.core.context_engine.ContextEngine", _ContextEngine)
     monkeypatch.setattr(maintenance_daemon, "_last_audit_report", "")
 
@@ -421,9 +421,7 @@ async def test_maintenance_audit_retries_identical_report_until_notify_commits(
 
     monkeypatch.setattr(maintenance_daemon, "DB_PATH", db_path)
     monkeypatch.setattr(maintenance_daemon.httpx, "AsyncClient", _AsyncClient)
-    monkeypatch.setattr(
-        "plastic_promise.defense.soul_enforcer.TrustManager", _TrustManager
-    )
+    monkeypatch.setattr("plastic_promise.defense.soul_enforcer.TrustManager", _TrustManager)
     monkeypatch.setattr("plastic_promise.core.context_engine.ContextEngine", _ContextEngine)
     monkeypatch.setattr(maintenance_daemon, "_last_audit_report", "")
 

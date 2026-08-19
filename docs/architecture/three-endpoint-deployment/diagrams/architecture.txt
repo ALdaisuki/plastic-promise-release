@@ -1,0 +1,96 @@
+Plastic Promise three-endpoint architecture and PR 6 release target
+Normative source: Union Six-PR Contract revision 2026-08-18.1
+Legend: [C] current source contract  [P] focused tests passed
+        [T] target runtime            [U] unverified live state
+
++--------------------------- User host ---------------------------+
+| [C/T] pp-local-edge: static browser entry, non-authoritative     |
+| [C] static role package only; no Python runtime/package          |
+| Dashboard / Deployment Center; bridge absent -> disabled         |
+| configured browser POST only -> host ppctl inspect / preview     |
+| no Docker socket, host path, SSH material, SQLite, or apply      |
++-------------------------------+----------------------------------+
+                                | safe manifest/preview only
+                                v
++-------------------------- Server host ---------------------------+
+| [C/T] pp-server-backend / pp-core                                |
+| [C] server role package; no compute-node or release-builder code |
+| [C] sole canonical SQLite writer; [C/P] collaboration Maintenance composition |
+| [T] live MCP, routing, and Maintenance transition               |
+| [C] LanceDB selection owner; LanceDB is derived/rebuildable      |
+| [T] Migration Operation: typed phases + separate Execution Grant |
++-------------------------------+----------------------------------+
+                                | typed derived inference only
+                                v
++------------------------- Compute host ---------------------------+
+| [C/T] pp-compute-node: embedding/rerank contract + CPU/CUDA      |
+| [C] one compute role package; CPU/CUDA are runtime variants      |
+| [C] no MCP/SQLite/memory/knowledge/deployment/release-builder    |
+| [T] local model cache; [C] no SQLite/LanceDB/promotion authority |
++------------------------------------------------------------------+
+
+[C] PR 2 defines V2 manifest/ownership/capability-binding/admission/receipt schemas; runtime is [T].
+[C] EndpointManifestV2 candidate -> [C/T] digest comparison.
+[C/T] Safe active topology present -> redacted V2 structural manifest diff;
+    absent -> manifest diff explicitly unavailable.
+[C/T] Controller-owned enrollment readiness is a secret-free projection.
+[C/T] Preview update class is inspection-only: no-change / enrollment-required /
+    manual-review.  State-bound plan hash reports drift and never authorizes execution.
+[C] PR 3 adds ContainerArtifactCompiler -> plan -> ArtifactBuildExecutor -> inspection bundle.
+[C] One monorepo -> RolePackageCompiler -> edge/server/compute allowlists;
+    complete source exists only in discarded build stages, never final images.
+[C/T] PR 4 Deployment Center is inspect/preview only; mutation is deferred to PR5.
+[C] PR 4 ProjectWorkingSet: max 64 items per source class; no database or feed.
+[C] AgentAwarenessProjection: max 20 deltas and 64 KiB canonical JSON.
+    Caller-supplied coordinator/reviewer strings grant no authority or full view.
+    Full active work requires a server-issued AgentSession policy binding and
+    authenticated source receipt for the same project/session/audience tuple.
+    cursor/project/session/audience/policy/source fail closed; no partial projection.
+    objective/capabilities/payload redacted.
+    canonical-memory effect none; the derived projection grants no authority.
+[C/P] PR 5 durable collaboration source and focused tests: Agent/session/role/work/lease/event/
+     cursor/result stores, formal-result submitter assignment, typed events, replay/fencing,
+     reconcile algorithm, promotion validation/outbox, and Maintenance collaboration composition.
+[C/P] PR 5 fresh-client Hook continuation, agent.closed/lease/cursor lifecycle, and
+     shadow-to-inject gate; [U] real authenticated lifecycle E2E evidence pending.
+[C/P] PR 5 public bounded ProjectWorkBoard list/claim/heartbeat/review/accept lifecycle and
+     Dashboard topology/work/timeline; register uses server-owned issuance;
+     [U] real browser/runtime smoke pending.
+[C/P] PR 5 server-owned WorkReceipt issuer/register, exact-session tool reconcile,
+      bounded Stop progress/submitted events, and atomic pending-only promotion enqueue.
+[U] Live Maintenance transition and production activation/evidence.
+[C/T] PR 5 server-owned MigrationOperation durable source / target live adapters (pp-core only):
+    fresh Migration Operation Plan -> drift/backup -> SQLite grant/lease/fence/receipt journal
+    -> separate Execution Grant -> typed phase adapters
+       preflight | rehearsal | cutover | shadow/promotion | Maintenance | rollback
+    -> secret-free Migration Receipt
+[C/P] Generation operator seam:
+    prepare: quality evidence -> build -> reconcile -> verify inactive candidate
+             -> atomic receipt binding manifest/index/quality/revision-env digests
+    independent host boundary: stop MCP/inference/Maintenance/Knowledge Ingest
+    cutover: verify prepare receipt -> authenticated revision activation
+             -> promote -> authenticated retarget
+             -> live-root bootstrap/verify -> atomic pointer update
+    independent host boundary: restart -> health/retrieval smoke -> Maintenance review
+    no direct Control SQLite mutation, embedded restart, or Maintenance policy change
+[C] Deployment Center and host ppctl stay read-only; inspection plan_hash
+    never becomes an Execution Grant and never authorizes SQLite mutation.
+[L] Existing runtime/deployment paths remain compatibility baseline; no host observed here.
+[U] MCP returned HTTP 502; no listener, container, tunnel, production migration,
+    LanceDB promotion, Maintenance transition, or MCP restart proof.
+
+PR 6 target authority path (unverified):
+  Windows/WSL2 local build/cache + GPU smoke (derived inference only)
+    -> GitHub protected build -> immutable digest + SBOM/provenance
+    -> Release Bundle + opaque Model Catalog ref/digest
+    -> server pulls verified selected digest -> stable-only handoff
+
+Release Bundle target fields: source revision, package version, protocol/profile/
+variant matrix, OCI digests, SBOM/provenance refs, Model Catalog ref/digest.
+It excludes model weights, paths, credentials, canonical state, runtime config,
+and execution grants. ArtifactBundle is build inspection evidence, not release
+or deployment authority.
+
+[C/T] Deployment Center and ppctl remain read-only; a planning hash never grants
+execution. [U] No listener, container, tunnel, migration, promotion, Maintenance,
+MCP restart, signature, registry publication, or stable release is proven here.

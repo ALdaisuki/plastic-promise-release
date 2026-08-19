@@ -11,6 +11,7 @@ import json
 
 from mcp.types import TextContent
 
+from plastic_promise.core.agent_tool_policy import policy_receipt
 from plastic_promise.core.official_workflow import OFFICIAL_SKILLS
 from plastic_promise.skills.closure_runner import run_post_task_best_effort
 from plastic_promise.skills.engine import SkillDef, SkillResult
@@ -118,6 +119,13 @@ def build_stage_guidance(
     if stage_name not in ENGINEERING_STAGE_CONFIG:
         raise ValueError(f"unknown official engineering stage: {stage_name}")
     domain, layer, artifact, closure_mode = ENGINEERING_STAGE_CONFIG[stage_name]
+    delegated_roles = (
+        ["deepsec_reviewer"]
+        if stage_name == "code-review"
+        else ["research_reader"]
+        if stage_name == "research"
+        else []
+    )
     return {
         "stage_summary": {
             "stage": stage_name,
@@ -142,6 +150,21 @@ def build_stage_guidance(
             "message": (
                 f"Run step-closure(mode='{closure_mode}') after substantive verified output."
             ),
+        },
+        "delegation_policy": {
+            "roles": delegated_roles,
+            "receipts": [policy_receipt(role) for role in delegated_roles],
+            "enforcement": {
+                "required_argument": "agent_role",
+                "transport_boundary": "mcp.call_tool",
+                "fail_closed": True,
+                "message": (
+                    "Delegated calls may include agent_role; the MCP dispatcher "
+                    "authorizes the allowlisted tool and action before handler execution. "
+                    "Transport-level identity binding is not available on this MCP surface."
+                ),
+            },
+            "default": "no delegated role; the caller keeps its existing tool boundary",
         },
     }
 

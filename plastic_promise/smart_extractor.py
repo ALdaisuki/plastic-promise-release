@@ -8,11 +8,11 @@ LLM classify cache: SHA-256 content hash → category, LRU 128 / 300s TTL.
 """
 
 import hashlib
+import os
 import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 import requests
 
@@ -180,6 +180,10 @@ def extract_memories(
     Returns:
         List of ExtractedMemory objects.
     """
+    endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+    if endpoint_role and endpoint_role != "pp-compute-node":
+        max_llm_calls = 0
+
     sentences = _split_memory_sentences(conversation)
 
     results: list[ExtractedMemory] = []

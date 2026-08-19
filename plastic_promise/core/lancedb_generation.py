@@ -68,6 +68,25 @@ MAX_P95_MS = 5_000.0
 _MAX_MANIFEST_BYTES = 1024 * 1024
 _MAX_ARTIFACT_FILE_BYTES = 8 * 1024 * 1024 * 1024
 _READ_CHUNK_BYTES = 1024 * 1024
+
+
+def _max_v1_control_profile(provider: object) -> tuple[str, int, dict[str, str]]:
+    """Return the fixed max-v1 profile for legacy or governed embeddings.
+
+    The fusion algorithm remains max-v1, while the governed compute route
+    carries its own immutable compact-v2/2560 embedding contract. Legacy
+    provider reports retain the original legacy/1024 profile.
+    """
+
+    if canonical_embedding_provider(provider) == "governed-node":
+        index_policy = "compact-v2"
+        dimension = 2560
+    else:
+        index_policy = MAX_V1_CONTROL_INDEX_TEXT_POLICY
+        dimension = MAX_V1_CONTROL_EMBEDDING_DIMENSION
+    retrieval = dict(MAX_V1_CONTROL_RETRIEVAL_CONFIGURATION)
+    retrieval["index_text_policy"] = index_policy
+    return index_policy, dimension, retrieval
 _GENERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _ACTIVATION_ID = re.compile(r"[0-9a-f]{64}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -100,6 +119,7 @@ class GenerationSpec:
     """Immutable identity and canonical-source binding for one full build."""
 
     generation_id: str
+    project_id: str
     index_schema: str
     embedding_model: str
     model_revision: str
@@ -127,6 +147,7 @@ class GenerationSpec:
 
     def __post_init__(self) -> None:
         _validate_generation_id(self.generation_id)
+        _validate_project_id(self.project_id)
         _validate_identity_text("index_schema", self.index_schema)
         _validate_identity_text("embedding_model", self.embedding_model)
         _validate_identity_text("model_revision", self.model_revision)
@@ -170,6 +191,7 @@ class GenerationSpec:
     def identity_sha256(self) -> str:
         identity = {
             "generation_id": self.generation_id,
+            "project_id": self.project_id,
             "index_schema": self.index_schema,
             "embedding_model": self.embedding_model,
             "model_revision": self.model_revision,
@@ -293,6 +315,7 @@ class GenerationManifest:
     """Persisted lifecycle, content binding, and verification record."""
 
     generation_id: str
+    project_id: str
     index_schema: str
     embedding_model: str
     model_revision: str
@@ -325,12 +348,18 @@ class GenerationManifest:
     # The index-material extension likewise retained MANIFEST_SCHEMA. Preserve
     # the exact serialized shape and digest of manifests written before it.
     _legacy_without_index_material: bool = field(default=False, repr=False, compare=False)
+    # Project identity was added after several immutable generations had
+    # already shipped. Preserve those original digest shapes while exposing a
+    # governed legacy-global scope to the current runtime.
+    _legacy_without_project_id: bool = field(default=False, repr=False, compare=False)
+    _legacy_without_outbox_project_id: bool = field(default=False, repr=False, compare=False)
 
     @classmethod
     def building(cls, spec: GenerationSpec) -> GenerationManifest:
         index_outbox = None
         if spec.index_outbox_watermark is not None:
             index_outbox = {
+                "project_id": spec.project_id,
                 "watermark": spec.index_outbox_watermark,
                 "immutable_digest": spec.index_outbox_digest,
                 "job_count": spec.index_outbox_job_count,
@@ -342,6 +371,7 @@ class GenerationManifest:
                 index_outbox["embedding_index_identity"] = spec.embedding_index_identity
         manifest = cls(
             generation_id=spec.generation_id,
+            project_id=spec.project_id,
             index_schema=spec.index_schema,
             embedding_model=spec.embedding_model,
             model_revision=spec.model_revision,
@@ -374,6 +404,7 @@ class GenerationManifest:
         expected = {
             "manifest_schema",
             "generation_id",
+            "project_id",
             "index_schema",
             "embedding_model",
             "model_revision",
@@ -406,6 +437,21 @@ class GenerationManifest:
         if legacy_without_outbox:
             payload = dict(payload)
             payload["index_outbox"] = None
+        # Manifests created before project isolation have neither the
+        # top-level project binding nor the copy embedded in outbox evidence.
+        # Hydrate them as legacy-global in memory, but retain markers so the
+        # immutable on-disk digest is checked against its original shape.
+        legacy_without_project_id = "project_id" not in payload
+        if legacy_without_project_id:
+            payload = dict(payload)
+            payload["project_id"] = "project:legacy-global"
+        legacy_without_outbox_project_id = False
+        if isinstance(payload.get("index_outbox"), Mapping):
+            outbox = dict(payload["index_outbox"])
+            legacy_without_outbox_project_id = "project_id" not in outbox
+            if legacy_without_outbox_project_id:
+                outbox["project_id"] = str(payload["project_id"])
+                payload["index_outbox"] = outbox
         material_fields = {"index_text_policy", "index_material_sha256"}
         present_material_fields = material_fields.intersection(payload)
         legacy_without_index_material = not present_material_fields
@@ -424,6 +470,8 @@ class GenerationManifest:
                 **{key: payload[key] for key in expected},
                 _legacy_without_outbox=legacy_without_outbox,
                 _legacy_without_index_material=legacy_without_index_material,
+                _legacy_without_project_id=legacy_without_project_id,
+                _legacy_without_outbox_project_id=legacy_without_outbox_project_id,
             )
         except (TypeError, ValueError) as exc:
             raise ManifestError("invalid_manifest_values") from exc
@@ -436,6 +484,7 @@ class GenerationManifest:
             raise ValueError("invalid_index_outbox_evidence")
         return GenerationSpec(
             generation_id=self.generation_id,
+            project_id=self.project_id,
             index_schema=self.index_schema,
             embedding_model=self.embedding_model,
             model_revision=self.model_revision,
@@ -477,14 +526,21 @@ class GenerationManifest:
         except ValueError as exc:
             raise ManifestError(str(exc)) from exc
         try:
-            _validate_outbox_evidence(self.index_outbox, generation_id=self.generation_id)
+            _validate_outbox_evidence(
+                self.index_outbox,
+                generation_id=self.generation_id,
+                expected_project_id=self.project_id,
+            )
         except ValueError as exc:
             raise ManifestError(str(exc)) from exc
-        expected_identity_sha256 = (
-            _legacy_generation_identity_sha256(spec)
-            if self._legacy_without_outbox
-            else spec.identity_sha256
-        )
+        if self._legacy_without_project_id and self._legacy_without_outbox:
+            expected_identity_sha256 = _legacy_generation_identity_sha256(spec)
+        elif self._legacy_without_project_id:
+            expected_identity_sha256 = _legacy_generation_identity_without_project_id(spec)
+        elif self._legacy_without_outbox:
+            expected_identity_sha256 = _legacy_generation_identity_sha256(spec)
+        else:
+            expected_identity_sha256 = spec.identity_sha256
         if self.identity_sha256 != expected_identity_sha256:
             raise ManifestError("manifest_identity_mismatch")
         if self.build_status not in {"building", "complete"}:
@@ -553,6 +609,7 @@ class GenerationManifest:
         payload = {
             "manifest_schema": self.manifest_schema,
             "generation_id": self.generation_id,
+            "project_id": self.project_id,
             "index_schema": self.index_schema,
             "embedding_model": self.embedding_model,
             "model_revision": self.model_revision,
@@ -583,6 +640,11 @@ class GenerationManifest:
         if self._legacy_without_index_material:
             payload.pop("index_text_policy", None)
             payload.pop("index_material_sha256", None)
+        if self._legacy_without_project_id:
+            payload.pop("project_id", None)
+        if self._legacy_without_outbox_project_id and isinstance(payload.get("index_outbox"), dict):
+            payload["index_outbox"] = dict(payload["index_outbox"])
+            payload["index_outbox"].pop("project_id", None)
         return payload
 
 
@@ -2040,6 +2102,14 @@ def _validate_identity_text(name: str, value: object) -> None:
         raise ValueError(f"invalid_{name}")
 
 
+def _validate_project_id(project_id: object) -> None:
+    """Require a concrete project owner for every new generation artifact."""
+    _validate_identity_text("project_id", project_id)
+    assert isinstance(project_id, str)
+    if project_id.casefold() in {"project:unknown", "unknown"}:
+        raise ValueError("invalid_project_id")
+
+
 def _validate_index_text_policy(value: object) -> None:
     if value not in _INDEX_TEXT_POLICIES:
         raise ValueError("invalid_index_text_policy")
@@ -2093,12 +2163,18 @@ def _validate_outbox_identity(
         raise ValueError("invalid_index_outbox_identity")
 
 
-def _validate_outbox_evidence(value: object, *, generation_id: str | None = None) -> None:
+def _validate_outbox_evidence(
+    value: object,
+    *,
+    generation_id: str | None = None,
+    expected_project_id: str | None = None,
+) -> None:
     if value is None:
         return
     if not isinstance(value, Mapping):
         raise ValueError("invalid_index_outbox_evidence")
     required = {
+        "project_id",
         "watermark",
         "immutable_digest",
         "job_count",
@@ -2106,6 +2182,12 @@ def _validate_outbox_evidence(value: object, *, generation_id: str | None = None
     }
     if not required.issubset(value):
         raise ValueError("invalid_index_outbox_evidence")
+    try:
+        _validate_project_id(value.get("project_id"))
+    except ValueError as exc:
+        raise ValueError("invalid_index_outbox_project_id") from exc
+    if expected_project_id is not None and value.get("project_id") != expected_project_id:
+        raise ValueError("index_outbox_project_mismatch")
     _validate_outbox_identity(
         value.get("watermark"),
         value.get("immutable_digest"),
@@ -2225,6 +2307,35 @@ def _legacy_generation_identity_sha256(spec: GenerationSpec) -> str:
             "benchmark_case_count": spec.benchmark_case_count,
         }
     )
+
+
+def _legacy_generation_identity_without_project_id(spec: GenerationSpec) -> str:
+    """Hash the post-outbox identity shape used before project isolation."""
+
+    identity: dict[str, object] = {
+        "generation_id": spec.generation_id,
+        "index_schema": spec.index_schema,
+        "embedding_model": spec.embedding_model,
+        "model_revision": spec.model_revision,
+        "embedding_dimension": spec.embedding_dimension,
+        "source_db_sha256": spec.source_db_sha256,
+        "source_row_count": spec.source_row_count,
+        "benchmark_corpus_sha256": spec.benchmark_corpus_sha256,
+        "benchmark_corpus_count": spec.benchmark_corpus_count,
+        "benchmark_cases_sha256": spec.benchmark_cases_sha256,
+        "benchmark_case_count": spec.benchmark_case_count,
+        "index_outbox_watermark": spec.index_outbox_watermark,
+        "index_outbox_digest": spec.index_outbox_digest,
+        "index_outbox_job_count": spec.index_outbox_job_count,
+    }
+    if spec.index_outbox_source_fingerprint is not None:
+        identity["index_outbox_source_fingerprint"] = spec.index_outbox_source_fingerprint
+    if spec.embedding_index_identity is not None:
+        identity["embedding_index_identity"] = spec.embedding_index_identity
+    if spec.index_text_policy is not None:
+        identity["index_text_policy"] = spec.index_text_policy
+        identity["index_material_sha256"] = spec.index_material_sha256
+    return _json_sha256(identity)
 
 
 def _copy_json_mapping(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -2419,6 +2530,7 @@ def adapt_recall_quality_report(
     identity = _quality_report_identity_from_fields(normalized)
     validation_spec = GenerationSpec(
         generation_id="benchmark-evidence",
+        project_id="project:benchmark",
         index_schema="benchmark-evidence/v1",
         embedding_model=identity.embedding_model,
         model_revision=identity.model_revision,
@@ -2450,6 +2562,7 @@ def quality_report_generation_identity(
     identity = _quality_report_identity_from_fields(copied)
     validation_spec = GenerationSpec(
         generation_id="benchmark-evidence",
+        project_id="project:benchmark",
         index_schema="benchmark-evidence/v1",
         embedding_model=identity.embedding_model,
         model_revision=identity.model_revision,
@@ -3071,13 +3184,16 @@ def _adapt_recall_environment(
         raise PromotionError("recall_quality_embedding_configuration_mismatch")
     if provider.casefold() in {"unknown", "fallback", "none"}:
         raise PromotionError("recall_quality_embedding_configuration_invalid")
+    max_v1_index_policy, max_v1_dimension, max_v1_retrieval = _max_v1_control_profile(
+        provider
+    )
     if fusion_policy == MAX_V1_CONTROL_POLICY and (
-        candidate != MAX_V1_CONTROL_INDEX_TEXT_POLICY
+        candidate != max_v1_index_policy
         or source_commit != code_revision
         or dataset_source != MAX_V1_CONTROL_DATASET_SOURCE
         or supply_runtime != MAX_V1_CONTROL_RUNTIME
-        or dict(retrieval_configuration) != dict(MAX_V1_CONTROL_RETRIEVAL_CONFIGURATION)
-        or backend["dimension"] != MAX_V1_CONTROL_EMBEDDING_DIMENSION
+        or dict(retrieval_configuration) != max_v1_retrieval
+        or backend["dimension"] != max_v1_dimension
     ):
         raise PromotionError("recall_quality_max_v1_control_environment_invalid")
     configuration = {
@@ -3694,11 +3810,14 @@ def _validate_quality_report(
             effective_runtime=effective_runtime,
             invalid_reason="live_backend_evidence_invalid",
         )
+        _max_v1_index_policy, max_v1_dimension, _max_v1_retrieval = _max_v1_control_profile(
+            backend.get("provider")
+        )
         if candidate_id == MAX_V1_CONTROL_POLICY and (
             requested_runtime != MAX_V1_CONTROL_RUNTIME
             or effective_runtime != MAX_V1_CONTROL_RUNTIME
             or backend.get("runtime_route") != MAX_V1_CONTROL_RUNTIME_ROUTE
-            or backend.get("dimension") != MAX_V1_CONTROL_EMBEDDING_DIMENSION
+            or backend.get("dimension") != max_v1_dimension
         ):
             raise PromotionError("max_v1_control_runtime_invalid")
 
@@ -3881,13 +4000,16 @@ def _validate_quality_report(
             configuration
         ) or environment.get("dependencies_sha256") != _json_sha256(dependencies):
             raise PromotionError("environment_evidence_invalid")
+        max_v1_index_policy, max_v1_dimension, max_v1_retrieval = _max_v1_control_profile(
+            backend.get("provider")
+        )
         if benchmark.get("candidate_id") == MAX_V1_CONTROL_POLICY and (
-            benchmark.get("candidate") != MAX_V1_CONTROL_INDEX_TEXT_POLICY
+            benchmark.get("candidate") != max_v1_index_policy
             or environment.get("source_commit") != code_revision
             or dataset_source != MAX_V1_CONTROL_DATASET_SOURCE
             or supply_runtime != MAX_V1_CONTROL_RUNTIME
-            or dict(retrieval_configuration) != dict(MAX_V1_CONTROL_RETRIEVAL_CONFIGURATION)
-            or embedding_configuration.get("dimension") != MAX_V1_CONTROL_EMBEDDING_DIMENSION
+            or dict(retrieval_configuration) != max_v1_retrieval
+            or embedding_configuration.get("dimension") != max_v1_dimension
         ):
             raise PromotionError("max_v1_control_environment_invalid")
 

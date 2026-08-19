@@ -9,6 +9,10 @@ from itertools import combinations
 from plastic_promise.core.paths import get_db_path
 from plastic_promise.core.synthesis import ensure_synthesis_schema
 from plastic_promise.core.synthesis_retrieval import ordinary_memory_sql_predicate
+from plastic_promise.cron.project_scope import (
+    ProjectScopeResolutionError,
+    resolve_memory_project_id,
+)
 
 
 def _compute_median_and_threshold(values: list[float]) -> tuple[float, float]:
@@ -30,6 +34,7 @@ async def scan_coupling(
     connection: sqlite3.Connection | None = None,
     dispatch: bool = True,
     include_findings: bool = False,
+    project_id: str | None = None,
 ) -> dict:
     """Scan coupling patterns for hidden structural issues:
     1. Tag co-occurrence anomalies — unusual tag pair frequencies
@@ -49,12 +54,28 @@ async def scan_coupling(
     findings = []
 
     try:
+        project_id = resolve_memory_project_id(conn, project_id)
+    except ProjectScopeResolutionError as exc:
+        if owns_connection:
+            conn.close()
+        result = {
+            "scanner": "scan_coupling",
+            "findings": 0,
+            "dispatched": 0,
+            "failure_code": exc.reason,
+        }
+        if include_findings:
+            result["projected_findings"] = []
+        return result
+
+    try:
         # 1. Tag co-occurrence anomalies: find tag pairs that co-occur
         #    significantly more often than expected by chance
         tag_memory_rows = conn.execute(
             "SELECT id, tags FROM memories "
             "WHERE tags IS NOT NULL AND tags != '[]' AND tags != '' "
-            f"AND {ordinary_guard}"
+            f"AND {ordinary_guard} AND project_id = ?",
+            (project_id,),
         ).fetchall()
 
         if len(tag_memory_rows) >= 10:
@@ -126,7 +147,8 @@ async def scan_coupling(
             "SELECT entity_ids, domain FROM memories "
             "WHERE entity_ids IS NOT NULL AND entity_ids != '' "
             "AND domain IS NOT NULL AND domain != '' "
-            f"AND {ordinary_guard}"
+            f"AND {ordinary_guard} AND project_id = ?",
+            (project_id,),
         ).fetchall()
 
         if entity_domain_rows:
@@ -179,10 +201,10 @@ async def scan_coupling(
             "FROM memories "
             "WHERE created_at >= ? "
             "AND domain IS NOT NULL AND domain != '' "
-            f"AND {ordinary_guard} "
+            f"AND {ordinary_guard} AND project_id = ? "
             "GROUP BY d, domain "
             "ORDER BY d",
-            (fourteen_days_ago,),
+            (fourteen_days_ago, project_id),
         ).fetchall()
 
         if len(domain_timeline) >= 10:
@@ -258,6 +280,7 @@ async def scan_coupling(
                         "to_agent": f["to_agent"],
                         "priority": f["priority"],
                         "source_scan": "scan_coupling",
+                        "project_id": project_id,
                         "payload": f,
                     },
                 )

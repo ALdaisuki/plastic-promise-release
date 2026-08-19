@@ -202,7 +202,7 @@ step-closure(
 
 ## 九、路线图
 
-当前未完成事项见 [TODO List/README.md](TODO%20List/README.md)。其中 dated comparison 文档保留为研究基线；README 中的 Roadmap Status 才是当前未完成工作的索引。
+当前未完成事项见 [TODO List/README.zh-CN.md](TODO%20List/README.zh-CN.md)。其中带日期的 comparison 文档保留为研究基线；README 中的 Roadmap Status 才是当前未完成工作的索引。
 
 ## 2026-07-06 Runtime Startup Note
 
@@ -260,8 +260,9 @@ step-closure(
 
 ## 2026-08-03 Cloud, Workflow, and Passive Memory Release Note
 
-- Release version `0.1.20` follows the immutable public `v0.1.19` release and
-  carries the merged development range through PR #85.
+- Release version `0.2.15` follows the highest immutable public release tag
+  `v0.2.14` and carries the governed-memory/knowledge v2 baseline plus the
+  composable deployment range through PR #107.
 - Hosted embedding and reranking now run behind a loopback-only inference
   gateway with durable reservations, bounded leases, server-owned provider
   credentials, optional client-local rerank packages, and an explicitly
@@ -284,7 +285,7 @@ step-closure(
   proposal adoption, structured fusion, Maintenance activation, and LanceDB
   generation promotion remain independently gated. This release preparation
   does not enable production Maintenance or promote a generation.
-- Release verification for `0.1.20` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+- Release verification for `0.2.15` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
 
 ## 2026-07-14 Context Supply Reliability Release Note
 
