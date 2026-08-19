@@ -67,9 +67,7 @@ class FakeRepository:
             "filters": {"role_effect": "result_narrowing_only"},
             "filter_options": {
                 "coordination_sessions": ["coordination:a"],
-                "agent_sessions": [
-                    {"session_id": "session:a", "agent_id": "agent:a"}
-                ],
+                "agent_sessions": [{"session_id": "session:a", "agent_id": "agent:a"}],
                 "roles": ["worker"],
             },
             "topology": {"data": [], "returned": 0, "truncated": False},
@@ -382,11 +380,11 @@ async def test_dashboard_collaboration_assets_keep_cursor_browser_memory_only_an
     assert 'attrs: { href: "#/collaboration" }' in script
     assert 'dataset: { view: "collaboration" }' in script
     assert 'endpoint: "/collaboration"' in script
-    assert 'collaboration: {\n      cursor: null' in script
-    assert 'role_effect' not in script
+    assert "collaboration: {\n      cursor: null" in script
+    assert "role_effect" not in script
     assert "pp_dashboard_collaboration_cursor" not in script
     assert "sessionStorage" not in script
-    assert 'apiRequest(definition.endpoint' in script
+    assert "apiRequest(definition.endpoint" in script
 
 
 @pytest.mark.asyncio
@@ -954,9 +952,9 @@ async def test_dashboard_knowledge_navigation_uses_consistent_text_and_svg_icons
 
     assert shell.status_code == 200
     assert stylesheet.status_code == 200
-    knowledge_navigation = shell.text.split(
-        '<div class="nav-label">知识</div>', 1
-    )[1].split('<div class="nav-label">运维</div>', 1)[0]
+    knowledge_navigation = shell.text.split('<div class="nav-label">知识</div>', 1)[1].split(
+        '<div class="nav-label">运维</div>', 1
+    )[0]
     for legacy_emoji in ("&#128218;", "&#128228;", "&#9881;", "📚", "📤", "⚙"):
         assert legacy_emoji not in knowledge_navigation
     for view, icon in (
@@ -971,7 +969,7 @@ async def test_dashboard_knowledge_navigation_uses_consistent_text_and_svg_icons
         assert '<svg class="icon">' in item
         assert f'href="#icon-{icon}"' in item
         assert 'class="nav-label"' not in item
-    assert 'app.css?v=20260816-knowledge-nav-consistency-v1' in shell.text
+    assert "app.css?v=20260816-knowledge-nav-consistency-v1" in shell.text
     assert "font-size: 12px;" in stylesheet.text.split(".nav-item {", 1)[1].split("}", 1)[0]
     assert "line-height: 18px;" in stylesheet.text.split(".nav-item {", 1)[1].split("}", 1)[0]
     assert repositories == []

@@ -2675,7 +2675,10 @@ class DurableCollaborationRuntime:
             "SELECT result_json,result_sha256 FROM collaboration_results WHERE receipt_id=?",
             (canonical_acceptance.result_receipt_id,),
         )
-        if result is None or str(result["result_sha256"]) != canonical_acceptance.result_receipt_sha256:
+        if (
+            result is None
+            or str(result["result_sha256"]) != canonical_acceptance.result_receipt_sha256
+        ):
             raise DurableCollaborationError("promotion_result_digest_mismatch")
         try:
             result_projection = json.loads(str(result["result_json"]))
@@ -2704,11 +2707,11 @@ class DurableCollaborationRuntime:
         if event is None:
             raise DurableCollaborationError("promotion_source_event_missing")
         evidence_refs = tuple(
-            str(item)
-            for item in result_projection.get("evidence_refs", ())
-            if str(item).strip()
+            str(item) for item in result_projection.get("evidence_refs", ()) if str(item).strip()
         )
-        combined_evidence = tuple(dict.fromkeys((*evidence_refs, *canonical_acceptance.evidence_refs)))
+        combined_evidence = tuple(
+            dict.fromkeys((*evidence_refs, *canonical_acceptance.evidence_refs))
+        )
         idempotency_sha256 = _sha256(
             {
                 "event_id": expected_event.event_id,

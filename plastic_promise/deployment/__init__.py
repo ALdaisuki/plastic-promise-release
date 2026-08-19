@@ -4,7 +4,6 @@ The package is deliberately independent from service startup and provider
 configuration so manifests can be checked without initialising a runtime.
 """
 
-from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -428,17 +427,21 @@ def __getattr__(name: str) -> object:
     """
 
     if name in _MIGRATION_OPERATION_EXPORTS:
-        module_name = (
-            ".production_migration"
-            if name == "compose_production_migration_operations"
-            else ".migration_operations"
-        )
-        value = getattr(import_module(module_name, __name__), name)
+        if name == "compose_production_migration_operations":
+            from . import production_migration
+
+            value = getattr(production_migration, name)
+        else:
+            from . import migration_operations
+
+            value = getattr(migration_operations, name)
         globals()[name] = value
         return value
     if name not in _PPCTL_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(".ppctl", __name__), name)
+    from . import ppctl
+
+    value = getattr(ppctl, name)
     globals()[name] = value
     return value
 

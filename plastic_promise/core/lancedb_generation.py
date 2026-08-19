@@ -87,6 +87,8 @@ def _max_v1_control_profile(provider: object) -> tuple[str, int, dict[str, str]]
     retrieval = dict(MAX_V1_CONTROL_RETRIEVAL_CONFIGURATION)
     retrieval["index_text_policy"] = index_policy
     return index_policy, dimension, retrieval
+
+
 _GENERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _ACTIVATION_ID = re.compile(r"[0-9a-f]{64}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -3184,9 +3186,7 @@ def _adapt_recall_environment(
         raise PromotionError("recall_quality_embedding_configuration_mismatch")
     if provider.casefold() in {"unknown", "fallback", "none"}:
         raise PromotionError("recall_quality_embedding_configuration_invalid")
-    max_v1_index_policy, max_v1_dimension, max_v1_retrieval = _max_v1_control_profile(
-        provider
-    )
+    max_v1_index_policy, max_v1_dimension, max_v1_retrieval = _max_v1_control_profile(provider)
     if fusion_policy == MAX_V1_CONTROL_POLICY and (
         candidate != max_v1_index_policy
         or source_commit != code_revision

@@ -107,7 +107,10 @@ FallbackEmbedder = getattr(_provider_module, "FallbackEmbedder", _NeutralFallbac
 def get_embedder(*, fallback_on_error: bool = True) -> Embedder:
     """Return a governed provider in development/compute, fallback on server."""
 
-    if _provider_module is not None and os.environ.get("PP_ENDPOINT_ROLE", "").strip() != "pp-server-backend":
+    if (
+        _provider_module is not None
+        and os.environ.get("PP_ENDPOINT_ROLE", "").strip() != "pp-server-backend"
+    ):
         return _provider_module.get_embedder(fallback_on_error=fallback_on_error)
     return FallbackEmbedder()
 
@@ -115,6 +118,9 @@ def get_embedder(*, fallback_on_error: bool = True) -> Embedder:
 def reset_embedder() -> object | None:
     """Reset a delegated provider; server fallback has no mutable state."""
 
-    if _provider_module is not None and os.environ.get("PP_ENDPOINT_ROLE", "").strip() != "pp-server-backend":
+    if (
+        _provider_module is not None
+        and os.environ.get("PP_ENDPOINT_ROLE", "").strip() != "pp-server-backend"
+    ):
         return _provider_module.reset_embedder()
     return None

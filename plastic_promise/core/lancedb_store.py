@@ -1352,13 +1352,13 @@ class LanceDBStore:
                 self._record_index_diagnostic(mid, "lancedb_insert_failed", failed=True)
                 logger.warning("LanceDB sync: insert failed for %s: %s", mid, exc)
                 return False
-            if migrating_model and self._persist_index_material_enabled and not self._persist_index_material(
-                engine, mid, mem_data, material
+            if (
+                migrating_model
+                and self._persist_index_material_enabled
+                and not self._persist_index_material(engine, mid, mem_data, material)
             ):
                 self._delete_repair_row(mid)
-                self._record_index_diagnostic(
-                    mid, "index_material_persist_failed", failed=True
-                )
+                self._record_index_diagnostic(mid, "index_material_persist_failed", failed=True)
                 return False
             if self._persist_index_material_enabled and (
                 self._validated_canonical_index_memory(

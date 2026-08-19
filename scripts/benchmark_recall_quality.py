@@ -1980,8 +1980,7 @@ async def _seed_public_corpus(
                         .casefold(),
                     )[:96]
                     raise RuntimeError(
-                        f"public_stale_transition_failed:{record.memory_id}:"
-                        f"{reason or 'unknown'}"
+                        f"public_stale_transition_failed:{record.memory_id}:{reason or 'unknown'}"
                     )
 
     eligible_count = len(ordinary) + sum(

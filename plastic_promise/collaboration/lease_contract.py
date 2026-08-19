@@ -689,9 +689,7 @@ def validate_lease_heartbeat(
         lease.issued_at
     ):
         reason = "lease_fence_before_issue"
-    if reason is None and (
-        _parse_timestamp(observed) > _parse_timestamp(lease.expires_at)
-    ):
+    if reason is None and (_parse_timestamp(observed) > _parse_timestamp(lease.expires_at)):
         reason = "lease_expired"
     return _heartbeat_decision(lease, heartbeat, observed, reason)
 
@@ -719,9 +717,7 @@ def validate_lease_completion(
         lease.issued_at
     ):
         reason = "lease_fence_before_issue"
-    if reason is None and (
-        _parse_timestamp(observed) > _parse_timestamp(lease.expires_at)
-    ):
+    if reason is None and (_parse_timestamp(observed) > _parse_timestamp(lease.expires_at)):
         reason = "lease_expired"
     if reason is None and completion.result_binding_sha256 != lease.result_binding_sha256:
         reason = "lease_result_binding_mismatch"

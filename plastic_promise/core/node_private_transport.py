@@ -434,7 +434,10 @@ class PrivateNodeTransportProbe:
             if "structured-json" not in capabilities:
                 raise NodeGovernanceError("node_private_structured_json_capability_missing")
             required_identity = lease.resolved.required_identity
-            if identity.structured_json_key is None or identity.structured_json_key != required_identity:
+            if (
+                identity.structured_json_key is None
+                or identity.structured_json_key != required_identity
+            ):
                 raise NodeGovernanceError("node_private_structured_json_identity_drift")
             started = time.monotonic()
             intent = {
@@ -532,9 +535,7 @@ class PrivateNodeTransportProbe:
         try:
             response = self._http.post(
                 endpoint.base_url + path,
-                timeout=(
-                    self._timeout_seconds if timeout_seconds is None else timeout_seconds
-                ),
+                timeout=(self._timeout_seconds if timeout_seconds is None else timeout_seconds),
                 headers=dict(headers),
                 json=cast("Any", dict(payload)),
             )
@@ -688,7 +689,9 @@ def _structured_json_output(
     ):
         raise NodeGovernanceError("node_private_structured_json_result_identity_drift")
     output = payload.get("output")
-    if not isinstance(output, Mapping) or not _bounded_json_object(output, _MAX_STRUCTURED_OUTPUT_BYTES):
+    if not isinstance(output, Mapping) or not _bounded_json_object(
+        output, _MAX_STRUCTURED_OUTPUT_BYTES
+    ):
         raise NodeGovernanceError("node_private_structured_json_response_invalid")
     return dict(output)
 

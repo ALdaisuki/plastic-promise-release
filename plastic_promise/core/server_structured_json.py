@@ -68,9 +68,7 @@ def create_structured_json_provider(**kwargs: Any) -> StructuredJSONProvider:
     if _server_role():
         return UnavailableStructuredJSONProvider()
     try:
-        provider_module = importlib.import_module(
-            "plastic_promise.core." + "inference_provider"
-        )
+        provider_module = importlib.import_module("plastic_promise.core." + "inference_provider")
         provider_type = provider_module.OpenAICompatibleJSONProvider
     except (AttributeError, ImportError, ModuleNotFoundError):
         return UnavailableStructuredJSONProvider()

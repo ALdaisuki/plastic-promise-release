@@ -159,9 +159,9 @@ def test_compute_compose_templates_require_private_node_authorization():
 
 def test_compute_healthcheck_reuses_private_node_authorization():
     repository_root = Path(__file__).resolve().parents[1]
-    source = (
-        repository_root / "deploy" / "local-inference-node" / "Dockerfile"
-    ).read_text(encoding="utf-8")
+    source = (repository_root / "deploy" / "local-inference-node" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
     assert "Request('http://127.0.0.1:19130/health'" in source
     assert "os.environ['PP_LOCAL_NODE_AUTHORIZATION']" in source
     assert "'Authorization': os.environ['PP_LOCAL_NODE_AUTHORIZATION']" in source

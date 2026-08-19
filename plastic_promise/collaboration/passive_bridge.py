@@ -996,9 +996,7 @@ def _require_source_transition(
         previous.audience_roles != current.audience_roles
         or previous.audience_agent_ids != current.audience_agent_ids
     ):
-        raise PassiveCollaborationBridgeError(
-            "passive_collaboration_source_visibility_widening"
-        )
+        raise PassiveCollaborationBridgeError("passive_collaboration_source_visibility_widening")
     if previous.causal_parent_event_id != current.causal_parent_event_id:
         raise PassiveCollaborationBridgeError("passive_collaboration_source_parent_conflict")
     if previous.evidence_refs != current.evidence_refs:
@@ -1020,9 +1018,7 @@ def _require_source_transition(
         and current.kind in {"submitted", "accepted"}
         and previous.content_sha256 != current.content_sha256
     ):
-        raise PassiveCollaborationBridgeError(
-            "passive_collaboration_terminal_source_conflict"
-        )
+        raise PassiveCollaborationBridgeError("passive_collaboration_terminal_source_conflict")
 
 
 def _skipped_publication(reason: str) -> PassiveCollaborationPublication:

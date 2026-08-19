@@ -228,9 +228,8 @@ def create_node_app(
             return _error("node_structured_json_unavailable", status_code=503)
         except (OSError, RuntimeError, TypeError, ValueError):
             return _error("node_structured_json_failed", status_code=502)
-        if (
-            not isinstance(result, dict)
-            or not _bounded_json_bytes(result, request_limits.max_structured_output_bytes)
+        if not isinstance(result, dict) or not _bounded_json_bytes(
+            result, request_limits.max_structured_output_bytes
         ):
             return _error("node_structured_json_output_invalid", status_code=409)
         model = identity.structured_json_model

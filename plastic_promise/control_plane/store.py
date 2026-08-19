@@ -1092,15 +1092,12 @@ class ControlPlaneConfigStore:
             uri = f"file:{self.database_path}?mode=ro"
             with sqlite3.connect(uri, uri=True, timeout=5.0) as connection:
                 table = connection.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type = 'table' AND name = 'control_state'"
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'control_state'"
                 ).fetchone()
                 if table is None:
                     return False
                 return (
-                    connection.execute(
-                        "SELECT 1 FROM control_state WHERE singleton = 1"
-                    ).fetchone()
+                    connection.execute("SELECT 1 FROM control_state WHERE singleton = 1").fetchone()
                     is not None
                 )
         except sqlite3.Error as exc:
@@ -1770,7 +1767,10 @@ class ControlPlaneConfigStore:
         environment = _parse_environment_file(content)
         if environment.get("PP_ENDPOINT_ROLE") not in {None, "pp-compute-node"}:
             raise ControlPlaneStorageError("control_compute_profile_role_invalid")
-        if "PP_LOCAL_NODE_CLOUD_API_KEY" in environment and not environment["PP_LOCAL_NODE_CLOUD_API_KEY"]:
+        if (
+            "PP_LOCAL_NODE_CLOUD_API_KEY" in environment
+            and not environment["PP_LOCAL_NODE_CLOUD_API_KEY"]
+        ):
             raise ControlPlaneStorageError("control_compute_profile_secret_invalid")
         return content
 

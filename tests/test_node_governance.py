@@ -216,9 +216,7 @@ class RevisionedRoutingConfig:
         }
 
     @staticmethod
-    def _snapshot(
-        *, revision_id: str, identity: str, inference_mode: str
-    ) -> _RoutingSnapshot:
+    def _snapshot(*, revision_id: str, identity: str, inference_mode: str) -> _RoutingSnapshot:
         return _RoutingSnapshot(
             revision_id,
             {
@@ -940,9 +938,10 @@ def test_foreground_rerank_uses_verified_selection_without_durable_prompt_payloa
     )
     assert result is not None
     assert (node_id, reason) == ("remote-a", "pinned-node")
-    assert derived.stats(
-        project_id="project:alpha", job_kind="node-inference-foreground"
-    )["completed"] == 1
+    assert (
+        derived.stats(project_id="project:alpha", job_kind="node-inference-foreground")["completed"]
+        == 1
+    )
     with sqlite3.connect(_path) as connection:
         payload_json, result_json = connection.execute(
             "SELECT payload_json,result_json FROM derived_work_jobs "
@@ -1264,9 +1263,12 @@ def test_foreground_defer_waits_for_caller_rehydration_without_persisting_conten
     assert result is None
     assert node_id is None
     assert reason == "governed_node_deferred"
-    assert derived.stats(
-        project_id="project:alpha", job_kind="node-inference-foreground"
-    )["retry_wait"] == 1
+    assert (
+        derived.stats(project_id="project:alpha", job_kind="node-inference-foreground")[
+            "retry_wait"
+        ]
+        == 1
+    )
     with sqlite3.connect(path) as connection:
         payload_json, result_json, status, failure_code = connection.execute(
             "SELECT payload_json,result_json,status,failure_code FROM derived_work_jobs "
@@ -1292,14 +1294,20 @@ def test_foreground_defer_waits_for_caller_rehydration_without_persisting_conten
     )
     assert replacement_result is None
     assert replacement_receipt != receipt_reference
-    assert derived.get(
-        job_id=receipt_reference,
-        project_id="project:alpha",
-    ).config_revision == _ACTIVE_REVISION
-    assert derived.get(
-        job_id=replacement_receipt,
-        project_id="project:alpha",
-    ).config_revision == replacement.config_revision
+    assert (
+        derived.get(
+            job_id=receipt_reference,
+            project_id="project:alpha",
+        ).config_revision
+        == _ACTIVE_REVISION
+    )
+    assert (
+        derived.get(
+            job_id=replacement_receipt,
+            project_id="project:alpha",
+        ).config_revision
+        == replacement.config_revision
+    )
 
     store.observe_health(
         _health(
@@ -1852,11 +1860,11 @@ def test_dashboard_projection_exposes_bounded_node_observability_without_transpo
     assert projection["schema"] == "plastic-promise/node-governance-dashboard/v1"
     assert projection["state"] == "ready"
     assert projection["nodes"] == [
-            {
-                "node_id": "remote-a",
-                "node_kind": "remote-node",
-                "provider_class": "local",
-                "state": "active",
+        {
+            "node_id": "remote-a",
+            "node_kind": "remote-node",
+            "provider_class": "local",
+            "state": "active",
             "health": {"state": "fresh", "last_observed_at": "2026-08-06T00:00:00Z"},
             "capabilities": {
                 "declared": ["embedding", "rerank"],

@@ -287,7 +287,9 @@ class NodeIdentityEvidence:
                 rerank_artifact_sha256=_string(
                     rerank.get("artifact_sha256"), "node_rerank_artifact_sha256_invalid"
                 ),
-                provider_class=_string(value.get("provider_class", "local"), "node_provider_class_invalid"),
+                provider_class=_string(
+                    value.get("provider_class", "local"), "node_provider_class_invalid"
+                ),
                 structured_json_model=(
                     _string(
                         structured_mapping.get("model"),
@@ -1144,9 +1146,7 @@ class NodeGovernanceStore:
                 row["state"] != "active"
                 or not row["observed_identity_json"]
                 or not last_health_at
-                or _parse_utc(last_health_at)
-                + timedelta(seconds=self._health_ttl_seconds)
-                < now
+                or _parse_utc(last_health_at) + timedelta(seconds=self._health_ttl_seconds) < now
             ):
                 raise NodeGovernanceError("node_identity_revalidation_required")
             if (
@@ -1157,9 +1157,7 @@ class NodeGovernanceStore:
                     verification_receipt.evidence_digest,
                 )
             ):
-                raise NodeGovernanceError(
-                    "node_identity_receipt_activation_evidence_invalid"
-                )
+                raise NodeGovernanceError("node_identity_receipt_activation_evidence_invalid")
             observed = _identity_from_json(row["observed_identity_json"])
             expected = _identity_from_json(row["expected_identity_json"])
             identity_matches = (
@@ -1562,11 +1560,7 @@ class NodeGovernanceStore:
         resolved: ResolvedNodeTask,
         now: datetime,
     ) -> NodeSelection | None:
-        eligible = [
-            node
-            for node in nodes
-            if self._eligible(connection, node, resolved, now)
-        ]
+        eligible = [node for node in nodes if self._eligible(connection, node, resolved, now)]
         if resolved.allowed_node_ids:
             eligible = [node for node in eligible if node.node_id in resolved.allowed_node_ids]
         if resolved.scheduling_policy == "pinned-node":
@@ -2333,6 +2327,7 @@ class NodeInferenceWorkCoordinator:
                 "governed_node_deferred",
                 marker_lease.job.job_id,
             )
+
         def renew_marker_lease() -> None:
             renewed = self._derived_work.renew_lease(
                 job_id=marker_lease.job.job_id,
@@ -2375,9 +2370,10 @@ class NodeInferenceWorkCoordinator:
                     resolved.required_identity,
                     latency_ms=result.latency_ms,
                 )
-            result_digest = "sha256:" + hashlib.sha256(
-                _json_text(dict(result.result)).encode("utf-8")
-            ).hexdigest()
+            result_digest = (
+                "sha256:"
+                + hashlib.sha256(_json_text(dict(result.result)).encode("utf-8")).hexdigest()
+            )
             self._derived_work.complete(
                 job_id=marker_lease.job.job_id,
                 project_id=resolved.project_id,

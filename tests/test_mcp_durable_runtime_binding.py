@@ -364,9 +364,7 @@ def test_session_init_projection_is_bounded_and_does_not_expose_authority_handle
     }
     assert projection["working_set_summary"]["agents"]["active"] == 1
     assert projection["assigned_work"] == []
-    assert [item["event_type"] for item in projection["peer_delta"]["items"]] == [
-        "agent.joined"
-    ]
+    assert [item["event_type"] for item in projection["peer_delta"]["items"]] == ["agent.joined"]
     assert projection["cursor"] == {
         "schema_version": "collaboration-cursor-delivery/v1",
         "stored_sequence": 0,
@@ -420,11 +418,14 @@ def test_session_init_peer_delta_requires_explicit_ack_before_cursor_advances() 
     assert first["cursor"]["next_sequence"] == 2
     assert first["cursor"]["ack_required"] is True
     assert first["peer_delta"]["items"][0]["payload"] == "redacted"
-    assert outcome.runtime.load_cursor(
-        project=session.project,
-        coordination_session_id=session.coordination_session_id,
-        consumer_id=session.session_id,
-    ).sequence == 0
+    assert (
+        outcome.runtime.load_cursor(
+            project=session.project,
+            coordination_session_id=session.coordination_session_id,
+            consumer_id=session.session_id,
+        ).sequence
+        == 0
+    )
 
     acknowledged = outcome.host.heartbeat(cursor_ack=2)
     assert acknowledged["cursor"]["stored_sequence"] == 2
@@ -491,11 +492,14 @@ def test_authenticated_host_composes_bounded_durable_context_without_acknowledgi
     assert result.projection["items"][0]["payload"] == "redacted"
     assert result.projection["cursor"]["ack_required"] is True
     assert "internal_note" not in json.dumps(result.projection, sort_keys=True)
-    assert outcome.runtime.load_cursor(
-        project=outcome.session.project,
-        coordination_session_id=outcome.session.coordination_session_id,
-        consumer_id=outcome.session.session_id,
-    ).sequence == 0
+    assert (
+        outcome.runtime.load_cursor(
+            project=outcome.session.project,
+            coordination_session_id=outcome.session.coordination_session_id,
+            consumer_id=outcome.session.session_id,
+        ).sequence
+        == 0
+    )
     engine._sqlite._conn.close()
 
 
@@ -914,9 +918,13 @@ def test_hmac_continuation_fails_closed_for_tampering_scope_expiry_and_key_loss(
         base64.urlsafe_b64decode(payload_text + "=" * (-len(payload_text) % 4)).decode()
     )
     payload["project"] = "project:forged"
-    forged_payload = base64.urlsafe_b64encode(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).rstrip(b"=").decode()
+    forged_payload = (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
 
     common = {
         "project_id": "project:binding",
@@ -931,18 +939,27 @@ def test_hmac_continuation_fails_closed_for_tampering_scope_expiry_and_key_loss(
     assert authority.resume(f"{payload_text}.{forged_signature}", **common).reason == (
         "durable_collaboration_continuation_invalid"
     )
-    assert authority.resume(
-        issued.token,
-        **{**common, "project_id": "project:other"},
-    ).reason == "durable_collaboration_continuation_project_conflict"
-    assert authority.resume(
-        issued.token,
-        **{**common, "flow_scope_id": "stage:other::flow:other::project:binding"},
-    ).reason == "durable_collaboration_continuation_flow_conflict"
-    assert authority.resume(
-        issued.token,
-        **{**common, "hook_session_id": "hook:other"},
-    ).reason == "durable_collaboration_continuation_hook_conflict"
+    assert (
+        authority.resume(
+            issued.token,
+            **{**common, "project_id": "project:other"},
+        ).reason
+        == "durable_collaboration_continuation_project_conflict"
+    )
+    assert (
+        authority.resume(
+            issued.token,
+            **{**common, "flow_scope_id": "stage:other::flow:other::project:binding"},
+        ).reason
+        == "durable_collaboration_continuation_flow_conflict"
+    )
+    assert (
+        authority.resume(
+            issued.token,
+            **{**common, "hook_session_id": "hook:other"},
+        ).reason
+        == "durable_collaboration_continuation_hook_conflict"
+    )
 
     restarted = runtime_binding.DurableCollaborationContinuationAuthority(
         key=b"b" * 32,
@@ -1018,11 +1035,14 @@ def test_continuation_reuses_session_cursor_and_session_end_revokes_all_transpor
     assert engine._sqlite._conn.execute(
         "SELECT COUNT(*) FROM collaboration_events WHERE event_type='agent.joined'"
     ).fetchone() == (1,)
-    assert second.runtime.load_cursor(
-        project=second.session.project,
-        coordination_session_id=second.session.coordination_session_id,
-        consumer_id=second.session.session_id,
-    ).sequence == stored_sequence
+    assert (
+        second.runtime.load_cursor(
+            project=second.session.project,
+            coordination_session_id=second.session.coordination_session_id,
+            consumer_id=second.session.session_id,
+        ).sequence
+        == stored_sequence
+    )
 
     receipt, _lease = _assigned_work(first.session, suffix="continuation")
     first.runtime.register_work(
@@ -1154,10 +1174,8 @@ def test_continuation_rehydrates_exact_session_across_process_restart(
         agent_session_id=first.session.session_id,
     )
     first.host.work_claim(work_item_id=receipt.work_item_id)
-    old_token, _old_expiry, reason = (
-        mcp_server._issue_durable_collaboration_continuation(  # noqa: SLF001
-            hook_session_id="hook:restart"
-        )
+    old_token, _old_expiry, reason = mcp_server._issue_durable_collaboration_continuation(  # noqa: SLF001
+        hook_session_id="hook:restart"
     )
     assert reason == ""
     durable_session_id = first.session.session_id
@@ -1170,8 +1188,8 @@ def test_continuation_rehydrates_exact_session_across_process_restart(
     with mcp_server._mcp_transport_instances_guard:  # noqa: SLF001
         mcp_server._mcp_transport_instances.clear()  # noqa: SLF001
 
-    restarted_authority = (
-        runtime_binding.DurableCollaborationContinuationAuthority.from_key_file(keyring_path)
+    restarted_authority = runtime_binding.DurableCollaborationContinuationAuthority.from_key_file(
+        keyring_path
     )
     monkeypatch.setattr(
         mcp_server,
@@ -1193,11 +1211,14 @@ def test_continuation_rehydrates_exact_session_across_process_restart(
     resumed = mcp_server._current_durable_collaboration_binding()  # noqa: SLF001
     assert resumed is not None and resumed.session is not None
     assert resumed.session.session_id == durable_session_id
-    assert resumed.runtime.load_cursor(
-        project=resumed.session.project,
-        coordination_session_id=resumed.session.coordination_session_id,
-        consumer_id=resumed.session.session_id,
-    ).sequence == stored_sequence
+    assert (
+        resumed.runtime.load_cursor(
+            project=resumed.session.project,
+            coordination_session_id=resumed.session.coordination_session_id,
+            consumer_id=resumed.session.session_id,
+        ).sequence
+        == stored_sequence
+    )
     assert restarted_engine._sqlite._conn.execute(
         "SELECT COUNT(*) FROM collaboration_events WHERE event_type='agent.joined'"
     ).fetchone() == (1,)
@@ -1270,7 +1291,9 @@ def test_stop_activity_publishes_idempotent_typed_progress_for_exact_session(mon
         True,
         "",
     )
-    assert mcp_server._bind_durable_collaboration_runtime_for_project(engine, "project:binding") == (
+    assert mcp_server._bind_durable_collaboration_runtime_for_project(
+        engine, "project:binding"
+    ) == (
         True,
         "",
     )
@@ -1301,9 +1324,7 @@ def test_stop_activity_publishes_idempotent_typed_progress_for_exact_session(mon
         },
     )
     assert lifecycle["state"] == "durable"
-    assert lifecycle["receipt"]["stop_activity"]["events"][0]["event_type"] == (
-        "work.progressed"
-    )
+    assert lifecycle["receipt"]["stop_activity"]["events"][0]["event_type"] == ("work.progressed")
     assert engine._sqlite._conn.execute(
         "SELECT COUNT(*) FROM collaboration_events WHERE event_type='work.progressed'"
     ).fetchone() == (2,)
@@ -1412,7 +1433,9 @@ def test_restart_continuation_rejects_corrupt_canonical_session_rows(
         transport_session_id="transport:mcp:" + "1" * 32,
     )
     assert binding.durable and binding.session is not None
-    authority = runtime_binding.DurableCollaborationContinuationAuthority.from_key_file(keyring_path)
+    authority = runtime_binding.DurableCollaborationContinuationAuthority.from_key_file(
+        keyring_path
+    )
     issued = authority.issue(
         binding,
         project_id="project:binding",

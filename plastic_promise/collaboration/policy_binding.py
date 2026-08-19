@@ -45,9 +45,7 @@ AGENT_POLICY_REVISION = "agent-role-policy/v1"
 # binding primitive.  It therefore has its own explicit revision rather than
 # widening the authority boundary to arbitrary caller strings.
 ACCEPTANCE_REVIEW_POLICY_REVISION = "acceptance-review-policy/v1"
-SERVER_POLICY_REVISIONS = frozenset(
-    {AGENT_POLICY_REVISION, ACCEPTANCE_REVIEW_POLICY_REVISION}
-)
+SERVER_POLICY_REVISIONS = frozenset({AGENT_POLICY_REVISION, ACCEPTANCE_REVIEW_POLICY_REVISION})
 DEFAULT_AGENT_POLICY_BINDING_TTL_SECONDS = 300
 MAX_AGENT_POLICY_BINDING_TTL_SECONDS = 3600
 

@@ -362,9 +362,10 @@ def test_json_provider_accepts_request_above_legacy_ceiling_by_default():
         client=client,
     )
 
-    assert provider.complete_json(
-        system_prompt="Return JSON.", user_payload={}, max_tokens=16_384
-    ) == {}
+    assert (
+        provider.complete_json(system_prompt="Return JSON.", user_payload={}, max_tokens=16_384)
+        == {}
+    )
     assert client.calls[0][1]["max_tokens"] == 16_384
 
 

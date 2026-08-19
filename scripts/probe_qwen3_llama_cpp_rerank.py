@@ -11,7 +11,7 @@ import urllib.request
 
 DEFAULT_INSTRUCTION = "Given a web search query, retrieve relevant passages that answer the query"
 PREFIX = (
-    '<|im_start|>system\nJudge whether the Document meets the requirements based on the '
+    "<|im_start|>system\nJudge whether the Document meets the requirements based on the "
     'Query and the Instruct provided. Note that the answer can only be "yes" or "no".'
     "<|im_end|>\n<|im_start|>user\n"
 )
@@ -85,9 +85,7 @@ def qwen3_score(
     )
     probabilities = response.get("probs", response.get("completion_probabilities"))
     if not isinstance(probabilities, list) or len(probabilities) != 1:
-        raise RuntimeError(
-            "qwen3_rerank_probabilities_missing:" + ",".join(sorted(response))
-        )
+        raise RuntimeError("qwen3_rerank_probabilities_missing:" + ",".join(sorted(response)))
     first = probabilities[0]
     top = first.get("top_probs") if isinstance(first, dict) else None
     if not isinstance(top, list):

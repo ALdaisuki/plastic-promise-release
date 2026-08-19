@@ -251,9 +251,7 @@ def shadow_chunking_diagnostics(
         (material.source_end for material in bounded_materials), default=0
     )
     bounded_coverage_gap = has_uncovered_content(source, bounded_materials)
-    bounded_context_truncated = any(
-        material.context_truncated for material in bounded_materials
-    )
+    bounded_context_truncated = any(material.context_truncated for material in bounded_materials)
     return {
         "mode": "shadow",
         "active_mode": "legacy",

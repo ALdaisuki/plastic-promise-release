@@ -12,9 +12,7 @@ import pytest
 
 SCRIPT_PATH = Path("scripts/verify_union_six_pr_contract.py")
 SOURCE_PATH = Path("docs/standards/union-six-pr-contract.json")
-PREVIOUS_SOURCE_PATH = Path(
-    "docs/standards/history/union-six-pr-contract-2026-08-11.3.json"
-)
+PREVIOUS_SOURCE_PATH = Path("docs/standards/history/union-six-pr-contract-2026-08-11.3.json")
 
 
 def _load_gate():
@@ -1357,8 +1355,7 @@ def test_ci_and_make_preserve_the_git_revision_boundary_gate():
     assert "BASE_REVISION ?=" in makefile
     assert "SOURCE_REVISION ?=" in makefile
     assert (
-        "PREVIOUS_CONTRACT ?= "
-        "docs/standards/history/union-six-pr-contract-2026-08-11.3.json"
+        "PREVIOUS_CONTRACT ?= docs/standards/history/union-six-pr-contract-2026-08-11.3.json"
     ) in makefile
     assert '--base-revision "$(BASE_REVISION)"' in makefile
     assert '--source-revision "$(SOURCE_REVISION)"' in makefile

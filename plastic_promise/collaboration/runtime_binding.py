@@ -542,7 +542,9 @@ class DurableCollaborationContinuationAuthority:
         return keys
 
     @staticmethod
-    def _claims_from_payload(payload: Mapping[str, object]) -> DurableCollaborationContinuationClaims:
+    def _claims_from_payload(
+        payload: Mapping[str, object],
+    ) -> DurableCollaborationContinuationClaims:
         if payload["v"] != _CONTINUATION_SCHEMA:
             raise ValueError
         issued_at = payload["iat"]
@@ -636,8 +638,7 @@ class DurableCollaborationHost:
                 state="rejected",
                 reason=(
                     reason
-                    if reason.startswith("collaboration_")
-                    or reason.startswith("agent_session_")
+                    if reason.startswith("collaboration_") or reason.startswith("agent_session_")
                     else "collaboration_context_authority_rejected"
                 ),
             )
@@ -684,11 +685,7 @@ class DurableCollaborationHost:
         prompt = render_collaboration_prompt(projection)
         return CollaborationContextReadResult(
             state="available" if items else "empty",
-            reason=(
-                "collaboration_context_available"
-                if items
-                else "collaboration_context_empty"
-            ),
+            reason=("collaboration_context_available" if items else "collaboration_context_empty"),
             projection=projection,
             prompt_section=prompt,
         )
@@ -804,7 +801,9 @@ class DurableCollaborationHost:
         if not isinstance(raw_dependencies, (list, tuple)):
             raise DurableCollaborationError("work_dependencies_invalid")
         dependencies = tuple(
-            sorted({str(item or "").strip() for item in raw_dependencies if str(item or "").strip()})
+            sorted(
+                {str(item or "").strip() for item in raw_dependencies if str(item or "").strip()}
+            )
         )
         if len(dependencies) > 32 or any(len(item.encode("utf-8")) > 256 for item in dependencies):
             raise DurableCollaborationError("work_dependencies_invalid")
@@ -1088,7 +1087,11 @@ class DurableCollaborationHost:
             limit=64,
         )
         item = next(
-            (dict(entry) for entry in items if str(entry.get("work_item_id") or "") == work_item_id),
+            (
+                dict(entry)
+                for entry in items
+                if str(entry.get("work_item_id") or "") == work_item_id
+            ),
             None,
         )
         if item is None and isinstance(work, Mapping):
@@ -1201,7 +1204,11 @@ class DurableCollaborationHost:
 
         with self.runtime._write():  # noqa: SLF001 - one canonical lifecycle transaction
             if cursor_ack is not None:
-                if isinstance(cursor_ack, bool) or not isinstance(cursor_ack, int) or cursor_ack < 0:
+                if (
+                    isinstance(cursor_ack, bool)
+                    or not isinstance(cursor_ack, int)
+                    or cursor_ack < 0
+                ):
                     raise DurableCollaborationError("collaboration_cursor_ack_invalid")
                 current = self.runtime.load_cursor(
                     project=self.session.project,
@@ -1364,7 +1371,9 @@ class DurableCollaborationHost:
                         raise DurableCollaborationError("stop_activity_result_corrupt")
                     stored_binding = result_projection.get("lease_binding")
                     if not isinstance(stored_binding, Mapping):
-                        raise DurableCollaborationError("stop_activity_result_lease_binding_missing")
+                        raise DurableCollaborationError(
+                            "stop_activity_result_lease_binding_missing"
+                        )
                     stored_receipt = dict(result_projection)
                     stored_receipt.pop("lease_binding", None)
                     if _sha256(stored_receipt) != str(result["result_sha256"]):
@@ -1382,7 +1391,9 @@ class DurableCollaborationHost:
                         raise DurableCollaborationError("stop_activity_result_scope_mismatch")
                     lease_id = str(stored_binding.get("lease_id") or "").strip()
                     if not lease_id:
-                        raise DurableCollaborationError("stop_activity_result_lease_binding_missing")
+                        raise DurableCollaborationError(
+                            "stop_activity_result_lease_binding_missing"
+                        )
                     lease = self.runtime._fetchone(  # noqa: SLF001
                         "SELECT owner_session_id,owner_id,owner_kind,project_id,"
                         "coordination_session_id,work_item_id,lease_sha256,fencing_generation,state "
@@ -1408,7 +1419,9 @@ class DurableCollaborationHost:
                     ):
                         continue
                     event_type = "work.submitted"
-                    summary = str(result_projection.get("summary") or "Work result submitted").strip()
+                    summary = str(
+                        result_projection.get("summary") or "Work result submitted"
+                    ).strip()
                     subject_refs = (work_item_id, str(result["receipt_id"]))
                     evidence_refs = (str(result["result_sha256"]),)
                     event_identity = f"{result['receipt_id']}\x1f{result['result_sha256']}"
@@ -2215,7 +2228,9 @@ def resume_mcp_durable_collaboration_runtime(
                 started_at=str(stored.get("started_at") or ""),
                 last_heartbeat_at=str(stored.get("last_heartbeat_at") or ""),
                 expires_at=(
-                    None if stored.get("expires_at") is None else str(stored.get("expires_at") or "")
+                    None
+                    if stored.get("expires_at") is None
+                    else str(stored.get("expires_at") or "")
                 ),
             )
             if not hmac.compare_digest(

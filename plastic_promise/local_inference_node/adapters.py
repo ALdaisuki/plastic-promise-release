@@ -86,13 +86,16 @@ class CloudEmbeddingAdapter:
     ) -> None:
         if normalization not in {"l2", "none"}:
             raise ValueError("node_embedding_normalization_unsupported")
-        if expected_dimension is not None and dimension is not None and expected_dimension != dimension:
+        if (
+            expected_dimension is not None
+            and dimension is not None
+            and expected_dimension != dimension
+        ):
             raise ValueError("node_embedding_dimension_conflict")
         resolved_dimension = expected_dimension if expected_dimension is not None else dimension
         if (
             resolved_dimension is None
-            or
-            not isinstance(resolved_dimension, int)
+            or not isinstance(resolved_dimension, int)
             or isinstance(resolved_dimension, bool)
             or resolved_dimension <= 0
         ):
@@ -333,7 +336,11 @@ class LlamaCppEmbeddingAdapter:
     ) -> None:
         if normalization not in {"l2", "none"}:
             raise ValueError("node_embedding_normalization_unsupported")
-        if not isinstance(expected_dimension, int) or isinstance(expected_dimension, bool) or expected_dimension <= 0:
+        if (
+            not isinstance(expected_dimension, int)
+            or isinstance(expected_dimension, bool)
+            or expected_dimension <= 0
+        ):
             raise ValueError("node_embedding_dimension_invalid")
         self._model = _required_provider_text(model, "node_llama_cpp_embedding_model_invalid")
         self._expected_dimension = expected_dimension
@@ -814,7 +821,9 @@ def _cloud_embedding_vectors(
             or len(vector) != expected_dimension
         ):
             raise ValueError("node_cloud_embedding_response_invalid")
-        converted = [_finite_float(value, "node_cloud_embedding_response_invalid") for value in vector]
+        converted = [
+            _finite_float(value, "node_cloud_embedding_response_invalid") for value in vector
+        ]
         if not any(value != 0.0 for value in converted):
             raise ValueError("node_cloud_embedding_zero_vector")
         ordered[index] = converted

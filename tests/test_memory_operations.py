@@ -315,9 +315,7 @@ class TestSmartRemember:
         assert call.kwargs["actor"] == "codex"
         assert call.kwargs["call_id"] == "call:server-smart-remember"
         assert call.kwargs["expected_project_id"] == "project:test"
-        assert call.kwargs["expected_content_hash"] == synthesis_content_hash(
-            canonical["content"]
-        )
+        assert call.kwargs["expected_content_hash"] == synthesis_content_hash(canonical["content"])
         assert call.kwargs["expected_source_snapshot"] == {
             "tags": canonical["tags"],
             "category": canonical["category"],

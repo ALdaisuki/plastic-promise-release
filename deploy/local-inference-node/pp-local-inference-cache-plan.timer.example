@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Plastic Promise local inference cache cleanup planning
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+Unit=pp-local-inference-cache-plan.service
+
+[Install]
+WantedBy=timers.target

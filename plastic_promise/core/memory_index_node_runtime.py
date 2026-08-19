@@ -373,12 +373,10 @@ class MemoryIndexNodeRuntime:
                 allowed_node_ids=tuple(allowed),
                 profile_digest=self._profile_digest(revision),
             )
-            result, _node_id, selection, receipt_reference = (
-                self._coordinator.execute_foreground(
-                    resolved=route,
-                    request_fingerprint=fingerprint,
-                    executor=_ForegroundEmbeddingExecutor(self._transport, text),
-                )
+            result, _node_id, selection, receipt_reference = self._coordinator.execute_foreground(
+                resolved=route,
+                request_fingerprint=fingerprint,
+                executor=_ForegroundEmbeddingExecutor(self._transport, text),
             )
             if result is None:
                 raise MemoryIndexNodeRuntimeError(
@@ -391,9 +389,7 @@ class MemoryIndexNodeRuntime:
             )
             with self._usage_lock:
                 self._embedding_requests += 1
-                self._embedding_input_tokens += max(
-                    1, (len(text.encode("utf-8")) + 3) // 4
-                )
+                self._embedding_input_tokens += max(1, (len(text.encode("utf-8")) + 3) // 4)
             return embedding
         except MemoryIndexNodeRuntimeError:
             raise
@@ -429,7 +425,9 @@ class MemoryIndexNodeRuntime:
             snapshot = self._control_config.safe_config()
             config = getattr(snapshot, "config", None)
             revision = getattr(snapshot, "revision_id", None)
-            routing = routing_for_project(config, project_id) if isinstance(config, Mapping) else None
+            routing = (
+                routing_for_project(config, project_id) if isinstance(config, Mapping) else None
+            )
             if (
                 not isinstance(revision, str)
                 or not isinstance(routing, Mapping)
@@ -474,21 +472,17 @@ class MemoryIndexNodeRuntime:
                 allowed_node_ids=tuple(allowed),
                 profile_digest=self._profile_digest(revision),
             )
-            result, node_id, selection, receipt_reference = (
-                self._coordinator.execute_foreground(
-                    resolved=route,
-                    request_fingerprint=fingerprint,
-                    executor=_ForegroundRerankExecutor(
-                        self._transport,
-                        query,
-                        documents,
-                    ),
-                )
+            result, node_id, selection, receipt_reference = self._coordinator.execute_foreground(
+                resolved=route,
+                request_fingerprint=fingerprint,
+                executor=_ForegroundRerankExecutor(
+                    self._transport,
+                    query,
+                    documents,
+                ),
             )
             if result is None:
-                return NodeRerankOutcome(
-                    {}, None, selection, selection, receipt_reference
-                )
+                return NodeRerankOutcome({}, None, selection, selection, receipt_reference)
             scores = _completed_rerank_scores(result.result, expected_identity=required_identity)
             return NodeRerankOutcome(
                 scores,
@@ -585,24 +579,20 @@ class MemoryIndexNodeRuntime:
                 allowed_node_ids=tuple(allowed),
                 profile_digest=self._profile_digest(revision),
             )
-            result, node_id, selection, receipt_reference = (
-                self._coordinator.execute_foreground(
-                    resolved=route,
-                    request_fingerprint=fingerprint,
-                    executor=_ForegroundStructuredJSONExecutor(
-                        self._transport,
-                        user_payload,
-                        max_tokens,
-                        intent_id=intent_id,
-                        schema_id=schema_id,
-                        input_digest=input_digest,
-                    ),
-                )
+            result, node_id, selection, receipt_reference = self._coordinator.execute_foreground(
+                resolved=route,
+                request_fingerprint=fingerprint,
+                executor=_ForegroundStructuredJSONExecutor(
+                    self._transport,
+                    user_payload,
+                    max_tokens,
+                    intent_id=intent_id,
+                    schema_id=schema_id,
+                    input_digest=input_digest,
+                ),
             )
             if result is None:
-                return NodeStructuredJSONOutcome(
-                    {}, None, selection, selection, receipt_reference
-                )
+                return NodeStructuredJSONOutcome({}, None, selection, selection, receipt_reference)
             output = _completed_structured_json(
                 result.result,
                 expected_identity=required_identity,

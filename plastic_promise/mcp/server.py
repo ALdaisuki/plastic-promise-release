@@ -3304,14 +3304,10 @@ def _durable_collaboration_lifecycle(
     continuation_token = values.get(_COLLABORATION_CONTINUATION_TOKEN_ARGUMENT)
     if str(continuation_token or "").strip():
         expected_project = (
-            binding.get("project_id")
-            if isinstance(binding, dict)
-            else values.get("project_id")
+            binding.get("project_id") if isinstance(binding, dict) else values.get("project_id")
         )
         expected_scope = (
-            str(binding.get("flow_scope_id") or "").strip()
-            if isinstance(binding, dict)
-            else ""
+            str(binding.get("flow_scope_id") or "").strip() if isinstance(binding, dict) else ""
         )
         resumed, reason = _resume_durable_collaboration_continuation(
             engine=engine,
@@ -4748,10 +4744,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         _without_collaboration_continuation_token(arguments),
         mutation_runtime_context=authority_runtime_context,
     )
-    if (
-        name not in _COLLABORATION_TOOL_CALL_RECONCILE_EXCLUSIONS
-        and await _is_known_mcp_tool(name)
-    ):
+    if name not in _COLLABORATION_TOOL_CALL_RECONCILE_EXCLUSIONS and await _is_known_mcp_tool(name):
         collaboration_reconcile = _reconcile_authenticated_tool_call(engine)
         if collaboration_reconcile is not None:
             runtime_metadata = dict(runtime_ctx.get("metadata") or {})
@@ -5089,16 +5082,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     success=durable_succeeded,
                     reason=durable_reason,
                     binding=(
-                        _current_durable_collaboration_binding()
-                        if durable_succeeded
-                        else None
+                        _current_durable_collaboration_binding() if durable_succeeded else None
                     ),
                 )
                 if durable_succeeded and hook_session_id:
                     token, expires_at_epoch, continuation_reason = (
-                        _issue_durable_collaboration_continuation(
-                            hook_session_id=hook_session_id
-                        )
+                        _issue_durable_collaboration_continuation(hook_session_id=hook_session_id)
                     )
                     if token:
                         payload[_COLLABORATION_CONTINUATION_TOKEN_ARGUMENT] = token

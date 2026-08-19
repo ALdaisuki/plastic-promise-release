@@ -424,9 +424,7 @@ async def test_collaboration_maintenance_open_transaction_rolls_back_and_reports
     )
 
     def leave_transaction_open(_engine):
-        engine._sqlite._conn.execute(
-            "INSERT INTO collaboration_stage_writes VALUES ('partial')"
-        )
+        engine._sqlite._conn.execute("INSERT INTO collaboration_stage_writes VALUES ('partial')")
         return {"schema_version": "collaboration-maintenance/v1"}
 
     monkeypatch.setattr(
@@ -516,9 +514,7 @@ def test_collaboration_maintenance_authority_unavailable_fails_closed(monkeypatc
     )
 
     def unavailable_authority(*_args, **_kwargs):
-        raise DurableCollaborationError(
-            "durable_collaboration_authority_cache_unavailable"
-        )
+        raise DurableCollaborationError("durable_collaboration_authority_cache_unavailable")
 
     monkeypatch.setattr(runtime_binding, "_authority_bundle", unavailable_authority)
 

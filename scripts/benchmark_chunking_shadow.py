@@ -105,9 +105,7 @@ def run_benchmark(
             "source_chars": source_chars,
             "legacy_chunks": legacy_chunks,
             "candidate_chunks": candidate_chunks,
-            "candidate_to_legacy_chunk_ratio": round(
-                candidate_chunks / max(legacy_chunks, 1), 6
-            ),
+            "candidate_to_legacy_chunk_ratio": round(candidate_chunks / max(legacy_chunks, 1), 6),
             "legacy_covered_chars": legacy_covered,
             "candidate_covered_chars": candidate_covered,
             "legacy_dropped_tail_chars": legacy_dropped_tail,
@@ -125,7 +123,9 @@ def run_benchmark(
     }
 
 
-def load_records(path: Path, source_type: str = "auto") -> tuple[Iterator[tuple[str, str, str]], dict[str, Any]]:
+def load_records(
+    path: Path, source_type: str = "auto"
+) -> tuple[Iterator[tuple[str, str, str]], dict[str, Any]]:
     """Load records from a corpus file or a SQLite database in read-only mode."""
 
     resolved = path.resolve()
@@ -143,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(get_db_path()),
         help="read-only SQLite database, JSON corpus, or JSONL file",
     )
-    parser.add_argument("--source-type", choices=("auto", "sqlite", "json", "jsonl"), default="auto")
+    parser.add_argument(
+        "--source-type", choices=("auto", "sqlite", "json", "jsonl"), default="auto"
+    )
     parser.add_argument("--limit", type=int, default=0, help="maximum records; 0 means all")
     parser.add_argument("--target-chars", type=int, default=512)
     parser.add_argument("--hard-chars", type=int, default=1024)
@@ -197,7 +199,9 @@ def _load_sqlite_records(path: Path) -> tuple[Iterator[tuple[str, str, str]], di
     }
 
 
-def _load_json_records(path: Path, source_type: str) -> tuple[Iterator[tuple[str, str, str]], dict[str, Any]]:
+def _load_json_records(
+    path: Path, source_type: str
+) -> tuple[Iterator[tuple[str, str, str]], dict[str, Any]]:
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     if source_type == "jsonl":

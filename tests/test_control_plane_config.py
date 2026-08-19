@@ -313,7 +313,7 @@ def test_compute_projection_materializes_provider_contract_without_server_secret
             "compute_node_cloud_api_key": {
                 "op": "set",
                 "value": "synthetic-compute-key",
-            }
+            },
         },
     )
 

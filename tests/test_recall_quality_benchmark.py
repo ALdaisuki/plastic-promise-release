@@ -985,9 +985,7 @@ def test_governed_live_isolation_snapshots_canonical_sqlite(monkeypatch, tmp_pat
     ) as paths:
         assert paths.sqlite != source
         isolated = sqlite3.connect(paths.sqlite)
-        assert isolated.execute("SELECT node_id FROM inference_nodes").fetchone() == (
-            "node:test",
-        )
+        assert isolated.execute("SELECT node_id FROM inference_nodes").fetchone() == ("node:test",)
         assert (
             isolated.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unrelated_memory'"
@@ -1745,10 +1743,7 @@ def test_live_adapter_consumes_complete_rankings_without_survivor_reconstruction
 
 def test_live_adapter_normalizes_optional_diagnostic_channels():
     def pack(*, graph=None, code=None):
-        states = {
-            channel: _channel_state()
-            for channel in ("vector", "bm25", "fts")
-        }
+        states = {channel: _channel_state() for channel in ("vector", "bm25", "fts")}
         if graph is not None:
             states["graph"] = graph
         if code is not None:
@@ -1762,7 +1757,9 @@ def test_live_adapter_normalizes_optional_diagnostic_channels():
         pack(graph=_channel_state(participating=True, evidence_only=True, reason="diagnostic")),
         {},
     )
-    _, second = benchmark_recall_quality._channel_evidence_from_pack(pack(code=_channel_state()), {})
+    _, second = benchmark_recall_quality._channel_evidence_from_pack(
+        pack(code=_channel_state()), {}
+    )
 
     assert set(first) == set(second)
     assert first["graph"]["evidence_only"] is True

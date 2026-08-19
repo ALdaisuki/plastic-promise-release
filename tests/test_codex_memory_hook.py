@@ -1005,9 +1005,7 @@ async def test_capture_disabled_stop_retries_typed_activity_with_same_request_id
         if arguments["event"] == "after_invoke":
             calls.append(arguments)
             attempts += 1
-            lifecycle = (
-                _deferred_stop_activity() if attempts == 1 else _completed_stop_activity()
-            )
+            lifecycle = _deferred_stop_activity() if attempts == 1 else _completed_stop_activity()
             return {
                 "status": "empty",
                 "injection": "",
@@ -1177,14 +1175,20 @@ async def test_session_end_removes_only_matching_session_state(tmp_path):
         for path in tmp_path.glob("turn-*.json")
     ]
     assert remaining == ["session-2"]
-    assert codex_hook._session_state_path(
-        codex_hook.HookConfig.from_environ(_environment(tmp_path), {}),
-        "session-1",
-    ).exists() is False
-    assert codex_hook._session_state_path(
-        codex_hook.HookConfig.from_environ(_environment(tmp_path), {}),
-        "session-2",
-    ).exists() is True
+    assert (
+        codex_hook._session_state_path(
+            codex_hook.HookConfig.from_environ(_environment(tmp_path), {}),
+            "session-1",
+        ).exists()
+        is False
+    )
+    assert (
+        codex_hook._session_state_path(
+            codex_hook.HookConfig.from_environ(_environment(tmp_path), {}),
+            "session-2",
+        ).exists()
+        is True
+    )
 
 
 @pytest.mark.asyncio

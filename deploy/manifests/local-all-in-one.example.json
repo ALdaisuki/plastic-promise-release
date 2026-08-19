@@ -1,0 +1,22 @@
+{
+  "schema_version": "plastic-promise-deployment/v1",
+  "deployment_id": "local-laptop",
+  "profile": "local-all-in-one",
+  "modules": {
+    "local-ollama": {
+      "enabled": true
+    }
+  },
+  "nodes": [],
+  "resource_locations": {
+    "container_store": null,
+    "model_cache": "/var/lib/plastic-promise/model-cache"
+  },
+  "resource_budget": {
+    "image_layers_bytes": 0,
+    "image_unpack_bytes": 0,
+    "model_cache_bytes": 1,
+    "lancedb_shadow_rebuild_bytes": 1,
+    "rollback_coexistence_bytes": 1
+  }
+}

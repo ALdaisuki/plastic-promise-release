@@ -1,0 +1,54 @@
+[Unit]
+Description=Plastic Promise inference gateway
+Documentation=https://github.com/ALdaisuki/plastic-promise/blob/main/docs/remote-control-plane.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=plastic
+Group=plastic
+WorkingDirectory=/srv/plastic-promise/runtime
+UMask=0077
+Environment=TZ=UTC
+EnvironmentFile=/srv/plastic-promise/state/plastic-promise.env
+EnvironmentFile=/srv/plastic-promise/state/control/managed.env
+ExecStart=/srv/plastic-promise/runtime/.venv/bin/plastic-promise-inference-gateway --port 9030
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=120s
+# The gateway drains in-flight durable work for at most 30 seconds.
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plastic-promise-inference-gateway
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+# Hide SSH/GitHub credentials and reveal only uv's managed Python runtime,
+# which is the target of the runtime venv's interpreter symlink.
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/plastic/.local/share/uv/python
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# The gateway owns a separate directory for inference_jobs.db and its sidecars.
+# The canonical SQLite directory remains read-only in the mount namespace.
+ReadWritePaths=/srv/plastic-promise/state/inference
+ReadOnlyPaths=/srv/plastic-promise/state/db
+
+[Install]
+WantedBy=multi-user.target

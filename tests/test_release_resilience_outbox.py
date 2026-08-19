@@ -20,16 +20,19 @@ from plastic_promise.mcp.tools.memory import handle_memory_store
 def _index_enqueue_engine(tmp_path, monkeypatch):
     monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "index.db"))
     engine = ContextEngine(use_sqlite=True)
-    assert engine.register_memory(
-        {
-            "id": "ordinary-index-job",
-            "content": "canonical ordinary index evidence",
-            "memory_type": "experience",
-            "source": "test",
-            "project_id": "project:index-a",
-            "embedding_hash": "sha256:index-a",
-        }
-    ) == "ordinary-index-job"
+    assert (
+        engine.register_memory(
+            {
+                "id": "ordinary-index-job",
+                "content": "canonical ordinary index evidence",
+                "memory_type": "experience",
+                "source": "test",
+                "project_id": "project:index-a",
+                "embedding_hash": "sha256:index-a",
+            }
+        )
+        == "ordinary-index-job"
+    )
     return engine
 
 
@@ -191,9 +194,9 @@ def test_memory_index_v3_enqueue_payload_is_exact_and_legacy_hash_alias_works(
             "FROM store_outbox WHERE outbox_id = ?",
             (first,),
         ).fetchone()
-        version = conn.execute(
-            "SELECT version FROM memory_version WHERE singleton = 1"
-        ).fetchone()[0]
+        version = conn.execute("SELECT version FROM memory_version WHERE singleton = 1").fetchone()[
+            0
+        ]
 
         assert duplicate == first
         assert row[:2] == ("project:index-a", "call-first")
@@ -283,15 +286,18 @@ def test_memory_index_v3_dedupe_includes_action_version_hash_and_project(
             call_id="call-upsert-new-project",
         )
 
-        assert len(
-            {
-                upsert_a,
-                delete_a,
-                upsert_new_version,
-                upsert_new_hash,
-                upsert_new_project,
-            }
-        ) == 5
+        assert (
+            len(
+                {
+                    upsert_a,
+                    delete_a,
+                    upsert_new_version,
+                    upsert_new_hash,
+                    upsert_new_project,
+                }
+            )
+            == 5
+        )
     finally:
         conn.close()
 
@@ -362,10 +368,13 @@ def test_memory_index_v3_enqueue_joins_caller_owned_transaction(tmp_path, monkey
             (job_id,),
         ).fetchone() == (job_id,)
         conn.rollback()
-        assert conn.execute(
-            "SELECT outbox_id FROM store_outbox WHERE outbox_id = ?",
-            (job_id,),
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT outbox_id FROM store_outbox WHERE outbox_id = ?",
+                (job_id,),
+            ).fetchone()
+            is None
+        )
     finally:
         if conn.in_transaction:
             conn.rollback()

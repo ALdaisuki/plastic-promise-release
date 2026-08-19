@@ -47,7 +47,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--owner-reference", type=Path)
-    parser.add_argument("--set", dest="assignments", type=parse_assignment, action="append", required=True)
+    parser.add_argument(
+        "--set", dest="assignments", type=parse_assignment, action="append", required=True
+    )
     args = parser.parse_args()
 
     path = args.env_file

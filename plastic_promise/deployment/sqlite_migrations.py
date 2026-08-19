@@ -347,15 +347,13 @@ def apply_deployment_migrations(connection: sqlite3.Connection) -> tuple[str, ..
         applied_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         if production_readiness_applied is None:
             connection.execute(
-                "INSERT INTO deployment_migration_journal (migration_id, applied_at) "
-                "VALUES (?, ?)",
+                "INSERT INTO deployment_migration_journal (migration_id, applied_at) VALUES (?, ?)",
                 (PRODUCTION_READINESS_SCHEMA_MIGRATION_ID, applied_at),
             )
             applied_migrations.append(PRODUCTION_READINESS_SCHEMA_MIGRATION_ID)
         if promotion_tasks_applied is None:
             connection.execute(
-                "INSERT INTO deployment_migration_journal (migration_id, applied_at) "
-                "VALUES (?, ?)",
+                "INSERT INTO deployment_migration_journal (migration_id, applied_at) VALUES (?, ?)",
                 (PROMOTION_TASK_SCHEMA_MIGRATION_ID, applied_at),
             )
             applied_migrations.append(PROMOTION_TASK_SCHEMA_MIGRATION_ID)

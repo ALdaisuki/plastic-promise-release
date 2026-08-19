@@ -153,9 +153,10 @@ def test_compiler_prepares_role_platform_and_compute_variant_matrix():
         "structured-json/v1",
     )
     compute = plan.artifact_for(PP_COMPUTE_NODE, "linux/amd64", COMPUTE_VARIANT_CPU)
-    assert plan.expected_oci_labels(compute.artifact_id)[
-        "org.plastic-promise.compute.capabilities"
-    ] == "embedding/v1,rerank/v1,structured-json/v1"
+    assert (
+        plan.expected_oci_labels(compute.artifact_id)["org.plastic-promise.compute.capabilities"]
+        == "embedding/v1,rerank/v1,structured-json/v1"
+    )
 
 
 def test_server_recipe_requires_compute_provider_source_pruning(tmp_path: Path):

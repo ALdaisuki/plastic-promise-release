@@ -342,9 +342,7 @@ def test_context_supply_keeps_memory_plane_unchanged_when_collaboration_is_added
     )
 
     assert injected.startswith(baseline)
-    assert injected[len(baseline) :] == (
-        "\n\n## [COLLABORATION]\n- canonical_memory_effect: none"
-    )
+    assert injected[len(baseline) :] == ("\n\n## [COLLABORATION]\n- canonical_memory_effect: none")
     assert compact["core"][0]["content"] == "canonical decision"
     assert compact["collaboration"]["canonical_memory_effect"] == "none"
     assert compact["degraded"] is False

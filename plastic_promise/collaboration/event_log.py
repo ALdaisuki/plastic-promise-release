@@ -142,9 +142,7 @@ class CollaborationEventReadReceipt:
                 "collaboration_event_read_receipt_time_invalid"
             ) from exc
         if self.generated_at_utc != canonical:
-            raise CollaborationContractError(
-                "collaboration_event_read_receipt_time_not_canonical"
-            )
+            raise CollaborationContractError("collaboration_event_read_receipt_time_not_canonical")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -268,9 +266,12 @@ class CollaborationEventLog:
             self._connection = connection
             self._owns_connection = False
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._source_anchor_sha256 = "sha256:" + hashlib.sha256(
-            f"{COLLABORATION_EVENT_LOG_REVISION}:{uuid.uuid4().hex}".encode()
-        ).hexdigest()
+        self._source_anchor_sha256 = (
+            "sha256:"
+            + hashlib.sha256(
+                f"{COLLABORATION_EVENT_LOG_REVISION}:{uuid.uuid4().hex}".encode()
+            ).hexdigest()
+        )
         self._issued_read_receipts: dict[str, str] = {}
         try:
             if ensure_schema:
@@ -349,8 +350,7 @@ class CollaborationEventLog:
             _, parent_event = self._decode_event_row(parent)
             if (
                 parent_event.project != canonical_event.project
-                or parent_event.coordination_session_id
-                != canonical_event.coordination_session_id
+                or parent_event.coordination_session_id != canonical_event.coordination_session_id
             ):
                 raise CollaborationContractError("collaboration_parent_scope_mismatch")
 
@@ -669,6 +669,7 @@ class CollaborationEventLog:
             or audience.role in event.audience_roles
             or audience.agent_id in event.audience_agent_ids
         )
+
     def _ensure_schema(self) -> None:
         self._connection.execute(
             """

@@ -94,6 +94,28 @@ def test_release_sync_includes_project_codex_config():
     assert release_sync.is_included(".codex/config.toml")
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".codex/hooks.json",
+        ".dockerignore",
+        ".gitattributes",
+        "CONTEXT.md",
+        "MANIFEST.in",
+        "deploy/server/Dockerfile",
+        "docs/deployment/profiles.md",
+        "docs/release/delivery.md",
+        "docs/roadmap/composable-deployment.md",
+        "docs/adr/0009-union-six-pr-contract-is-normative.md",
+        "docs/standards/union-six-pr-contract.json",
+    ],
+)
+def test_release_sync_includes_public_runtime_and_contract_assets(path):
+    release_sync = _load_release_sync()
+
+    assert release_sync.is_included(path)
+
+
 def test_release_sync_includes_distribution_variant_contract():
     release_sync = _load_release_sync()
 

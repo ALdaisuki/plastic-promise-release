@@ -45,9 +45,7 @@ def _evidence_counts(row: dict[str, Any]) -> tuple[int, int]:
     return len(sources), len(spaces)
 
 
-def evaluate_domain_activations(
-    repository: KnowledgeRepository, project_id: str
-) -> dict[str, Any]:
+def evaluate_domain_activations(repository: KnowledgeRepository, project_id: str) -> dict[str, Any]:
     """Promote candidates that pass evidence and separation thresholds."""
     gate = knowledge_feature_gate(AUTO_DOMAINS_GATE)
     if gate not in {"shadow", "on"}:
@@ -177,9 +175,7 @@ def retire_domain(
     reason: str,
 ) -> dict[str, Any]:
     """Retire an inactive-eligible domain, appending a reversible lineage event."""
-    row = next(
-        (row for row in repository.list_domains(project_id) if row["id"] == domain_id), None
-    )
+    row = next((row for row in repository.list_domains(project_id) if row["id"] == domain_id), None)
     if row is None:
         raise ValueError("retire_domain_not_found")
     if row["kind"] in {"retired", "merged"}:

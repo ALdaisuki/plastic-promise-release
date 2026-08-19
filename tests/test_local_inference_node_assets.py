@@ -297,4 +297,4 @@ def test_windows_compute_environment_supports_hybrid_structured_json():
     ):
         assert field in configure
     assert '$providerMode = if ($structuredJsonEnabled) { "hybrid" } else { "local" }' in configure
-    assert 'PP_LOCAL_NODE_PROVIDER_MODE=$providerMode' in configure
+    assert "PP_LOCAL_NODE_PROVIDER_MODE=$providerMode" in configure

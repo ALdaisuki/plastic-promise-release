@@ -52,7 +52,10 @@ def test_plan_validates_source_revision(monkeypatch):
 
 def test_plan_auto_detects_variant_from_nvidia_smi(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Linux")
-    monkeypatch.setattr("plastic_promise.deployment.node_build.shutil.which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None)
+    monkeypatch.setattr(
+        "plastic_promise.deployment.node_build.shutil.which",
+        lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None,
+    )
     plan = plan_node_build(source_revision=_git_head())
     assert plan.variant == "cuda"
 

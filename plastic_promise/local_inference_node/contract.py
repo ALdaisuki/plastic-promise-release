@@ -49,7 +49,11 @@ class EmbeddingProviderIdentity:
     def __post_init__(self) -> None:
         _require_safe_identity_string(self.model, "embedding_identity_model_invalid")
         _require_pinned_revision(self.revision, "embedding_identity_revision_invalid")
-        if not isinstance(self.dimension, int) or isinstance(self.dimension, bool) or self.dimension <= 0:
+        if (
+            not isinstance(self.dimension, int)
+            or isinstance(self.dimension, bool)
+            or self.dimension <= 0
+        ):
             raise NodeConfigurationError("embedding_identity_dimension_invalid")
         if self.normalization not in {"l2", "none"}:
             raise NodeConfigurationError("embedding_identity_normalization_invalid")

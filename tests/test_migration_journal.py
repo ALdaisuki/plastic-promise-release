@@ -469,9 +469,7 @@ def test_controlled_deployment_migration_installs_readiness_and_promotion_tables
         assert "memory-proposal-promotion-tasks-v1" in applied
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         assert {
             "production_evidence_attestations",
@@ -479,9 +477,7 @@ def test_controlled_deployment_migration_installs_readiness_and_promotion_tables
         }.issubset(tables)
         assert {
             row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(production_evidence_attestations)"
-            )
+            for row in connection.execute("PRAGMA table_info(production_evidence_attestations)")
         } == {
             "attestation_id",
             "subject_path_sha256",
@@ -494,9 +490,7 @@ def test_controlled_deployment_migration_installs_readiness_and_promotion_tables
         }
         promotion_columns = {
             row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(memory_proposal_promotion_tasks)"
-            )
+            for row in connection.execute("PRAGMA table_info(memory_proposal_promotion_tasks)")
         }
         assert {
             "task_id",

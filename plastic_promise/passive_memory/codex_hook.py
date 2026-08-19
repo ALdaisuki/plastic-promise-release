@@ -324,7 +324,9 @@ def _session_state_path(config: HookConfig, stage_session_id: object) -> Path | 
 def _continuation_token(value: object) -> str:
     if not isinstance(value, str) or not 1 <= len(value) <= _MAX_CONTINUATION_CHARS:
         return ""
-    if any(character.isspace() or ord(character) < 33 or ord(character) == 127 for character in value):
+    if any(
+        character.isspace() or ord(character) < 33 or ord(character) == 127 for character in value
+    ):
         return ""
     return value
 
@@ -547,7 +549,10 @@ def _read_session_state(
         expiry = _continuation_expiry(state.get("expires_at_epoch"), now=now)
         if not expiry:
             raise ValueError("hook_session_state_continuation_expired")
-        if updated_at > now + config.state_ttl_seconds or now - updated_at > config.state_ttl_seconds:
+        if (
+            updated_at > now + config.state_ttl_seconds
+            or now - updated_at > config.state_ttl_seconds
+        ):
             raise ValueError("hook_session_state_expired")
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         _unlink(path)
@@ -967,7 +972,7 @@ def _collaboration_injection(
     if len(encoded) > _MAX_COLLABORATION_TEXT_CHARS:
         return ""
     return (
-        "<plastic-promise-collaboration trust=\"server-projection\">"
+        '<plastic-promise-collaboration trust="server-projection">'
         f"{encoded}</plastic-promise-collaboration>"
     )
 
@@ -1370,9 +1375,7 @@ async def process_hook(
                 else ({"passive_capture_available": False} if state is None else None)
             ),
         )
-        retry_request_id = (
-            _text(state.get("stop_request_id")) if isinstance(state, Mapping) else ""
-        )
+        retry_request_id = _text(state.get("stop_request_id")) if isinstance(state, Mapping) else ""
         if retry_request_id:
             arguments["request_id"] = retry_request_id
         try:

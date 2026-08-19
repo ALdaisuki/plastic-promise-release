@@ -160,7 +160,14 @@ def _script_command(plan: NodeBuildPlan) -> list[str]:
     """Resolve the platform interpreter for the one-click build script."""
 
     if plan.script.suffix == ".ps1":
-        return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(plan.script)]
+        return [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(plan.script),
+        ]
     if plan.script.suffix == ".sh":
         return ["bash", str(plan.script)]
     raise DeploymentContractError("build_node_script_interpreter_unsupported")

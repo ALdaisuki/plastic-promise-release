@@ -1785,6 +1785,7 @@ def test_direct_mcp_server_legacy_sse_alias_still_routes_to_streamable_http(monk
     captured = {}
 
     monkeypatch.delenv("PP_ENDPOINT_ROLE", raising=False)
+
     async def fake_run_streamable_http(port):
         captured["port"] = port
 

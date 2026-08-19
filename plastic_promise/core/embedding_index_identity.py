@@ -28,9 +28,7 @@ def configured_embedding_index_identity(
         try:
             root = env.get("PP_CONTROL_ROOT")
             if not root:
-                sqlite_path = Path(
-                    env.get("PLASTIC_DB_PATH") or "data/db/plastic_memory.db"
-                )
+                sqlite_path = Path(env.get("PLASTIC_DB_PATH") or "data/db/plastic_memory.db")
                 state_root = (
                     sqlite_path.parent.parent
                     if sqlite_path.parent.name == "db"
@@ -50,27 +48,20 @@ def configured_embedding_index_identity(
             snapshot = store.get_revision(revision_id) if revision_id else store.safe_config()
             routing = snapshot.config.get("node_routing")
             if not isinstance(routing, Mapping) or routing.get("enabled") is not True:
-                raise EmbeddingIndexIdentityError(
-                    "governed_embedding_identity_unavailable"
-                )
+                raise EmbeddingIndexIdentityError("governed_embedding_identity_unavailable")
             identity = routing.get("embedding_required_identity")
             if not isinstance(identity, str) or not identity.startswith("sha256:"):
-                raise EmbeddingIndexIdentityError(
-                    "governed_embedding_identity_unavailable"
-                )
+                raise EmbeddingIndexIdentityError("governed_embedding_identity_unavailable")
             return identity
         except EmbeddingIndexIdentityError:
             raise
         except Exception as exc:
-            raise EmbeddingIndexIdentityError(
-                "governed_control_projection_unavailable"
-            ) from exc
+            raise EmbeddingIndexIdentityError("governed_control_projection_unavailable") from exc
 
     if (
         "EMBEDDER_PROVIDER" not in env
         and "EMBED_MODEL" not in env
-        and str(env.get("PP_MEMORY_CHUNKING", "off")).strip().casefold()
-        != "structure-v1"
+        and str(env.get("PP_MEMORY_CHUNKING", "off")).strip().casefold() != "structure-v1"
     ):
         return None
 

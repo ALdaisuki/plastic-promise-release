@@ -304,7 +304,9 @@ def test_server_backend_cannot_resolve_or_call_semantic_inference(monkeypatch, t
     monkeypatch.setenv("PP_MEMORY_CHUNK_ENRICHMENT_CACHE_PATH", str(tmp_path / "enrichment.db"))
     monkeypatch.delenv("PP_MEMORY_CHUNK_ENRICHMENT_MODEL_DIGEST", raising=False)
     monkeypatch.setattr("plastic_promise.core.semantic_chunk_enrichment.requests.get", fail_network)
-    monkeypatch.setattr("plastic_promise.core.semantic_chunk_enrichment.requests.post", fail_network)
+    monkeypatch.setattr(
+        "plastic_promise.core.semantic_chunk_enrichment.requests.post", fail_network
+    )
 
     enricher = SemanticChunkEnricher(host="http://127.0.0.1:11434")
 

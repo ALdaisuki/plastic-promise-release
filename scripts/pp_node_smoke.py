@@ -154,18 +154,30 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"node id mismatch: {identity.get('node_id')}")
     if args.expected_dimension is not None and dimension != args.expected_dimension:
         raise SystemExit(f"embedding dimension mismatch: {dimension} != {args.expected_dimension}")
-    if expected["PP_LOCAL_NODE_EMBEDDING_MODEL"] and embedding_model != expected["PP_LOCAL_NODE_EMBEDDING_MODEL"]:
+    if (
+        expected["PP_LOCAL_NODE_EMBEDDING_MODEL"]
+        and embedding_model != expected["PP_LOCAL_NODE_EMBEDDING_MODEL"]
+    ):
         raise SystemExit(f"embedding model mismatch: {embedding_model}")
-    if expected["PP_LOCAL_NODE_EMBEDDING_REVISION"] and embedding_revision != expected["PP_LOCAL_NODE_EMBEDDING_REVISION"]:
+    if (
+        expected["PP_LOCAL_NODE_EMBEDDING_REVISION"]
+        and embedding_revision != expected["PP_LOCAL_NODE_EMBEDDING_REVISION"]
+    ):
         raise SystemExit(f"embedding revision mismatch: {embedding_revision}")
     if (
         expected["PP_LOCAL_NODE_EMBEDDING_ARTIFACT_SHA256"]
         and embedding_artifact != expected["PP_LOCAL_NODE_EMBEDDING_ARTIFACT_SHA256"]
     ):
         raise SystemExit(f"embedding artifact mismatch: {embedding_artifact}")
-    if expected["PP_LOCAL_NODE_RERANK_MODEL"] and rerank.get("model") != expected["PP_LOCAL_NODE_RERANK_MODEL"]:
+    if (
+        expected["PP_LOCAL_NODE_RERANK_MODEL"]
+        and rerank.get("model") != expected["PP_LOCAL_NODE_RERANK_MODEL"]
+    ):
         raise SystemExit(f"rerank model mismatch: {rerank.get('model')}")
-    if expected["PP_LOCAL_NODE_RERANK_REVISION"] and rerank.get("revision") != expected["PP_LOCAL_NODE_RERANK_REVISION"]:
+    if (
+        expected["PP_LOCAL_NODE_RERANK_REVISION"]
+        and rerank.get("revision") != expected["PP_LOCAL_NODE_RERANK_REVISION"]
+    ):
         raise SystemExit(f"rerank revision mismatch: {rerank.get('revision')}")
     if (
         expected["PP_LOCAL_NODE_RERANK_ARTIFACT_SHA256"]
@@ -262,7 +274,9 @@ def main(argv: list[str] | None = None) -> int:
         "measured_at": datetime.now(timezone.utc).isoformat(),
     }
     smoke_path = output_dir / f"node-smoke-{timestamp}.json"
-    smoke_path.write_text(json.dumps(smoke_report, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    smoke_path.write_text(
+        json.dumps(smoke_report, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
     runtime = {
         "schema_version": RUNTIME_STATUS_SCHEMA,

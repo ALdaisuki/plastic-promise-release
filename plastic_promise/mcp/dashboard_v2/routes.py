@@ -546,9 +546,7 @@ def create_dashboard_v2_routes(
         return _run_repository(
             request,
             lambda repository: repository.collaboration_snapshot(
-                coordination_session_id=request.query_params.get(
-                    "coordination_session_id"
-                ),
+                coordination_session_id=request.query_params.get("coordination_session_id"),
                 agent_session_id=request.query_params.get("agent_session_id"),
                 role=request.query_params.get("role"),
                 event_cursor=request.query_params.get("cursor"),
@@ -802,7 +800,9 @@ def create_dashboard_v2_routes(
                     "key": "PP_RETRIEVAL_EXPLAIN",
                 },
                 "structured_slicing": {
-                    "mode": _mode("PP_MEMORY_CHUNKING", {"off", "shadow", "structure-v1"}, "structure-v1"),
+                    "mode": _mode(
+                        "PP_MEMORY_CHUNKING", {"off", "shadow", "structure-v1"}, "structure-v1"
+                    ),
                     "default": "structure-v1",
                     "key": "PP_MEMORY_CHUNKING",
                 },

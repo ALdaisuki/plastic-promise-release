@@ -678,7 +678,12 @@ def routing_for_project(config: Mapping[str, object], project_id: str) -> dict[s
     if isinstance(overlays, Mapping):
         overlay = overlays.get(project_id)
         if isinstance(overlay, Mapping):
-            for name in ("inference_mode", "embedding_policy", "rerank_policy", "structured_json_policy"):
+            for name in (
+                "inference_mode",
+                "embedding_policy",
+                "rerank_policy",
+                "structured_json_policy",
+            ):
                 if name in overlay:
                     result[name] = overlay[name]
     return result
@@ -1492,7 +1497,11 @@ def _render_compute_environment(
     embedding = config.get("embedding")
     rerank = config.get("rerank")
     chunk = config.get("chunk_inference")
-    if not isinstance(embedding, Mapping) or not isinstance(rerank, Mapping) or not isinstance(chunk, Mapping):
+    if (
+        not isinstance(embedding, Mapping)
+        or not isinstance(rerank, Mapping)
+        or not isinstance(chunk, Mapping)
+    ):
         return {}
 
     environment = {
@@ -1515,7 +1524,9 @@ def _render_compute_environment(
                 {
                     "PP_LOCAL_NODE_EMBEDDING_BACKEND": "openai-compatible",
                     "PP_LOCAL_NODE_EMBEDDING_CLOUD_BASE_URL": str(embedding.get("base_url") or ""),
-                    "PP_LOCAL_NODE_EMBEDDING_CLOUD_PATH": str(embedding.get("path") or "/embeddings"),
+                    "PP_LOCAL_NODE_EMBEDDING_CLOUD_PATH": str(
+                        embedding.get("path") or "/embeddings"
+                    ),
                 }
             )
     if rerank.get("enabled") is True:
@@ -1544,8 +1555,12 @@ def _render_compute_environment(
             environment.update(
                 {
                     "PP_LOCAL_NODE_STRUCTURED_JSON_BACKEND": "openai-compatible",
-                    "PP_LOCAL_NODE_STRUCTURED_JSON_CLOUD_BASE_URL": str(chunk.get("base_url") or ""),
-                    "PP_LOCAL_NODE_STRUCTURED_JSON_CLOUD_PATH": str(chunk.get("path") or "/chat/completions"),
+                    "PP_LOCAL_NODE_STRUCTURED_JSON_CLOUD_BASE_URL": str(
+                        chunk.get("base_url") or ""
+                    ),
+                    "PP_LOCAL_NODE_STRUCTURED_JSON_CLOUD_PATH": str(
+                        chunk.get("path") or "/chat/completions"
+                    ),
                 }
             )
     return dict(sorted(environment.items()))

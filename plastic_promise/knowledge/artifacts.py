@@ -29,9 +29,7 @@ def _coverage_setting() -> float:
     return min(1.0, max(0.0, value))
 
 
-def promote_eligible_artifacts(
-    repository: KnowledgeRepository, project_id: str
-) -> dict[str, Any]:
+def promote_eligible_artifacts(repository: KnowledgeRepository, project_id: str) -> dict[str, Any]:
     """Advance drafts through validation and (low-risk) activation."""
     gate = knowledge_feature_gate(WIKI_GATE)
     if gate not in {"shadow", "on"}:

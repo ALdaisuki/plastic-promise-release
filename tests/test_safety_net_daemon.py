@@ -129,13 +129,15 @@ class TestSafetyNetImports:
         monkeypatch.setattr(
             maintenance_daemon,
             "run_collaboration_maintenance",
-            lambda _engine: calls.append("collaboration_maintenance")
-            or {
-                "schema_version": "collaboration-maintenance/v1",
-                "status": "success",
-                "canonical_memory_mutation": False,
-                "event_delete": False,
-            },
+            lambda _engine: (
+                calls.append("collaboration_maintenance")
+                or {
+                    "schema_version": "collaboration-maintenance/v1",
+                    "status": "success",
+                    "canonical_memory_mutation": False,
+                    "event_delete": False,
+                }
+            ),
         )
         monkeypatch.setattr(maintenance_daemon, "expire_pending_memory_proposals", expiry)
         monkeypatch.setattr(maintenance_daemon, "scan_synthesis_integrity", synthesis_scan)

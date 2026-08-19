@@ -42,7 +42,9 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 _EMBEDDING_BACKENDS = frozenset({"bge-local", "llama.cpp", "ollama", "cloud", "openai-compatible"})
-_RERANK_BACKENDS = frozenset({"bge-local", "llama.cpp", "qwen3-cross-encoder", "cloud", "openai-compatible"})
+_RERANK_BACKENDS = frozenset(
+    {"bge-local", "llama.cpp", "qwen3-cross-encoder", "cloud", "openai-compatible"}
+)
 _STRUCTURED_JSON_BACKENDS = frozenset({"off", "cloud", "openai-compatible"})
 _EMBEDDING_NORMALIZATIONS = frozenset({"l2", "none"})
 
@@ -276,9 +278,7 @@ class NodeRuntimeConfig:
             llama_cpp_rerank_base_url=validate_local_llama_cpp_url(
                 _get(values, "PP_LOCAL_NODE_RERANK_LLAMA_CPP_BASE_URL", "http://127.0.0.1:19132")
             ),
-            llama_cpp_rerank_path=_path(
-                values, "PP_LOCAL_NODE_RERANK_LLAMA_CPP_PATH", "/rerank"
-            ),
+            llama_cpp_rerank_path=_path(values, "PP_LOCAL_NODE_RERANK_LLAMA_CPP_PATH", "/rerank"),
             model_cache_dir=Path(cache_root) if cache_root else None,
             resource_guard=resource_guard_from_environment(values),
             limits=limits,
@@ -293,7 +293,9 @@ def create_embedding_engine(
     """Build the selected local engine without silently changing its identity."""
 
     if config.embedding_backend in {"cloud", "openai-compatible"}:
-        cloud = _required_cloud_config(config.embedding_cloud, "node_cloud_embedding_config_missing")
+        cloud = _required_cloud_config(
+            config.embedding_cloud, "node_cloud_embedding_config_missing"
+        )
         return CloudEmbeddingAdapter(
             api_key=cloud.api_key,
             base_url=cloud.base_url,

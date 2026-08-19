@@ -1085,9 +1085,7 @@ class DashboardRepository:
         for table, required in _COLLABORATION_REQUIRED_COLUMNS.items():
             if table not in tables:
                 raise DashboardCollaborationError("collaboration_projection_schema_missing")
-            available = {
-                str(row[1]) for row in self._conn.execute(f"PRAGMA table_info({table})")
-            }
+            available = {str(row[1]) for row in self._conn.execute(f"PRAGMA table_info({table})")}
             if not required.issubset(available):
                 raise DashboardCollaborationError("collaboration_projection_schema_stale")
 

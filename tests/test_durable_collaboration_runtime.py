@@ -733,8 +733,7 @@ def test_register_session_appends_one_bounded_agent_joined_event() -> None:
     connection, runtime, _ = _runtime()
     session = _session()
     expected_event_id = (
-        "event:agent-joined:"
-        + hashlib.sha256(session.session_id.encode("utf-8")).hexdigest()
+        "event:agent-joined:" + hashlib.sha256(session.session_id.encode("utf-8")).hexdigest()
     )
 
     runtime.register_session(session)
@@ -767,13 +766,13 @@ def test_register_session_event_failure_rolls_back_agent_and_session(
         runtime.register_session(_session())
 
     assert connection.execute("SELECT COUNT(*) FROM collaboration_agents").fetchone() == (0,)
-    assert connection.execute(
-        "SELECT COUNT(*) FROM collaboration_agent_sessions"
-    ).fetchone() == (0,)
+    assert connection.execute("SELECT COUNT(*) FROM collaboration_agent_sessions").fetchone() == (
+        0,
+    )
     assert connection.execute("SELECT COUNT(*) FROM collaboration_events").fetchone() == (0,)
-    assert connection.execute(
-        "SELECT COUNT(*) FROM collaboration_event_retention"
-    ).fetchone() == (0,)
+    assert connection.execute("SELECT COUNT(*) FROM collaboration_event_retention").fetchone() == (
+        0,
+    )
     connection.close()
 
 
@@ -884,11 +883,14 @@ def test_collaboration_state_recovers_after_sqlite_reopen(tmp_path) -> None:
         "SELECT owner_session_id,state FROM collaboration_work_leases WHERE lease_id=?",
         (lease.lease_id,),
     ).fetchone() == (session.session_id, "active")
-    assert connection.execute(
-        "SELECT COUNT(*) FROM collaboration_events WHERE project_id=? "
-        "AND coordination_session_id=?",
-        (session.project.project_id, session.coordination_session_id),
-    ).fetchone()[0] == expected_event_count
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM collaboration_events WHERE project_id=? "
+            "AND coordination_session_id=?",
+            (session.project.project_id, session.coordination_session_id),
+        ).fetchone()[0]
+        == expected_event_count
+    )
     assert connection.execute(
         "SELECT COUNT(*) FROM collaboration_events WHERE event_type='agent.joined'"
     ).fetchone() == (1,)

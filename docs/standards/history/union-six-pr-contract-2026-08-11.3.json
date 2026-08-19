@@ -1,0 +1,1381 @@
+{
+  "schema": "plastic-promise/union-six-pr-contract/v1",
+  "revision": "2026-08-11.3",
+  "revision_lineage": {
+    "comparison": "sha256-raw-source-bytes",
+    "mode": "successor",
+    "previous_canonical": {
+      "revision": "2026-08-11.2",
+      "sha256": "7a6741dee014439b8ebcc8cd36fdc69d51d38364a32892619a80d0d8e38b7346",
+      "reference": "sha256:7a6741dee014439b8ebcc8cd36fdc69d51d38364a32892619a80d0d8e38b7346"
+    },
+    "provenance": [
+      {
+        "classification": "provenance-only",
+        "claimed_revision": "2026-08-11.1",
+        "sha256": "c5c3b197f6fa192d8a7248b3b37e65c6622d55c4bd09fcd05bc4df23373e7b02",
+        "reference": "audit-preimage:union-six-pr-contract/2026-08-11.1/c5c3b197f6fa192d8a7248b3b37e65c6622d55c4bd09fcd05bc4df23373e7b02",
+        "verifiable_canonical_source": false
+      }
+    ]
+  },
+  "authority": {
+    "normative": true,
+    "canonical_source": "docs/standards/union-six-pr-contract.json",
+    "generated_views": [
+      "docs/standards/union-six-pr-contract.md",
+      "docs/standards/union-six-pr-contract.zh-CN.md"
+    ],
+    "digest_algorithm": "sha256-raw-source-bytes",
+    "scope": {
+      "en": "The single integrated six-PR contract for Plastic Promise composable deployment and project-scoped multi-Agent collaboration.",
+      "zh_CN": "Plastic Promise 可组合部署与项目级多 Agent 协作的唯一联合六 PR 合同。"
+    },
+    "change_control": [
+      {
+        "id": "AUTH-01",
+        "statement": {
+          "en": "Normative scope changes MUST edit this JSON source, increment revision, regenerate both Markdown views, and pass the contract drift gate in one change set.",
+          "zh_CN": "任何规范范围变更都必须修改此 JSON、递增 revision、重新生成两份 Markdown，并在同一变更集中通过合同漂移门禁。"
+        }
+      },
+      {
+        "id": "AUTH-02",
+        "statement": {
+          "en": "Generated Markdown views MUST NOT be edited as independent authorities; disagreement is resolved in favor of this JSON and regeneration.",
+          "zh_CN": "生成的 Markdown 不得被作为独立权威手工编辑；发生不一致时，以此 JSON 为准并重新生成。"
+        }
+      },
+      {
+        "id": "AUTH-03",
+        "statement": {
+          "en": "Implementation status, PR descriptions, roadmaps, architecture pages, tests, and release notes may report evidence but MUST NOT silently narrow, replace, or reorder this contract.",
+          "zh_CN": "实现状态、PR 描述、路线图、架构文档、测试和发行说明可以报告证据，但不得静默缩减、替代或重排本合同。"
+        }
+      },
+      {
+        "id": "AUTH-04",
+        "statement": {
+          "en": "Every generated view, evidence ledger, review receipt, and derived-document manifest MUST bind this exact revision and the SHA-256 of the raw canonical JSON bytes. Revision 2026-08-11.3 is a successor to revision 2026-08-11.2 and its previous_canonical binding MUST match the immutable raw bytes and SHA-256 of that revision. Every later byte-changing revision MUST likewise be proven against immutable previous bytes or a Git base object. Changed bytes with an unchanged revision, missing previous-source evidence, or a stale digest fail closed.",
+          "zh_CN": "每份生成视图、证据台账、审查回执和派生文档清单都必须绑定本合同的精确 revision 与规范 JSON 原始字节 SHA-256。Revision 2026-08-11.3 是 revision 2026-08-11.2 的 successor，其 previous_canonical 绑定必须与上一 revision 的不可变原始字节及 SHA-256 精确一致。之后每次改变字节的 revision 也必须由不可变 previous bytes 或 Git base object 证明。源码字节变化但 revision 未变、缺少 previous-source 证据或 digest 过期时，必须 fail closed。"
+        }
+      },
+      {
+        "id": "AUTH-05",
+        "statement": {
+          "en": "The evidence ledger MUST cover the exact PR requirement-ID set and preserve implementation, test, runtime, and production as separate evidence classes. Evidence from a lower or different class never satisfies a higher class.",
+          "zh_CN": "证据台账必须精确覆盖全部 PR requirement ID，并将 implementation、test、runtime、production 保持为独立证据层级。较低或不同层级的证据绝不能满足更高层级。"
+        }
+      },
+      {
+        "id": "AUTH-06",
+        "statement": {
+          "en": "The derived-document manifest is the complete tracked family for critical bilingual documents and assets. Known drift is recorded as blocking evidence, never converted into a passing parity claim.",
+          "zh_CN": "派生文档清单是关键中英文文档与资产的完整跟踪族。已知漂移必须记录为阻塞证据，绝不能转换为通过的一致性声明。"
+        }
+      }
+    ]
+  },
+  "source_precedence": [
+    {
+      "priority": 1,
+      "source": "Explicit user-approved amendment captured by a new revision of this JSON",
+      "classification": "normative-amendment",
+      "rule": {
+        "en": "A later explicit decision changes the union contract only after it is captured here with a new revision; one-off execution authorization may narrow actions but does not silently rewrite scope.",
+        "zh_CN": "后续明确决策只有在写入此 JSON 并形成新 revision 后才改变联合合同；单次执行授权可以收窄动作，但不会静默改写范围。"
+      }
+    },
+    {
+      "priority": 2,
+      "source": "docs/standards/union-six-pr-contract.json",
+      "classification": "canonical-normative-source",
+      "rule": {
+        "en": "This file defines the required delivery scope, collaboration scope, evidence, invariants, and completion rules.",
+        "zh_CN": "本文件定义强制的交付范围、协作范围、证据、不变量和完成规则。"
+      }
+    },
+    {
+      "priority": 3,
+      "source": "Generated English and Chinese union-contract Markdown views",
+      "classification": "generated-normative-view",
+      "rule": {
+        "en": "These are readable projections of the canonical JSON and are authoritative only while their embedded digest matches the JSON bytes.",
+        "zh_CN": "这些文件是规范 JSON 的可读投影，仅在其内嵌 digest 与 JSON 原始字节一致时有效。"
+      }
+    },
+    {
+      "priority": 4,
+      "source": "Roadmaps, architecture documents, TODO lists, ADRs, diagrams, and release documentation",
+      "classification": "derived-guidance",
+      "rule": {
+        "en": "Derived guidance must reference and conform to this contract; it cannot declare one half of a PR complete while omitting the other half.",
+        "zh_CN": "派生指导必须引用并符合本合同；不得在遗漏 PR 另一半时宣布其中一半已完成。"
+      }
+    },
+    {
+      "priority": 5,
+      "source": "Code, tests, PR descriptions, commits, receipts, and deployed artifacts",
+      "classification": "implementation-evidence",
+      "rule": {
+        "en": "These prove current implementation state. They do not redefine required scope, and source-level evidence cannot be relabeled as runtime or production evidence.",
+        "zh_CN": "这些材料证明当前实现状态，但不重新定义强制范围；源码级证据不得被改称为运行时或生产证据。"
+      }
+    },
+    {
+      "priority": 6,
+      "source": "Historical conversations, attachments, and superseded planning notes",
+      "classification": "provenance-only",
+      "rule": {
+        "en": "After adoption of this revision, historical material explains provenance but cannot override the canonical JSON without a reviewed amendment.",
+        "zh_CN": "本 revision 采用后，历史材料只用于解释来源，未经审查的修订不得覆盖规范 JSON。"
+      }
+    }
+  ],
+  "governance_artifacts": {
+    "evidence_ledger": "docs/standards/union-six-pr-evidence-ledger.json",
+    "derived_document_manifest": "docs/standards/union-six-pr-derived-documents.json",
+    "evidence_classes": [
+      "implementation",
+      "test",
+      "runtime",
+      "production"
+    ],
+    "evidence_states": [
+      "not-evidenced",
+      "partial",
+      "verified",
+      "not-applicable"
+    ],
+    "rules": [
+      {
+        "id": "U6-GOV-01",
+        "statement": {
+          "en": "The evidence ledger requirement set MUST exactly equal every PR delivery, collaboration, and required-evidence ID in this contract, including PR, group, ordinal, and statement digest.",
+          "zh_CN": "证据台账的 requirement 集合必须与本合同全部 PR 的 delivery、collaboration 和 required-evidence ID 精确相等，并绑定 PR、分组、序号和 statement digest。"
+        }
+      },
+      {
+        "id": "U6-GOV-02",
+        "statement": {
+          "en": "Each evidence receipt is typed to exactly one evidence class and binds this contract revision and digest, real ancestor Git base and source commit/tree objects, deterministic source-tree and diff digests, the exact changed-path set, a bounded non-secret evidence-artifact reference, and a UTC timestamp. The parsed artifact must repeat the receipt fields exactly. Cross-class promotion is forbidden.",
+          "zh_CN": "每个 evidence receipt 只能属于一个证据层级，并绑定本合同 revision 与 digest、真实且具祖先关系的 Git base/source commit 与 tree object、确定性的 source-tree/diff digest、精确 changed-path 集、有界无 secret 的 evidence-artifact 引用和 UTC 时间。解析后的 artifact 必须逐项重复 receipt 字段。禁止跨层级升格。"
+        }
+      },
+      {
+        "id": "U6-GOV-03",
+        "statement": {
+          "en": "The derived-document manifest enumerates the critical bilingual document and asset families. A tracked-drift entry is a blocking failure record, not an exception or a passing state.",
+          "zh_CN": "派生文档清单枚举关键中英文文档与资产族。tracked-drift 条目是阻塞失败记录，不是豁免或通过状态。"
+        }
+      },
+      {
+        "id": "U6-GOV-04",
+        "statement": {
+          "en": "A contract edit MUST increment revision before regeneration. This successor revision binds the verifiable raw bytes, revision, and SHA-256 of revision 2026-08-11.2 through previous_canonical; provenance-only audit digests are never accepted as a preimage. Every later byte-changing revision requires verifiable previous canonical bytes or a Git base object proving the old revision and digest. Regenerating views, ledgers, or manifests against changed bytes while retaining the previous revision is invalid even when all current digests agree.",
+          "zh_CN": "修改合同后必须先递增 revision 再重新生成。本 successor revision 通过 previous_canonical 绑定 revision 2026-08-11.2 的可验证原始字节、revision 与 SHA-256；仅用于溯源的 audit digest 绝不能充当 preimage。之后每次改变字节的 revision 都必须提供可验证的上一规范字节或 Git base object 来证明旧 revision 与 digest。即使当前所有 digest 一致，在源码字节已变化时沿用旧 revision 仍属无效。"
+        }
+      }
+    ]
+  },
+  "completion_gates": [
+    {
+      "id": "U6-GATE-SOURCE-01",
+      "applies_to": [
+        "PR1",
+        "PR2",
+        "PR3",
+        "PR4",
+        "PR5",
+        "PR6"
+      ],
+      "required_evidence_classes": [
+        "implementation",
+        "test"
+      ],
+      "statement": {
+        "en": "Implementation, test, review, artifact, and release receipts MUST bind real Git base and source commit objects, prove base ancestry, name both tree objects, bind a deterministic source-tree material digest and raw diff digest, and enumerate the exact changed paths. Mutable branches, tags, paths, hash-shaped strings, statuses, or prose are not source identity.",
+        "zh_CN": "Implementation、test、review、artifact 和 release receipt 必须绑定真实 Git base/source commit object，证明 base 祖先关系，写明两端 tree object，绑定确定性的 source-tree material digest 与 raw diff digest，并枚举精确 changed paths。可变 branch、tag、path、仅具 hash 外形的字符串、status 或文字说明都不是 source identity。"
+      }
+    },
+    {
+      "id": "U6-GATE-REVISION-01",
+      "applies_to": [
+        "PR1",
+        "PR2",
+        "PR3",
+        "PR4",
+        "PR5",
+        "PR6"
+      ],
+      "required_evidence_classes": [
+        "test"
+      ],
+      "statement": {
+        "en": "Generated views, the evidence ledger, the derived-document manifest, and all governed review receipts MUST name this exact contract revision and raw-source SHA-256. This successor revision requires verifiable previous canonical bytes or a Git base object proving revision 2026-08-11.2, its raw-source digest, and the required increment. Every later byte-changing revision has the same obligation. Missing base evidence, unchanged revision over changed bytes, or any revision/digest mismatch fails closed.",
+        "zh_CN": "生成视图、证据台账、派生文档清单及全部受治理 review receipt 必须写明本合同精确 revision 与 raw-source SHA-256。本 successor revision 必须由可验证 previous canonical bytes 或 Git base object 证明 revision 2026-08-11.2、其 raw-source digest 及本次必要递增；之后每次改变字节的 revision 具有同样义务。缺少 base evidence、源码变化但 revision 未变，或任何 revision/digest 不一致时都必须 fail closed。"
+      }
+    },
+    {
+      "id": "U6-GATE-DOCUMENT-01",
+      "applies_to": [
+        "PR1",
+        "PR2",
+        "PR3",
+        "PR4",
+        "PR5",
+        "PR6"
+      ],
+      "required_evidence_classes": [
+        "test"
+      ],
+      "statement": {
+        "en": "Every affected critical English/Chinese document pair in the derived-document manifest MUST exist, reference the canonical contract when required, preserve the integrated completion rule, and have no blocking tracked drift.",
+        "zh_CN": "派生文档清单中每个受影响的关键中英文文档对都必须存在；需要时引用规范合同；保留联合完成规则；且不得存在阻塞 tracked drift。"
+      }
+    },
+    {
+      "id": "U6-GATE-ASSET-01",
+      "applies_to": [
+        "PR1",
+        "PR2",
+        "PR3",
+        "PR4",
+        "PR5",
+        "PR6"
+      ],
+      "required_evidence_classes": [
+        "test"
+      ],
+      "statement": {
+        "en": "Every tracked bilingual diagram, SVG, badge set, link set, resource table, and pricing table affected by a PR MUST remain structurally and semantically synchronized and bind the current contract revision when the asset carries status or architecture claims.",
+        "zh_CN": "每个 PR 影响到的中英文图、SVG、徽章集合、链接集合、资源表和价格表都必须保持结构与语义同步；资产承载状态或架构声明时还必须绑定当前合同 revision。"
+      }
+    },
+    {
+      "id": "U6-GATE-REVIEW-01",
+      "applies_to": [
+        "PR1",
+        "PR2",
+        "PR3",
+        "PR4",
+        "PR5",
+        "PR6"
+      ],
+      "required_evidence_classes": [
+        "test"
+      ],
+      "statement": {
+        "en": "An independent Standards review and an independent Spec review MUST both finish against the same verified Git base-to-source boundary, tree/material digest, deterministic diff, changed-path set, requirement set, and contract revision. Their evidence artifacts must deep-bind those receipt fields. One review cannot substitute for the other.",
+        "zh_CN": "独立 Standards review 与独立 Spec review 必须针对同一已验证 Git base→source 边界、tree/material digest、确定性 diff、changed-path 集、requirement 集合和 contract revision 完成；两者的 evidence artifact 必须深度绑定这些 receipt 字段。两种审查不能互相替代。"
+      }
+    },
+    {
+      "id": "U6-GATE-DEEPSEC-01",
+      "applies_to": [
+        "PR1",
+        "PR2",
+        "PR3",
+        "PR4",
+        "PR5",
+        "PR6"
+      ],
+      "required_evidence_classes": [
+        "test"
+      ],
+      "statement": {
+        "en": "Every formal PR review MUST include an independent DeepSec Shield and code-smell receipt bound to the same source and contract revision. The DeepSec reviewer is limited to repository/diff/web reads and read-only MCP; it has no shell, file, database, release, or production write authority, and its findings never become canonical memory automatically.",
+        "zh_CN": "每次正式 PR review 都必须包含独立 DeepSec Shield 与代码坏味道 receipt，并绑定同一 source 与 contract revision。DeepSec reviewer 仅可读取 repository/diff/web 和只读 MCP；不得拥有 shell、文件、数据库、发行或生产写权限；其 finding 绝不自动成为 canonical memory。"
+      }
+    },
+    {
+      "id": "U6-GATE-COMPOSER-01",
+      "applies_to": [
+        "PR6"
+      ],
+      "required_evidence_classes": [
+        "test"
+      ],
+      "statement": {
+        "en": "Workflow Composer is included in PR6 as shadow-only behavior and MUST pass a fail-closed adversarial risk audit over frozen plan revision/digest, compiler revision, mandatory hard-gate-set digest, atomic-skill receipt chain, tool-policy digest, stale completion, revision mutation, user-only self-attestation, tool escalation, gate removal, and fixed-route rollback.",
+        "zh_CN": "Workflow Composer 以仅 shadow 行为纳入 PR6，并必须通过 fail-closed 对抗风险审计，覆盖冻结 plan revision/digest、compiler revision、mandatory hard-gate-set digest、原子 skill receipt 链、tool-policy digest、stale completion、revision mutation、user-only self-attestation、tool escalation、gate removal 和 fixed-route rollback。"
+      }
+    },
+    {
+      "id": "U6-GATE-EVIDENCE-01",
+      "applies_to": [
+        "PR1",
+        "PR2",
+        "PR3",
+        "PR4",
+        "PR5",
+        "PR6"
+      ],
+      "required_evidence_classes": [
+        "implementation",
+        "test"
+      ],
+      "statement": {
+        "en": "Every PR requirement MUST have an explicit evidence-ledger state in all four evidence classes. Partial, verified, and not-applicable states require a same-class receipt whose Git boundary and parsed evidence artifact validate; a verified runtime or production state additionally requires the exact authority for that class. Implementation or test evidence cannot be promoted by wording, aggregation, or reviewer opinion.",
+        "zh_CN": "每个 PR requirement 必须在四个证据层级中都有显式 evidence-ledger 状态。partial、verified 与 not-applicable 都必须具有同层级 receipt，且其 Git 边界和解析后的 evidence artifact 均通过验证；runtime 或 production 标记为 verified 时还必须具有该层级要求的精确 authority。implementation/test 证据不得通过措辞、聚合或 reviewer 意见被升格。"
+      }
+    }
+  ],
+  "experimental_features": [
+    {
+      "id": "workflow-composer",
+      "owning_pr": "PR6",
+      "disposition": "included-shadow",
+      "activation": "shadow-only",
+      "rollback": "fixed-route",
+      "required_gate_id": "U6-GATE-COMPOSER-01",
+      "statement": {
+        "en": "Workflow Composer is part of this delivery only as an observable, non-authoritative shadow planner. It may emit a candidate atomic-skill plan, but the fixed route remains the execution authority until a separately reviewed future contract revision changes the disposition.",
+        "zh_CN": "Workflow Composer 作为可观测、非权威的 shadow planner 纳入本次交付。它可以输出候选原子 skill 计划，但在后续单独审查的合同 revision 改变 disposition 前，固定 route 始终是执行权威。"
+      }
+    }
+  ],
+  "cross_cutting_invariants": [
+    {
+      "id": "U6-INV-01",
+      "title": {
+        "en": "One integrated delivery line",
+        "zh_CN": "唯一联合交付线"
+      },
+      "statement": {
+        "en": "Deployment and collaboration are two mandatory scopes inside the same PR1-to-PR6 dependency line. They are not parallel roadmaps, optional add-ons, or substitutes for one another.",
+        "zh_CN": "部署与协作是同一条 PR1 到 PR6 依赖链中的两个强制范围，不是平行路线、可选插件，也不能互相替代。"
+      }
+    },
+    {
+      "id": "U6-INV-02",
+      "title": {
+        "en": "No half-complete PR",
+        "zh_CN": "禁止半完成 PR"
+      },
+      "statement": {
+        "en": "A PR is incomplete if any delivery-scope item, collaboration-scope item, or required evidence item is missing. Completion language such as done, merged, released, or deployed must name the evidence class it actually proves.",
+        "zh_CN": "只要交付范围、协作范围或强制证据中的任一项缺失，该 PR 就不完整。使用“完成、合并、发行、部署”等表述时，必须指出实际证明的证据层级。"
+      }
+    },
+    {
+      "id": "U6-INV-03",
+      "title": {
+        "en": "Three data planes stay separate",
+        "zh_CN": "三个数据平面保持分离"
+      },
+      "statement": {
+        "en": "Coordination holds short-lived presence, leases, progress, findings, blockers, conflicts, and receipts; Project Working Set is a bounded rebuildable projection for the active task or PR; Canonical Memory holds governed stable facts, decisions, principles, and lessons. No plane silently becomes another plane's authority.",
+        "zh_CN": "Coordination 保存短期 presence、租约、进度、finding、blocker、conflict 和 receipt；Project Working Set 是面向当前任务或 PR 的有界可重建投影；Canonical Memory 保存经治理的稳定事实、决策、原则和经验。任何平面都不得静默取得另一平面的权威。"
+      }
+    },
+    {
+      "id": "U6-INV-04",
+      "title": {
+        "en": "Server single-writer authority",
+        "zh_CN": "服务器单写者权威"
+      },
+      "statement": {
+        "en": "The server is the sole coordination, canonical SQLite, governance, accepted-result validation, receipt-persistence, and LanceDB-promotion decision authority. Edge and compute claims, project IDs, manifests, capabilities, and model identity are validation inputs, never authority grants.",
+        "zh_CN": "服务器是 coordination、规范 SQLite、治理、accepted-result 验证、receipt 持久化和 LanceDB 推广决策的唯一权威。Edge/compute 声明、project ID、manifest、capability 和模型身份都只是校验输入，绝不是授权。"
+      }
+    },
+    {
+      "id": "U6-INV-05",
+      "title": {
+        "en": "Strict project and session scope",
+        "zh_CN": "严格项目与会话作用域"
+      },
+      "statement": {
+        "en": "Every Agent session, work item, lease, event, cursor, receipt, retrieval, promotion candidate, and lifecycle action must be bound to canonical project_id and coordination_session_id. Cross-project or ambiguous legacy state fails closed or enters non-claimable quarantine.",
+        "zh_CN": "每个 Agent session、work item、lease、event、cursor、receipt、retrieval、promotion candidate 和生命周期动作都必须绑定规范 project_id 与 coordination_session_id。跨项目或歧义旧状态必须 fail closed 或进入不可认领隔离区。"
+      }
+    },
+    {
+      "id": "U6-INV-06",
+      "title": {
+        "en": "Typed bounded collaboration, not prompt sharing",
+        "zh_CN": "协作必须有类型且有界，不共享完整 prompt"
+      },
+      "statement": {
+        "en": "Agents exchange typed, audience-filtered summaries, references, evidence digests, state transitions, and receipts. Raw prompts, private or hidden reasoning, credentials, lease tokens, provider secrets, full result bodies, and unrestricted peer history never enter collaboration projections or memory proposals.",
+        "zh_CN": "Agent 只交换有类型、按 audience 裁剪的摘要、引用、证据 digest、状态迁移和 receipt。原始 prompt、私有或隐藏推理、凭据、lease token、provider secret、完整结果正文和无限制 peer history 不得进入协作投影或记忆提案。"
+      }
+    },
+    {
+      "id": "U6-INV-07",
+      "title": {
+        "en": "Cursor pull is the correctness path",
+        "zh_CN": "事件游标拉取是正确性路径"
+      },
+      "statement": {
+        "en": "Incremental awareness uses project/session/audience-bound cursor pull with replay, monotonic from/to positions, gap detection, and bounded pages. SSE or other push transport may improve the frontend experience but is never the only correctness channel.",
+        "zh_CN": "增量 awareness 必须使用绑定项目、会话和 audience 的 cursor pull，并支持重放、单调 from/to 位置、gap 检测和有界分页。SSE 等推送只能优化前端体验，不能成为唯一正确性通道。"
+      }
+    },
+    {
+      "id": "U6-INV-08",
+      "title": {
+        "en": "Evidence-governed memory promotion",
+        "zh_CN": "证据治理的记忆晋升"
+      },
+      "statement": {
+        "en": "Peer progress, heartbeats, assumptions, findings, agreement, and semantic capture never become canonical memory. Only a server-validated accepted result with stable evidence, independent review authority, project scope, and resolved conflict state may become a pending proposal; adoption remains a separate governed action.",
+        "zh_CN": "peer progress、heartbeat、assumption、finding、多 Agent 一致和 semantic capture 都不得成为 canonical memory。只有经服务器验证、带稳定证据和独立 reviewer 权威、项目作用域明确且冲突状态已处理的 accepted result 才能成为 pending proposal；adoption 仍是独立治理动作。"
+      }
+    },
+    {
+      "id": "U6-INV-09",
+      "title": {
+        "en": "Shared lease primitives, separate authority planes",
+        "zh_CN": "共享租约原语，分离权限平面"
+      },
+      "statement": {
+        "en": "Developer-Agent work and compute inference jobs reuse one semantic contract for lease, fence, heartbeat, result receipt, retry, reconcile, idempotency, and project scope. Their record types, persistence tables, operation policies, capabilities, and authorization adapters remain distinct and cannot be cast into one another.",
+        "zh_CN": "开发 Agent work 与 compute inference job 复用同一套 lease、fence、heartbeat、result receipt、retry、reconcile、幂等和项目作用域语义合同；但记录类型、持久化表、operation policy、capability 和授权 adapter 必须分离，且不能互相转换。"
+      }
+    },
+    {
+      "id": "U6-INV-10",
+      "title": {
+        "en": "Least privilege and independent acceptance",
+        "zh_CN": "最小权限与独立验收"
+      },
+      "statement": {
+        "en": "Agent identity is bound by the server to a versioned role/tool/capability policy. A delegated Agent cannot grant itself reviewer or coordinator visibility, accept its own finding, mutate canonical memory, merge a PR, deploy, promote a generation, start Maintenance, or modify another Agent's events.",
+        "zh_CN": "Agent identity 必须由服务器绑定到版本化 role/tool/capability policy。被委托 Agent 不得自授 reviewer/coordinator 可见性、验收自己的 finding、修改 canonical memory、合并 PR、部署、推广 generation、启动 Maintenance 或修改其他 Agent 的事件。"
+      }
+    },
+    {
+      "id": "U6-INV-11",
+      "title": {
+        "en": "Immutable lineage and receipts",
+        "zh_CN": "不可变谱系与回执"
+      },
+      "statement": {
+        "en": "Accepted artifacts, awareness projections, deployment plans, migrations, releases, and promotions bind immutable source identities, revisions, digests, cursors, fences, and typed receipts. A completed state plus an artifact reference is not, by itself, an accepted result.",
+        "zh_CN": "accepted artifact、awareness projection、deployment plan、migration、release 和 promotion 必须绑定不可变的 source identity、revision、digest、cursor、fence 和 typed receipt。仅有 completed 状态与 artifact ref 不足以构成 accepted result。"
+      }
+    },
+    {
+      "id": "U6-INV-12",
+      "title": {
+        "en": "Source evidence is not runtime evidence",
+        "zh_CN": "源码证据不等于运行时证据"
+      },
+      "statement": {
+        "en": "A contract, fake adapter, source recipe, unit test, image descriptor, or documentation receipt proves only its stated layer. It cannot prove a listener, persistent runtime, migration, restart, promotion, Maintenance transition, RC publication, stable release, or production acceptance without matching external receipts.",
+        "zh_CN": "合同、fake adapter、源码 recipe、单元测试、image descriptor 或文档 receipt 只证明其声明层级。没有匹配的外部 receipt，就不能证明 listener、持久 runtime、migration、restart、promotion、Maintenance transition、RC 发布、stable release 或生产验收。"
+      }
+    },
+    {
+      "id": "U6-INV-13",
+      "title": {
+        "en": "Bilingual generated parity",
+        "zh_CN": "双语生成一致性"
+      },
+      "statement": {
+        "en": "English and Chinese union-contract views are generated from the same JSON bytes and carry the same SHA-256. Every PR must also keep affected English/Chinese docs, architecture diagrams, badges, links, and resource or pricing tables synchronized.",
+        "zh_CN": "中英文联合合同必须由同一份 JSON 原始字节生成并携带相同 SHA-256。每个 PR 还必须同步受影响的中英文文档、架构图、徽章、链接以及资源或价格表。"
+      }
+    },
+    {
+      "id": "U6-INV-14",
+      "title": {
+        "en": "UTC semantics without host timezone mutation",
+        "zh_CN": "统一 UTC 语义但不修改宿主时区"
+      },
+      "statement": {
+        "en": "The server backend is the sole canonical clock authority. Every persisted or authoritative wire timestamp is server-issued, timezone-aware UTC in canonical Z form. Edge, client, and compute timestamps are diagnostic source observations only and MUST NOT influence ordering, lease expiry, fencing, idempotency, receipts, promotion, or cursor progression. Frontends may localize timestamps for display but MUST NOT write localized values back as authority. Installation must not mutate Linux, macOS, Windows, WSL2, edge, server, or compute host timezone settings.",
+        "zh_CN": "服务器后端是唯一 canonical 时钟权威。每个持久化时间戳或权威 wire 时间戳都必须由服务器签发，并使用带时区的规范 UTC Z 形式。Edge、client 与 compute 时间戳只能作为诊断性的 source observation，绝不得影响排序、租约过期、fence、幂等、回执、晋升或游标推进。前端可以按本地时区展示，但不得把本地化时间回写为权威值。安装过程不得修改 Linux、macOS、Windows、WSL2、edge、server 或 compute 宿主机时区。"
+      }
+    },
+    {
+      "id": "U6-INV-15",
+      "title": {
+        "en": "Workflow Composer remains subordinate to hard gates",
+        "zh_CN": "Workflow Composer 服从硬门"
+      },
+      "statement": {
+        "en": "Workflow Composer is included in PR6 as shadow-only behavior. It may propose an atomic-skill plan and a new frozen plan revision, but a deterministic compiler must restore non-removable safety, review, evidence, migration, release, and authorization gates. It cannot mutate an executing revision, self-attest a user-only stage, waive any item in this contract, or replace the fixed execution route.",
+        "zh_CN": "Workflow Composer 以仅 shadow 行为纳入 PR6。它可以提出原子 skill 计划和新的冻结 plan revision，但确定性编译器必须补回不可移除的安全、审查、证据、迁移、发行和授权硬门。它不得篡改正在执行的 revision、自证 user-only 阶段、豁免本合同任何条目或替代固定执行 route。"
+      }
+    },
+    {
+      "id": "U6-INV-16",
+      "title": {
+        "en": "Independent Standards, Spec, and DeepSec review",
+        "zh_CN": "独立 Standards、Spec 与 DeepSec 审查"
+      },
+      "statement": {
+        "en": "Every PR requires three distinct review channels bound to the same immutable source revision, diff digest, requirement set, and contract revision: Standards conformance, Spec conformance, and DeepSec Shield/code-smell review. Missing, stale, self-issued, cross-revision, or mismatched receipts block completion.",
+        "zh_CN": "每个 PR 都必须具备三条独立审查通道，并绑定同一不可变 source revision、diff digest、requirement 集合和 contract revision：Standards 一致性、Spec 一致性及 DeepSec Shield/代码坏味道审查。缺失、过期、自签、跨 revision 或不匹配的 receipt 必须阻塞完成。"
+      }
+    },
+    {
+      "id": "U6-INV-17",
+      "title": {
+        "en": "AcceptanceReceipt is an authenticated decision",
+        "zh_CN": "AcceptanceReceipt 是认证决策"
+      },
+      "statement": {
+        "en": "An AcceptanceReceipt is a server-authenticated, project/session-scoped decision over one WorkReceipt and ResultReceipt, with independent submitter/reviewer sessions, immutable work/result/evidence digests, policy revision, conflict decision, and UTC issuance time. A result status, artifact reference, reviewer string, or self-attestation cannot substitute for it.",
+        "zh_CN": "AcceptanceReceipt 是服务器认证、绑定项目/会话、针对一个 WorkReceipt 与 ResultReceipt 的决策；它必须包含独立 submitter/reviewer session、不可变 work/result/evidence digest、policy revision、conflict decision 和 UTC 签发时间。result status、artifact reference、reviewer 字符串或自我声明都不能替代它。"
+      }
+    }
+  ],
+  "pull_requests": [
+    {
+      "id": "PR1",
+      "depends_on": [],
+      "required_gate_ids": [
+        "U6-GATE-SOURCE-01",
+        "U6-GATE-REVISION-01",
+        "U6-GATE-DOCUMENT-01",
+        "U6-GATE-ASSET-01",
+        "U6-GATE-REVIEW-01",
+        "U6-GATE-DEEPSEC-01",
+        "U6-GATE-EVIDENCE-01"
+      ],
+      "slug": "routing-core-and-collaboration-foundation",
+      "title": {
+        "en": "Routing core and collaboration foundation",
+        "zh_CN": "路由内核与协作地基"
+      },
+      "objective": {
+        "en": "Create the governed inference-routing seam and the immutable, project-scoped collaboration contracts that every later PR can safely build on.",
+        "zh_CN": "建立受治理的推理路由接缝，以及供后续所有 PR 安全复用的不可变项目级协作合同。"
+      },
+      "delivery_scope": [
+        {
+          "id": "PR1-D01",
+          "statement": {
+            "en": "Introduce one typed routing interface for query embedding, index/outbox embedding, and rerank, with local-node, cloud, and deterministic degradation adapters behind it.",
+            "zh_CN": "为 query embedding、index/outbox embedding 和 rerank 引入统一类型化路由接口，并将本地节点、云端与确定性降级 adapter 放在其后。"
+          }
+        },
+        {
+          "id": "PR1-D02",
+          "statement": {
+            "en": "Enforce exact embedding identity compatibility, explicit profile selection on identity disagreement, bounded health/circuit recovery, and separation of core MCP readiness from optional structured-inference readiness.",
+            "zh_CN": "强制精确 embedding identity 兼容；身份不一致时显式选择 profile；提供有界 health/circuit 恢复；分离 MCP 核心 readiness 与可选结构化推理 readiness。"
+          }
+        },
+        {
+          "id": "PR1-D03",
+          "statement": {
+            "en": "Provide durable queue/reconcile semantics for unavailable derived work without creating another canonical writer or treating LanceDB as recovery authority.",
+            "zh_CN": "为不可用的派生任务提供持久 queue/reconcile 语义，不新增规范写入者，也不把 LanceDB 当作恢复权威。"
+          }
+        },
+        {
+          "id": "PR1-D04",
+          "statement": {
+            "en": "Migrate every existing task enqueue, dedupe, claim, heartbeat, complete, verify/review, inbox, release/abandon, and recovery path plus schema/index/trigger constraints to mandatory project_id; ambiguous legacy rows are quarantined and non-claimable.",
+            "zh_CN": "将所有现有 task enqueue、dedupe、claim、heartbeat、complete、verify/review、inbox、release/abandon、recovery 路径及 schema/index/trigger 约束迁移为强制 project_id；歧义旧行进入隔离且不可认领。"
+          }
+        }
+      ],
+      "collaboration_scope": [
+        {
+          "id": "PR1-C01",
+          "statement": {
+            "en": "Define secret-free typed contracts for AgentIdentity, AgentSession, ProjectScope, CoordinationSession, WorkItem, WorkLease, CollaborationEvent, EventCursor/EventPage, WorkReceipt, ResultReceipt, ReviewReceipt, and AcceptanceReceipt.",
+            "zh_CN": "定义无 secret 的类型化合同：AgentIdentity、AgentSession、ProjectScope、CoordinationSession、WorkItem、WorkLease、CollaborationEvent、EventCursor/EventPage、WorkReceipt、ResultReceipt、ReviewReceipt 和 AcceptanceReceipt。"
+          }
+        },
+        {
+          "id": "PR1-C02",
+          "statement": {
+            "en": "Add a project/session-scoped append-only CollaborationEventLog foundation with idempotent event identity, causal-parent checks, expiry, audience filtering, bounded cursor reads, corruption detection, and explicit SQLite injection; do not wire production listeners yet.",
+            "zh_CN": "增加按项目/会话隔离的 append-only CollaborationEventLog 地基，具备幂等 event identity、因果父级检查、过期、audience 过滤、有界 cursor 读取、损坏检测和显式 SQLite 注入；此阶段不接生产 listener。"
+          }
+        },
+        {
+          "id": "PR1-C03",
+          "statement": {
+            "en": "Define the ProjectWorkBoard boundary over the hardened task lifecycle so handlers do not become the long-term SQL authority; persistence adapters and the mutable registry/work-board lifecycle remain PR5 work.",
+            "zh_CN": "在已加固 task lifecycle 上定义 ProjectWorkBoard 边界，避免 handler 长期成为 SQL 权威；持久化 adapter 与可变 registry/work-board 生命周期留给 PR5。"
+          }
+        },
+        {
+          "id": "PR1-C04",
+          "statement": {
+            "en": "Bind Agent identity/session values to a versioned least-privilege role, tool, and capability policy contract. Caller-provided role or capability strings do not grant authority; authenticated runtime binding is completed in PR5.",
+            "zh_CN": "将 Agent identity/session 值绑定到版本化最小权限 role/tool/capability policy 合同。调用方自报 role 或 capability 不授予权限；认证 runtime binding 在 PR5 完成。"
+          }
+        },
+        {
+          "id": "PR1-C05",
+          "statement": {
+            "en": "Encode the Coordination, Project Working Set, and Canonical Memory separation, including the rule that peer progress and unverified findings are never automatically promotion-eligible.",
+            "zh_CN": "编码 Coordination、Project Working Set 与 Canonical Memory 的分离，包括 peer progress 与未验证 finding 绝不自动具备晋升资格。"
+          }
+        },
+        {
+          "id": "PR1-C06",
+          "statement": {
+            "en": "Define AcceptanceReceipt as a server-authenticated immutable decision binding acceptance_receipt_id, project_id, coordination_session_id, work_item_id, WorkReceipt, ResultReceipt, submitter_agent_session_id, independent reviewer_agent_session_id, review_policy_revision, source_revision, work/result/evidence digests, decision, conflict_state, and issued_at_utc. Self-acceptance, caller-supplied reviewer identity, unresolved conflict, stale policy, cross-scope receipt, or digest mismatch fails closed.",
+            "zh_CN": "将 AcceptanceReceipt 定义为服务器认证的不可变决策，绑定 acceptance_receipt_id、project_id、coordination_session_id、work_item_id、WorkReceipt、ResultReceipt、submitter_agent_session_id、独立 reviewer_agent_session_id、review_policy_revision、source_revision、work/result/evidence digest、decision、conflict_state 和 issued_at_utc。自我验收、调用方自报 reviewer 身份、未解决 conflict、过期 policy、跨作用域 receipt 或 digest 不匹配必须 fail closed。"
+          }
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "PR1-E01",
+          "statement": {
+            "en": "Focused query/index/rerank route tests plus exact-identity, profile-selection, degradation, circuit-recovery, and optional-provider-health evidence.",
+            "zh_CN": "聚焦 query/index/rerank 路由测试，以及 exact identity、profile selection、降级、circuit recovery 和可选 provider health 证据。"
+          }
+        },
+        {
+          "id": "PR1-E02",
+          "statement": {
+            "en": "Contract validation and secret/private-reasoning rejection matrix covering every required collaboration value, WorkItem/WorkLease lifecycle edge, and minimum-policy binding.",
+            "zh_CN": "覆盖全部强制协作值、WorkItem/WorkLease 生命周期边界和最小权限 policy binding 的合同校验及 secret/private-reasoning 拒绝矩阵。"
+          }
+        },
+        {
+          "id": "PR1-E03",
+          "statement": {
+            "en": "Event-log append/idempotency/causal-scope/audience/expiry/cursor/corruption tests and a cross-project negative matrix for every hardened task operation and migration/recovery transaction.",
+            "zh_CN": "Event log 的 append/idempotency/causal scope/audience/expiry/cursor/corruption 测试，以及覆盖全部加固 task operation 和迁移/恢复事务的跨项目负向矩阵。"
+          }
+        },
+        {
+          "id": "PR1-E04",
+          "statement": {
+            "en": "Bilingual documentation and generated union-contract drift gate, with explicit upgrade, degradation, rollback, quarantine, and no-production-activation statements.",
+            "zh_CN": "双语文档与生成式联合合同漂移门禁，并明确 upgrade、degradation、rollback、quarantine 和未激活生产的声明。"
+          }
+        },
+        {
+          "id": "PR1-E05",
+          "statement": {
+            "en": "AcceptanceReceipt conformance and negative evidence covering authenticated server issuance, independent reviewer sessions, WorkReceipt/ResultReceipt/digest binding, policy revision, conflict decision, replay/idempotency, self-acceptance, stale policy, cross-project/session scope, and tampered or mismatched evidence.",
+            "zh_CN": "AcceptanceReceipt 一致性与负向证据，覆盖服务器认证签发、独立 reviewer session、WorkReceipt/ResultReceipt/digest 绑定、policy revision、conflict decision、replay/idempotency、自我验收、过期 policy、跨项目/会话作用域及被篡改或不匹配证据。"
+          }
+        },
+        {
+          "id": "PR1-E06",
+          "statement": {
+            "en": "Independent Standards, Spec, and DeepSec Shield/code-smell review receipts bound to the same immutable source revision, diff digest, requirement set, and union-contract revision, with DeepSec least-privilege and non-canonical-finding proof.",
+            "zh_CN": "独立 Standards、Spec 与 DeepSec Shield/代码坏味道 review receipt，绑定同一不可变 source revision、diff digest、requirement 集合和联合合同 revision，并证明 DeepSec 最小权限及 finding 不进入 canonical memory。"
+          }
+        }
+      ],
+      "completion_rule": {
+        "operator": "all",
+        "required_groups": [
+          "delivery_scope",
+          "collaboration_scope",
+          "required_evidence"
+        ],
+        "prohibits_partial_completion": true,
+        "statement": {
+          "en": "PR1 is complete only when the routing/task delivery seam and the full immutable collaboration foundation are both implemented and evidenced. Task project isolation or collaboration value classes alone are insufficient.",
+          "zh_CN": "只有路由/task 交付接缝与完整不可变协作地基都实现并有证据时，PR1 才完成。仅有 task 项目隔离或协作值类都不充分。"
+        }
+      }
+    },
+    {
+      "id": "PR2",
+      "depends_on": [
+        "PR1"
+      ],
+      "required_gate_ids": [
+        "U6-GATE-SOURCE-01",
+        "U6-GATE-REVISION-01",
+        "U6-GATE-DOCUMENT-01",
+        "U6-GATE-ASSET-01",
+        "U6-GATE-REVIEW-01",
+        "U6-GATE-DEEPSEC-01",
+        "U6-GATE-EVIDENCE-01"
+      ],
+      "slug": "endpoint-contracts-and-shared-lease-semantics",
+      "title": {
+        "en": "Endpoint contracts and shared lease semantics",
+        "zh_CN": "端点合同与共享租约语义"
+      },
+      "objective": {
+        "en": "Define closed three-endpoint authority and make compute jobs and Agent work conform to the same lease semantics without merging their authority planes.",
+        "zh_CN": "定义封闭的三端点权限，并让 compute job 与 Agent work 遵循相同租约语义，同时保持权限平面分离。"
+      },
+      "delivery_scope": [
+        {
+          "id": "PR2-D01",
+          "statement": {
+            "en": "Define versioned pp-local-edge, pp-server-backend, and pp-compute-node contracts through a closed EndpointAuthority resolve/assess/verify_completion interface.",
+            "zh_CN": "通过封闭的 EndpointAuthority resolve/assess/verify_completion 接口定义版本化 pp-local-edge、pp-server-backend 和 pp-compute-node 合同。"
+          }
+        },
+        {
+          "id": "PR2-D02",
+          "statement": {
+            "en": "Compile server-owned role/action authority profiles: edge submits intent and reads bounded projections; server owns canonical inference/collaboration/governance decisions; compute may execute bounded embedding/rerank work and return derived evidence only.",
+            "zh_CN": "编译服务器拥有的 role/action 权限 profile：edge 只提交 intent 和读取有界投影；server 拥有规范推理/协作/治理决策；compute 只执行有界 embedding/rerank 并返回派生证据。"
+          }
+        },
+        {
+          "id": "PR2-D03",
+          "statement": {
+            "en": "Define manifest/hello/capability/result identities, exact model compatibility, resource floors, schema versions, idempotency, timeout, cancellation, terminal reasons, resource reports, and golden-probe evidence without activating runtime persistence.",
+            "zh_CN": "定义 manifest/hello/capability/result 身份、精确模型兼容、资源下限、schema version、幂等、timeout、cancellation、terminal reason、resource report 和 golden-probe 证据，但不激活 runtime 持久化。"
+          }
+        }
+      ],
+      "collaboration_scope": [
+        {
+          "id": "PR2-C01",
+          "statement": {
+            "en": "Create one common semantic contract for Lease, Fence, Heartbeat, ResultReceipt, RetryDecision, ReconcileDecision, idempotency, expiry, and ProjectScope, with conformance adapters for both Agent work and compute jobs.",
+            "zh_CN": "为 Lease、Fence、Heartbeat、ResultReceipt、RetryDecision、ReconcileDecision、幂等、过期和 ProjectScope 创建统一语义合同，并为 Agent work 与 compute job 提供 conformance adapter。"
+          }
+        },
+        {
+          "id": "PR2-C02",
+          "statement": {
+            "en": "Keep Agent WorkItem/WorkLease records, compute job/lease records, tables, operation policies, capabilities, result bodies, and authorization adapters distinct; no matching project_id or structural cast crosses the boundary.",
+            "zh_CN": "保持 Agent WorkItem/WorkLease 与 compute job/lease 的记录、表、operation policy、capability、result body 和授权 adapter 分离；相同 project_id 或结构转换都不能跨越边界。"
+          }
+        },
+        {
+          "id": "PR2-C03",
+          "statement": {
+            "en": "Use server-issued current fences and server-owned retry/reconcile decisions. Stale, expired, mismatched, replayed, or cross-plane completions fail closed with stable reason codes.",
+            "zh_CN": "使用服务器签发的 current fence 和服务器拥有的 retry/reconcile 决策。stale、expired、mismatched、replayed 或跨平面 completion 必须以稳定 reason code fail closed。"
+          }
+        },
+        {
+          "id": "PR2-C04",
+          "statement": {
+            "en": "Deny compute all Task Queue, AgentRegistry, ProjectWorkBoard, collaboration-event-writer, awareness, memory/knowledge-promotion, merge, deployment, Maintenance, canonical SQLite, and LanceDB-promotion authority.",
+            "zh_CN": "拒绝 compute 获得任何 Task Queue、AgentRegistry、ProjectWorkBoard、collaboration-event-writer、awareness、memory/knowledge promotion、merge、deployment、Maintenance、canonical SQLite 和 LanceDB promotion 权限。"
+          }
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "PR2-E01",
+          "statement": {
+            "en": "Endpoint schema round-trip, secret rejection, closed authority matrix, exact identity, protocol compatibility, resource-floor, and role denial tests.",
+            "zh_CN": "Endpoint schema round-trip、secret rejection、封闭权限矩阵、exact identity、protocol compatibility、resource floor 和角色拒绝测试。"
+          }
+        },
+        {
+          "id": "PR2-E02",
+          "statement": {
+            "en": "One shared lease-semantics conformance suite executed against both the Agent-work adapter and compute-job adapter, covering fence, heartbeat, receipt, retry, reconcile, expiry, idempotency, and project scope.",
+            "zh_CN": "同一套共享租约语义 conformance suite 必须分别对 Agent-work adapter 与 compute-job adapter 运行，覆盖 fence、heartbeat、receipt、retry、reconcile、expiry、idempotency 和 project scope。"
+          }
+        },
+        {
+          "id": "PR2-E03",
+          "statement": {
+            "en": "Negative proofs that a compute completion cannot complete Agent work, an Agent receipt cannot satisfy a compute job, and caller claims cannot grant either authority.",
+            "zh_CN": "负向证明：compute completion 不能完成 Agent work，Agent receipt 不能满足 compute job，调用方声明不能授予任一权限。"
+          }
+        },
+        {
+          "id": "PR2-E04",
+          "statement": {
+            "en": "Source-only upgrade/degradation/rollback and bilingual documentation evidence that makes no listener, persistence, migration, deployment, or production claim.",
+            "zh_CN": "源码级 upgrade/degradation/rollback 和双语文档证据，并明确不声称 listener、persistence、migration、deployment 或 production 已完成。"
+          }
+        },
+        {
+          "id": "PR2-E05",
+          "statement": {
+            "en": "Independent Standards, Spec, and DeepSec Shield/code-smell review receipts bound to the same immutable source revision, diff digest, requirement set, and union-contract revision, with DeepSec least-privilege and non-canonical-finding proof.",
+            "zh_CN": "独立 Standards、Spec 与 DeepSec Shield/代码坏味道 review receipt，绑定同一不可变 source revision、diff digest、requirement 集合和联合合同 revision，并证明 DeepSec 最小权限及 finding 不进入 canonical memory。"
+          }
+        }
+      ],
+      "completion_rule": {
+        "operator": "all",
+        "required_groups": [
+          "delivery_scope",
+          "collaboration_scope",
+          "required_evidence"
+        ],
+        "prohibits_partial_completion": true,
+        "statement": {
+          "en": "PR2 is complete only when endpoint authority and the common Agent/compute lease semantics both pass their conformance and isolation proofs. Compute-only lease classes are not sufficient.",
+          "zh_CN": "只有 endpoint authority 与 Agent/compute 共用租约语义都通过 conformance 与隔离证明时，PR2 才完成。只有 compute lease 类并不充分。"
+        }
+      }
+    },
+    {
+      "id": "PR3",
+      "depends_on": [
+        "PR2"
+      ],
+      "required_gate_ids": [
+        "U6-GATE-SOURCE-01",
+        "U6-GATE-REVISION-01",
+        "U6-GATE-DOCUMENT-01",
+        "U6-GATE-ASSET-01",
+        "U6-GATE-REVIEW-01",
+        "U6-GATE-DEEPSEC-01",
+        "U6-GATE-EVIDENCE-01"
+      ],
+      "slug": "container-artifacts-and-passive-memory-events",
+      "title": {
+        "en": "Container artifacts and Passive Memory collaboration events",
+        "zh_CN": "容器制品与 Passive Memory 协作事件"
+      },
+      "objective": {
+        "en": "Prove role-specific artifact boundaries and connect Passive Memory Hooks to typed collaboration events without promoting transient Agent activity into memory.",
+        "zh_CN": "证明按角色划分的制品边界，并将 Passive Memory Hook 接入类型化协作事件，同时防止瞬时 Agent 活动晋升为记忆。"
+      },
+      "delivery_scope": [
+        {
+          "id": "PR3-D01",
+          "statement": {
+            "en": "Provide a secret-free ContainerArtifactCompiler prepare/materialize seam and a role × platform × variant matrix for edge, server, compute CPU, and compute CUDA.",
+            "zh_CN": "提供无 secret 的 ContainerArtifactCompiler prepare/materialize 接缝，以及 edge、server、compute CPU、compute CUDA 的 role × platform × variant 矩阵。"
+          }
+        },
+        {
+          "id": "PR3-D02",
+          "statement": {
+            "en": "Require immutable OCI, SBOM, provenance, application-inventory, role-label, non-root, read-only-rootfs, listener, mount, and layer-exclusion evidence; model weights, databases, secrets, runtime state, logs, and build caches stay out of layers.",
+            "zh_CN": "强制不可变 OCI、SBOM、provenance、application inventory、role label、non-root、read-only-rootfs、listener、mount 与 layer exclusion 证据；模型权重、数据库、secret、runtime state、日志和 build cache 不得进入镜像层。"
+          }
+        },
+        {
+          "id": "PR3-D03",
+          "statement": {
+            "en": "Package collaboration writer/runtime modules only in the server artifact; edge receives only bounded projection/submission contracts and compute physically contains no collaboration package or configuration surface.",
+            "zh_CN": "collaboration writer/runtime module 只封装进 server artifact；edge 只获得有界 projection/submission contract；compute 物理上不包含 collaboration package 或配置面。"
+          }
+        },
+        {
+          "id": "PR3-D04",
+          "statement": {
+            "en": "Keep local runtime activation, listener binding, tunnel creation, registry push, migration, promotion, Maintenance, MCP restart, and production mutation out of PR3; protected no-push build verification is evidence only.",
+            "zh_CN": "PR3 不得执行本地 runtime 激活、listener 绑定、tunnel 创建、registry push、migration、promotion、Maintenance、MCP restart 或生产修改；受保护的 no-push 构建验证只属于证据。"
+          }
+        }
+      ],
+      "collaboration_scope": [
+        {
+          "id": "PR3-C01",
+          "statement": {
+            "en": "On Stop, publish a bounded project/session-scoped work.progressed or work.submitted event; publish accepted-result events only when a server-authenticated independent acceptance receipt already exists.",
+            "zh_CN": "Stop 时发布有界且绑定项目/会话的 work.progressed 或 work.submitted event；只有已存在服务器认证的独立 acceptance receipt 时才发布 accepted-result event。"
+          }
+        },
+        {
+          "id": "PR3-C02",
+          "statement": {
+            "en": "Keep semantic capture unchanged as a pending-proposal producer. Ordinary progress, peer events, assumptions, findings, and submitted-but-unaccepted work are never memory proposals or canonical memory.",
+            "zh_CN": "semantic capture 仍只生成 pending proposal。普通进度、peer event、assumption、finding 和尚未 accepted 的 submitted work 绝不成为 memory proposal 或 canonical memory。"
+          }
+        },
+        {
+          "id": "PR3-C03",
+          "statement": {
+            "en": "Route only accepted work with typed receipt, stable evidence, project scope, and conflict state into the CollaborationMemoryPromoter input contract; the output may be only a pending proposal and adoption remains separate.",
+            "zh_CN": "只有带 typed receipt、稳定证据、项目作用域和冲突状态的 accepted work 才能进入 CollaborationMemoryPromoter 输入合同；输出只能是 pending proposal，adoption 仍然分离。"
+          }
+        },
+        {
+          "id": "PR3-C04",
+          "statement": {
+            "en": "Hook event payloads contain typed summaries, artifact/evidence references, and causal links only; raw prompt, hidden reasoning, credentials, result bodies, lease tokens, and provider secrets are rejected.",
+            "zh_CN": "Hook event payload 只包含类型化摘要、artifact/evidence ref 与 causal link；拒绝 raw prompt、hidden reasoning、credential、result body、lease token 和 provider secret。"
+          }
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "PR3-E01",
+          "statement": {
+            "en": "Artifact policy, final-rootfs inventory, SBOM/provenance, role-label, mount/layer, and import-denial checks proving server-only collaboration and complete compute exclusion.",
+            "zh_CN": "Artifact policy、final-rootfs inventory、SBOM/provenance、role label、mount/layer 与 import-denial 检查，证明 collaboration 仅在 server 且 compute 完全排除。"
+          }
+        },
+        {
+          "id": "PR3-E02",
+          "statement": {
+            "en": "Stop Hook tests for progress/submission/accepted-event selection, scope binding, idempotency, fail-open retry behavior, bounded payloads, and secret/private-reasoning rejection.",
+            "zh_CN": "Stop Hook 的 progress/submission/accepted event 选择、scope binding、idempotency、fail-open retry、有界 payload 与 secret/private-reasoning 拒绝测试。"
+          }
+        },
+        {
+          "id": "PR3-E03",
+          "statement": {
+            "en": "Promotion negative matrix proving peer progress, agreement, completed-plus-artifact, self-acceptance, assumptions, findings, and semantic capture cannot bypass an authenticated acceptance receipt or create canonical memory.",
+            "zh_CN": "Promotion 负向矩阵，证明 peer progress、多 Agent 一致、completed-plus-artifact、自我验收、assumption、finding 和 semantic capture 都不能绕过认证 acceptance receipt 或创建 canonical memory。"
+          }
+        },
+        {
+          "id": "PR3-E04",
+          "statement": {
+            "en": "Explicit no-runtime/no-production activation assertion and bilingual artifact/Hook boundary documentation.",
+            "zh_CN": "显式 no-runtime/no-production 激活断言，以及双语 artifact/Hook 边界文档。"
+          }
+        },
+        {
+          "id": "PR3-E05",
+          "statement": {
+            "en": "Independent Standards, Spec, and DeepSec Shield/code-smell review receipts bound to the same immutable source revision, diff digest, requirement set, and union-contract revision, with DeepSec least-privilege and non-canonical-finding proof.",
+            "zh_CN": "独立 Standards、Spec 与 DeepSec Shield/代码坏味道 review receipt，绑定同一不可变 source revision、diff digest、requirement 集合和联合合同 revision，并证明 DeepSec 最小权限及 finding 不进入 canonical memory。"
+          }
+        }
+      ],
+      "completion_rule": {
+        "operator": "all",
+        "required_groups": [
+          "delivery_scope",
+          "collaboration_scope",
+          "required_evidence"
+        ],
+        "prohibits_partial_completion": true,
+        "statement": {
+          "en": "PR3 is complete only when both artifact isolation and Passive Memory collaboration-event/promotion boundaries are implemented and tested. Server-only packaging by itself does not complete PR3.",
+          "zh_CN": "只有 artifact isolation 与 Passive Memory 协作事件/晋升边界都实现并测试后，PR3 才完成。仅有 server-only packaging 不能完成 PR3。"
+        }
+      }
+    },
+    {
+      "id": "PR4",
+      "depends_on": [
+        "PR3"
+      ],
+      "required_gate_ids": [
+        "U6-GATE-SOURCE-01",
+        "U6-GATE-REVISION-01",
+        "U6-GATE-DOCUMENT-01",
+        "U6-GATE-ASSET-01",
+        "U6-GATE-REVIEW-01",
+        "U6-GATE-DEEPSEC-01",
+        "U6-GATE-EVIDENCE-01"
+      ],
+      "slug": "deployment-center-and-collaboration-retrieval",
+      "title": {
+        "en": "Deployment Center and collaboration retrieval projection",
+        "zh_CN": "Deployment Center 与协作检索投影"
+      },
+      "objective": {
+        "en": "Deliver a read-only deployment-planning surface and an authenticated, bounded collaboration projection that context_supply composes beside, never inside, canonical memory retrieval.",
+        "zh_CN": "交付只读部署规划面，以及经认证且有界的协作投影；context_supply 将其放在 canonical memory 检索旁边合成，而不是混入其中。"
+      },
+      "delivery_scope": [
+        {
+          "id": "PR4-D01",
+          "statement": {
+            "en": "Provide a host-only DeploymentCenter with only inspect and preview plus a closed ppctl dispatcher; apply, shell, Docker, SSH, arbitrary paths/commands, credential transfer, node contact, services, database mutation, promotion, and receipt persistence remain unavailable.",
+            "zh_CN": "提供只含 inspect/preview 的 host-only DeploymentCenter 和封闭 ppctl dispatcher；apply、shell、Docker、SSH、任意 path/command、credential transfer、node contact、service、database mutation、promotion 与 receipt persistence 均不可用。"
+          }
+        },
+        {
+          "id": "PR4-D02",
+          "statement": {
+            "en": "Use bounded JSON input, secret-free manifest candidates, redacted fresh projections, macOS/Linux/Windows-WSL2 resource inspection, profile recommendation/override, model identity comparison, safe-space refusal, and inspection-only update classes.",
+            "zh_CN": "使用有界 JSON 输入、无 secret manifest candidate、脱敏新鲜投影、macOS/Linux/Windows-WSL2 资源检查、profile 推荐/覆盖、模型身份比较、空间不足拒绝和仅 inspection 的 update class。"
+          }
+        },
+        {
+          "id": "PR4-D03",
+          "statement": {
+            "en": "Keep pp-local-edge a non-authoritative static browser entry and keep the existing backend MCP endpoint authoritative; every status or plan claim requires a fresh host/server projection.",
+            "zh_CN": "保持 pp-local-edge 为非权威静态浏览器入口，保持现有 backend MCP endpoint 为权威入口；每个 status 或 plan 声明都需要新鲜 host/server projection。"
+          }
+        }
+      ],
+      "collaboration_scope": [
+        {
+          "id": "PR4-C01",
+          "statement": {
+            "en": "Implement ProjectWorkingSet as a bounded, rebuildable, non-authoritative projection and AgentAwarenessProjection as a role/audience-specific delta view; neither grants lease, execution, review, or memory authority.",
+            "zh_CN": "实现有界、可重建、非权威的 ProjectWorkingSet，以及按 role/audience 裁剪的 AgentAwarenessProjection delta view；二者都不授予 lease、execution、review 或 memory 权限。"
+          }
+        },
+        {
+          "id": "PR4-C02",
+          "statement": {
+            "en": "Retrieve project memory and peer collaboration events through separate ranking paths. context_supply composes an independent collaboration field after memory retrieval; peer relevance never changes canonical-memory scores or overrides user instructions.",
+            "zh_CN": "项目记忆与 peer collaboration event 必须通过分离的 ranking path 检索。context_supply 在记忆检索后合成独立 collaboration 字段；peer relevance 不得改变 canonical-memory score 或覆盖用户指令。"
+          }
+        },
+        {
+          "id": "PR4-C03",
+          "statement": {
+            "en": "Provide role-aware relevance using work dependency, same module/symbol/artifact/decision, causal distance, freshness, and severity; open conflict and blocker events rank ahead of ordinary progress.",
+            "zh_CN": "提供 role-aware relevance，考虑 work dependency、same module/symbol/artifact/decision、causal distance、freshness 和 severity；开放 conflict 与 blocker event 优先于普通 progress。"
+          }
+        },
+        {
+          "id": "PR4-C04",
+          "statement": {
+            "en": "Bind every collaboration delta to a server-authenticated source tuple: source_kind=collaboration-event-log, source_authority=server, project_id, coordination_session_id, audience, AgentSession policy_revision, event_schema_revision, event_log_revision, cursor_from, cursor_to, source_page_digest, projection_factory_revision, and generated_at_utc. Reject role or audience self-assertion, source substitution, cursor regression/gaps, forged pages or digests, stale policy/factory revision, and arbitrary caller-constructed projections.",
+            "zh_CN": "将每个 collaboration delta 绑定到服务器认证的精确 source tuple：source_kind=collaboration-event-log、source_authority=server、project_id、coordination_session_id、audience、AgentSession policy_revision、event_schema_revision、event_log_revision、cursor_from、cursor_to、source_page_digest、projection_factory_revision 和 generated_at_utc。拒绝 role/audience 自报、source substitution、cursor 回退/gap、伪造 page/digest、过期 policy/factory revision 和调用方任意构造的 projection。"
+          }
+        },
+        {
+          "id": "PR4-C05",
+          "statement": {
+            "en": "Accepted artifacts require the exact server-authenticated independent AcceptanceReceipt contract from PR1-C06, including acceptance_receipt_id and receipt digest in the source tuple. completed plus artifact_refs, a reviewer string, or an unbound ResultReceipt is insufficient. Objectives, capabilities, event payloads, prompts, private reasoning, credentials, and result bodies are redacted at the server-owned projection factory.",
+            "zh_CN": "Accepted artifact 必须使用 PR1-C06 的精确服务器认证独立 AcceptanceReceipt 合同，并在 source tuple 中包含 acceptance_receipt_id 与 receipt digest。completed 加 artifact_refs、reviewer 字符串或未绑定 ResultReceipt 都不充分。objective、capability、event payload、prompt、private reasoning、credential 和 result body 由服务器拥有的 projection factory 脱敏。"
+          }
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "PR4-E01",
+          "statement": {
+            "en": "DeploymentCenter two-operation allowlist, bounded streaming input, V2-only candidate, redaction, profile/resource/model comparison, safe-space refusal, and no-mutation tests.",
+            "zh_CN": "DeploymentCenter 两操作 allowlist、有界 streaming input、V2-only candidate、redaction、profile/resource/model comparison、安全空间拒绝和 no-mutation 测试。"
+          }
+        },
+        {
+          "id": "PR4-E02",
+          "statement": {
+            "en": "Working-set and awareness boundary tests for project/session isolation and the exact server-authenticated source tuple: source kind/authority, authenticated role and audience, policy/event-schema/event-log/projection-factory revisions, source page digest, cursor_from/to resume and gap behavior, generated_at_utc, bounded source/page/output sizes, AcceptanceReceipt lineage when present, and redaction.",
+            "zh_CN": "Working set 与 awareness 边界测试，覆盖 project/session 隔离及精确服务器认证 source tuple：source kind/authority、认证 role/audience、policy/event-schema/event-log/projection-factory revision、source page digest、cursor_from/to resume 与 gap 行为、generated_at_utc、有界 source/page/output 大小、存在 accepted artifact 时的 AcceptanceReceipt 谱系，以及脱敏。"
+          }
+        },
+        {
+          "id": "PR4-E03",
+          "statement": {
+            "en": "context_supply integration proof that memory and collaboration are retrieved/ranked separately then composed, with conflict/blocker priority and no canonical-memory effect.",
+            "zh_CN": "context_supply 集成证明：memory 与 collaboration 分别检索/排序后再合成，conflict/blocker 优先，且无 canonical-memory effect。"
+          }
+        },
+        {
+          "id": "PR4-E04",
+          "statement": {
+            "en": "Negative tests for forged reviewer/coordinator role or audience, forged or self-issued AcceptanceReceipt, source-kind/authority/revision/digest substitution, caller-built projections, cursor skipping/replay ambiguity, raw-prompt/private-reasoning leakage, stale policy or projection-factory revision, and peer override of user or canonical context.",
+            "zh_CN": "负向测试覆盖伪造 reviewer/coordinator role 或 audience、伪造/自签 AcceptanceReceipt、source kind/authority/revision/digest 替换、调用方构造 projection、cursor skip/replay 歧义、raw prompt/private reasoning 泄漏、过期 policy/projection-factory revision，以及 peer 覆盖用户或 canonical context。"
+          }
+        },
+        {
+          "id": "PR4-E05",
+          "statement": {
+            "en": "Independent Standards, Spec, and DeepSec Shield/code-smell review receipts bound to the same immutable source revision, diff digest, requirement set, and union-contract revision, with DeepSec least-privilege and non-canonical-finding proof.",
+            "zh_CN": "独立 Standards、Spec 与 DeepSec Shield/代码坏味道 review receipt，绑定同一不可变 source revision、diff digest、requirement 集合和联合合同 revision，并证明 DeepSec 最小权限及 finding 不进入 canonical memory。"
+          }
+        }
+      ],
+      "completion_rule": {
+        "operator": "all",
+        "required_groups": [
+          "delivery_scope",
+          "collaboration_scope",
+          "required_evidence"
+        ],
+        "prohibits_partial_completion": true,
+        "statement": {
+          "en": "PR4 is complete only when the read-only Deployment Center and authenticated collaboration retrieval/context_supply composition both work. Pure projection value classes without a trusted feed and retrieval consumer are insufficient.",
+          "zh_CN": "只有只读 Deployment Center 与经认证的 collaboration retrieval/context_supply 合成都可用时，PR4 才完成。只有 projection value class 而没有可信 feed 与 retrieval consumer 不充分。"
+        }
+      }
+    },
+    {
+      "id": "PR5",
+      "depends_on": [
+        "PR4"
+      ],
+      "required_gate_ids": [
+        "U6-GATE-SOURCE-01",
+        "U6-GATE-REVISION-01",
+        "U6-GATE-DOCUMENT-01",
+        "U6-GATE-ASSET-01",
+        "U6-GATE-REVIEW-01",
+        "U6-GATE-DEEPSEC-01",
+        "U6-GATE-EVIDENCE-01"
+      ],
+      "slug": "migration-operations-and-collaboration-runtime",
+      "title": {
+        "en": "Migration operations and collaboration runtime",
+        "zh_CN": "迁移操作与协作运行时"
+      },
+      "objective": {
+        "en": "Activate the persistent server-owned runtime for three-endpoint migration and the complete Agent registry, work-board, Hook, MCP, Maintenance, promotion, and frontend lifecycle with reversible recovery.",
+        "zh_CN": "激活服务器拥有的持久三端迁移运行时，并完整接通 Agent registry、work board、Hook、MCP、Maintenance、promotion 与前端生命周期，且可逆恢复。"
+      },
+      "delivery_scope": [
+        {
+          "id": "PR5-D01",
+          "statement": {
+            "en": "Provide a server-owned typed MigrationOperation plan/grant/lease/fence/phase/receipt orchestrator with a backup-gated durable journal, drift rejection, one-shot grants, stable failures, and restart recovery; browser/ppctl remain read-only.",
+            "zh_CN": "提供服务器拥有的类型化 MigrationOperation plan/grant/lease/fence/phase/receipt orchestrator，具备备份门禁持久 journal、drift rejection、one-shot grant、稳定失败和重启恢复；browser/ppctl 仍只读。"
+          }
+        },
+        {
+          "id": "PR5-D02",
+          "statement": {
+            "en": "Perform authorized preflight, immutable image verification, online backup and integrity rehearsal, single-writer cutover, endpoint/tunnel/capability/model checks, SQLite migration, shadow LanceDB rebuild and atomic promotion, Maintenance transition, rollback, and secret-free receipt persistence through typed adapters.",
+            "zh_CN": "通过类型化 adapter 执行经授权的 preflight、不可变镜像验证、在线备份与完整性演练、单写者切换、endpoint/tunnel/capability/model 检查、SQLite migration、shadow LanceDB rebuild/atomic promotion、Maintenance transition、rollback 和无 secret receipt 持久化。"
+          }
+        },
+        {
+          "id": "PR5-D03",
+          "statement": {
+            "en": "Keep canonical SQLite mounted only by pp-server-backend/pp-core, keep LanceDB rebuildable derived state, enable Maintenance by default after successful cutover, retain production backups for at most five days, and clear temporary cache daily.",
+            "zh_CN": "canonical SQLite 仅由 pp-server-backend/pp-core 挂载，LanceDB 保持可重建派生状态；成功切换后默认启用 Maintenance；生产备份最多保留五天，临时缓存每日清理。"
+          }
+        }
+      ],
+      "collaboration_scope": [
+        {
+          "id": "PR5-C01",
+          "statement": {
+            "en": "Persist AgentRegistry and ProjectWorkBoard behind server single-writer authority, including join/active/idle/stale/closed Agent lifecycle and proposed/ready/leased/in_progress/submitted/reviewing/accepted/rework/expired work lifecycle.",
+            "zh_CN": "在服务器单写者权威后持久化 AgentRegistry 与 ProjectWorkBoard，包括 join/active/idle/stale/closed Agent 生命周期，以及 proposed/ready/leased/in_progress/submitted/reviewing/accepted/rework/expired work 生命周期。"
+          }
+        },
+        {
+          "id": "PR5-C02",
+          "statement": {
+            "en": "Extend session-init to register an authenticated Agent session and return bound policy, working-set summary, assigned work, peer delta, and cursor; heartbeat/tool calls reconcile presence, leases, and incremental feed state.",
+            "zh_CN": "扩展 session-init 以注册认证 Agent session，并返回绑定 policy、working-set summary、assigned work、peer delta 和 cursor；heartbeat/tool call 负责 reconcile presence、lease 与增量 feed 状态。"
+          }
+        },
+        {
+          "id": "PR5-C03",
+          "statement": {
+            "en": "UserPromptSubmit loads bounded project memory and collaboration delta separately; Stop publishes typed progress/result events plus stable user-fact pending proposals; SessionEnd publishes agent.closed, releases leases, advances/records cursor state, and cleans local turn state.",
+            "zh_CN": "UserPromptSubmit 分别加载有界项目记忆与 collaboration delta；Stop 发布类型化 progress/result event 及稳定用户事实 pending proposal；SessionEnd 发布 agent.closed、释放 lease、推进/记录 cursor state 并清理本地 turn state。"
+          }
+        },
+        {
+          "id": "PR5-C04",
+          "statement": {
+            "en": "sp-stage emits typed stage started/completed/blocked/receipt events, while step-closure emits a collaboration result receipt separately from an optional memory proposal.",
+            "zh_CN": "sp-stage 发布类型化 stage started/completed/blocked/receipt event；step-closure 将 collaboration result receipt 与可选 memory proposal 分别输出。"
+          }
+        },
+        {
+          "id": "PR5-C05",
+          "statement": {
+            "en": "Maintenance expires stale presence, retained events, and abandoned leases; reconciles expired work to the correct state; preserves append-only audit evidence; and never adopts a proposal or deletes canonical memory as cleanup.",
+            "zh_CN": "Maintenance 清理 stale presence、超过 retention 的 event 与 abandoned lease；将 expired work reconcile 到正确状态；保留 append-only audit evidence；清理过程绝不 adopt proposal 或删除 canonical memory。"
+          }
+        },
+        {
+          "id": "PR5-C06",
+          "statement": {
+            "en": "Activate authenticated server feed and collaboration awareness in shadow before injection, then expose Agent topology, project work board, and event timeline in the frontend with project/session/role filtering and cursor-based refresh.",
+            "zh_CN": "先以 shadow 激活认证 server feed 与 collaboration awareness，再进入注入；前端展示 Agent topology、project work board 和 event timeline，并支持项目/会话/角色过滤与 cursor-based refresh。"
+          }
+        },
+        {
+          "id": "PR5-C07",
+          "statement": {
+            "en": "Implement CollaborationMemoryPromoter so only accepted, evidenced, conflict-checked work can emit a pending proposal. The promoter cannot adopt, overwrite, forget, merge, or directly update canonical memory.",
+            "zh_CN": "实现 CollaborationMemoryPromoter，只有 accepted、带证据且完成冲突检查的 work 才能产生 pending proposal。Promoter 不得 adopt、overwrite、forget、merge 或直接更新 canonical memory。"
+          }
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "PR5-E01",
+          "statement": {
+            "en": "Migration plan/grant binding, backup/integrity/rehearsal, drift/fence, single-writer, phase order, restart, rollback, outbox replay, shadow generation, promotion, Maintenance, retention, and stable refusal evidence in isolated and authorized runtime slices.",
+            "zh_CN": "在隔离及经授权 runtime slice 中提供 migration plan/grant binding、backup/integrity/rehearsal、drift/fence、single-writer、phase order、restart、rollback、outbox replay、shadow generation、promotion、Maintenance、retention 和稳定拒绝证据。"
+          }
+        },
+        {
+          "id": "PR5-E02",
+          "statement": {
+            "en": "Persistent Agent/session/work/lease/event/cursor restart recovery, heartbeat timeout, stale presence, abandoned lease, retention, idempotency, fencing, and reconcile tests.",
+            "zh_CN": "持久 Agent/session/work/lease/event/cursor 的重启恢复、heartbeat timeout、stale presence、abandoned lease、retention、idempotency、fencing 和 reconcile 测试。"
+          }
+        },
+        {
+          "id": "PR5-E03",
+          "statement": {
+            "en": "Authenticated MCP/Hook lifecycle E2E covering session-init, UserPromptSubmit, Stop, SessionEnd, sp-stage, step-closure, cursor resume, shadow-to-inject gate, scope enforcement, event emission, and lease release.",
+            "zh_CN": "认证 MCP/Hook 生命周期 E2E，覆盖 session-init、UserPromptSubmit、Stop、SessionEnd、sp-stage、step-closure、cursor resume、shadow-to-inject gate、scope enforcement、event emission 和 lease release。"
+          }
+        },
+        {
+          "id": "PR5-E04",
+          "statement": {
+            "en": "Promotion tests proving accepted-result-to-pending-proposal, conflict blocking, independent reviewer authority, and non-promotion of progress, assumptions, peer agreement, semantic capture, self-acceptance, or raw prompts.",
+            "zh_CN": "Promotion 测试证明 accepted-result-to-pending-proposal、conflict blocking、独立 reviewer authority，以及 progress、assumption、peer agreement、semantic capture、自我验收或 raw prompt 不晋升。"
+          }
+        },
+        {
+          "id": "PR5-E05",
+          "statement": {
+            "en": "Frontend smoke evidence for Agent topology, work board, and event timeline with bounded role-aware data, project isolation, cursor refresh, empty/error/stale states, and no canonical mutation controls.",
+            "zh_CN": "前端 Agent topology、work board 和 event timeline 烟测证据，覆盖有界 role-aware 数据、项目隔离、cursor refresh、empty/error/stale 状态，且无 canonical mutation 控件。"
+          }
+        },
+        {
+          "id": "PR5-E06",
+          "statement": {
+            "en": "Independent Standards, Spec, and DeepSec Shield/code-smell review receipts bound to the same immutable source revision, diff digest, requirement set, and union-contract revision, with DeepSec least-privilege and non-canonical-finding proof.",
+            "zh_CN": "独立 Standards、Spec 与 DeepSec Shield/代码坏味道 review receipt，绑定同一不可变 source revision、diff digest、requirement 集合和联合合同 revision，并证明 DeepSec 最小权限及 finding 不进入 canonical memory。"
+          }
+        }
+      ],
+      "completion_rule": {
+        "operator": "all",
+        "required_groups": [
+          "delivery_scope",
+          "collaboration_scope",
+          "required_evidence"
+        ],
+        "prohibits_partial_completion": true,
+        "statement": {
+          "en": "PR5 is complete only when migration operations and the full persistent collaboration lifecycle are wired, recoverable, observable, and governed. A source journal, Hook contract, or frontend mock alone is insufficient.",
+          "zh_CN": "只有 migration operation 与完整持久协作生命周期都已接线、可恢复、可观测且受治理时，PR5 才完成。仅有 source journal、Hook contract 或前端 mock 不充分。"
+        }
+      }
+    },
+    {
+      "id": "PR6",
+      "depends_on": [
+        "PR5"
+      ],
+      "required_gate_ids": [
+        "U6-GATE-SOURCE-01",
+        "U6-GATE-REVISION-01",
+        "U6-GATE-DOCUMENT-01",
+        "U6-GATE-ASSET-01",
+        "U6-GATE-REVIEW-01",
+        "U6-GATE-DEEPSEC-01",
+        "U6-GATE-COMPOSER-01",
+        "U6-GATE-EVIDENCE-01"
+      ],
+      "slug": "release-readiness-and-role-contracts",
+      "title": {
+        "en": "Release readiness and role-capability contracts",
+        "zh_CN": "发行就绪与角色能力合同"
+      },
+      "objective": {
+        "en": "Make the three-endpoint system installable, upgradeable, auditable, and releasable while proving the final collaboration authority boundaries and cross-Agent behavior.",
+        "zh_CN": "让三端系统可安装、可升级、可审计、可发行，同时证明最终协作权限边界和跨 Agent 行为。"
+      },
+      "delivery_scope": [
+        {
+          "id": "PR6-D01",
+          "statement": {
+            "en": "Provide cross-platform macOS, Linux, and Windows/WSL2 installer entry points with selectable local-all-in-one, local-cloud, and split-accelerated profiles, module size/resource estimates, safe-space refusal, basic/recommended configurations, and reversible hot switching.",
+            "zh_CN": "提供跨 macOS、Linux、Windows/WSL2 的安装入口，支持 local-all-in-one、local-cloud、split-accelerated 可选 profile、模块大小/资源估算、安全空间拒绝、基础/推荐配置和可逆热切换。"
+          }
+        },
+        {
+          "id": "PR6-D02",
+          "statement": {
+            "en": "Build an RC/release bundle that binds source revision, Python artifacts, Model Catalog identity, OCI digests, SBOM, provenance, profile/variant compatibility, installer assets, documentation parity, and immutable rollback references.",
+            "zh_CN": "构建 RC/release bundle，绑定 source revision、Python artifact、Model Catalog identity、OCI digest、SBOM、provenance、profile/variant compatibility、installer asset、文档一致性和不可变 rollback reference。"
+          }
+        },
+        {
+          "id": "PR6-D03",
+          "statement": {
+            "en": "Use Windows/WSL2 only for local build/cache/GPU smoke and derived inference; protected GitHub workflow creates immutable release evidence; server pulls and runs only verified digests. Stable PyPI, GHCR, GitHub Release, release-repository sync, and production rollout require separate explicit authorization.",
+            "zh_CN": "Windows/WSL2 只负责本地 build/cache/GPU smoke 与派生推理；受保护 GitHub workflow 生成不可变发行证据；server 只拉取并运行已验证 digest。Stable PyPI、GHCR、GitHub Release、发行仓库同步和生产 rollout 均需单独明确授权。"
+          }
+        },
+        {
+          "id": "PR6-D04",
+          "statement": {
+            "en": "Verify upgrade, rollback, restart recovery, old-client compatibility, single-writer preservation, rebuildable LanceDB, five-day backup retention, daily cache cleanup, and timezone-aware UTC behavior without changing host timezones.",
+            "zh_CN": "验证 upgrade、rollback、restart recovery、旧客户端兼容、single-writer 保持、LanceDB 可重建、五天备份保留、每日缓存清理和带时区 UTC 行为，且不修改宿主机时区。"
+          }
+        }
+      ],
+      "collaboration_scope": [
+        {
+          "id": "PR6-C01",
+          "statement": {
+            "en": "Declare and verify OCI role labels for agent-registry-authority, work-board-authority, canonical-memory-authority, collaboration-event-writer, bounded-awareness-display, bounded-event-submission, compute-execution, and local-edge.",
+            "zh_CN": "声明并验证 OCI role label：agent-registry-authority、work-board-authority、canonical-memory-authority、collaboration-event-writer、bounded-awareness-display、bounded-event-submission、compute-execution 和 local-edge。"
+          }
+        },
+        {
+          "id": "PR6-C02",
+          "statement": {
+            "en": "Prove server is the only registry/work-board/event/promotion/canonical authority; edge can display bounded projections and submit typed bounded events but cannot read raw history or mutate canonical state; compute has no developer-Agent collaboration package, tools, or authority.",
+            "zh_CN": "证明 server 是唯一 registry/work-board/event/promotion/canonical 权威；edge 可以展示有界投影和提交类型化有界 event，但不能读取 raw history 或修改 canonical state；compute 不含开发 Agent 协作 package、tool 或 authority。"
+          }
+        },
+        {
+          "id": "PR6-C03",
+          "statement": {
+            "en": "Run the final cross-Agent E2E: authenticated join, scoped claim, lease/fence heartbeat, peer delta, conflict/review, independent accepted receipt, pending proposal, governed adoption or rejection, restart/cursor recovery, stale cleanup, and rollback.",
+            "zh_CN": "运行最终跨 Agent E2E：认证 join、scoped claim、lease/fence heartbeat、peer delta、conflict/review、独立 accepted receipt、pending proposal、治理 adoption/rejection、restart/cursor recovery、stale cleanup 和 rollback。"
+          }
+        },
+        {
+          "id": "PR6-C04",
+          "statement": {
+            "en": "Include Workflow Composer as shadow-only behavior with frozen plan_revision and plan_digest, compiler_revision, mandatory_hard_gate_set_digest, atomic-skill receipt chain, tool_policy_digest, bounded Agent tools, observable candidate-versus-fixed-route comparison, and deterministic rollback to the fixed route. It has no execution or authorization authority.",
+            "zh_CN": "将 Workflow Composer 以仅 shadow 行为纳入交付，绑定冻结 plan_revision 与 plan_digest、compiler_revision、mandatory_hard_gate_set_digest、原子 skill receipt 链、tool_policy_digest、有界 Agent tool、可观测 candidate 与 fixed route 对比，以及确定性回退固定 route。它不拥有执行或授权权威。"
+          }
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "PR6-E01",
+          "statement": {
+            "en": "Cross-platform installer/profile matrix, resource and disk preflight, hot-switch/upgrade/rollback, model-identity compatibility, and old-client compatibility receipts.",
+            "zh_CN": "跨平台 installer/profile matrix、资源与磁盘 preflight、hot-switch/upgrade/rollback、模型身份兼容和旧客户端兼容 receipt。"
+          }
+        },
+        {
+          "id": "PR6-E02",
+          "statement": {
+            "en": "Immutable RC bundle verification covering source, packages, OCI digests, SBOM, provenance, Model Catalog, role labels, final rootfs, documentation parity, signatures/attestations when claimed, and rollback references.",
+            "zh_CN": "不可变 RC bundle 验证，覆盖 source、package、OCI digest、SBOM、provenance、Model Catalog、role label、final rootfs、文档一致性、声称存在时的 signature/attestation 和 rollback reference。"
+          }
+        },
+        {
+          "id": "PR6-E03",
+          "statement": {
+            "en": "Role-capability negative matrix proving edge and compute cannot gain server authority, compute contains no collaboration surface, and no unreviewed claim, manifest, capability, project_id, or model identity grants privilege.",
+            "zh_CN": "Role-capability 负向矩阵，证明 edge/compute 不能获得 server 权限、compute 不含 collaboration surface，且未审查声明、manifest、capability、project_id 或 model identity 都不能授予权限。"
+          }
+        },
+        {
+          "id": "PR6-E04",
+          "statement": {
+            "en": "Complete cross-profile and cross-Agent acceptance receipt, including negative proof that peer progress never becomes canonical memory, restart/cursor recovery, Maintenance cleanup, migration rollback, and derived-index rebuild.",
+            "zh_CN": "完整 cross-profile 与 cross-Agent acceptance receipt，包括 peer progress 绝不成为 canonical memory 的负向证明、restart/cursor recovery、Maintenance cleanup、migration rollback 和 derived-index rebuild。"
+          }
+        },
+        {
+          "id": "PR6-E05",
+          "statement": {
+            "en": "Mandatory Workflow Composer included-shadow adversarial evidence proves exact plan/compiler/hard-gate/tool-policy binding and rejects stale completion, executing-revision mutation, user-only self-attestation, tool escalation, gate removal or reordering, receipt-chain gaps, source or contract mismatch, execution authority, and fixed-route rollback failure.",
+            "zh_CN": "强制 Workflow Composer included-shadow 对抗证据必须证明精确 plan/compiler/hard-gate/tool-policy 绑定，并拒绝 stale completion、执行中 revision 修改、user-only 自签、tool escalation、gate 删除或重排、receipt 链缺口、source/contract 不匹配、获取执行权威及 fixed-route rollback 失败。"
+          }
+        },
+        {
+          "id": "PR6-E06",
+          "statement": {
+            "en": "Separate explicit authorization receipts for RC creation, internal deployment, production migration, public PyPI/GHCR/GitHub Release, stable publication, and release-repository synchronization; one authorization never implies another.",
+            "zh_CN": "RC 创建、内部部署、生产迁移、公开 PyPI/GHCR/GitHub Release、stable 发布和发行仓库同步分别需要明确授权 receipt；任何一种授权都不隐含其他授权。"
+          }
+        },
+        {
+          "id": "PR6-E07",
+          "statement": {
+            "en": "Independent Standards, Spec, and DeepSec Shield/code-smell review receipts bound to the same immutable source revision, diff digest, requirement set, and union-contract revision, with DeepSec least-privilege and non-canonical-finding proof.",
+            "zh_CN": "独立 Standards、Spec 与 DeepSec Shield/代码坏味道 review receipt，绑定同一不可变 source revision、diff digest、requirement 集合和联合合同 revision，并证明 DeepSec 最小权限及 finding 不进入 canonical memory。"
+          }
+        }
+      ],
+      "completion_rule": {
+        "operator": "all",
+        "required_groups": [
+          "delivery_scope",
+          "collaboration_scope",
+          "required_evidence"
+        ],
+        "prohibits_partial_completion": true,
+        "statement": {
+          "en": "PR6 is complete only when install/release readiness and final role/cross-Agent acceptance are both evidenced. An RC contract, artifact bundle, or role label without runtime E2E is insufficient, and stable publication remains separately authorized.",
+          "zh_CN": "只有安装/发行就绪与最终角色/跨 Agent 验收都具备证据时，PR6 才完成。只有 RC contract、artifact bundle 或 role label 而没有 runtime E2E 不充分；stable publication 仍需单独授权。"
+        }
+      }
+    }
+  ]
+}

@@ -797,14 +797,9 @@ def test_composer_keeps_memory_layers_separate_and_ranks_collaboration() -> None
     runtime_authority = collaboration["runtime_authority"]  # type: ignore[index]
     assert runtime_authority["server_feed_binding"] == "pr4-process-local-server-bound"
     assert runtime_authority["security_boundary"] == "pr4-authenticated-process-local"
-    assert runtime_authority["persistent_head_authority"] == (
-        "pr5-durable-canonical-adapter"
-    )
+    assert runtime_authority["persistent_head_authority"] == ("pr5-durable-canonical-adapter")
     assert runtime_authority["restart_recovery"] == "deferred-to-pr5"
-    assert (
-        runtime_authority["python_factory_is_validation_seam_only"]
-        is True
-    )
+    assert runtime_authority["python_factory_is_validation_seam_only"] is True
     accepted_result = collaboration["items"][2]  # type: ignore[index]
     assert accepted_result["acceptance_receipt_id"] == "acceptance:peer"
     assert accepted_result["acceptance_receipt_sha256"] == (

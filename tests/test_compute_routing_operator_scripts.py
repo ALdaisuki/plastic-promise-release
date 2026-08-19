@@ -355,11 +355,7 @@ def test_prepare_receipt_binds_generation_and_revision_environment(tmp_path):
     revision_env = tmp_path / "revision.env"
     revision_env.write_text("PP_EMBEDDING_MODEL=test\n")
     manifest_path = (
-        prepare.state_root
-        / "generations"
-        / "generations"
-        / prepare.generation_id
-        / "manifest.json"
+        prepare.state_root / "generations" / "generations" / prepare.generation_id / "manifest.json"
     )
     manifest_path.parent.mkdir(parents=True)
     manifest_payload = {

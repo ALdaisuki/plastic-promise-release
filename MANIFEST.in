@@ -1,0 +1,34 @@
+include docs/remote-control-plane.md
+include scripts/manage_control_credentials.py
+include scripts/manage_codex_hook_cleanup_launchd.py
+include scripts/manage_lancedb_generations.py
+include scripts/init_and_start.py
+include scripts/plastic-promise-deploy.sh
+include scripts/plastic-promise-deploy.ps1
+include scripts/verify_release_deployment.py
+include scripts/create_release_bundle.py
+include scripts/run_local_inference_node_build.sh
+include scripts/run_windows_local_inference_build.ps1
+include scripts/resolve_container_artifact_identity.py
+include scripts/validate_container_artifact_policy.py
+include scripts/verify_oci_artifact_evidence.py
+include deploy/release-builder/windows-install.ps1
+include .codex/hooks.json
+include CONTEXT.md
+recursive-include deploy/systemd *.service
+recursive-include deploy/systemd *.conf
+recursive-include deploy/manifests *.json
+include deploy/oci-base-images.json
+include deploy/server/Dockerfile
+recursive-include deploy/server *.yaml *.example
+include deploy/local-edge/Dockerfile
+recursive-include deploy/local-edge *.yaml *.conf *.sh
+include deploy/local-inference-node/Dockerfile
+recursive-include deploy/local-inference-node *.yaml *.example
+recursive-include docs/release *.md
+recursive-include docs/deployment *.md
+recursive-include docs/adr *.md
+recursive-include docs/roadmap *.md
+recursive-include docs/standards *.json *.md
+recursive-include docs/architecture/release-delivery *.md *.mermaid
+recursive-include docs/architecture/three-endpoint-deployment *.md *.mermaid *.txt *.svg

@@ -690,9 +690,10 @@ def test_collaboration_cursor_is_ephemeral_scope_and_filter_bound(repository):
     assert resumed["event_timeline"]["data"] == []
     with pytest.raises(DashboardCursorError, match="cursor_filter_mismatch"):
         repository.collaboration_snapshot(role="worker", event_cursor=cursor)
-    assert repository.connection.execute(
-        "SELECT COUNT(*) FROM collaboration_cursors"
-    ).fetchone()[0] == 0
+    assert (
+        repository.connection.execute("SELECT COUNT(*) FROM collaboration_cursors").fetchone()[0]
+        == 0
+    )
 
 
 def test_collaboration_projection_fails_closed_on_schema_or_event_mismatch(repository):

@@ -531,8 +531,7 @@ def validate_recovery_smoke(artifact: Any) -> dict[str, Any]:
     if (
         len(ordinary_payloads) != 1
         or ordinary_payloads[0].get("memory_id") != corrected_source_id
-        or ordinary_payloads[0].get("expected_embedding_hash")
-        != corrected_source_embedding_hash
+        or ordinary_payloads[0].get("expected_embedding_hash") != corrected_source_embedding_hash
         or ordinary_payloads[0].get("material_revision") != corrected_source_embedding_hash
         or ordinary_payloads[0].get("memory_version") != ordinary_memory_version
         or ordinary_payloads[0].get("project_id") != project_id

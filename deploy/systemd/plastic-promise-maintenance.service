@@ -1,0 +1,52 @@
+[Unit]
+Description=Plastic Promise governed maintenance daemon
+Documentation=https://github.com/ALdaisuki/plastic-promise
+Wants=network-online.target plastic-promise-mcp.service
+After=network-online.target plastic-promise-mcp.service
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=plastic
+Group=plastic
+WorkingDirectory=/srv/plastic-promise/runtime
+UMask=0077
+Environment=TZ=UTC
+EnvironmentFile=/srv/plastic-promise/state/plastic-promise.env
+EnvironmentFile=-/srv/plastic-promise/state/control/managed.env
+Environment=PP_MAINTENANCE_RUN_DIR=/srv/plastic-promise/state/run
+ExecStart=/srv/plastic-promise/runtime/.venv/bin/python /srv/plastic-promise/runtime/daemons/maintenance_daemon.py --mcp-url http://127.0.0.1:9020/mcp
+Restart=on-failure
+RestartPreventExitStatus=3
+RestartSec=5s
+TimeoutStartSec=120s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plastic-promise-maintenance
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/plastic/.local/share/uv/python
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/srv/plastic-promise/state/db
+ReadWritePaths=/srv/plastic-promise/state/lancedb
+ReadWritePaths=/srv/plastic-promise/state/audit
+ReadWritePaths=/srv/plastic-promise/state/run
+
+[Install]
+WantedBy=multi-user.target

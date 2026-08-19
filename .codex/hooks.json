@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".venv/bin/python -m plastic_promise.passive_memory.codex_hook",
+            "commandWindows": ".venv\\Scripts\\python.exe -m plastic_promise.passive_memory.codex_hook",
+            "timeout": 8,
+            "statusMessage": "Loading governed memory context"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".venv/bin/python -m plastic_promise.passive_memory.codex_hook",
+            "commandWindows": ".venv\\Scripts\\python.exe -m plastic_promise.passive_memory.codex_hook",
+            "timeout": 8,
+            "statusMessage": "Auditing governed memory candidates"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".venv/bin/python -m plastic_promise.passive_memory.codex_hook",
+            "commandWindows": ".venv\\Scripts\\python.exe -m plastic_promise.passive_memory.codex_hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

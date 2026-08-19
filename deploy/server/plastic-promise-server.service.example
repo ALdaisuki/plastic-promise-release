@@ -1,0 +1,27 @@
+# Native-wheel systemd alternative to deploy/server/compose.yaml.
+# Copy to /etc/systemd/system/plastic-promise-server.service only after
+# reviewing the operator-owned EnvironmentFile. Both templates take the same
+# PLASTIC_RUNTIME_LOCK_PATH before opening PLASTIC_DB_PATH.
+[Unit]
+Description=Plastic Promise MCP server (native wheel runtime)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=plastic-promise
+Group=plastic-promise
+Environment=TZ=UTC
+EnvironmentFile=/etc/plastic-promise/server.env
+WorkingDirectory=/var/lib/plastic-promise
+ExecStart=/usr/bin/env plastic-promise-canonical-runtime
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/plastic-promise
+
+[Install]
+WantedBy=multi-user.target

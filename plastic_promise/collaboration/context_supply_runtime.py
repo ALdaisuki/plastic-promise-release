@@ -77,9 +77,7 @@ class CollaborationContextReadRequest:
         if not isinstance(self.request_scope_id, str) or not _SAFE_IDENTIFIER_RE.fullmatch(
             self.request_scope_id
         ):
-            raise CollaborationContextProjectionError(
-                "collaboration_context_request_scope_invalid"
-            )
+            raise CollaborationContextProjectionError("collaboration_context_request_scope_invalid")
         mode = str(self.response_mode or "").strip().casefold()
         if mode not in {"standard", "compact", "debug"}:
             raise CollaborationContextProjectionError("collaboration_context_mode_invalid")
@@ -89,7 +87,11 @@ class CollaborationContextReadRequest:
             or self.after_sequence < 0
         ):
             raise CollaborationContextProjectionError("collaboration_cursor_invalid")
-        if isinstance(self.limit, bool) or not isinstance(self.limit, int) or not 1 <= self.limit <= 20:
+        if (
+            isinstance(self.limit, bool)
+            or not isinstance(self.limit, int)
+            or not 1 <= self.limit <= 20
+        ):
             raise CollaborationContextProjectionError("collaboration_context_limit_invalid")
         object.__setattr__(self, "response_mode", mode)
 
@@ -390,13 +392,10 @@ class ServerCollaborationContextRuntime:
         """
 
         if not isinstance(value, ProjectWorkingSet):
-            raise CollaborationContextProjectionError(
-                "collaboration_context_working_set_invalid"
-            )
+            raise CollaborationContextProjectionError("collaboration_context_working_set_invalid")
         if (
             value.project != self._bound_session.project
-            or value.coordination_session_id
-            != self._bound_session.coordination_session_id
+            or value.coordination_session_id != self._bound_session.coordination_session_id
             or self._bound_session not in value.agent_sessions
         ):
             raise CollaborationContextProjectionError(
@@ -428,8 +427,7 @@ class ServerCollaborationContextRuntime:
             )
         if any(
             value.project != self._bound_session.project
-            or value.coordination_session_id
-            != self._bound_session.coordination_session_id
+            or value.coordination_session_id != self._bound_session.coordination_session_id
             for value in values
         ):
             raise CollaborationContextProjectionError(
@@ -443,9 +441,7 @@ class ServerCollaborationContextRuntime:
         if self._bound_session.expires_at is not None:
             expires = min(expires, _parse_time(self._bound_session.expires_at))
         if expires <= now:
-            raise CollaborationContextProjectionError(
-                "collaboration_context_policy_expired"
-            )
+            raise CollaborationContextProjectionError("collaboration_context_policy_expired")
         binding_id = f"context-policy:{uuid.uuid4().hex}"
         binding_sha256 = _digest(
             {
@@ -568,24 +564,16 @@ class ServerCollaborationContextRuntime:
         now = self._now()
         session = self._bound_session
         if session.state != "active":
-            raise CollaborationContextProjectionError(
-                "collaboration_audience_session_inactive"
-            )
+            raise CollaborationContextProjectionError("collaboration_audience_session_inactive")
         heartbeat = _parse_time(
             session.last_heartbeat_at,
         )
         if heartbeat > now:
-            raise CollaborationContextProjectionError(
-                "collaboration_audience_session_from_future"
-            )
+            raise CollaborationContextProjectionError("collaboration_audience_session_from_future")
         if (now - heartbeat).total_seconds() > _SESSION_FRESHNESS_SECONDS:
-            raise CollaborationContextProjectionError(
-                "collaboration_audience_session_stale"
-            )
+            raise CollaborationContextProjectionError("collaboration_audience_session_stale")
         if session.expires_at is not None and _parse_time(session.expires_at) <= now:
-            raise CollaborationContextProjectionError(
-                "collaboration_audience_session_expired"
-            )
+            raise CollaborationContextProjectionError("collaboration_audience_session_expired")
 
     def _now(self) -> datetime:
         value = self._clock()

@@ -5359,9 +5359,7 @@ class ContextEngine:
             # the configured cloud provider, then original ordering.
             server_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip() == "pp-server-backend"
             reranker = MultiProviderReranker(
-                providers=("original",)
-                if governed_runtime is not None or server_role
-                else None
+                providers=("original",) if governed_runtime is not None or server_role else None
             )
             governed_reason = ""
             if callable(governed_rerank):

@@ -1,0 +1,30 @@
+# Install only after the server operator creates a restricted tunnel account
+# and the user writes the node-local EnvironmentFile. This template has no
+# concrete host, key, user, IP, or canonical-state access.
+[Unit]
+Description=Plastic Promise local inference node reverse tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/plastic-promise/local-inference-tunnel.env
+ExecStart=/usr/bin/ssh -NT \
+  -o BatchMode=yes \
+  -o ClearAllForwardings=yes \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o PermitLocalCommand=no \
+  -o ForwardAgent=no \
+  -o RequestTTY=no \
+  -i ${PP_TUNNEL_IDENTITY_FILE} \
+  -R 127.0.0.1:${PP_TUNNEL_SERVER_PORT}:127.0.0.1:${PP_LOCAL_NODE_PORT} \
+  ${PP_TUNNEL_TARGET}
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

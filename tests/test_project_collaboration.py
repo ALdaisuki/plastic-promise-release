@@ -466,7 +466,9 @@ def test_event_log_enforces_causality_expiry_idempotency_and_append_only_storage
             coordination_session_id="coord:pr1",
             audience=actor,
             include_expired=True,
-        ).events[-1].expires_at
+        )
+        .events[-1]
+        .expires_at
         == "2026-08-10T13:00:00.000000Z"
     )
     clock_value[0] = datetime(2026, 8, 10, 14, 0, tzinfo=timezone.utc)
@@ -588,7 +590,9 @@ def test_event_log_uses_server_time_and_keeps_source_time_diagnostic_only() -> N
             coordination_session_id="coord:pr1",
             audience=actor,
             include_expired=True,
-        ).events[0].created_at
+        )
+        .events[0]
+        .created_at
         == "2026-08-10T12:00:00.000000Z"
     )
     connection.close()

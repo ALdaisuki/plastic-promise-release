@@ -485,17 +485,19 @@ def test_work_board_operation_requires_exact_authenticated_binding(monkeypatch) 
 def test_work_board_operation_uses_host_and_rejects_project_conflict(monkeypatch) -> None:
     calls = []
     host = SimpleNamespace(
-        work_list=lambda *, limit: calls.append(limit)
-        or {
-            "schema_version": "collaboration-work-list/v1",
-            "state": "durable",
-            "persistent": True,
-            "project_id": "project:authority",
-            "items": [],
-            "count": 0,
-            "authority_effect": "none",
-            "canonical_memory_effect": "none",
-        }
+        work_list=lambda *, limit: (
+            calls.append(limit)
+            or {
+                "schema_version": "collaboration-work-list/v1",
+                "state": "durable",
+                "persistent": True,
+                "project_id": "project:authority",
+                "items": [],
+                "count": 0,
+                "authority_effect": "none",
+                "canonical_memory_effect": "none",
+            }
+        )
     )
     exact = SimpleNamespace(
         host=host,
@@ -792,7 +794,5 @@ async def test_ordinary_authenticated_tool_call_reconciles_exactly_once_with_exc
         "collaboration_work_list",
         {"agent_role": "test-role", "project_id": "project:authority"},
     )
-    assert __import__("json").loads(denied[0].text)["error"] == (
-        "delegated_agent_policy_denied"
-    )
+    assert __import__("json").loads(denied[0].text)["error"] == ("delegated_agent_policy_denied")
     assert calls["reconcile"] == 1
