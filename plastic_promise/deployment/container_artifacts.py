@@ -89,9 +89,9 @@ _COLLABORATION_MODULES = tuple(module for module, _ in _COLLABORATION_FOUNDATION
 _COLLABORATION_SOURCE_PATHS = tuple(path for _, path in _COLLABORATION_FOUNDATION)
 _COLLABORATION_WRITER_SURFACES = frozenset({"absent", "source-only-unwired"})
 _COLLABORATION_EVENT_WRITER_AUTHORITY = "collaboration-event-writer"
-_SERVER_RECIPE_AUTHORITY_LABEL = (
-    "canonical-sqlite,lancedb-promotion,deployment-receipts,collaboration-event-writer"
-)
+_SERVER_RECIPE_AUTHORITY_LABEL = _SERVER_ROLE_CONTRACT.artifact_authority_label
+_EDGE_RECIPE_AUTHORITY_LABEL = endpoint_role_contract(PP_LOCAL_EDGE).artifact_authority_label
+_COMPUTE_RECIPE_AUTHORITY_LABEL = endpoint_role_contract(PP_COMPUTE_NODE).artifact_authority_label
 _COMPUTE_PACKAGE_MANIFEST = compute_package_manifest()
 _COMPUTE_CAPABILITY_CONTRACTS = _COMPUTE_PACKAGE_MANIFEST.capability_contracts
 _COMPUTE_CAPABILITY_LABEL = _COMPUTE_PACKAGE_MANIFEST.capability_label
@@ -804,6 +804,16 @@ class StaticRecipePolicyValidator:
         ):
             raise ContainerArtifactError("container_recipe_label_or_identity_mismatch")
         if (
+            role == PP_LOCAL_EDGE
+            and labels.get("org.plastic-promise.authority") != _EDGE_RECIPE_AUTHORITY_LABEL
+        ):
+            raise ContainerArtifactError("container_recipe_label_or_identity_mismatch")
+        if (
+            role == PP_COMPUTE_NODE
+            and labels.get("org.plastic-promise.authority") != _COMPUTE_RECIPE_AUTHORITY_LABEL
+        ):
+            raise ContainerArtifactError("container_recipe_label_or_identity_mismatch")
+        if (
             role == PP_SERVER_BACKEND
             and labels.get("org.plastic-promise.server.source-exclusions")
             != _SERVER_SOURCE_EXCLUSION_LABEL
@@ -1055,7 +1065,7 @@ class StaticRecipePolicyValidator:
             raise ContainerArtifactError("container_recipe_edge_service_contract_invalid")
         if service.get("labels") != {
             "org.plastic-promise.endpoint.role": PP_LOCAL_EDGE,
-            "org.plastic-promise.authority": "sanitized-read-only-projection",
+            "org.plastic-promise.authority": _EDGE_RECIPE_AUTHORITY_LABEL,
         }:
             raise ContainerArtifactError("container_recipe_edge_service_contract_invalid")
         if service.get("tmpfs") != [
@@ -1290,6 +1300,7 @@ class StaticRecipePolicyValidator:
         self._validate_logging(service.get("logging"), "container_recipe_compute_contract_invalid")
         if service.get("labels") != {
             "org.plastic-promise.endpoint.role": PP_COMPUTE_NODE,
+            "org.plastic-promise.authority": _COMPUTE_RECIPE_AUTHORITY_LABEL,
             "org.plastic-promise.compute.variant": variant,
             "org.plastic-promise.compute.capabilities": _COMPUTE_CAPABILITY_LABEL,
             "org.plastic-promise.compute.package-manifest": (
@@ -1570,12 +1581,16 @@ class ArtifactBuildPlan:
             "org.plastic-promise.build.recipe-policy-digest": self.recipe_policy.recipe_policy_digest,
         }
         if artifact.role == PP_COMPUTE_NODE:
+            labels["org.plastic-promise.authority"] = _COMPUTE_RECIPE_AUTHORITY_LABEL
             labels["org.plastic-promise.compute.capabilities"] = _COMPUTE_CAPABILITY_LABEL
             labels["org.plastic-promise.compute.package-manifest"] = (
                 _COMPUTE_PACKAGE_MANIFEST.schema_version
             )
         elif artifact.role == PP_SERVER_BACKEND:
+            labels["org.plastic-promise.authority"] = _SERVER_RECIPE_AUTHORITY_LABEL
             labels["org.plastic-promise.server.source-exclusions"] = _SERVER_SOURCE_EXCLUSION_LABEL
+        elif artifact.role == PP_LOCAL_EDGE:
+            labels["org.plastic-promise.authority"] = _EDGE_RECIPE_AUTHORITY_LABEL
         return labels
 
     @property

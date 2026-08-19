@@ -29,6 +29,7 @@ services:
     gpus: all
     labels:
       org.plastic-promise.endpoint.role: pp-compute-node
+      org.plastic-promise.authority: compute-execution
       org.plastic-promise.compute.variant: cuda
       org.plastic-promise.compute.capabilities: embedding/v1,rerank/v1,structured-json/v1
       org.plastic-promise.compute.package-manifest: plastic-promise-compute-package-manifest/v1

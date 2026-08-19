@@ -42,7 +42,7 @@ LABEL org.opencontainers.image.title="Plastic Promise server backend" \
       org.plastic-promise.endpoint.contract="plastic-promise-endpoint-contract/v1" \
       org.plastic-promise.build.policy-digest="${BUILD_POLICY_DIGEST}" \
       org.plastic-promise.build.recipe-policy-digest="${RECIPE_POLICY_DIGEST}" \
-      org.plastic-promise.authority="canonical-sqlite,lancedb-promotion,deployment-receipts,collaboration-event-writer" \
+      org.plastic-promise.authority="agent-registry-authority,work-board-authority,canonical-memory-authority,collaboration-event-writer" \
       org.plastic-promise.server.source-exclusions="plastic_promise/core/backend_inference.py,plastic_promise/core/embedder.py,plastic_promise/core/inference_provider.py,plastic_promise/core/inference_jobs.py,plastic_promise/core/provider_http.py,plastic_promise/core/reranker.py,plastic_promise/client/local_rerank_executor.py,plastic_promise/local_inference_node,plastic_promise/mcp/inference_gateway.py,plastic_promise/mcp/inference_gateway_server.py"
 
 ENV TZ=UTC \

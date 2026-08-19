@@ -19,7 +19,7 @@ services:
     pids_limit: 256
     labels:
       org.plastic-promise.endpoint.role: pp-server-backend
-      org.plastic-promise.authority: canonical-sqlite,lancedb-promotion,deployment-receipts,collaboration-event-writer
+      org.plastic-promise.authority: agent-registry-authority,work-board-authority,canonical-memory-authority,collaboration-event-writer
     environment:
       TZ: "UTC"
       PP_ENDPOINT_ROLE: "pp-server-backend"

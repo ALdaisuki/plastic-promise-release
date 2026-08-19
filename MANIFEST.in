@@ -13,8 +13,6 @@ include scripts/resolve_container_artifact_identity.py
 include scripts/validate_container_artifact_policy.py
 include scripts/verify_oci_artifact_evidence.py
 include deploy/release-builder/windows-install.ps1
-include .codex/hooks.json
-include CONTEXT.md
 recursive-include deploy/systemd *.service
 recursive-include deploy/systemd *.conf
 recursive-include deploy/manifests *.json

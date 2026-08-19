@@ -88,10 +88,10 @@ def _advance_remote(remote: Path, destination: Path, content: str) -> None:
     _git(destination, "push", "origin", "main")
 
 
-def test_release_sync_includes_project_codex_config():
+def test_release_sync_excludes_internal_codex_config():
     release_sync = _load_release_sync()
 
-    assert release_sync.is_included(".codex/config.toml")
+    assert not release_sync.is_included(".codex/config.toml")
 
 
 @pytest.mark.parametrize(
@@ -113,7 +113,10 @@ def test_release_sync_includes_project_codex_config():
 def test_release_sync_includes_public_runtime_and_contract_assets(path):
     release_sync = _load_release_sync()
 
-    assert release_sync.is_included(path)
+    if path in {".codex/hooks.json", "CONTEXT.md"}:
+        assert not release_sync.is_included(path)
+    else:
+        assert release_sync.is_included(path)
 
 
 def test_release_sync_includes_distribution_variant_contract():
@@ -436,8 +439,11 @@ def test_release_sync_keeps_internal_superpowers_docs_excluded():
         ]
     )
 
-    assert included == [".codex/config.toml"]
-    assert excluded == ["docs/superpowers/plans/2026-07-05-sp-stage-guidance.md"]
+    assert included == []
+    assert excluded == [
+        ".codex/config.toml",
+        "docs/superpowers/plans/2026-07-05-sp-stage-guidance.md",
+    ]
 
 
 def test_release_sync_includes_authoritative_retrieval_plan_exception():

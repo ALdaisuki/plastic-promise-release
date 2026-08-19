@@ -54,6 +54,7 @@ LABEL org.opencontainers.image.title="Plastic Promise compute node" \
       org.opencontainers.image.base.digest="${BASE_IMAGE_DIGEST}" \
       org.opencontainers.image.licenses="MIT" \
       org.plastic-promise.endpoint.role="pp-compute-node" \
+      org.plastic-promise.authority="compute-execution" \
       org.plastic-promise.endpoint.variant="${COMPUTE_VARIANT}" \
       org.plastic-promise.compute.variant="${COMPUTE_VARIANT}" \
       org.plastic-promise.endpoint.contract="plastic-promise-endpoint-contract/v1" \

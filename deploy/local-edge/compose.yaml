@@ -24,7 +24,7 @@ services:
     pids_limit: 128
     labels:
       org.plastic-promise.endpoint.role: pp-local-edge
-      org.plastic-promise.authority: sanitized-read-only-projection
+      org.plastic-promise.authority: local-edge,bounded-awareness-display,bounded-event-submission
     tmpfs:
       # nginxinc/nginx-unprivileged uses /tmp for its pid and temporary paths.
       - /tmp:rw,noexec,nosuid,size=64m,mode=1777

@@ -37,7 +37,7 @@ LABEL org.opencontainers.image.title="Plastic Promise local edge" \
       org.plastic-promise.endpoint.contract="plastic-promise-endpoint-contract/v1" \
       org.plastic-promise.build.policy-digest="${BUILD_POLICY_DIGEST}" \
       org.plastic-promise.build.recipe-policy-digest="${RECIPE_POLICY_DIGEST}" \
-      org.plastic-promise.authority="sanitized-read-only-projection"
+      org.plastic-promise.authority="local-edge,bounded-awareness-display,bounded-event-submission"
 
 ENV TZ=UTC
 
