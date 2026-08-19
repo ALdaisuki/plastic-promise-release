@@ -132,7 +132,10 @@ jobs:
 
           source_venv="$extract_root/source-only-venv"
           python -m venv "$source_venv"
-          "$source_venv/bin/python" -m pip install --no-deps "$sdist"
+          # Install the exact source distribution plus its declared runtime
+          # dependencies.  The proof imports the public deployment contract,
+          # which intentionally uses PyYAML to inspect Compose recipes.
+          "$source_venv/bin/python" -m pip install "$sdist"
           "$source_venv/bin/python" -c 'import plastic_promise; print(plastic_promise.__version__)'
 
           for manifest in deploy/manifests/*.example.json; do
