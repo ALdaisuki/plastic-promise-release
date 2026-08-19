@@ -287,6 +287,13 @@ def _validate_collaboration_surface(
             or any(path not in expected_paths for path in compiled_sources)
             or len(source_paths) != len(expected_paths)
         ):
+            print(
+                "collaboration_surface_diagnostic:"
+                f" unexpected={sorted(unexpected_paths)!r}"
+                f" compiled={sorted(compiled_sources)!r}"
+                f" source_count={len(source_paths)} expected_count={len(expected_paths)}",
+                file=sys.stderr,
+            )
             _fail("container_artifact_collaboration_surface_forbidden")
         return
     if surface.writer_surface == "absent" and actual_paths:
