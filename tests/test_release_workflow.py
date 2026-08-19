@@ -88,7 +88,7 @@ def test_release_workflow_roles_keep_pr_rc_and_stable_publishing_separate():
     assert "deploy/oci-base-images.json" in rc
     assert "scripts/resolve_container_artifact_identity.py" in rc
     assert "scripts/verify_oci_artifact_evidence.py" in rc
-    assert "--sbom=generator=anchore/syft:latest --provenance=mode=max" in rc
+    assert "--sbom=true --provenance=mode=max" in rc
     assert rc.count("--artifact-evidence ") == 14
     assert "anchore/sbom-action/download-syft@v0" in rc
     assert 'syft scan "oci-archive:${archive}"' in rc
@@ -301,7 +301,7 @@ def test_release_verification_emits_plan_bound_no_push_oci_evidence_for_every_ar
             assert f"--artifact-variant {expected['variant']}" in job
         assert f"--platform {expected['platforms']}" in job
         assert "docker buildx build --builder plastic-promise-oci" in job
-        assert "--sbom=generator=anchore/syft:latest --provenance=mode=max" in job
+        assert "--sbom=true --provenance=mode=max" in job
         assert (
             '--tag "plastic-promise.invalid/'
             f"{expected['attestation_tag']}:pr-verify-${{{{ github.sha }}}}" + '"'

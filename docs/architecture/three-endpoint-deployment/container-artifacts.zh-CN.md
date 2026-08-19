@@ -97,8 +97,9 @@ inspector 再从所选 image 的 final rootfs 派生 `application_inventory_dige
 与 image/SBOM/provenance 绑定的 evidence receipt 中。二者都不是独立 OCI label。server
 inventory 必须精确等于 `endpoint_role_contract(PP_SERVER_BACKEND)` 发布的当前封闭
 collaboration allowlist。container compiler 直接消费同一份 manifest，不再维护第二套
-module 清单。仅包含其中一部分仍不够，出现额外 module 会 fail closed。SBOM attestation 必须携带有效的 SPDX 2.2/2.3 document predicate，且其
-file inventory 中的 collaboration namespace 必须与 final rootfs 精确一致。compute
+module 清单。仅包含其中一部分仍不够，出现额外 module 会 fail closed。SBOM attestation 必须携带有效的 SPDX 2.2/2.3 document predicate。原生
+BuildKit attestation 可以是 package-level 且不带 file entry；验证器接受这一有界缺省，但它一旦携带 collaboration 文件条目，就必须与 final rootfs 精确一致。
+RC/stable 发布阶段会额外生成每个 artifact 的 Syft file inventory，并单独绑定这份完整清单。compute
 同一比较也覆盖实际出现的完整 `plastic_promise` namespace：每个已安装 source path
 必须属于所选角色 allowlist，每个 required import 地基必须存在，SPDX package view 必须与
 final-rootfs package view 相等。materializer 另行证明 staged source tree 等于完整 allowlist，

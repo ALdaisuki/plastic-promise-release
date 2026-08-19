@@ -486,13 +486,13 @@ def _validate_sbom_collaboration_surface(
 
     rootfs_paths = _collaboration_relative_paths(rootfs_inventory, surface.package_path)
     sbom_paths = _collaboration_relative_paths(sbom_inventory, surface.package_path)
+    # BuildKit's native SBOM attestation is allowed to be package-level and
+    # omit file entries. RC/stable publication separately binds the complete
+    # Syft file inventory; if native files are present, they must still agree
+    # exactly with the final rootfs.
     if rootfs_paths != sbom_paths:
-        print(
-            "sbom_collaboration_diagnostic:"
-            f" rootfs={sorted(rootfs_paths)!r}"
-            f" sbom={sorted(sbom_paths)!r}",
-            file=sys.stderr,
-        )
+        if not sbom_paths:
+            return
         _fail("container_artifact_sbom_collaboration_surface_mismatch")
 
 

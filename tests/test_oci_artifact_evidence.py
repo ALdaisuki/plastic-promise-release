@@ -540,6 +540,33 @@ def test_oci_evidence_cli_rejects_sbom_that_omits_a_server_collaboration_file(
     assert not output.exists()
 
 
+def test_oci_evidence_cli_accepts_package_level_server_sbom_without_file_entries(
+    tmp_path: Path,
+):
+    plan = ContainerArtifactCompiler().prepare(_request())
+    artifact = plan.artifact_for("pp-server-backend", "linux/amd64")
+    layout = tmp_path / "server-package-level-sbom.oci.tar"
+    output = tmp_path / "receipt.json"
+    _write_oci_layout(
+        layout,
+        labels=plan.expected_oci_labels(artifact.artifact_id),
+        include_sbom=True,
+        rootfs_layers=(COLLABORATION_FILES,),
+        sbom_files=(),
+    )
+
+    result = subprocess.run(
+        _command(layout, output, role="pp-server-backend"),
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.exists()
+
+
 @pytest.mark.parametrize(
     ("rootfs_layers", "sbom_files", "expected_error"),
     [

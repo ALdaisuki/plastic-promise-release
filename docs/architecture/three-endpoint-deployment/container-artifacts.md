@@ -120,8 +120,11 @@ published by `endpoint_role_contract(PP_SERVER_BACKEND)`. The container
 compiler consumes that same manifest instead of maintaining a second module
 list. Merely containing a subset is insufficient, and an extra module fails
 closed.
-The SBOM attestation must carry a valid SPDX 2.2/2.3 document predicate with a
-file inventory whose collaboration namespace exactly matches the final rootfs.
+The SBOM attestation must carry a valid SPDX 2.2/2.3 document predicate. The
+native BuildKit attestation may be package-level and omit file entries; the
+verifier accepts that bounded omission, while any collaboration file entries
+it carries must exactly match the final rootfs. RC/stable publication adds the
+per-artifact Syft file inventory and binds that complete inventory separately.
 The same comparison covers the complete observed `plastic_promise` namespace:
 every installed source path must belong to the selected role allowlist, every
 required import foundation must be present, and the SPDX package view must

@@ -222,7 +222,7 @@ jobs:
           # bind the in-toto self-subject to each exported image manifest.
           docker buildx build --builder plastic-promise-oci \
             --platform linux/amd64,linux/arm64 \
-            --sbom=generator=anchore/syft:latest --provenance=mode=max \
+            --sbom=true --provenance=mode=max \
             --tag "plastic-promise.invalid/local-edge:pr-verify-${{ github.sha }}" \
             --output type=oci,dest=/tmp/plastic-promise-local-edge.oci.tar \
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
@@ -294,7 +294,7 @@ jobs:
         run: |
           docker buildx build --builder plastic-promise-oci \
             --platform linux/amd64,linux/arm64 \
-            --sbom=generator=anchore/syft:latest --provenance=mode=max \
+            --sbom=true --provenance=mode=max \
             --tag "plastic-promise.invalid/server:pr-verify-${{ github.sha }}" \
             --output type=oci,dest=/tmp/plastic-promise-server.oci.tar \
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
@@ -367,7 +367,7 @@ jobs:
         run: |
           docker buildx build --builder plastic-promise-oci \
             --platform linux/amd64,linux/arm64 \
-            --sbom=generator=anchore/syft:latest --provenance=mode=max \
+            --sbom=true --provenance=mode=max \
             --tag "plastic-promise.invalid/compute-node-cpu:pr-verify-${{ github.sha }}" \
             --output type=oci,dest=/tmp/plastic-promise-compute-node-cpu.oci.tar \
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
@@ -440,7 +440,7 @@ jobs:
         run: |
           docker buildx build --builder plastic-promise-oci \
             --platform linux/amd64 \
-            --sbom=generator=anchore/syft:latest --provenance=mode=max \
+            --sbom=true --provenance=mode=max \
             --tag "plastic-promise.invalid/compute-node-cuda:pr-verify-${{ github.sha }}" \
             --output type=oci,dest=/tmp/plastic-promise-compute-node-cuda.oci.tar \
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
