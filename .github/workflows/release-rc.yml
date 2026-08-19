@@ -258,7 +258,7 @@ jobs:
             fi
             docker buildx build --builder plastic-promise-oci \
               --platform "$platforms" \
-              --sbom=true --provenance=mode=max \
+              --sbom=generator=anchore/syft:latest --provenance=mode=max \
               --tag "$tag" \
               --file "$dockerfile" \
               --build-arg "BASE_IMAGE=$base_image" \
