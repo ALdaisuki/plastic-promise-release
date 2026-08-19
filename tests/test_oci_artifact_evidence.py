@@ -288,6 +288,37 @@ def test_oci_evidence_cli_binds_an_attested_layout_to_the_prepared_artifact(tmp_
         (
             "pp-server-backend",
             "standard",
+            (
+                COLLABORATION_FILES
+                + tuple(
+                    path.replace(
+                        "app/plastic_promise/collaboration/",
+                        "usr/lib/python3/site-packages/plastic_promise/collaboration/__pycache__/",
+                    ).replace(".py", ".cpython-312.pyc")
+                    for path in COLLABORATION_FILES
+                ),
+            ),
+            COLLABORATION_FILES
+            + tuple(
+                path.replace(
+                    "app/plastic_promise/collaboration/",
+                    "usr/lib/python3/site-packages/plastic_promise/collaboration/__pycache__/",
+                ).replace(".py", ".cpython-312.pyc")
+                for path in COLLABORATION_FILES
+            ),
+            None,
+            COLLABORATION_FILES
+            + tuple(
+                path.replace(
+                    "app/plastic_promise/collaboration/",
+                    "usr/lib/python3/site-packages/plastic_promise/collaboration/__pycache__/",
+                ).replace(".py", ".cpython-312.pyc")
+                for path in COLLABORATION_FILES
+            ),
+        ),
+        (
+            "pp-server-backend",
+            "standard",
             (COLLABORATION_FILES[:-1],),
             COLLABORATION_FILES[:-1],
             "container_artifact_collaboration_foundation_missing",
@@ -298,6 +329,24 @@ def test_oci_evidence_cli_binds_an_attested_layout_to_the_prepared_artifact(tmp_
             "standard",
             (COLLABORATION_FILES + ("app/plastic_promise/collaboration/agent_registry.py",),),
             COLLABORATION_FILES + ("app/plastic_promise/collaboration/agent_registry.py",),
+            "container_artifact_collaboration_surface_forbidden",
+            (),
+        ),
+        (
+            "pp-server-backend",
+            "standard",
+            (
+                COLLABORATION_FILES
+                + (
+                    "usr/lib/python3/site-packages/plastic_promise/"
+                    "collaboration/__pycache__/agent_registry.cpython-312.pyc",
+                ),
+            ),
+            COLLABORATION_FILES
+            + (
+                "usr/lib/python3/site-packages/plastic_promise/"
+                "collaboration/__pycache__/agent_registry.cpython-312.pyc",
+            ),
             "container_artifact_collaboration_surface_forbidden",
             (),
         ),

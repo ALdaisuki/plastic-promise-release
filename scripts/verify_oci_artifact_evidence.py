@@ -259,11 +259,34 @@ def _validate_collaboration_surface(
     actual_paths = _collaboration_relative_paths(inventory, surface.package_path)
     if surface.writer_surface == "source-only-unwired":
         expected_paths = frozenset(surface.source_paths)
-        actual_path_set = frozenset(actual_paths)
-        missing = expected_paths - actual_path_set
+        source_paths = tuple(path for path in actual_paths if path in expected_paths)
+        source_path_set = frozenset(source_paths)
+        missing = expected_paths - source_path_set
         if missing:
             _fail("container_artifact_collaboration_foundation_missing")
-        if actual_path_set != expected_paths or len(actual_paths) != len(expected_paths):
+
+        compiled_sources: list[str] = []
+        unexpected_paths: list[str] = []
+        cache_prefix = f"{surface.package_path}/__pycache__/"
+        for path in actual_paths:
+            if path in expected_paths:
+                continue
+            if path.startswith(cache_prefix):
+                cache_name = path.removeprefix(cache_prefix)
+                match = re.fullmatch(
+                    r"(?P<stem>.+)\.[A-Za-z0-9_-]+(?:\.opt-\d+)?\.pyc",
+                    cache_name,
+                )
+                if match is not None:
+                    compiled_sources.append(f"{surface.package_path}/{match.group('stem')}.py")
+                    continue
+            unexpected_paths.append(path)
+
+        if (
+            unexpected_paths
+            or any(path not in expected_paths for path in compiled_sources)
+            or len(source_paths) != len(expected_paths)
+        ):
             _fail("container_artifact_collaboration_surface_forbidden")
         return
     if surface.writer_surface == "absent" and actual_paths:
