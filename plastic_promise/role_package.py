@@ -88,7 +88,13 @@ class RolePackageCompiler:
             shutil.copy2(source, target)
 
         if contract.package_kind == "python":
-            self._write_python_metadata(destination, contract, version, self.source_root)
+            self._write_python_metadata(
+                destination,
+                contract,
+                version,
+                self.source_root,
+                selected,
+            )
         elif role == PP_LOCAL_EDGE:
             # Static recipes use the same compiler for inventory purposes but
             # do not need Python distribution metadata.
@@ -174,10 +180,16 @@ class RolePackageCompiler:
         contract: EndpointRoleContract,
         version: str,
         source_root: Path,
+        selected: list[str],
     ) -> None:
         dependency_block = "\n".join(f'    "{item}",' for item in contract.package_dependencies)
         script_block = "\n".join(
             f'"{name}" = "{target}"' for name, target in contract.package_scripts
+        )
+        package_data = RolePackageCompiler._package_data_for(source_root, selected)
+        package_data_block = "\n".join(
+            f'"{package}" = [{", ".join(json.dumps(pattern) for pattern in patterns)}]'
+            for package, patterns in package_data.items()
         )
         metadata = f'''[build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -199,6 +211,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["plastic_promise*"]
 exclude = ["plastic_promise.tests*", "plastic_promise.skills*"]
+
+[tool.setuptools.package-data]
+{package_data_block}
 '''
         (destination / "pyproject.toml").write_text(metadata, encoding="utf-8")
         readme = source_root / "README.md"
@@ -207,6 +222,30 @@ exclude = ["plastic_promise.tests*", "plastic_promise.skills*"]
         license_path = source_root / "LICENSE"
         if license_path.is_file() and not (destination / "LICENSE").exists():
             shutil.copy2(license_path, destination / "LICENSE")
+
+    @staticmethod
+    def _package_data_for(source_root: Path, selected: list[str]) -> dict[str, tuple[str, ...]]:
+        """Return deterministic setuptools package-data entries for non-Python files."""
+
+        package_data: dict[str, set[str]] = {}
+        for relative in selected:
+            path = PurePosixPath(relative)
+            if path.suffix in {".py", ".pyi", ".pyc"} or path.parts[0] != "plastic_promise":
+                continue
+            package_root: PurePosixPath | None = None
+            for length in range(len(path.parts) - 1, 0, -1):
+                candidate = PurePosixPath(*path.parts[:length])
+                if (source_root / candidate / "__init__.py").is_file():
+                    package_root = candidate
+                    break
+            if package_root is None:
+                continue
+            package = ".".join(package_root.parts)
+            pattern = PurePosixPath(*path.parts[len(package_root.parts) :]).as_posix()
+            package_data.setdefault(package, set()).add(pattern)
+        return {
+            package: tuple(sorted(patterns)) for package, patterns in sorted(package_data.items())
+        }
 
 
 def _safe_relative(value: str) -> str:
