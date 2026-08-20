@@ -1,9 +1,25 @@
 # Release Delivery and Installation Profiles
 
-> **Status on August 11, 2026:** this page specifies the PR 6 release-readiness
-> target. It does not prove a real RC, signature, attestation, GHCR/PyPI
-> publication, server deployment, node enrollment, migration, promotion, or
-> Maintenance transition.
+> **Status on August 20, 2026:** the `v0.2.15` stable workflow built and pushed
+> all four required GHCR OCI roles at immutable digests. The Python wheel and
+> sdist were built, checked, and attested, but PyPI Trusted Publishing was
+> rejected by PyPI with `invalid-publisher`; no PyPI publication or complete
+> release manifest is claimed until the external publisher is configured.
+
+The verified OCI subjects from run
+[`32376104075`](https://github.com/ALdaisuki/plastic-promise-release/actions/runs/32376104075)
+are:
+
+| Role | Immutable digest |
+| --- | --- |
+| `local-edge` | `sha256:65c6d54a5c1cbbf96f837bef05f26e4756283b1060c98223dc108682aaf433ea` |
+| `server` | `sha256:40e0d61d1efb59899ab4160b9dd34001a2198781966564cae95aca47534340dd` |
+| `inference-cpu` | `sha256:947ffcfe0c43b9fc228ecb99755bc7113cdc49a881ce1baf9b95b68e5a20d189` |
+| `inference-node` (CUDA control image) | `sha256:fb48386f34bcd6693ea6f1de9ad829c64ad3e772f3ca87a3859d7b023dd41d2a` |
+
+These digests are build evidence, not a claim that the Mac canonical runtime or
+the Windows node has been cut over. Those deployments require a successful
+pull, health check, and runtime receipt.
 
 Plastic Promise has one source distribution contract and three supported target
 runtime profiles. A profile changes the placement of runtime and inference work;

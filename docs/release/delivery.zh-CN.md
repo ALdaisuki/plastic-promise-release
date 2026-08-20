@@ -1,8 +1,23 @@
 # 发行交付与安装 Profile
 
-> **截至 2026 年 8 月 11 日的状态：**本页规定 PR 6 release-readiness 的目标。它不证明
-> 真实 RC、签名、attestation、GHCR/PyPI 发布、服务器部署、node enrollment、迁移、推广或
-> Maintenance transition 已经发生。
+> **截至 2026 年 8 月 20 日的状态：**`v0.2.15` stable workflow 已经通过 GitHub
+> 构建并按 immutable digest 推送四类 GHCR OCI role。Python wheel/sdist 已构建、检查并
+> 生成 attestation，但 PyPI Trusted Publishing 被 PyPI 以 `invalid-publisher` 拒绝；在
+> 外部 publisher 配置完成前，不宣称 PyPI publication 或完整 release manifest 已完成。
+
+对应 run 为
+[`32376104075`](https://github.com/ALdaisuki/plastic-promise-release/actions/runs/32376104075)，
+已验证的 OCI digest 如下：
+
+| Role | Immutable digest |
+| --- | --- |
+| `local-edge` | `sha256:65c6d54a5c1cbbf96f837bef05f26e4756283b1060c98223dc108682aaf433ea` |
+| `server` | `sha256:40e0d61d1efb59899ab4160b9dd34001a2198781966564cae95aca47534340dd` |
+| `inference-cpu` | `sha256:947ffcfe0c43b9fc228ecb99755bc7113cdc49a881ce1baf9b95b68e5a20d189` |
+| `inference-node`（CUDA 控制镜像） | `sha256:fb48386f34bcd6693ea6f1de9ad829c64ad3e772f3ca87a3859d7b023dd41d2a` |
+
+这些 digest 是构建证据，不代表 Mac canonical runtime 或 Windows 节点已经切换。真正部署仍
+需要成功拉取、健康检查和 runtime receipt。
 
 Plastic Promise 有一份 source distribution contract 和三个受支持的目标 runtime profile。
 Profile 只改变 runtime 与 inference work 的放置位置；不会改变所有权：

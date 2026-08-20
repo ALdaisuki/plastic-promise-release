@@ -1,7 +1,9 @@
 # 发行交付实施说明
 
-> **状态（2026-08-11）：目标 / 未验证。** 当前 stable publisher 未接线 PR 6
-> selected-evidence gate，不能把任何 stable workflow run 当作 Bundle 验证证据。
+> **状态（2026-08-20）：已有部分证据。** 当前 stable publisher 仍未接入 PR 6
+> selected-evidence gate，但 run `32376104075` 已按 immutable digest 推送四类 stable
+> GHCR OCI role。PyPI Trusted Publisher exchange 以 `invalid-publisher` 失败，因此该 run
+> 不是完整 stable release，release-manifest job 也被跳过。
 
 ## 运行时边界
 

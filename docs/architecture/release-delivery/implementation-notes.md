@@ -1,8 +1,10 @@
 # Release Delivery Implementation Notes
 
-> **Status (2026-08-11): target / unverified.** The current stable publisher is
-> not wired to the PR 6 selected-evidence gate; no stable workflow run is Bundle
-> verification evidence by itself.
+> **Status (2026-08-20): partially evidenced.** The current stable publisher is
+> still not wired to the PR 6 selected-evidence gate. Run `32376104075` did,
+> however, publish all four stable GHCR OCI roles by immutable digest. Its PyPI
+> Trusted Publisher exchange failed with `invalid-publisher`, so the run is not
+> a complete stable release and its release-manifest job was skipped.
 
 ## Runtime boundaries
 
