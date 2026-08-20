@@ -296,9 +296,10 @@ layers, arbitrary shell/tool access, and canonical authority. CPU and CUDA
 remain variants behind the same `embedding/v1` / `rerank/v1` contract; CUDA is
 limited to its supported platform policy.
 
-The control node uses non-executable `node-tmp` and `node-runtime` tmpfs
-mounts. Any worker that genuinely requires executable JIT scratch space owns
-that exception in its separate runtime boundary.
+The bounded `node-tmp` mount remains executable for the compatibility adapter
+contract and optional JIT-backed worker integrations; `node-runtime` remains
+non-executable. CUDA libraries and model execution still belong to the
+operator-managed llama.cpp workers.
 
 Before Buildx receives any arguments, the builder uses
 [`validate_container_artifact_policy.py`](../../scripts/validate_container_artifact_policy.py)

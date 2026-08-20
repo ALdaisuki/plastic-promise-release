@@ -231,8 +231,9 @@ build policy 要求 non-root、read-only-rootfs descriptor 与 loopback listener
 layer 的 model weight、任意 shell/tool access 与 canonical authority。CPU/CUDA 保持在相同
 `embedding/v1` / `rerank/v1` contract 之后；CUDA 限于其支持的 platform policy。
 
-compute 控制容器的 `node-tmp` 与 `node-runtime` tmpfs 均保持不可执行。真正需要 JIT
-可执行临时目录的 worker 必须在自己的独立 runtime boundary 中声明该例外。
+兼容 adapter 合同与可选 JIT worker 集成要求有界的 `node-tmp` 保持可执行；
+`node-runtime` 仍保持不可执行。CUDA library 与模型执行仍由操作者管理的 llama.cpp
+worker 负责。
 
 Buildx 获得任何 argument 前，builder 会通过
 [`validate_container_artifact_policy.py`](../../scripts/validate_container_artifact_policy.py)

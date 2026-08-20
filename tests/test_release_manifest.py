@@ -57,8 +57,7 @@ def _release_inputs(tmp_path: Path) -> dict[str, object]:
         "dist_directory": dist_directory,
         "sbom_path": sbom_path,
         "image_references": {
-            "local-edge": "ghcr.io/aldaisuki/plastic-promise-local-edge@sha256:"
-            + ("d" * 64),
+            "local-edge": "ghcr.io/aldaisuki/plastic-promise-local-edge@sha256:" + ("d" * 64),
             "server": "ghcr.io/aldaisuki/plastic-promise-server@sha256:" + ("b" * 64),
             "inference-cpu": "ghcr.io/aldaisuki/plastic-promise-local-inference-node@sha256:"
             + ("e" * 64),
