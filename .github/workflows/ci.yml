@@ -81,7 +81,7 @@ jobs:
         run: |
           python scripts/resolve_container_artifact_identity.py \
             --repository-root . --profile-id split-accelerated \
-            --source-revision "${{ github.sha }}" --package-version ci-verify \
+            --source-revision "${{ github.sha }}" --package-version 0.0.0+ci.verify \
             --platform linux/amd64 --compute-variant cpu \
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
             --model-catalog-digest "$PP_PR_VERIFY_MODEL_CATALOG_DIGEST" \

@@ -19,7 +19,7 @@
     ],
     "tracked_drift_is_passing": false,
     "content_set_algorithm": "sha256-entry-id-locale-path-content-v1",
-    "content_set_sha256": "cdd02ca780934adb757dbe134a2dee04b55c309dda1101b456ad11e8e7a537b7",
+    "content_set_sha256": "94f04126d5bbddb5e4ca1d7ce90b8f34b640c20d175e580b890aabdadf020e1e",
     "rules": [
       "every listed path is part of the critical derived-document family and must be checked on each affected PR",
       "tracked-drift is a blocking evidence record, not a waiver, exception, or successful parity result",
