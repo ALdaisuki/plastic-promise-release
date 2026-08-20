@@ -408,7 +408,7 @@ generation, including prompt-based `yes`/`no`, is never accepted as reranking.
 
 | Profile | Embedding | Dimensions | Rerank | Model budget | Recommended for |
 | --- | --- | --- | --- | --- | --- |
-| CUDA quality | `Qwen3-Embedding-4B-GGUF` via llama.cpp | 2560, L2 | `Qwen3-Reranker-0.6B-GGUF` via llama.cpp structured rerank endpoint, or an official CrossEncoder worker | Operator-selected quantization + runtime workspace | Default for English, Chinese and code retrieval on a 16 GB-class GPU |
+| CUDA quality | `Qwen3-Embedding-4B-GGUF` via llama.cpp | 2560, L2 | `Qwen3-Reranker-4B-GGUF` via llama.cpp structured rerank endpoint, or an official CrossEncoder worker | Operator-selected quantization + runtime workspace | Recommended quality profile for English, Chinese and code retrieval; use low-memory when the GPU cannot keep both models resident |
 | Low memory | `Qwen3-Embedding-0.6B-GGUF` via llama.cpp | 1024, L2 | `Qwen3-Reranker-0.6B-GGUF` | Smaller operator-selected quantization | GPU-capacity or latency pressure |
 | Compatibility | BGE GGUF or a local BGE embedding worker | Native dimension, L2 | BGE sequence-classification reranker | Depends on selected artifacts | Governed compatibility fallback |
 
@@ -795,7 +795,11 @@ Local storage is the default. Optional external calls depend on configured agent
 
 Embedding and reranking are separate compute-node roles. The recommended local
 profile uses llama.cpp for both, with an embedding GGUF and a reranker GGUF
-exposed through separate structured endpoints. Ollama and in-process
+exposed through separate structured endpoints. Both workers use the same immutable
+`PP_LLAMA_CPP_IMAGE` digest and one read-only `PP_LLAMA_CPP_MODEL_ROOT`; Docker
+stores shared llama.cpp/CUDA layers only once. The two GGUF files remain separate
+because they are different weights: merging them would not lower GPU residency and
+would remove independent overload and restart control. Ollama and in-process
 CrossEncoder/BGE adapters remain explicit compatibility choices. If reranking
 is unavailable, the server preserves original order; it never asks a generation
 model to invent scores.
@@ -826,7 +830,9 @@ scripts/start_llama_cpp_compute_workers.sh --start
 Set `PP_LLAMA_CPP_RESOURCE_GATE=off` only for an explicitly controlled
 maintenance window. Normal local, split-accelerated, and release profiles keep
 both resource gates enabled. This is especially important on a 16 GiB-class
-GPU when the quality profile keeps two 4B models resident.
+GPU when the quality profile keeps two 4B models resident. The model cache stays
+outside every OCI image; the published control image contains neither CUDA nor
+model weights.
 
 ### Hosted embedding, reranking, and chunk analysis
 
@@ -999,7 +1005,7 @@ PP_LOCAL_NODE_EMBEDDING_DIMENSION=2560
 PP_LOCAL_NODE_EMBEDDING_NORMALIZATION=l2
 PP_LOCAL_NODE_EMBEDDING_LLAMA_CPP_BASE_URL=http://127.0.0.1:19131
 PP_LOCAL_NODE_RERANK_BACKEND=llama.cpp
-PP_LOCAL_NODE_RERANK_MODEL=Qwen3-Reranker-0.6B-GGUF
+PP_LOCAL_NODE_RERANK_MODEL=Qwen3-Reranker-4B-GGUF
 PP_LOCAL_NODE_RERANK_REVISION=<fixed-40-hex-revision>
 PP_LOCAL_NODE_RERANK_LLAMA_CPP_BASE_URL=http://127.0.0.1:19132
 ```
@@ -1471,7 +1477,7 @@ python scripts/rebuild_lancedb.py
 | Structured database | `data/db/plastic_memory.db` unless `PLASTIC_DB_PATH` overrides it |
 | Vector database | `data/lancedb` unless `PLASTIC_LANCEDB_PATH` overrides it |
 | Codex repo skills | `.agents/skills/*/SKILL.md` |
-| Default compute-node rerank | llama.cpp structured rerank endpoint + operator-pinned `Qwen3-Reranker-0.6B-GGUF`; generation text is rejected |
+| Default compute-node rerank | llama.cpp structured rerank endpoint + operator-pinned `Qwen3-Reranker-4B-GGUF`; generation text is rejected |
 | Runtime logs and PIDs | `var/log/`, `var/run/` |
 
 Service subprocesses inherit the launcher's runtime-mode environment and receive the project root at the front of `PYTHONPATH`; this keeps direct script entrypoints and hidden Windows subprocesses aligned with source-checkout execution.

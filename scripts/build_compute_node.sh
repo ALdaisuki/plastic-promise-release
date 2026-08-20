@@ -242,7 +242,7 @@ else
 fi
 
 if [[ "$rerank_backend" == "llama.cpp" ]]; then
-  [[ -n "$rerank_model" ]] || rerank_model="Qwen3-Reranker-0.6B-GGUF"
+  [[ -n "$rerank_model" ]] || rerank_model="Qwen3-Reranker-4B-GGUF"
   if [[ -z "$rerank_revision" ]]; then
     printf 'llama.cpp rerank requires PP_LOCAL_NODE_RERANK_REVISION for %s\n' "$rerank_model" >&2
     exit 3

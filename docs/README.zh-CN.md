@@ -233,7 +233,7 @@ rerank。用户可以选择其他兼容 runtime，但必须返回结构化向量
 
 | 档位 | Embedding | 维度 | Rerank | 模型预算 | 适用场景 |
 | --- | --- | --- | --- | --- | --- |
-| CUDA 质量档 | llama.cpp + `Qwen3-Embedding-4B-GGUF` | 2560，L2 | llama.cpp 结构化 rerank endpoint + `Qwen3-Reranker-0.6B-GGUF`，或官方 CrossEncoder worker | 由量化与 runtime 决定 | 16 GB 级显存上的中英与代码检索默认选择 |
+| CUDA 质量档 | llama.cpp + `Qwen3-Embedding-4B-GGUF` | 2560，L2 | llama.cpp 结构化 rerank endpoint + `Qwen3-Reranker-4B-GGUF`，或官方 CrossEncoder worker | 由量化与 runtime 决定 | 中英与代码检索的推荐质量档；显存无法同时驻留两个模型时改用低内存档 |
 | 低内存档 | llama.cpp + `Qwen3-Embedding-0.6B-GGUF` | 1024，L2 | `Qwen3-Reranker-0.6B-GGUF` | 较小量化制品 | 显存/时延压力场景 |
 | 兼容档 | BGE GGUF 或本地 BGE embedding worker | 模型原生维度，L2 | BGE sequence-classification reranker | 由制品决定 | 治理化兼容后备 |
 
@@ -806,7 +806,7 @@ production acceptance 与 publication 仍未验证。PR 5、runtime 与 producti
 | 语义切片富化 | 一键启动器默认 `shadow`，推荐在 `pp-compute-node` 使用 OpenAI-compatible 云 provider；`on` 需先完成受审查的离线重建/迁移 |
 | Dashboard V2 | 一键启动器默认开启；中文、仅本机、按项目隔离、只读，入口 `/dashboard` |
 | 检索解释 | `PP_RETRIEVAL_EXPLAIN=1`；保存有界快照并显示真实请求/阶段耗时，不生成虚假零耗时 |
-| 默认 compute-node rerank | llama.cpp 结构化 rerank endpoint + 固定的 `Qwen3-Reranker-0.6B-GGUF`；拒绝生成文本冒充分数 |
+| 默认 compute-node rerank | llama.cpp 结构化 rerank endpoint + 固定的 `Qwen3-Reranker-4B-GGUF`；拒绝生成文本冒充分数 |
 | SQLite | `data/db/plastic_memory.db`，可用 `PLASTIC_DB_PATH` 覆盖 |
 | LanceDB | `data/lancedb`，可用 `PLASTIC_LANCEDB_PATH` 覆盖 |
 | 运行日志 | `var/log/` |

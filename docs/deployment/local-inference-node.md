@@ -197,7 +197,7 @@ PP_LOCAL_NODE_EMBEDDING_NORMALIZATION=l2
 PP_LOCAL_NODE_EMBEDDING_LLAMA_CPP_BASE_URL=http://127.0.0.1:19131
 PP_LOCAL_NODE_EMBEDDING_LLAMA_CPP_PATH=/v1/embeddings
 PP_LOCAL_NODE_RERANK_BACKEND=llama.cpp
-PP_LOCAL_NODE_RERANK_MODEL=Qwen3-Reranker-0.6B-GGUF
+PP_LOCAL_NODE_RERANK_MODEL=Qwen3-Reranker-4B-GGUF
 PP_LOCAL_NODE_RERANK_REVISION=<fixed-40-hex-revision>
 PP_LOCAL_NODE_RERANK_LLAMA_CPP_BASE_URL=http://127.0.0.1:19132
 PP_LOCAL_NODE_RERANK_LLAMA_CPP_PATH=/rerank
@@ -215,8 +215,13 @@ downloading anything, or opening a listener. The optional `local-inference`
 package extra supplies governed adapters behind the same fixed contract:
 
 - `llama.cpp` embedding and rerank: separate loopback llama-server processes
-  return structured vectors and scores; model/revision/dimension/digest remain
-  bound to the Plastic Promise node identity, and generation text is rejected;
+  return structured vectors and scores. Both workers use the same immutable
+  `PP_LLAMA_CPP_IMAGE` digest and one read-only model root, so Docker stores the
+  shared llama.cpp/CUDA runtime layers only once. The GGUF files remain separate
+  because they are different weights; merging them would not lower GPU residency
+  and would remove independent overload/restart control. Model/revision/dimension
+  /digest remain bound to the Plastic Promise node identity, and generation text
+  is rejected;
 - `bge-local` embeddings and `bge-local` rerank (sentence-transformers /
   `AutoModelForSequenceClassification`, `local_files_only=True`);
 - `ollama` embeddings (e.g. `qwen3-embedding:4b`, 2560 dim, L2): the node binds

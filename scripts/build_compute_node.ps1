@@ -222,7 +222,7 @@ else {
 }
 
 if ($rerankBackend -eq 'llama.cpp') {
-    if ([string]::IsNullOrWhiteSpace($rerankModel)) { $rerankModel = 'Qwen3-Reranker-0.6B-GGUF' }
+    if ([string]::IsNullOrWhiteSpace($rerankModel)) { $rerankModel = 'Qwen3-Reranker-4B-GGUF' }
     if ([string]::IsNullOrWhiteSpace($rerankRevision)) {
         throw 'build_compute_node_llama_cpp_rerank_revision_required'
     }
