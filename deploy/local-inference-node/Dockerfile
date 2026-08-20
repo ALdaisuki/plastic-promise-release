@@ -10,17 +10,23 @@
 # pulls PyTorch/Triton/CUDA Python wheels into an image that does not execute
 # those adapters.
 ARG BASE_IMAGE
-FROM ${BASE_IMAGE} AS compute-source
+FROM ${BASE_IMAGE} AS compute-package
+ARG PACKAGE_VERSION
 
-# Stage the complete source tree, then remove the collaboration writer before
-# any material can cross into the fresh compute image. The deployment package
-# uses lazy migration exports, so compute startup no longer imports the
-# server-owned collaboration surface. Endpoint permissions remain the boundary
-# that prevents compute from joining the Agent work system.
+# Stage the complete source tree only as compiler input.  The materializer
+# emits the closed compute allowlist; no full source tree crosses into the
+# final image.
 WORKDIR /source
 COPY pyproject.toml README.md /source/
 COPY plastic_promise /source/plastic_promise
-RUN rm -rf /source/plastic_promise/collaboration
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m plastic_promise.role_package \
+        --role pp-compute-node \
+        --source-root /source \
+        --output-root /role-package \
+        --version "$PACKAGE_VERSION"
 
 FROM ${BASE_IMAGE}
 
@@ -77,13 +83,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=compute-source /source/pyproject.toml /source/README.md /app/
-COPY --from=compute-source /source/plastic_promise /app/plastic_promise
+COPY --from=compute-package /role-package /app
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python3 -m venv /opt/plastic-promise-venv \
     && /opt/plastic-promise-venv/bin/python -m pip install \
         --retries 10 --timeout 60 \
-        --index-url "${PIP_INDEX_URL}" .
+        --index-url "${PIP_INDEX_URL}" . \
+    && rm -rf /app/plastic_promise /app/build
 
 ENV PATH="/opt/plastic-promise-venv/bin:${PATH}"
 

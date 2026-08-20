@@ -160,7 +160,7 @@ def test_compiler_prepares_role_platform_and_compute_variant_matrix():
     )
 
 
-def test_server_recipe_requires_compute_provider_source_pruning(tmp_path: Path):
+def test_server_recipe_requires_role_package_compiler(tmp_path: Path):
     repository_root = Path(__file__).resolve().parents[1]
     shutil.copytree(repository_root / "deploy", tmp_path / "deploy")
     shutil.copytree(repository_root / "plastic_promise", tmp_path / "plastic_promise")
@@ -168,15 +168,15 @@ def test_server_recipe_requires_compute_provider_source_pruning(tmp_path: Path):
     dockerfile = tmp_path / "deploy/server/Dockerfile"
     dockerfile.write_text(
         dockerfile.read_text(encoding="utf-8").replace(
-            " /source/plastic_promise/core/provider_http.py",
-            "",
+            "python -m plastic_promise.role_package",
+            "python -m plastic_promise.other_package",
         ),
         encoding="utf-8",
     )
 
     with pytest.raises(
         ContainerArtifactError,
-        match="container_recipe_server_compute_source_prune_required",
+        match="container_recipe_server_role_package_required",
     ):
         ContainerArtifactCompiler(tmp_path).prepare(_request())
 
@@ -457,17 +457,17 @@ def _copy_recipe_tree(destination: Path) -> None:
     ("original", "replacement", "code"),
     [
         (
-            "FROM ${BASE_IMAGE} AS compute-source",
-            "FROM ${BASE_IMAGE} AS renamed-source",
+            "FROM ${BASE_IMAGE} AS compute-package",
+            "FROM ${BASE_IMAGE} AS renamed-package",
             "container_recipe_compute_source_stage_invalid",
         ),
         (
-            "RUN rm -rf /source/plastic_promise/collaboration",
+            "python3 -m plastic_promise.role_package",
             "RUN true",
-            "container_recipe_compute_collaboration_prune_required",
+            "container_recipe_compute_role_package_required",
         ),
         (
-            "COPY --from=compute-source /source/plastic_promise /app/plastic_promise",
+            "COPY --from=compute-package /role-package /app",
             "COPY plastic_promise /app/plastic_promise",
             "container_recipe_compute_final_copy_invalid",
         ),

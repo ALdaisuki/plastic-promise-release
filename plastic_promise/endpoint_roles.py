@@ -287,6 +287,8 @@ class EndpointRoleContract:
     collaboration_modules: tuple[str, ...] = ()
     collaboration_source_paths: tuple[str, ...] = ()
     collaboration_writer_surface: str = "absent"
+    package_dependencies: tuple[str, ...] = ()
+    package_scripts: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.role not in ENDPOINT_ROLES:
@@ -304,11 +306,22 @@ class EndpointRoleContract:
             self.source_exclusions,
             self.collaboration_modules,
             self.collaboration_source_paths,
+            self.package_dependencies,
+            self.package_scripts,
         )
         if any(len(values) != len(set(values)) for values in tuple_fields):
             raise EndpointRoleContractError("endpoint_role_contract_duplicate_value")
         if len(self.collaboration_modules) != len(self.collaboration_source_paths):
             raise EndpointRoleContractError("endpoint_role_contract_collaboration_surface_invalid")
+        if any(
+            not isinstance(name, str) or not name or not isinstance(target, str) or not target
+            for name, target in self.package_scripts
+        ):
+            raise EndpointRoleContractError("endpoint_role_contract_package_scripts_invalid")
+        if len(tuple(name for name, _ in self.package_scripts)) != len(
+            {name for name, _ in self.package_scripts}
+        ):
+            raise EndpointRoleContractError("endpoint_role_contract_package_scripts_invalid")
         if self.collaboration_writer_surface not in {"absent", "source-only-unwired"}:
             raise EndpointRoleContractError("endpoint_role_contract_writer_surface_invalid")
         if (self.collaboration_writer_surface == "absent") != (
@@ -423,6 +436,22 @@ _ROLE_CONTRACTS: Mapping[str, EndpointRoleContract] = MappingProxyType(
             collaboration_modules=tuple(module for module, _path in _COLLABORATION_FOUNDATION),
             collaboration_source_paths=tuple(path for _module, path in _COLLABORATION_FOUNDATION),
             collaboration_writer_surface="source-only-unwired",
+            package_dependencies=(
+                "mcp>=1.0.0,<2.0.0",
+                "lancedb>=0.34.0",
+                "uvicorn[standard]>=0.27.0",
+                "starlette>=0.36.0",
+                "httpx>=0.27.0",
+                "requests>=2.31.0",
+                "PyYAML>=6.0.1,<7.0.0",
+                "tomli>=2.0.1; python_version < '3.11'",
+            ),
+            package_scripts=(
+                (
+                    "plastic-promise-canonical-runtime",
+                    "plastic_promise.deployment.runtime_lock:main",
+                ),
+            ),
         ),
         PP_COMPUTE_NODE: EndpointRoleContract(
             role=PP_COMPUTE_NODE,
@@ -443,6 +472,22 @@ _ROLE_CONTRACTS: Mapping[str, EndpointRoleContract] = MappingProxyType(
                 "plastic_promise/__init__.py",
                 "plastic_promise/py.typed",
                 "plastic_promise/local_inference_node",
+            ),
+            package_dependencies=(
+                "uvicorn[standard]>=0.27.0",
+                "starlette>=0.36.0",
+                "httpx>=0.27.0",
+                "requests>=2.31.0",
+            ),
+            package_scripts=(
+                (
+                    "plastic-promise-local-inference-node",
+                    "plastic_promise.local_inference_node.server:main",
+                ),
+                (
+                    "plastic-promise-local-inference-cache-plan",
+                    "plastic_promise.local_inference_node.cache_planner:main",
+                ),
             ),
         ),
     }

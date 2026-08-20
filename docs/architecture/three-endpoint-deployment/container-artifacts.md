@@ -33,6 +33,13 @@ static recipe-policy preflight(repository root) -> RecipePolicyReceipt
 RolePackageCompiler.materialize(role, output root, version) -> RolePackageMaterialization
 ```
 
+The implementation lives in `plastic_promise/role_package.py`. It is the
+single source-to-package seam consumed by the server and compute Docker
+recipes. The complete development tree is available only in the discarded
+compiler stage; the final image receives the materialized allowlist output.
+This is physical allowlist materialization, not a full-copy-then-delete
+simulation.
+
 `prepare` resolves a deterministic, secret-free artifact policy. `materialize`
 hands that policy to a build-time `ArtifactBuildExecutor` and returns an
 inspectable descriptor bundle. The executor receives the prepared plan and a
@@ -208,8 +215,8 @@ presence is not proof of a build or a usable runtime:
 | Endpoint artifact | Source recipe / companion file | Declared entrypoint |
 |---|---|---|
 | `pp-local-edge` | `deploy/local-edge/Dockerfile`, `entrypoint.sh`, `nginx.conf`, and `compose.yaml` | `plastic-promise-local-edge` |
-| `pp-server-backend` | `deploy/server/Dockerfile` and `compose.yaml`; a discarded `server-package` stage feeds the monorepo to `RolePackageCompiler`, and the fresh final stage installs only the server allowlist, then removes both the staged source tree and pip's `/app/build` tree | `plastic-promise-canonical-runtime` |
-| `pp-compute-node` CPU/CUDA | `deploy/local-inference-node/Dockerfile`, compatibility `compose.yaml`, `compose.cpu.yaml`, and `compose.cuda.yaml`; `compute-runtime` supplies dependencies, discarded `compute-package` compiles the one compute allowlist, and the fresh final stage installs it for either variant | `plastic-promise-local-inference-node` |
+| `pp-server-backend` | `deploy/server/Dockerfile` and `compose.yaml`; a discarded `server-package` stage feeds the monorepo to `RolePackageCompiler`, and the fresh final stage installs only the materialized server allowlist, then removes the installed staging tree and pip's `/app/build` tree | `plastic-promise-canonical-runtime` |
+| `pp-compute-node` CPU/CUDA | `deploy/local-inference-node/Dockerfile`, compatibility `compose.yaml`, `compose.cpu.yaml`, and `compose.cuda.yaml`; discarded `compute-package` compiles the one compute allowlist, and the fresh final stage installs it for either variant | `plastic-promise-local-inference-node` |
 
 The Compose files are recipe inputs for later reviewed activation. Their
 presence is not an authorization to activate them, bind a listener, create a

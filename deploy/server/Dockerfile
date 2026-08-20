@@ -2,12 +2,17 @@
 # This image contains application code only. SQLite, LanceDB, models, logs,
 # environment files, and all credentials are runtime-mounted operator state.
 ARG BASE_IMAGE
-FROM ${BASE_IMAGE} AS server-source
+FROM ${BASE_IMAGE} AS server-package
+ARG PACKAGE_VERSION
 
 WORKDIR /source
 COPY pyproject.toml README.md /source/
 COPY plastic_promise /source/plastic_promise
-RUN rm -rf /source/plastic_promise/core/backend_inference.py /source/plastic_promise/core/embedder.py /source/plastic_promise/core/inference_provider.py /source/plastic_promise/core/inference_jobs.py /source/plastic_promise/core/provider_http.py /source/plastic_promise/core/reranker.py /source/plastic_promise/client/local_rerank_executor.py /source/plastic_promise/local_inference_node /source/plastic_promise/mcp/inference_gateway.py /source/plastic_promise/mcp/inference_gateway_server.py
+RUN python -m plastic_promise.role_package \
+        --role pp-server-backend \
+        --source-root /source \
+        --output-root /role-package \
+        --version "$PACKAGE_VERSION"
 
 FROM ${BASE_IMAGE}
 
@@ -51,8 +56,7 @@ ENV TZ=UTC \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
-COPY --from=server-source /source/pyproject.toml /source/README.md /app/
-COPY --from=server-source /source/plastic_promise /app/plastic_promise
+COPY --from=server-package /role-package /app
 RUN python -m pip install --no-cache-dir . \
     && rm -rf /app/plastic_promise /app/build \
     && useradd --create-home --shell /usr/sbin/nologin ppruntime

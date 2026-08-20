@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from plastic_promise.core.structured_token_budget import (
+from .support import (
     UNBOUNDED_STRUCTURED_TOKEN_LIMIT,
     validate_structured_token_limit,
 )

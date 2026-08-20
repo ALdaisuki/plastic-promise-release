@@ -7,8 +7,6 @@ import os
 import sys
 from dataclasses import replace
 
-from plastic_promise.core.node_private_transport import valid_private_node_authorization
-
 from .adapters import NodeModelUnavailableError
 from .app import create_node_app
 from .contract import (
@@ -26,6 +24,7 @@ from .runtime import (
     validate_loopback_bind_host,
     validate_node_port,
 )
+from .support import valid_private_node_authorization
 
 
 def create_runtime_app(

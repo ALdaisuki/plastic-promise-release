@@ -492,8 +492,7 @@ class StaticRecipePolicyValidator:
             allowed_copies=(
                 "COPY pyproject.toml README.md /source/",
                 "COPY plastic_promise /source/plastic_promise",
-                "COPY --from=server-source /source/pyproject.toml /source/README.md /app/",
-                "COPY --from=server-source /source/plastic_promise /app/plastic_promise",
+                "COPY --from=server-package /role-package /app",
             ),
             server_source_stage=True,
         )
@@ -506,8 +505,7 @@ class StaticRecipePolicyValidator:
             allowed_copies=(
                 "COPY pyproject.toml README.md /source/",
                 "COPY plastic_promise /source/plastic_promise",
-                "COPY --from=compute-source /source/pyproject.toml /source/README.md /app/",
-                "COPY --from=compute-source /source/plastic_promise /app/plastic_promise",
+                "COPY --from=compute-package /role-package /app",
             ),
             compute_source_stage=True,
         )
@@ -643,9 +641,9 @@ class StaticRecipePolicyValidator:
                 or from_arguments
                 != [
                     (
-                        "${BASE_IMAGE} AS compute-source"
+                        "${BASE_IMAGE} AS compute-package"
                         if compute_source_stage
-                        else "${BASE_IMAGE} AS server-source"
+                        else "${BASE_IMAGE} AS server-package"
                     ),
                     "${BASE_IMAGE}",
                 ]
@@ -662,28 +660,35 @@ class StaticRecipePolicyValidator:
             source_non_run = tuple(
                 instruction for opcode, _, instruction in source_stage if opcode != "RUN"
             )
-            if source_non_run != (
+            expected_source_non_run = (
+                "ARG PACKAGE_VERSION",
                 "WORKDIR /source",
                 "COPY pyproject.toml README.md /source/",
                 "COPY plastic_promise /source/plastic_promise",
-            ):
+            )
+            if source_non_run != expected_source_non_run:
                 raise ContainerArtifactError("container_recipe_compute_source_stage_invalid")
             source_runs = tuple(
                 instruction for opcode, _, instruction in source_stage if opcode == "RUN"
             )
-            expected_source_runs = (
-                ("RUN rm -rf /source/plastic_promise/collaboration",)
+            compiler_command = (
+                "python3 -m plastic_promise.role_package"
                 if compute_source_stage
-                else (
-                    "RUN rm -rf "
-                    + " ".join(f"/source/{path}" for path in _SERVER_SOURCE_EXCLUSIONS),
-                )
+                else "python -m plastic_promise.role_package"
             )
-            if source_runs != expected_source_runs:
+            if (
+                len(source_runs) != 1
+                or compiler_command not in source_runs[0]
+                or f"--role {role}" not in source_runs[0]
+                or "--source-root /source" not in source_runs[0]
+                or "--output-root /role-package" not in source_runs[0]
+                or '--version "$PACKAGE_VERSION"' not in source_runs[0]
+                or "rm -rf /source/plastic_promise" in source_runs[0]
+            ):
                 raise ContainerArtifactError(
-                    "container_recipe_compute_collaboration_prune_required"
+                    "container_recipe_compute_role_package_required"
                     if compute_source_stage
-                    else "container_recipe_server_compute_source_prune_required"
+                    else "container_recipe_server_role_package_required"
                 )
             final_copies = tuple(
                 instruction for opcode, _, instruction in final_stage if opcode == "COPY"
@@ -837,7 +842,7 @@ class StaticRecipePolicyValidator:
             raise ContainerArtifactError("container_recipe_label_or_identity_mismatch")
         if role == PP_SERVER_BACKEND:
             server_source_copy = (
-                "COPY --from=server-source /source/plastic_promise /app/plastic_promise"
+                "COPY --from=server-package /role-package /app"
                 if server_source_stage
                 else "COPY plastic_promise /app/plastic_promise"
             )
@@ -867,6 +872,33 @@ class StaticRecipePolicyValidator:
                 or build_cleanup_position <= install_position
             ):
                 raise ContainerArtifactError("container_recipe_server_source_cleanup_required")
+        if role == PP_COMPUTE_NODE:
+            source_copy_index = next(
+                (
+                    index
+                    for index, (_, _, instruction) in enumerate(contract_instructions)
+                    if instruction == "COPY --from=compute-package /role-package /app"
+                ),
+                -1,
+            )
+            install_runs = tuple(
+                (index, argument)
+                for index, (opcode, argument, _) in enumerate(contract_instructions)
+                if opcode == "RUN" and "-m pip install" in argument and " ." in argument
+            )
+            if len(install_runs) != 1:
+                raise ContainerArtifactError("container_recipe_compute_source_cleanup_required")
+            install_index, install_run = install_runs[0]
+            install_position = install_run.find("-m pip install")
+            cleanup_position = install_run.find("rm -rf /app/plastic_promise")
+            build_cleanup_position = install_run.find("/app/build")
+            if (
+                source_copy_index < 0
+                or install_index <= source_copy_index
+                or cleanup_position <= install_position
+                or build_cleanup_position <= install_position
+            ):
+                raise ContainerArtifactError("container_recipe_compute_source_cleanup_required")
         run_mount_count = 0
         for opcode, argument, _ in parsed_instructions:
             if opcode != "RUN":

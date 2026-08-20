@@ -15,8 +15,6 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
-from plastic_promise.core.structured_token_budget import UNBOUNDED_STRUCTURED_TOKEN_LIMIT
-
 from .adapters import (
     CloudEmbeddingAdapter,
     CloudRerankingAdapter,
@@ -37,6 +35,7 @@ from .contract import (
     StructuredJSONEngine,
 )
 from .resource_guard import NodeResourceGuard, resource_guard_from_environment
+from .support import UNBOUNDED_STRUCTURED_TOKEN_LIMIT
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

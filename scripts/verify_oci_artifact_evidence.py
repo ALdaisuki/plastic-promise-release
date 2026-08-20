@@ -155,7 +155,13 @@ def _normalise_layer_path(name: str) -> str | None:
     return "/".join(parts)
 
 
-def _remove_path(rootfs_paths: set[str], target: str, *, descendants_only: bool = False) -> None:
+def _remove_path(
+    rootfs_paths: set[str],
+    target: str,
+    *,
+    descendants_only: bool = False,
+    rootfs_files: dict[str, bytes] | None = None,
+) -> None:
     """Remove one path subtree from the accumulated non-directory inventory."""
 
     prefix = f"{target}/" if target else ""
@@ -165,9 +171,17 @@ def _remove_path(rootfs_paths: set[str], target: str, *, descendants_only: bool 
         if (not descendants_only and path == target) or not target or path.startswith(prefix)
     }
     rootfs_paths.difference_update(removals)
+    if rootfs_files is not None:
+        for path in tuple(rootfs_files):
+            if (not descendants_only and path == target) or not target or path.startswith(prefix):
+                rootfs_files.pop(path, None)
 
 
-def _apply_layer(rootfs_paths: set[str], layer_payload: bytes) -> None:
+def _apply_layer(
+    rootfs_paths: set[str],
+    layer_payload: bytes,
+    rootfs_files: dict[str, bytes] | None = None,
+) -> None:
     """Apply one OCI layer to a non-directory rootfs path inventory.
 
     Whiteouts affect lower layers before normal members from this layer are
@@ -177,14 +191,22 @@ def _apply_layer(rootfs_paths: set[str], layer_payload: bytes) -> None:
 
     try:
         with tarfile.open(fileobj=BytesIO(layer_payload), mode="r:*") as archive:
-            members = archive.getmembers()
+            member_data = []
+            for member in archive.getmembers():
+                data = None
+                if not member.isdir():
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        raise OciEvidenceError("container_artifact_oci_layer_invalid")
+                    data = extracted.read()
+                member_data.append((member, data))
     except (OSError, EOFError, tarfile.TarError) as exc:
         raise OciEvidenceError("container_artifact_oci_layer_invalid") from exc
 
     opaque_directories: set[str] = set()
     whiteout_targets: set[str] = set()
-    normal_members: list[tuple[str, bool]] = []
-    for member in members:
+    normal_members: list[tuple[str, bool, bytes | None]] = []
+    for member, member_data_bytes in member_data:
         path = _normalise_layer_path(member.name)
         if path is None:
             continue
@@ -198,19 +220,23 @@ def _apply_layer(rootfs_paths: set[str], layer_payload: bytes) -> None:
                 _fail("container_artifact_oci_layer_invalid")
             whiteout_targets.add(f"{parent}/{target_name}" if parent else target_name)
             continue
-        normal_members.append((path, member.isdir()))
+        normal_members.append((path, member.isdir(), member_data_bytes))
 
     for directory in opaque_directories:
-        _remove_path(rootfs_paths, directory, descendants_only=True)
+        _remove_path(rootfs_paths, directory, descendants_only=True, rootfs_files=rootfs_files)
     for target in whiteout_targets:
-        _remove_path(rootfs_paths, target)
+        _remove_path(rootfs_paths, target, rootfs_files=rootfs_files)
 
-    for path, is_directory in normal_members:
+    for path, is_directory, data in normal_members:
         if is_directory:
             rootfs_paths.discard(path)
+            if rootfs_files is not None:
+                rootfs_files.pop(path, None)
             continue
-        _remove_path(rootfs_paths, path)
+        _remove_path(rootfs_paths, path, rootfs_files=rootfs_files)
         rootfs_paths.add(path)
+        if rootfs_files is not None and data is not None:
+            rootfs_files[path] = data
 
 
 def _rootfs_file_inventory(
@@ -229,6 +255,25 @@ def _rootfs_file_inventory(
         list(inventory), ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
     return inventory, _digest(inventory_payload)
+
+
+def _rootfs_snapshot(
+    members: dict[str, bytes], image_descriptor: dict[str, Any]
+) -> tuple[tuple[str, ...], str, dict[str, bytes]]:
+    """Return final files plus bytes for receipt and SBOM binding."""
+
+    manifest = _descriptor_payload(members, image_descriptor)
+    rootfs_paths: set[str] = set()
+    rootfs_files: dict[str, bytes] = {}
+    for raw_layer in _sequence(manifest.get("layers"), "container_artifact_oci_manifest_invalid"):
+        layer = _mapping(raw_layer, "container_artifact_oci_layer_invalid")
+        _, layer_payload = _blob(members, layer)
+        _apply_layer(rootfs_paths, layer_payload, rootfs_files)
+    inventory = tuple(sorted(rootfs_paths))
+    inventory_payload = json.dumps(
+        list(inventory), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return inventory, _digest(inventory_payload), dict(rootfs_files)
 
 
 def _collaboration_relative_paths(
@@ -326,6 +371,143 @@ def _validate_server_compute_exclusions(
         if _inventory_contains_path(inventory, target):
             suffix = "sbom" if sbom else "rootfs"
             _fail(f"container_artifact_server_compute_source_present_{suffix}")
+
+
+def _package_relative_paths(
+    inventory: tuple[str, ...],
+) -> dict[str, tuple[str, ...]]:
+    """Project installed Python files onto the source package namespace."""
+
+    marker = "/plastic_promise/"
+    values: dict[str, list[str]] = {}
+    for path in inventory:
+        wrapped = f"/{path}"
+        index = wrapped.rfind(marker)
+        if index < 0:
+            continue
+        logical = wrapped[index + 1 :]
+        values.setdefault(logical, []).append(path)
+    return {key: tuple(sorted(paths)) for key, paths in sorted(values.items())}
+
+
+def _normalise_compiled_package_path(path: str) -> str | None:
+    if "/__/" in path:
+        return None
+    if "/__pycache__/" not in path or not path.endswith(".pyc"):
+        return path
+    prefix, _, filename = path.partition("/__pycache__/")
+    stem = re.sub(r"\.[A-Za-z0-9_-]+(?:\.opt-\d+)?\.pyc$", ".py", filename)
+    if stem == filename:
+        return None
+    return f"{prefix}/{stem}"
+
+
+def _role_receipt_paths(inventory: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        path for path in inventory if path.rsplit("/", 1)[-1] == "role-package.receipt.json"
+    )
+
+
+def _validate_role_package_inventory(
+    repository_root: Path,
+    role: str,
+    package_version: str,
+    inventory: tuple[str, ...],
+    rootfs_files: dict[str, bytes],
+) -> str | None:
+    """Require an immutable receipt and exact role package inventory."""
+
+    if role == "pp-local-edge":
+        return None
+    receipt_paths = _role_receipt_paths(inventory)
+    if len(receipt_paths) != 1:
+        _fail("container_artifact_role_package_receipt_missing")
+    receipt_path = receipt_paths[0]
+    receipt_bytes = rootfs_files.get(receipt_path)
+    if receipt_bytes is None:
+        _fail("container_artifact_role_package_receipt_missing")
+    try:
+        receipt = json.loads(receipt_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OciEvidenceError("container_artifact_role_package_receipt_invalid") from exc
+    if not isinstance(receipt, dict):
+        _fail("container_artifact_role_package_receipt_invalid")
+    expected_keys = {"schema_version", "role", "version", "source_paths", "package_digest"}
+    if set(receipt) != expected_keys:
+        _fail("container_artifact_role_package_receipt_invalid")
+    if (
+        receipt.get("schema_version") != "plastic-promise-role-package/v1"
+        or receipt.get("role") != role
+        or receipt.get("version") != package_version
+        or not isinstance(receipt.get("source_paths"), list)
+        or not isinstance(receipt.get("package_digest"), str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", receipt["package_digest"]) is None
+    ):
+        _fail("container_artifact_role_package_receipt_invalid")
+    from plastic_promise.role_package import RolePackageCompiler, RolePackageError
+
+    try:
+        expected = tuple(RolePackageCompiler(repository_root).source_paths_for(role))
+    except RolePackageError:
+        _fail("container_artifact_role_package_allowlist_invalid")
+    source_paths = tuple(receipt["source_paths"])
+    if source_paths != expected:
+        _fail("container_artifact_role_package_receipt_allowlist_mismatch")
+    try:
+        expected_digest = RolePackageCompiler(repository_root).package_digest_for(
+            role, package_version
+        )
+    except RolePackageError:
+        _fail("container_artifact_role_package_allowlist_invalid")
+    if receipt["package_digest"] != expected_digest:
+        _fail("container_artifact_role_package_receipt_digest_mismatch")
+
+    package_paths = _package_relative_paths(inventory)
+    observed: dict[str, tuple[str, ...]] = {}
+    for path, physical_paths in package_paths.items():
+        normalised = _normalise_compiled_package_path(path)
+        if normalised is not None:
+            observed[normalised] = tuple(physical_paths)
+    if set(observed) != set(expected):
+        _fail("container_artifact_role_package_inventory_mismatch")
+    if any(len(paths) != 1 for paths in observed.values()):
+        _fail("container_artifact_role_package_duplicate_path")
+    return _digest(receipt_bytes)
+
+
+def _validate_role_package_sbom_inventory(
+    repository_root: Path,
+    role: str,
+    package_version: str,
+    rootfs_inventory: tuple[str, ...],
+    sbom_inventory: tuple[str, ...],
+) -> None:
+    """Require SBOM and rootfs to expose the same closed role package."""
+
+    del package_version
+    from plastic_promise.role_package import RolePackageCompiler, RolePackageError
+
+    try:
+        expected = set(RolePackageCompiler(repository_root).source_paths_for(role))
+    except RolePackageError:
+        _fail("container_artifact_role_package_allowlist_invalid")
+
+    def logical_paths(inventory: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        result: dict[str, tuple[str, ...]] = {}
+        for path, physical in _package_relative_paths(inventory).items():
+            normalised = _normalise_compiled_package_path(path)
+            if normalised is not None:
+                result[normalised] = physical
+        return result
+
+    rootfs_paths = logical_paths(rootfs_inventory)
+    sbom_paths = logical_paths(sbom_inventory)
+    if set(rootfs_paths) != expected or set(sbom_paths) != expected:
+        _fail("container_artifact_sbom_role_package_inventory_mismatch")
+    if any(len(paths) != 1 for paths in sbom_paths.values()):
+        _fail("container_artifact_sbom_role_package_duplicate_path")
+    if set(_role_receipt_paths(rootfs_inventory)) != set(_role_receipt_paths(sbom_inventory)):
+        _fail("container_artifact_sbom_role_package_receipt_mismatch")
 
 
 def _collect_manifest_descriptors(
@@ -503,6 +685,8 @@ def _attestation_layers(
     surface: ArtifactCollaborationSurface,
     rootfs_inventory: tuple[str, ...],
     role: str,
+    repository_root: Path,
+    package_version: str,
 ) -> tuple[str, str]:
     sbom_digest: str | None = None
     provenance_digest: str | None = None
@@ -542,6 +726,12 @@ def _attestation_layers(
                     sbom_inventory,
                 )
                 _validate_server_compute_exclusions(role, sbom_inventory, sbom=True)
+                if role in {"pp-server-backend", "pp-compute-node"}:
+                    if not _role_receipt_paths(sbom_inventory):
+                        _fail("container_artifact_sbom_role_package_inventory_missing")
+                    _validate_role_package_sbom_inventory(
+                        repository_root, role, package_version, rootfs_inventory, sbom_inventory
+                    )
                 sbom_digest = digest
     if sbom_digest is None:
         _fail("container_artifact_sbom_attestation_missing")
@@ -589,11 +779,18 @@ def main() -> int:
     expected_labels = plan.expected_oci_labels(artifact.artifact_id)
     if {key: actual_labels.get(key) for key in expected_labels} != expected_labels:
         _fail("container_artifact_oci_labels_mismatch")
-    application_inventory, application_inventory_digest = _rootfs_file_inventory(
+    application_inventory, application_inventory_digest, rootfs_files = _rootfs_snapshot(
         members, image_descriptor
     )
     _validate_collaboration_surface(artifact.collaboration_surface, application_inventory)
     _validate_server_compute_exclusions(artifact.role, application_inventory)
+    _validate_role_package_inventory(
+        repository_root,
+        artifact.role,
+        plan.request.package_version,
+        application_inventory,
+        rootfs_files,
+    )
     sbom_digest, provenance_digest = _attestation_layers(
         members,
         descriptors,
@@ -601,6 +798,8 @@ def main() -> int:
         artifact.collaboration_surface,
         application_inventory,
         artifact.role,
+        repository_root,
+        plan.request.package_version,
     )
     receipt = ArtifactEvidenceReceipt(
         artifact_id=artifact.artifact_id,

@@ -43,11 +43,16 @@ def _descriptor(value: bytes, media_type: str, **extra: object) -> dict[str, obj
     return {"mediaType": media_type, "digest": _digest(value), "size": len(value), **extra}
 
 
-def _tar_layer(paths: tuple[str, ...]) -> bytes:
+def _tar_layer(paths: tuple[str, ...] | dict[str, bytes]) -> bytes:
     payload = BytesIO()
     with tarfile.open(fileobj=payload, mode="w") as archive:
-        for path in paths:
-            value = b"" if "/.wh." in f"/{path}" else path.encode("utf-8")
+        entries = paths.items() if isinstance(paths, dict) else ((path, None) for path in paths)
+        for path, explicit_value in entries:
+            value = (
+                explicit_value
+                if explicit_value is not None
+                else (b"" if "/.wh." in f"/{path}" else path.encode("utf-8"))
+            )
             info = tarfile.TarInfo(path)
             info.size = len(value)
             archive.addfile(info, BytesIO(value))
@@ -62,7 +67,7 @@ def _write_oci_layout(
     sbom_subject_digest: str | None = None,
     provenance_subject_digest: str | None = None,
     empty_statement_subjects: bool = False,
-    rootfs_layers: tuple[tuple[str, ...], ...] = (),
+    rootfs_layers: tuple[tuple[str, ...] | dict[str, bytes], ...] = (),
     sbom_files: tuple[str, ...] = (),
     sbom_predicate: dict[str, object] | None = None,
     statement_type: str = "https://in-toto.io/Statement/v0.1",
@@ -266,6 +271,107 @@ def test_oci_evidence_cli_binds_an_attested_layout_to_the_prepared_artifact(tmp_
     assert receipt["application_inventory_digest"] == _digest(_canonical([]))
 
 
+def test_oci_evidence_cli_requires_and_binds_a_complete_compute_role_package(tmp_path: Path):
+    from plastic_promise.role_package import RolePackageCompiler
+
+    plan = ContainerArtifactCompiler().prepare(_request())
+    artifact = plan.artifact_for("pp-compute-node", "linux/amd64", COMPUTE_VARIANT_CPU)
+    materialized = RolePackageCompiler(REPOSITORY_ROOT).materialize(
+        "pp-compute-node", tmp_path / "role-package", "0.8.0rc1"
+    )
+    receipt_bytes = (tmp_path / "role-package" / "role-package.receipt.json").read_bytes()
+    package_paths = tuple(
+        f"usr/local/lib/python3/site-packages/{path}" for path in materialized.source_paths
+    )
+    rootfs_files = {path: path.encode("utf-8") for path in package_paths}
+    rootfs_files["app/role-package.receipt.json"] = receipt_bytes
+    sbom_files = package_paths + ("app/role-package.receipt.json",)
+    layout = tmp_path / "compute-role-package.oci.tar"
+    output = tmp_path / "receipt.json"
+    _write_oci_layout(
+        layout,
+        labels=plan.expected_oci_labels(artifact.artifact_id),
+        include_sbom=True,
+        rootfs_layers=(rootfs_files,),
+        sbom_files=sbom_files,
+    )
+
+    result = subprocess.run(
+        _command(layout, output, role="pp-compute-node", variant=COMPUTE_VARIANT_CPU),
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.exists()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        ("missing-receipt", "container_artifact_role_package_receipt_missing"),
+        ("extra-core", "container_artifact_role_package_inventory_mismatch"),
+        ("duplicate-package", "container_artifact_role_package_duplicate_path"),
+        ("receipt-digest", "container_artifact_role_package_receipt_digest_mismatch"),
+        ("sbom-extra-core", "container_artifact_sbom_role_package_inventory_mismatch"),
+    ],
+)
+def test_oci_evidence_cli_rejects_role_package_tampering(
+    tmp_path: Path, mutate: str, expected_error: str
+):
+    from plastic_promise.role_package import RolePackageCompiler
+
+    plan = ContainerArtifactCompiler().prepare(_request())
+    artifact = plan.artifact_for("pp-compute-node", "linux/amd64", COMPUTE_VARIANT_CPU)
+    materialized = RolePackageCompiler(REPOSITORY_ROOT).materialize(
+        "pp-compute-node", tmp_path / "role-package", "0.8.0rc1"
+    )
+    receipt_path = tmp_path / "role-package" / "role-package.receipt.json"
+    receipt_bytes = receipt_path.read_bytes()
+    package_paths = tuple(
+        f"usr/local/lib/python3/site-packages/{path}" for path in materialized.source_paths
+    )
+    rootfs_files = {path: path.encode("utf-8") for path in package_paths}
+    sbom_files = list(package_paths)
+    if mutate == "extra-core":
+        rootfs_files["usr/local/lib/python3/site-packages/plastic_promise/core/embedder.py"] = b"x"
+    elif mutate == "duplicate-package":
+        duplicate = "app/plastic_promise/local_inference_node/app.py"
+        rootfs_files[duplicate] = b"x"
+    elif mutate == "receipt-digest":
+        receipt = json.loads(receipt_bytes)
+        receipt["package_digest"] = "sha256:" + ("0" * 64)
+        receipt_bytes = _canonical(receipt)
+    elif mutate == "sbom-extra-core":
+        sbom_files.append("usr/local/lib/python3/site-packages/plastic_promise/core/embedder.py")
+    if mutate != "missing-receipt":
+        rootfs_files["app/role-package.receipt.json"] = receipt_bytes
+        sbom_files.append("app/role-package.receipt.json")
+    layout = tmp_path / f"compute-tampered-{mutate}.oci.tar"
+    output = tmp_path / "receipt.json"
+    _write_oci_layout(
+        layout,
+        labels=plan.expected_oci_labels(artifact.artifact_id),
+        include_sbom=True,
+        rootfs_layers=(rootfs_files,),
+        sbom_files=tuple(sbom_files),
+    )
+
+    result = subprocess.run(
+        _command(layout, output, role="pp-compute-node", variant=COMPUTE_VARIANT_CPU),
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert not output.exists()
+
+
 @pytest.mark.parametrize(
     (
         "role",
@@ -281,7 +387,7 @@ def test_oci_evidence_cli_binds_an_attested_layout_to_the_prepared_artifact(tmp_
             "standard",
             (COLLABORATION_FILES,),
             COLLABORATION_FILES,
-            None,
+            "container_artifact_role_package_receipt_missing",
             COLLABORATION_FILES,
         ),
         (
@@ -305,7 +411,7 @@ def test_oci_evidence_cli_binds_an_attested_layout_to_the_prepared_artifact(tmp_
                 ).replace(".py", ".cpython-312.pyc")
                 for path in COLLABORATION_FILES
             ),
-            None,
+            "container_artifact_role_package_receipt_missing",
             COLLABORATION_FILES
             + tuple(
                 path.replace(
@@ -389,7 +495,7 @@ def test_oci_evidence_cli_binds_an_attested_layout_to_the_prepared_artifact(tmp_
                 ("app/plastic_promise/collaboration/.wh..wh..opq",),
             ),
             (),
-            None,
+            "container_artifact_role_package_receipt_missing",
             (),
         ),
         (
@@ -536,11 +642,11 @@ def test_oci_evidence_cli_rejects_sbom_that_omits_a_server_collaboration_file(
     )
 
     assert result.returncode != 0
-    assert "container_artifact_sbom_collaboration_surface_mismatch" in result.stderr
+    assert "container_artifact_role_package_receipt_missing" in result.stderr
     assert not output.exists()
 
 
-def test_oci_evidence_cli_accepts_package_level_server_sbom_without_file_entries(
+def test_oci_evidence_cli_rejects_package_level_server_sbom_without_file_entries(
     tmp_path: Path,
 ):
     plan = ContainerArtifactCompiler().prepare(_request())
@@ -563,8 +669,9 @@ def test_oci_evidence_cli_accepts_package_level_server_sbom_without_file_entries
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert output.exists()
+    assert result.returncode != 0
+    assert "container_artifact_role_package_receipt_missing" in result.stderr
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -579,7 +686,7 @@ def test_oci_evidence_cli_accepts_package_level_server_sbom_without_file_entries
             (COLLABORATION_FILES,),
             COLLABORATION_FILES
             + ("usr/lib/python3/site-packages/plastic_promise/core/provider_http.py",),
-            "container_artifact_server_compute_source_present_sbom",
+            "container_artifact_role_package_receipt_missing",
         ),
     ],
 )

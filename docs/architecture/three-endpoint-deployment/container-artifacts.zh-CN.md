@@ -29,6 +29,11 @@ ContainerArtifactCompiler.materialize(plan, executor) -> ArtifactBundle
 RolePackageCompiler.materialize(role, output root, version) -> RolePackageMaterialization
 ```
 
+实现位于 `plastic_promise/role_package.py`。它是 server 与 compute Docker
+recipe 共用的唯一 source-to-package seam。完整开发树只存在于被丢弃的编译
+stage；final image 只接收物化后的 allowlist 输出。这是物理 allowlist
+物化，不是“先完整复制再删除”的模拟隔离。
+
 `prepare` 解析确定性、无 secret 的制品策略。`materialize` 把该策略交给构建期
 `ArtifactBuildExecutor`，并返回可检查的 descriptor bundle。executor 接收已准备的 plan
 和 descriptor，因此无需第二份 out-of-band configuration 也能得到 pinned revision/package
@@ -170,8 +175,8 @@ canonical-state authority，也不是 production image default。
 | Endpoint artifact | Source recipe / companion file | 声明的 entrypoint |
 |---|---|---|
 | `pp-local-edge` | `deploy/local-edge/Dockerfile`、`entrypoint.sh`、`nginx.conf` 与 `compose.yaml` | `plastic-promise-local-edge` |
-| `pp-server-backend` | `deploy/server/Dockerfile` 与 `compose.yaml`；丢弃的 `server-package` stage 把 monorepo 交给 `RolePackageCompiler`，fresh final stage 只安装 server allowlist，并清理 staged source tree 与 pip 生成的 `/app/build` tree | `plastic-promise-canonical-runtime` |
-| `pp-compute-node` CPU/CUDA | `deploy/local-inference-node/Dockerfile`、兼容 `compose.yaml`、`compose.cpu.yaml` 与 `compose.cuda.yaml`；`compute-runtime` 提供依赖，丢弃的 `compute-package` 编译唯一 compute allowlist，fresh final stage 为任一 variant 安装它 | `plastic-promise-local-inference-node` |
+| `pp-server-backend` | `deploy/server/Dockerfile` 与 `compose.yaml`；丢弃的 `server-package` stage 把 monorepo 交给 `RolePackageCompiler`，fresh final stage 只安装物化后的 server allowlist，并清理安装后的 staging tree 与 pip 生成的 `/app/build` tree | `plastic-promise-canonical-runtime` |
+| `pp-compute-node` CPU/CUDA | `deploy/local-inference-node/Dockerfile`、兼容 `compose.yaml`、`compose.cpu.yaml` 与 `compose.cuda.yaml`；丢弃的 `compute-package` 编译唯一 compute allowlist，fresh final stage 为任一 variant 安装它 | `plastic-promise-local-inference-node` |
 
 Compose file 是后续经审查 activation 的 recipe input。其存在不构成 activation、listener
 binding、tunnel creation 或 runtime-asset generation 的授权。

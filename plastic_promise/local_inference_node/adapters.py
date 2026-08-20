@@ -12,19 +12,17 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from plastic_promise.core.embedder import OllamaEmbedder
-from plastic_promise.core.provider_http import (
+from .contract import EmbeddingEngine, EmbeddingProviderIdentity, NodeConfigurationError
+from .provider_http import (
     ProviderHTTPClient,
     ProviderHTTPError,
     ProviderHTTPPolicy,
 )
-from plastic_promise.core.structured_token_budget import (
+from .support import (
     UNBOUNDED_STRUCTURED_TOKEN_LIMIT,
     structured_tokens_allowed,
     validate_structured_token_limit,
 )
-
-from .contract import EmbeddingEngine, EmbeddingProviderIdentity, NodeConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -37,6 +35,35 @@ class NodeModelUnavailableError(RuntimeError):
 
 class NodeModelIdentityDriftError(NodeModelUnavailableError):
     """Raised when a model result cannot be bound to the declared artifact."""
+
+
+class OllamaEmbedder:
+    """Minimal compatibility adapter for Ollama's legacy embeddings route."""
+
+    def __init__(self, *, host: str, model: str, expected_dim: int) -> None:
+        self._model = _required_provider_text(model, "node_ollama_model_invalid")
+        self._expected_dim = expected_dim
+        self._client = ProviderHTTPClient(
+            provider="node-ollama-embedding",
+            base_url=host,
+            api_key=None,
+            allow_unauthenticated_loopback=True,
+        )
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in texts:
+            payload = self._client.post_json(
+                "/api/embeddings",
+                {"model": self._model, "prompt": text},
+            ).payload
+            vector = payload.get("embedding")
+            if not isinstance(vector, list) or len(vector) != self._expected_dim:
+                raise ValueError("node_ollama_embedding_response_invalid")
+            vectors.append(
+                [_finite_float(value, "node_ollama_embedding_response_invalid") for value in vector]
+            )
+        return vectors
 
 
 class IdentityBoundEmbeddingFallback:
@@ -508,7 +535,10 @@ class OllamaEmbeddingAdapter:
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         self._verify_artifact_identity()
-        vectors = self._delegate.embed_batch(texts)
+        try:
+            vectors = self._delegate.embed_batch(texts)
+        except (ProviderHTTPError, TypeError, ValueError) as exc:
+            raise NodeModelUnavailableError("node_ollama_embedding_unavailable") from exc
         self._verify_artifact_identity()
         return _apply_normalization(vectors, self._normalization)
 
