@@ -395,10 +395,7 @@ def _package_relative_paths(
         logical = wrapped[index + 1 :]
         # The receipt is governance metadata stored inside the installed
         # package so Syft includes it in SPDX, but it is not a source member.
-        if logical.rsplit("/", 1)[-1] in {
-            "role-package.receipt.json",
-            "role_package_receipt.py",
-        }:
+        if _is_role_receipt_metadata_path(logical):
             continue
         values.setdefault(logical, []).append(path)
     return {key: tuple(sorted(paths)) for key, paths in sorted(values.items())}
@@ -422,13 +419,24 @@ def _role_receipt_paths(inventory: tuple[str, ...]) -> tuple[str, ...]:
     )
 
 
+def _is_role_receipt_metadata_path(path: str) -> bool:
+    """Identify receipt JSON and its generated Python SBOM anchor/bytecode."""
+
+    name = path.rsplit("/", 1)[-1]
+    if name in {"role-package.receipt.json", "role_package_receipt.py"}:
+        return True
+    if "/__pycache__/" not in path or not name.endswith(".pyc"):
+        return False
+    return _normalise_compiled_package_path(path).rsplit("/", 1)[-1] == "role_package_receipt.py"
+
+
 def _role_receipt_anchor_paths(inventory: tuple[str, ...]) -> tuple[str, ...]:
     """Return the JSON receipt or a package-owned source anchor."""
 
     receipt_paths = _role_receipt_paths(inventory)
     if receipt_paths:
         return receipt_paths
-    return tuple(path for path in inventory if path.rsplit("/", 1)[-1] == "role_package_receipt.py")
+    return tuple(path for path in inventory if _is_role_receipt_metadata_path(path))
 
 
 def _report_inventory_delta(

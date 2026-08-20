@@ -100,7 +100,11 @@ def test_role_receipt_inside_package_is_not_source_inventory():
 
 
 def test_role_receipt_anchor_accepts_package_owned_python_marker():
-    inventory = ("usr/local/lib/python3.12/site-packages/plastic_promise/role_package_receipt.py",)
+    inventory = (
+        "usr/local/lib/python3.12/site-packages/plastic_promise/role_package_receipt.py",
+        "usr/local/lib/python3.12/site-packages/plastic_promise/__pycache__/"
+        "role_package_receipt.cpython-312.pyc",
+    )
     assert _VERIFY_MODULE._role_receipt_anchor_paths(inventory) == inventory
 
 
