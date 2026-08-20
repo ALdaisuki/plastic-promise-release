@@ -490,7 +490,7 @@ class StaticRecipePolicyValidator:
             entrypoint="plastic-promise-canonical-runtime",
             final_user="ppruntime",
             allowed_copies=(
-                "COPY pyproject.toml README.md /source/",
+                "COPY pyproject.toml README.md LICENSE /source/",
                 "COPY plastic_promise /source/plastic_promise",
                 "COPY --from=server-package /role-package /app",
             ),
@@ -503,7 +503,7 @@ class StaticRecipePolicyValidator:
             entrypoint="plastic-promise-local-inference-node",
             final_user="ppnode",
             allowed_copies=(
-                "COPY pyproject.toml README.md /source/",
+                "COPY pyproject.toml README.md LICENSE /source/",
                 "COPY plastic_promise /source/plastic_promise",
                 "COPY --from=compute-package /role-package /app",
             ),
@@ -663,7 +663,7 @@ class StaticRecipePolicyValidator:
             expected_source_non_run = (
                 "ARG PACKAGE_VERSION",
                 "WORKDIR /source",
-                "COPY pyproject.toml README.md /source/",
+                "COPY pyproject.toml README.md LICENSE /source/",
                 "COPY plastic_promise /source/plastic_promise",
             )
             if source_non_run != expected_source_non_run:

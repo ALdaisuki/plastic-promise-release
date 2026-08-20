@@ -6,7 +6,7 @@ FROM ${BASE_IMAGE} AS server-package
 ARG PACKAGE_VERSION
 
 WORKDIR /source
-COPY pyproject.toml README.md /source/
+COPY pyproject.toml README.md LICENSE /source/
 COPY plastic_promise /source/plastic_promise
 RUN python -m plastic_promise.role_package \
         --role pp-server-backend \

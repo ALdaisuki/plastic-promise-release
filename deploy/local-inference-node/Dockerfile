@@ -17,7 +17,7 @@ ARG PACKAGE_VERSION
 # emits the closed compute allowlist; no full source tree crosses into the
 # final image.
 WORKDIR /source
-COPY pyproject.toml README.md /source/
+COPY pyproject.toml README.md LICENSE /source/
 COPY plastic_promise /source/plastic_promise
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends python3 \

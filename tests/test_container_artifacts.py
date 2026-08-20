@@ -435,6 +435,7 @@ def _copy_recipe_tree(destination: Path) -> None:
     repository_root = Path(__file__).resolve().parents[1]
     for relative_path in (
         ".dockerignore",
+        "LICENSE",
         "deploy/oci-base-images.json",
         "deploy/local-edge/Dockerfile",
         "deploy/local-edge/compose.yaml",
