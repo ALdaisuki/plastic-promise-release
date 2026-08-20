@@ -1,0 +1,29 @@
+{
+  "schema_version": "plastic-promise-oci-base-images/v1",
+  "images": [
+    {
+      "role": "pp-local-edge",
+      "variant": "standard",
+      "reference": "nginxinc/nginx-unprivileged@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0",
+      "platforms": ["linux/amd64", "linux/arm64"]
+    },
+    {
+      "role": "pp-server-backend",
+      "variant": "standard",
+      "reference": "python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2",
+      "platforms": ["linux/amd64", "linux/arm64"]
+    },
+    {
+      "role": "pp-compute-node",
+      "variant": "cpu",
+      "reference": "python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2",
+      "platforms": ["linux/amd64", "linux/arm64"]
+    },
+    {
+      "role": "pp-compute-node",
+      "variant": "cuda",
+      "reference": "nvidia/cuda@sha256:2fcc4280646484290cc50dce5e65f388dd04352b07cbe89a635703bd1f9aedb6",
+      "platforms": ["linux/amd64"]
+    }
+  ]
+}

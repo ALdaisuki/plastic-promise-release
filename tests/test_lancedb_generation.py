@@ -9,8 +9,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+import plastic_promise.core.embedding_index_identity as embedding_identity_module
 import plastic_promise.core.lancedb_generation as generation_module
+import plastic_promise.core.memory_index as memory_index_module
 import scripts.manage_lancedb_generations as generation_cli_module
+import scripts.rebuild_lancedb as rebuild_lancedb_module
 from plastic_promise.core.lancedb_generation import (
     QUALITY_GATE_POLICY,
     QUALITY_REPORT_SCHEMA,
@@ -193,9 +196,47 @@ def _mutated_quality_report(path: str, value: object, **report_options) -> dict[
     return report
 
 
+def test_governed_runtime_validation_uses_stable_configured_identity(monkeypatch):
+    expected_identity = "sha256:" + ("1" * 64)
+    spec = _spec(
+        "governed",
+        embedding_index_identity=expected_identity,
+        index_outbox_watermark=1,
+        index_outbox_digest=_EMPTY_OUTBOX_DIGEST,
+        index_outbox_job_count=0,
+    )
+    report = _quality_report(
+        backend={
+            "mode": "live",
+            "provider": "governed-node",
+            "model": "Qwen3-Embedding-4B-GGUF",
+            "revision": "fixed-revision",
+            "dimension": 2560,
+        }
+    )
+    monkeypatch.setattr(
+        rebuild_lancedb_module,
+        "_assert_quality_report_runtime_environment",
+        lambda _report: None,
+    )
+    monkeypatch.setattr(
+        memory_index_module,
+        "effective_embedding_model_name",
+        lambda: "legacy|chunking=structure-v1",
+    )
+    monkeypatch.setattr(
+        embedding_identity_module,
+        "configured_embedding_index_identity",
+        lambda: expected_identity,
+    )
+
+    generation_cli_module._validate_runtime_environment(spec, report)
+
+
 def _spec(
     generation_id: str,
     *,
+    project_id: str = "project:test",
     model: str = "text-embedding-v4",
     revision: str = "2026-07-23",
     dimension: int = 1024,
@@ -219,6 +260,7 @@ def _spec(
         )
     return GenerationSpec(
         generation_id=generation_id,
+        project_id=project_id,
         index_schema="memory-vectors/v1",
         embedding_model=model,
         model_revision=revision,
@@ -824,6 +866,59 @@ def test_legacy_manifest_without_outbox_field_preserves_original_hash(tmp_path):
     assert loaded.to_dict() == payload
 
 
+def test_legacy_manifest_without_project_binding_preserves_original_hash(tmp_path):
+    manager = _manager(tmp_path / "lancedb-root")
+    manifest, _ = _build_complete(manager, "legacy-project-candidate", reconcile=True)
+    payload = manifest.to_dict()
+    payload.pop("project_id")
+    assert isinstance(payload["index_outbox"], dict)
+    payload["index_outbox"] = dict(payload["index_outbox"])
+    payload["index_outbox"].pop("project_id")
+    payload["identity_sha256"] = generation_module._legacy_generation_identity_without_project_id(
+        manifest.spec
+    )
+    binding = dict(payload)
+    binding.pop("manifest_sha256")
+    payload["manifest_sha256"] = generation_module._json_sha256(binding)
+    original_hash = payload["manifest_sha256"]
+    manifest_path = manager.generations_path / "legacy-project-candidate" / "manifest.json"
+    manifest_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    loaded = manager.load_manifest("legacy-project-candidate")
+
+    assert loaded.project_id == "project:legacy-global"
+    assert loaded.index_outbox["project_id"] == "project:legacy-global"
+    assert loaded.manifest_sha256 == original_hash
+    assert loaded.to_dict() == payload
+
+
+def test_legacy_manifest_without_project_or_outbox_binding_preserves_original_hash(tmp_path):
+    manager = _manager(tmp_path / "lancedb-root")
+    manifest, _ = _build_complete(manager, "legacy-project-pre-outbox")
+    payload = manifest.to_dict()
+    payload.pop("project_id")
+    payload.pop("index_outbox")
+    payload.pop("index_text_policy")
+    payload.pop("index_material_sha256")
+    unbound_spec = replace(
+        manifest.spec,
+        index_text_policy=None,
+        index_material_sha256=None,
+    )
+    payload["identity_sha256"] = generation_module._legacy_generation_identity_sha256(unbound_spec)
+    binding = dict(payload)
+    binding.pop("manifest_sha256")
+    payload["manifest_sha256"] = generation_module._json_sha256(binding)
+    manifest_path = manager.generations_path / "legacy-project-pre-outbox" / "manifest.json"
+    manifest_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    loaded = manager.load_manifest("legacy-project-pre-outbox")
+
+    assert loaded.project_id == "project:legacy-global"
+    assert loaded.index_outbox is None
+    assert loaded.to_dict() == payload
+
+
 def test_outbox_era_manifest_without_material_binding_loads_but_cannot_promote(tmp_path):
     manager = _manager(tmp_path / "lancedb-root")
     manifest, _ = _build_complete(manager, "old-outbox", reconcile=True)
@@ -955,7 +1050,7 @@ def test_mark_reconciled_rechecks_outbox_window_before_manifest_update(tmp_path)
         )
         connection.execute(
             "INSERT INTO store_outbox VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("job-1", "memory_index", "project", "call-1", "done", "{}", "{}", "now", "now"),
+            ("job-1", "memory_index", "project:test", "call-1", "done", "{}", "{}", "now", "now"),
         )
         connection.commit()
 
@@ -1001,7 +1096,17 @@ def test_mark_reconciled_rechecks_outbox_window_before_manifest_update(tmp_path)
         # before the generation manifest could be marked.
         connection.execute(
             "INSERT INTO store_outbox VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("job-2", "memory_index", "project", "call-2", "pending", "{}", "{}", "now", "now"),
+            (
+                "job-2",
+                "memory_index",
+                "project:test",
+                "call-2",
+                "pending",
+                "{}",
+                "{}",
+                "now",
+                "now",
+            ),
         )
         connection.commit()
 
@@ -1027,7 +1132,7 @@ def test_source_bound_promotion_requires_database_and_rechecks_freshness(tmp_pat
         )
         connection.execute(
             "INSERT INTO store_outbox VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("job-1", "memory_index", "project", "call-1", "done", "{}", "{}", "now", "now"),
+            ("job-1", "memory_index", "project:test", "call-1", "done", "{}", "{}", "now", "now"),
         )
         connection.commit()
 
@@ -1068,7 +1173,17 @@ def test_source_bound_promotion_requires_database_and_rechecks_freshness(tmp_pat
         # the pointer must not move even though the manifest is otherwise valid.
         connection.execute(
             "INSERT INTO store_outbox VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("job-2", "memory_index", "project", "call-2", "pending", "{}", "{}", "now", "now"),
+            (
+                "job-2",
+                "memory_index",
+                "project:test",
+                "call-2",
+                "pending",
+                "{}",
+                "{}",
+                "now",
+                "now",
+            ),
         )
         connection.commit()
         with pytest.raises(PromotionError, match="generation_outbox_newer_jobs_make_stale"):
@@ -1097,7 +1212,7 @@ def test_verify_candidate_rejects_newer_outbox_and_preserves_current(tmp_path):
         )
         connection.execute(
             "INSERT INTO store_outbox VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("job-1", "memory_index", "project", "call-1", "done", "{}", "{}", "now", "now"),
+            ("job-1", "memory_index", "project:test", "call-1", "done", "{}", "{}", "now", "now"),
         )
         connection.commit()
 
@@ -1135,7 +1250,7 @@ def test_verify_candidate_rejects_newer_outbox_and_preserves_current(tmp_path):
             (
                 "job-2",
                 "memory_index",
-                "project",
+                "project:test",
                 "call-2",
                 "pending",
                 "{}",

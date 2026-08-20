@@ -165,7 +165,7 @@ def _compile_component_health(ctx) -> dict:
 
     # embedder
     try:
-        from plastic_promise.core.embedder import get_embedder
+        from plastic_promise.core.server_embedder import get_embedder
 
         emb = get_embedder()
         health["embedder"] = (

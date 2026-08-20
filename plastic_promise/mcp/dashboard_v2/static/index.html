@@ -7,7 +7,7 @@
   <meta name="description" content="Plastic Promise 本地治理控制台">
   <title>Plastic Promise 管理控制台</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23171717'/%3E%3Cpath d='M9 8h7.5c4.7 0 7.5 2.4 7.5 6.5S21.2 21 16.5 21H14v4H9V8Zm5 4v5h2.2c1.8 0 2.8-.8 2.8-2.5S18 12 16.2 12H14Z' fill='%23fff'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/dashboard/assets/v2/app.css?v=20260803-passive-jobs-v1">
+  <link rel="stylesheet" href="/dashboard/assets/v2/app.css?v=20260816-knowledge-nav-consistency-v1">
 </head>
 <body>
   <a class="skip-link" href="#view-root">跳到控制台内容</a>
@@ -25,8 +25,15 @@
       <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/>
       <path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>
     </symbol>
+    <symbol id="icon-book-open" viewBox="0 0 24 24">
+      <path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3Z"/><path d="M21 18a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1h-5a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3Z"/>
+    </symbol>
     <symbol id="icon-cloud-cog" viewBox="0 0 24 24">
       <path d="M12 13a4 4 0 1 0 4 4"/><path d="M12 13H6a4 4 0 1 1 .7-7.94A5.5 5.5 0 0 1 17.2 7.1 4 4 0 0 1 18 15"/><path d="M19.7 16.4a1.7 1.7 0 1 1-3.4 0 1.7 1.7 0 0 1 3.4 0Z"/><path d="M18 13.5v1.2M18 18.1v1.2M20.5 16.4h-1.2M16.7 16.4h-1.2"/>
+    </symbol>
+    <symbol id="icon-cpu" viewBox="0 0 24 24">
+      <rect width="12" height="12" x="6" y="6" rx="2"/><rect width="4" height="4" x="10" y="10" rx="1"/>
+      <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>
     </symbol>
     <symbol id="icon-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
     <symbol id="icon-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
@@ -47,6 +54,7 @@
     </symbol>
     <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
     <symbol id="icon-key-round" viewBox="0 0 24 24"><path d="m15.5 7.5 1.4-1.4a5 5 0 1 1 1 1L12 13v3h-3v3H6v3H2v-4.2Z"/><circle cx="18.5" cy="5.5" r=".5"/></symbol>
+    <symbol id="icon-list-check" viewBox="0 0 24 24"><path d="M11 12H3"/><path d="M16 6H3"/><path d="M16 18H3"/><path d="m16 12 2 2 4-4"/></symbol>
     <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 12h16"/><path d="M4 6h16"/><path d="M4 18h16"/></symbol>
     <symbol id="icon-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
     <symbol id="icon-refresh" viewBox="0 0 24 24">
@@ -58,6 +66,7 @@
     </symbol>
     <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3Z"/><path d="m9 12 2 2 4-4"/></symbol>
     <symbol id="icon-sparkles" viewBox="0 0 24 24"><path d="m12 3-1.9 5.1L5 10l5.1 1.9L12 17l1.9-5.1L19 10l-5.1-1.9Z"/><path d="M5 3v4"/><path d="M3 5h4"/><path d="M19 17v4"/><path d="M17 19h4"/></symbol>
+    <symbol id="icon-upload" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></symbol>
     <symbol id="icon-workflow" viewBox="0 0 24 24"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></symbol>
     <symbol id="icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
   </svg>
@@ -102,6 +111,24 @@
           <a class="nav-item" href="#/lineage" data-view="lineage">
             <svg class="icon"><use href="#icon-git-branch"/></svg><span>记忆谱系</span>
           </a>
+          <a class="nav-item" href="#/knowledge-sources" data-view="knowledge-sources" data-feature="knowledge">
+            <svg class="icon"><use href="#icon-book-open"/></svg><span>知识源</span>
+          </a>
+          <a class="nav-item" href="#/knowledge-semantic" data-view="knowledge-semantic" data-feature="knowledge">
+            <svg class="icon"><use href="#icon-activity"/></svg><span>语义状态</span>
+          </a>
+          <a class="nav-item" href="#/knowledge-domains" data-view="knowledge-domains" data-feature="knowledge">
+            <svg class="icon"><use href="#icon-git-branch"/></svg><span>知识领域</span>
+          </a>
+          <a class="nav-item" href="#/knowledge-artifacts" data-view="knowledge-artifacts" data-feature="knowledge">
+            <svg class="icon"><use href="#icon-scroll-text"/></svg><span>Wiki 产物</span>
+          </a>
+          <a class="nav-item" href="#/knowledge-upload" data-view="knowledge-upload" data-feature="knowledge">
+            <svg class="icon"><use href="#icon-upload"/></svg><span>知识上传</span>
+          </a>
+          <a class="nav-item" href="#/knowledge-jobs" data-view="knowledge-jobs" data-feature="knowledge">
+            <svg class="icon"><use href="#icon-list-check"/></svg><span>摄入任务</span>
+          </a>
           <a class="nav-item" href="#/synthesis" data-view="synthesis">
             <svg class="icon"><use href="#icon-sparkles"/></svg><span>综合记忆</span>
           </a>
@@ -125,6 +152,18 @@
           <div class="nav-label">远程控制</div>
           <a class="nav-item" href="#/control-status" data-view="control-status">
             <svg class="icon"><use href="#icon-activity"/></svg><span>服务器状态</span>
+          </a>
+          <a class="nav-item" href="#/control-nodes" data-view="control-nodes">
+            <svg class="icon"><use href="#icon-cpu"/></svg><span>推理节点</span>
+          </a>
+          <a class="nav-item" href="#/control-preflight" data-view="control-preflight">
+            <svg class="icon"><use href="#icon-gauge"/></svg><span>部署预检</span>
+          </a>
+          <a class="nav-item" href="#/deployment-center" data-view="deployment-center">
+            <svg class="icon"><use href="#icon-workflow"/></svg><span>部署中心</span>
+          </a>
+          <a class="nav-item" href="#/control-diagnostics" data-view="control-diagnostics">
+            <svg class="icon"><use href="#icon-file-search"/></svg><span>脱敏诊断</span>
           </a>
           <a class="nav-item" href="#/control-config" data-view="control-config">
             <svg class="icon"><use href="#icon-cloud-cog"/></svg><span>云端期望配置</span>
@@ -156,6 +195,9 @@
         </button>
         <div class="page-identity">
           <span class="eyebrow">管理控制台</span>
+          <svg class="page-icon" id="topbar-view-icon" aria-hidden="true" hidden>
+            <use id="topbar-view-icon-use"></use>
+          </svg>
           <span class="topbar-title" id="topbar-title">概览</span>
         </div>
       </div>
@@ -172,7 +214,7 @@
       </div>
     </header>
 
-    <main class="main-panel" id="main-panel">
+    <main class="main-panel" id="main-panel" tabindex="-1">
       <div class="notice-stack" id="notice-stack" aria-live="polite"></div>
       <section class="view-root" id="view-root" tabindex="-1" aria-live="polite" aria-busy="true"></section>
       <footer class="dashboard-footer">
@@ -197,6 +239,6 @@
 
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
   <noscript>此控制台需要启用 JavaScript 才能加载只读 API 投影。</noscript>
-  <script src="/dashboard/assets/v2/app.js?v=20260803-passive-jobs-v1" defer></script>
+  <script src="/dashboard/assets/v2/app.js?v=20260816-default-feature-surfaces-v1" defer></script>
 </body>
 </html>

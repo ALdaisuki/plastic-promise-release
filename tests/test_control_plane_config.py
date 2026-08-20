@@ -229,6 +229,236 @@ def test_legacy_config_without_sampling_controls_upgrades_as_one_known_shape():
     assert prepared.safe_config["chunk_inference"]["json_mode"] is True
 
 
+def test_node_routing_is_controlled_non_secret_and_legacy_configs_remain_fail_closed():
+    legacy = default_safe_config()
+    legacy.pop("node_routing")
+    prepared_legacy = prepare_configuration(legacy, {}, {}, {})
+    assert prepared_legacy.safe_config["node_routing"]["enabled"] is False
+    assert prepared_legacy.safe_config["node_routing"]["allowed_node_ids"] == []
+
+    candidate = default_safe_config()
+    routing = candidate["node_routing"]
+    assert isinstance(routing, dict)
+    routing.update(
+        {
+            "enabled": True,
+            "embedding_policy": "pinned-node",
+            "rerank_policy": "fastest-estimated",
+            "embedding_required_identity": "sha256:" + "a" * 64,
+            "rerank_required_identity": "sha256:" + "b" * 64,
+            "embedding_pinned_node_id": "remote-a",
+            "allowed_node_ids": ["remote-a", "ollama-local"],
+            "accelerator_max_enabled": True,
+        }
+    )
+    prepared = prepare_configuration(candidate, {}, {}, {})
+    normalized = prepared.safe_config["node_routing"]
+    assert normalized == {
+        **routing,
+        "allowed_node_ids": ["remote-a", "ollama-local"],
+    }
+    assert all("endpoint" not in name for name in prepared.environment)
+
+    unsafe = default_safe_config()
+    unsafe_routing = unsafe["node_routing"]
+    assert isinstance(unsafe_routing, dict)
+    unsafe_routing["endpoint"] = "http://192.168.5.14:19130"
+    with pytest.raises(ControlPlaneValidationError, match="control_config_field_not_allowed"):
+        prepare_configuration(unsafe, {}, {}, {})
+
+    obsolete = default_safe_config()
+    obsolete_routing = obsolete["node_routing"]
+    assert isinstance(obsolete_routing, dict)
+    obsolete_routing["structured_chunking_policy"] = "pinned-node"
+    with pytest.raises(ControlPlaneValidationError, match="control_config_field_not_allowed"):
+        prepare_configuration(obsolete, {}, {}, {})
+
+
+def test_compute_projection_materializes_provider_contract_without_server_secret_projection():
+    candidate = default_safe_config()
+    candidate["embedding"].update(
+        {
+            "enabled": True,
+            "base_url": "https://api.example.test/v1",
+            "model": "embed-v1",
+            "model_revision": "embed-r1",
+            "dimension": 1024,
+        }
+    )
+    candidate["rerank"].update(
+        {
+            "enabled": True,
+            "base_url": "https://api.example.test/v1",
+            "model": "rerank-v1",
+            "model_revision": "rerank-r1",
+        }
+    )
+    candidate["node_routing"].update(
+        {
+            "enabled": True,
+            "inference_mode": "cloud",
+            "embedding_required_identity": "sha256:" + "a" * 64,
+            "rerank_required_identity": "sha256:" + "b" * 64,
+            "allowed_node_ids": ["compute-a"],
+        }
+    )
+    candidate["gateway"]["provider_host_allowlist"] = ["api.example.test"]
+    prepared = prepare_configuration(
+        candidate,
+        {},
+        {},
+        {
+            "embedding_api_key": {"op": "set", "value": "synthetic-embedding-key"},
+            "rerank_api_key": {"op": "set", "value": "synthetic-rerank-key"},
+            "compute_node_cloud_api_key": {
+                "op": "set",
+                "value": "synthetic-compute-key",
+            },
+        },
+    )
+
+    assert prepared.compute_environment == {
+        "PP_ENDPOINT_ROLE": "pp-compute-node",
+        "PP_LOCAL_NODE_CLOUD_API_KEY": "synthetic-compute-key",
+        "PP_LOCAL_NODE_EMBEDDING_BACKEND": "openai-compatible",
+        "PP_LOCAL_NODE_EMBEDDING_CLOUD_BASE_URL": "https://api.example.test/v1",
+        "PP_LOCAL_NODE_EMBEDDING_CLOUD_PATH": "/embeddings",
+        "PP_LOCAL_NODE_EMBEDDING_DIMENSION": "1024",
+        "PP_LOCAL_NODE_EMBEDDING_MODEL": "embed-v1",
+        "PP_LOCAL_NODE_EMBEDDING_NORMALIZATION": "l2",
+        "PP_LOCAL_NODE_EMBEDDING_REVISION": "embed-r1",
+        "PP_LOCAL_NODE_PROVIDER_MODE": "cloud",
+        "PP_LOCAL_NODE_RERANK_BACKEND": "openai-compatible",
+        "PP_LOCAL_NODE_RERANK_CLOUD_BASE_URL": "https://api.example.test/v1",
+        "PP_LOCAL_NODE_RERANK_CLOUD_PATH": "/rerank",
+        "PP_LOCAL_NODE_RERANK_MODEL": "rerank-v1",
+        "PP_LOCAL_NODE_RERANK_REVISION": "rerank-r1",
+    }
+    assert "EMBEDDER_API_KEY" not in prepared.environment
+    assert "PP_RERANK_API_KEY" not in prepared.environment
+    assert "PP_MEMORY_CHUNK_ENRICHMENT_API_KEY" not in prepared.environment
+    assert "PP_LOCAL_NODE_PROVIDER_MODE" not in prepared.environment
+    assert prepared.environment["EMBEDDER_PROVIDER"] == "fallback"
+    assert prepared.environment["EMBEDDER_BASE_URL"] == ""
+    assert prepared.environment["PP_RERANK_DISABLED"] == "1"
+    assert prepared.environment["PP_RERANK_PROVIDERS"] == "original"
+    assert prepared.environment["PP_RERANK_BASE_URL"] == ""
+    assert prepared.environment["PP_MEMORY_CHUNK_ENRICHMENT"] == "off"
+    assert prepared.environment["PP_MEMORY_CHUNK_ENRICHMENT_BASE_URL"] == ""
+    assert prepared.environment["PP_INFERENCE_GATEWAY"] == "0"
+
+
+def test_local_compute_projection_preserves_active_identity_without_cloud_fields():
+    candidate = default_safe_config()
+    candidate["embedding"].update(
+        {
+            "enabled": True,
+            "base_url": "https://compute.local.test/v1",
+            "model": "qwen3-embedding:4b",
+            "model_revision": "sha256:" + "a" * 64,
+            "dimension": 2560,
+        }
+    )
+    candidate["rerank"].update(
+        {
+            "enabled": True,
+            "base_url": "https://compute.local.test/v1",
+            "model": "Qwen/Qwen3-Reranker-4B",
+            "model_revision": "sha256:" + "b" * 64,
+        }
+    )
+    candidate["chunk_inference"].update(
+        {
+            "chunking_mode": "structure-v1",
+            "enrichment_mode": "on",
+            "base_url": "https://compute.local.test/v1",
+            "model": "structured-local",
+            "model_revision": "sha256:" + "c" * 64,
+        }
+    )
+    candidate["node_routing"].update(
+        {
+            "enabled": True,
+            "inference_mode": "local",
+            "embedding_required_identity": "sha256:" + "d" * 64,
+            "rerank_required_identity": "sha256:" + "e" * 64,
+            "allowed_node_ids": ["compute-local"],
+        }
+    )
+    candidate["gateway"]["provider_host_allowlist"] = ["compute.local.test"]
+    prepared = prepare_configuration(candidate, {}, {}, {})
+    assert prepared.compute_environment == {
+        "PP_ENDPOINT_ROLE": "pp-compute-node",
+        "PP_LOCAL_NODE_EMBEDDING_DIMENSION": "2560",
+        "PP_LOCAL_NODE_EMBEDDING_MODEL": "qwen3-embedding:4b",
+        "PP_LOCAL_NODE_EMBEDDING_NORMALIZATION": "l2",
+        "PP_LOCAL_NODE_EMBEDDING_REVISION": "sha256:" + "a" * 64,
+        "PP_LOCAL_NODE_PROVIDER_MODE": "local",
+        "PP_LOCAL_NODE_RERANK_MODEL": "Qwen/Qwen3-Reranker-4B",
+        "PP_LOCAL_NODE_RERANK_REVISION": "sha256:" + "b" * 64,
+        "PP_LOCAL_NODE_STRUCTURED_JSON_MODEL": "structured-local",
+        "PP_LOCAL_NODE_STRUCTURED_JSON_REVISION": "sha256:" + "c" * 64,
+    }
+
+
+def test_existing_control_store_restarts_from_governed_server_projection(tmp_path):
+    root = tmp_path / "control"
+    original = ControlPlaneConfigStore(root, base_env=_base_env()).safe_config()
+    candidate = default_safe_config()
+    candidate["embedding"].update(
+        {
+            "enabled": True,
+            "base_url": "https://compute.local.test/v1",
+            "model": "qwen3-embedding:4b",
+            "model_revision": "qwen3-embedding-r1",
+            "dimension": 2560,
+        }
+    )
+    candidate["rerank"].update(
+        {
+            "enabled": True,
+            "base_url": "https://compute.local.test/v1",
+            "model": "Qwen/Qwen3-Reranker-4B",
+            "model_revision": "qwen3-reranker-r1",
+        }
+    )
+    candidate["node_routing"].update(
+        {
+            "enabled": True,
+            "inference_mode": "local",
+            "embedding_required_identity": "sha256:" + "d" * 64,
+            "rerank_required_identity": "sha256:" + "e" * 64,
+            "allowed_node_ids": ["compute-local"],
+        }
+    )
+    candidate["gateway"]["provider_host_allowlist"] = ["compute.local.test"]
+    server_projection = prepare_configuration(candidate, {}, {}, {}).environment
+
+    restarted = ControlPlaneConfigStore(
+        root,
+        base_env={**_base_env(), **server_projection},
+    )
+
+    assert restarted.safe_config() == original
+
+
+def test_governed_node_identity_owns_runtime_embedding_index_identity():
+    candidate = default_safe_config()
+    routing = candidate["node_routing"]
+    assert isinstance(routing, dict)
+    required_identity = "sha256:" + "f" * 64
+    routing.update(
+        {
+            "enabled": True,
+            "embedding_required_identity": required_identity,
+            "rerank_required_identity": "sha256:" + "e" * 64,
+            "allowed_node_ids": ["compute-local"],
+        }
+    )
+
+    assert runtime_embedding_index_identity(candidate) == required_identity
+
+
 def test_legacy_config_without_fusion_controls_upgrades_fail_closed():
     legacy = default_safe_config()
     chunk = legacy["chunk_inference"]
@@ -898,6 +1128,7 @@ def test_chunk_inference_sampling_and_json_mode_render_to_managed_environment(tm
             "temperature": 0.0,
             "top_p": 1.0,
             "json_mode": True,
+            "num_predict": 16_384,
             "fusion_mode": "shadow",
             "fusion_batch_size": 20,
             "fusion_max_wait_seconds": 2.0,
@@ -927,6 +1158,7 @@ def test_chunk_inference_sampling_and_json_mode_render_to_managed_environment(tm
     assert "PP_MEMORY_CHUNK_ENRICHMENT_TEMPERATURE=0" in private_environment
     assert "PP_MEMORY_CHUNK_ENRICHMENT_TOP_P=1" in private_environment
     assert "PP_MEMORY_CHUNK_ENRICHMENT_JSON_MODE=1" in private_environment
+    assert "PP_MEMORY_CHUNK_ENRICHMENT_NUM_PREDICT=16384" in private_environment
     assert "PP_STRUCTURED_MEMORY_FUSION=shadow" in private_environment
     assert "PP_STRUCTURED_MEMORY_FUSION_BATCH_SIZE=20" in private_environment
     assert "PP_STRUCTURED_MEMORY_FUSION_MAX_WAIT_SECONDS=2" in private_environment

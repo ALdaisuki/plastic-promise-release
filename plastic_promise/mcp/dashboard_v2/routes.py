@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -23,7 +24,15 @@ from plastic_promise.mcp.dashboard_v2.config import (
     DashboardSettings,
     resolve_local_scope,
 )
+from plastic_promise.mcp.dashboard_v2.knowledge_proxy import (
+    KnowledgeProxyError,
+    forward_job_detail,
+    forward_submit,
+    forward_upload,
+    knowledge_ingest_enabled,
+)
 from plastic_promise.mcp.dashboard_v2.repository import (
+    DashboardCollaborationError,
     DashboardCursorError,
     DashboardRepository,
     redact_value,
@@ -46,6 +55,10 @@ _ASSET_MEDIA_TYPES = {
 }
 _ACTION_HEADER_VALUE = "proposal-review-v1"
 _MAX_ACTION_BODY_BYTES = 4096
+_MAX_KNOWLEDGE_UPLOAD_BYTES = 8 * 1024 * 1024
+_ALLOWED_KNOWLEDGE_UPLOAD_TYPES = frozenset(
+    {"text/markdown", "text/plain", "application/octet-stream"}
+)
 _REJECTION_REASON_CODES = frozenset(
     {
         "duplicate",
@@ -96,6 +109,9 @@ def _default_project_scope_provider() -> list[dict[str, Any]]:
             ("memory_proposals", "created_at", "proposal_count"),
             ("call_spans", "started_at", "call_count"),
             ("memories", "created_at", "memory_count"),
+            ("collaboration_agent_sessions", "updated_at", "agent_session_count"),
+            ("collaboration_work_items", "updated_at", "work_item_count"),
+            ("collaboration_events", "created_at", "collaboration_event_count"),
         )
         for table, timestamp_column, count_key in sources:
             try:
@@ -126,6 +142,34 @@ def _default_project_scope_provider() -> list[dict[str, Any]]:
         )
     finally:
         connection.close()
+
+
+def _knowledge_read_only_repository():
+    """Open the knowledge truth store read-only, or None when gated off.
+
+    The dashboard never creates the knowledge database; a missing store is
+    reported as an empty projection rather than a write.
+    """
+    from plastic_promise.knowledge.contracts import (
+        knowledge_db_path,
+        knowledge_feature_gate,
+    )
+    from plastic_promise.knowledge.repository import KnowledgeRepository
+
+    if knowledge_feature_gate("PP_KNOWLEDGE_SYSTEM") not in {"shadow", "on"}:
+        return None
+    return KnowledgeRepository(knowledge_db_path(), read_only=True)
+
+
+def _json_string_list(value: object, *, limit: int = 50) -> list[str]:
+    """Project a bounded string list from an internal JSON column."""
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item)[:500] for item in parsed[:limit] if isinstance(item, str)]
 
 
 def _request_id(request: Request) -> str:
@@ -444,6 +488,9 @@ def create_dashboard_v2_routes(
                             "proposal_count",
                             "call_count",
                             "memory_count",
+                            "agent_session_count",
+                            "work_item_count",
+                            "collaboration_event_count",
                         )
                         if isinstance(item.get(key), (int, float))
                         and not isinstance(item.get(key), bool)
@@ -485,6 +532,25 @@ def create_dashboard_v2_routes(
                 status=request.query_params.get("status"),
                 tool_name=request.query_params.get("tool_name"),
                 degraded=degraded,
+            ),
+        )
+
+    async def collaboration(request: Request) -> Response:
+        raw_limit = request.query_params.get("limit")
+        try:
+            event_limit = 20 if raw_limit in (None, "") else int(raw_limit)
+        except (TypeError, ValueError):
+            return _error(request, 400, "invalid_limit", "Invalid request filter")
+        if not 1 <= event_limit <= 20:
+            return _error(request, 400, "invalid_limit", "Invalid request filter")
+        return _run_repository(
+            request,
+            lambda repository: repository.collaboration_snapshot(
+                coordination_session_id=request.query_params.get("coordination_session_id"),
+                agent_session_id=request.query_params.get("agent_session_id"),
+                role=request.query_params.get("role"),
+                event_cursor=request.query_params.get("cursor"),
+                event_limit=event_limit,
             ),
         )
 
@@ -722,12 +788,56 @@ def create_dashboard_v2_routes(
             if settings.review_actions_enabled and not review_actions_enabled:
                 degraded = True
                 warnings.append("proposal_review_provider_unavailable")
+            feature_defaults = {
+                "dashboard": {
+                    "enabled": settings.enabled,
+                    "default": True,
+                    "key": "PP_DASHBOARD_V2",
+                },
+                "retrieval_explain": {
+                    "enabled": settings.explain_enabled,
+                    "default": True,
+                    "key": "PP_RETRIEVAL_EXPLAIN",
+                },
+                "structured_slicing": {
+                    "mode": _mode(
+                        "PP_MEMORY_CHUNKING", {"off", "shadow", "structure-v1"}, "structure-v1"
+                    ),
+                    "default": "structure-v1",
+                    "key": "PP_MEMORY_CHUNKING",
+                },
+                "semantic_enrichment": {
+                    "mode": _mode("PP_MEMORY_CHUNK_ENRICHMENT", {"off", "shadow", "on"}, "shadow"),
+                    "provider": _mode(
+                        "PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER",
+                        {"ollama", "openai-compatible"},
+                        "openai-compatible",
+                    ),
+                    "default": "shadow",
+                    "key": "PP_MEMORY_CHUNK_ENRICHMENT",
+                },
+                "knowledge_semantic": {
+                    "mode": _mode("PP_KNOWLEDGE_SEMANTIC", {"off", "shadow", "on"}, "shadow"),
+                    "default": "shadow",
+                    "key": "PP_KNOWLEDGE_SEMANTIC",
+                },
+                "cloud_inference": {
+                    "mode": _mode(
+                        "PP_LOCAL_NODE_PROVIDER_MODE",
+                        {"local", "cloud", "hybrid"},
+                        "local",
+                    ),
+                    "key": "PP_LOCAL_NODE_PROVIDER_MODE",
+                    "credentials_in": "pp-compute-node",
+                },
+            }
             return {
                 "version": version,
                 "dashboard": {
                     "enabled": settings.enabled,
                     "retrieval_explain_enabled": settings.explain_enabled,
                     "proposal_review_enabled": review_actions_enabled,
+                    "knowledge_enabled": _knowledge_read_only_repository() is not None,
                     "proposal_review_requested": settings.review_actions_enabled,
                     "auth_mode": settings.auth_mode,
                     "project_id": settings.project_id,
@@ -735,6 +845,7 @@ def create_dashboard_v2_routes(
                     "read_only": not review_actions_enabled,
                     "write_surface": "proposal_review_only" if review_actions_enabled else "none",
                 },
+                "feature_defaults": feature_defaults,
                 "memory_governance": _synthesis_governance(),
                 "runtime": identity,
                 "degraded": degraded,
@@ -790,6 +901,13 @@ def create_dashboard_v2_routes(
                 result = read(repository)
         except DashboardCursorError as exc:
             return _error(request, 400, "invalid_cursor", str(exc))
+        except DashboardCollaborationError as exc:
+            return _error(
+                request,
+                503,
+                exc.code,
+                "Collaboration projection is unavailable",
+            )
         except ValueError as exc:
             return _error(request, 400, "invalid_filter", str(exc))
         except (OSError, sqlite3.DatabaseError):
@@ -798,11 +916,495 @@ def create_dashboard_v2_routes(
             return _not_found(request, result.resource)
         return _response(request, _with_scope(result, scope))
 
+    async def knowledge_sources(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+            limit = _limit(request)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        except ValueError as exc:
+            return _error(request, 400, str(exc), "Invalid request filter")
+        repository = _knowledge_read_only_repository()
+        if repository is None:
+            return _response(
+                request,
+                _with_scope(
+                    {
+                        "enabled": False,
+                        "sources": [],
+                        "note": "PP_KNOWLEDGE_SYSTEM is off",
+                    },
+                    scope,
+                ),
+            )
+        try:
+            sources = repository.list_sources(scope.project_id, limit=limit)
+            rows = []
+            for source in sources:
+                versions = repository.list_versions(source.id, limit=3)
+                rows.append(
+                    {
+                        "id": source.id,
+                        "name": source.name,
+                        "kind": source.kind,
+                        "status": source.status,
+                        "origin_ref": source.origin_ref,
+                        "active_version_id": source.active_version_id,
+                        "created_at": source.created_at,
+                        "updated_at": source.updated_at,
+                        "versions": [
+                            {
+                                "id": version.id,
+                                "version_no": version.version_no,
+                                "status": version.status,
+                                "chunk_count": version.chunk_count,
+                                "created_at": version.created_at,
+                            }
+                            for version in versions
+                        ],
+                    }
+                )
+        except (OSError, sqlite3.DatabaseError, KeyError):
+            return _repository_error(request)
+        return _response(request, _with_scope({"enabled": True, "sources": rows}, scope))
+
+    async def knowledge_jobs(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+            limit = _limit(request)
+            status = request.query_params.get("status")
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        except ValueError as exc:
+            return _error(request, 400, str(exc), "Invalid request filter")
+        repository = _knowledge_read_only_repository()
+        if repository is None:
+            return _response(
+                request,
+                _with_scope(
+                    {
+                        "enabled": False,
+                        "jobs": [],
+                        "note": "PP_KNOWLEDGE_SYSTEM is off",
+                    },
+                    scope,
+                ),
+            )
+        try:
+            jobs = repository.list_jobs(scope.project_id, status=status, limit=limit)
+            rows = [
+                {
+                    "id": job.id,
+                    "source_id": job.source_id,
+                    "stage": job.stage,
+                    "status": job.status,
+                    "attempts": job.attempts,
+                    "error": job.error,
+                    "result": job.result_json,
+                    "created_at": job.created_at,
+                    "finished_at": job.finished_at,
+                }
+                for job in jobs
+            ]
+        except (OSError, sqlite3.DatabaseError, KeyError):
+            return _repository_error(request)
+        return _response(request, _with_scope({"enabled": True, "jobs": rows}, scope))
+
+    async def knowledge_semantic(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        repository = _knowledge_read_only_repository()
+        empty_status = {"pending": 0, "building": 0, "done": 0, "failed": 0}
+        if repository is None:
+            return _response(
+                request,
+                _with_scope(
+                    {
+                        "enabled": False,
+                        "mode": "off",
+                        "status": empty_status,
+                        "authority": "sqlite",
+                        "derived_index": "rebuildable_only",
+                        "note": "PP_KNOWLEDGE_SYSTEM is off",
+                    },
+                    scope,
+                ),
+            )
+        from plastic_promise.knowledge.contracts import knowledge_feature_gate
+
+        try:
+            status = repository.semantic_status(scope.project_id)
+        except (OSError, sqlite3.DatabaseError, KeyError):
+            return _repository_error(request)
+        return _response(
+            request,
+            _with_scope(
+                {
+                    "enabled": True,
+                    "mode": knowledge_feature_gate("PP_KNOWLEDGE_SEMANTIC"),
+                    "status": status,
+                    "authority": "sqlite",
+                    "derived_index": "rebuildable_only",
+                },
+                scope,
+            ),
+        )
+
+    async def knowledge_domains(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+            limit = _limit(request, default=100)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        except ValueError as exc:
+            return _error(request, 400, str(exc), "Invalid request filter")
+        repository = _knowledge_read_only_repository()
+        if repository is None:
+            return _response(
+                request,
+                _with_scope(
+                    {
+                        "enabled": False,
+                        "mode": "off",
+                        "domains": [],
+                        "note": "PP_KNOWLEDGE_SYSTEM is off",
+                    },
+                    scope,
+                ),
+            )
+        from plastic_promise.knowledge.contracts import knowledge_feature_gate
+
+        try:
+            domains = repository.list_domains(scope.project_id)[:limit]
+        except (OSError, sqlite3.DatabaseError, KeyError):
+            return _repository_error(request)
+        rows = [
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "description": row.get("description"),
+                "kind": row.get("kind"),
+                "parent_domain_id": row.get("parent_domain_id"),
+                "aliases": _json_string_list(row.get("aliases_json"), limit=20),
+                "source_count": int(row.get("source_count") or 0),
+                "distinct_spaces": int(row.get("distinct_spaces") or 0),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+                "retired_at": row.get("retired_at"),
+            }
+            for row in domains
+        ]
+        return _response(
+            request,
+            _with_scope(
+                {
+                    "enabled": True,
+                    "mode": knowledge_feature_gate("PP_KNOWLEDGE_AUTO_DOMAINS"),
+                    "domains": rows,
+                },
+                scope,
+            ),
+        )
+
+    async def knowledge_artifacts(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+            limit = _limit(request, default=100)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        except ValueError as exc:
+            return _error(request, 400, str(exc), "Invalid request filter")
+        repository = _knowledge_read_only_repository()
+        if repository is None:
+            return _response(
+                request,
+                _with_scope(
+                    {
+                        "enabled": False,
+                        "mode": "off",
+                        "artifacts": [],
+                        "note": "PP_KNOWLEDGE_SYSTEM is off",
+                    },
+                    scope,
+                ),
+            )
+        from plastic_promise.knowledge.contracts import knowledge_feature_gate
+
+        try:
+            artifacts = repository.list_artifacts(scope.project_id, limit=limit)
+        except (OSError, sqlite3.DatabaseError, KeyError):
+            return _repository_error(request)
+        rows = [
+            {
+                "id": row.get("id"),
+                "kind": row.get("kind"),
+                "title": row.get("title"),
+                "content": row.get("content"),
+                "status": row.get("status"),
+                "risk_tier": row.get("risk_tier"),
+                "citation_coverage": float(row.get("citation_coverage") or 0.0),
+                "source_ids": _json_string_list(row.get("source_ids_json"), limit=50),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+            for row in artifacts
+        ]
+        return _response(
+            request,
+            _with_scope(
+                {
+                    "enabled": True,
+                    "mode": knowledge_feature_gate("PP_KNOWLEDGE_WIKI"),
+                    "artifacts": rows,
+                },
+                scope,
+            ),
+        )
+
+    async def knowledge_upload(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        if not knowledge_ingest_enabled():
+            return _response(
+                request,
+                _with_scope(
+                    {"enabled": False, "note": "PP_KNOWLEDGE_SYSTEM is off"},
+                    scope,
+                ),
+            )
+        content_type = (
+            str(request.headers.get("content-type") or "text/markdown")
+            .split(";")[0]
+            .strip()
+            .casefold()
+        )
+        if content_type and content_type not in _ALLOWED_KNOWLEDGE_UPLOAD_TYPES:
+            return _error(
+                request,
+                415,
+                "knowledge_upload_media_type",
+                "Only Markdown/plain text uploads are supported",
+            )
+        declared_length = request.headers.get("content-length")
+        if declared_length:
+            try:
+                if int(declared_length) > _MAX_KNOWLEDGE_UPLOAD_BYTES:
+                    return _error(
+                        request,
+                        413,
+                        "knowledge_upload_too_large",
+                        "Upload exceeds the 8 MiB limit",
+                    )
+            except ValueError:
+                return _error(
+                    request,
+                    400,
+                    "knowledge_upload_invalid_length",
+                    "Invalid content-length",
+                )
+        raw = await request.body()
+        try:
+            payload = await asyncio.to_thread(
+                forward_upload,
+                raw,
+                content_type or "text/markdown",
+            )
+        except KnowledgeProxyError as exc:
+            return _error(request, exc.status_code, exc.code, str(exc))
+        return _response(request, _with_scope(payload, scope))
+
+    async def knowledge_source_submit(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        if not knowledge_ingest_enabled():
+            return _response(
+                request,
+                _with_scope(
+                    {"enabled": False, "note": "PP_KNOWLEDGE_SYSTEM is off"},
+                    scope,
+                ),
+            )
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return _error(
+                request,
+                400,
+                "knowledge_source_invalid_json",
+                "Request body must be JSON",
+            )
+        if not isinstance(payload, dict):
+            return _error(
+                request,
+                400,
+                "knowledge_source_invalid_json",
+                "Request body must be a JSON object",
+            )
+        project_id = str(payload.get("project_id") or "").strip()
+        source_name = str(payload.get("source_name") or "").strip()
+        content_sha256 = str(payload.get("content_sha256") or "").strip()
+        if project_id != scope.project_id:
+            return _error(
+                request,
+                403,
+                "knowledge_source_cross_project",
+                "project_id must match the active dashboard scope",
+            )
+        if not source_name or not content_sha256:
+            return _error(
+                request,
+                400,
+                "knowledge_source_missing_fields",
+                "source_name and content_sha256 are required",
+            )
+        forward_payload = {
+            "project_id": project_id,
+            "source_name": source_name,
+            "content_sha256": content_sha256,
+            "space_name": str(payload.get("space_name") or "default").strip() or "default",
+            "origin_ref": payload.get("origin_ref"),
+        }
+        try:
+            result = await asyncio.to_thread(forward_submit, forward_payload)
+        except KnowledgeProxyError as exc:
+            return _error(request, exc.status_code, exc.code, str(exc))
+        return _response(request, _with_scope(result, scope))
+
+    async def knowledge_job_detail(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        if not knowledge_ingest_enabled():
+            return _response(
+                request,
+                _with_scope(
+                    {"enabled": False, "note": "PP_KNOWLEDGE_SYSTEM is off"},
+                    scope,
+                ),
+            )
+        job_id = str(request.path_params.get("job_id") or "")
+        try:
+            result = await asyncio.to_thread(forward_job_detail, job_id, scope.project_id)
+        except KnowledgeProxyError as exc:
+            return _error(request, exc.status_code, exc.code, str(exc))
+        return _response(request, _with_scope(result, scope))
+
+    def _knowledge_source_or_none(
+        scope: DashboardScope,
+        repository: Any,
+        source_id: str,
+    ) -> Any:
+        try:
+            source = repository.get_source(source_id)
+        except KeyError:
+            return None
+        if source.project_id != scope.project_id:
+            return None
+        return source
+
+    async def knowledge_source_versions(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+            limit = _limit(request)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        except ValueError as exc:
+            return _error(request, 400, str(exc), "Invalid request filter")
+        repository = _knowledge_read_only_repository()
+        if repository is None:
+            return _response(
+                request,
+                _with_scope(
+                    {"enabled": False, "note": "PP_KNOWLEDGE_SYSTEM is off"},
+                    scope,
+                ),
+            )
+        source_id = str(request.path_params.get("source_id") or "")
+        try:
+            source = _knowledge_source_or_none(scope, repository, source_id)
+            if source is None:
+                return _not_found(request, "knowledge_source")
+            versions = repository.list_versions(source_id, limit=limit)
+        except (OSError, sqlite3.DatabaseError):
+            return _repository_error(request)
+        rows = [
+            {
+                "id": version.id,
+                "version_no": version.version_no,
+                "byte_size": version.byte_size,
+                "parser_id": version.parser_id,
+                "parse_schema": version.parse_schema,
+                "document_title": version.document_title,
+                "status": version.status,
+                "chunk_count": version.chunk_count,
+                "created_at": version.created_at,
+            }
+            for version in versions
+        ]
+        return _response(
+            request,
+            _with_scope(
+                {
+                    "enabled": True,
+                    "source": {
+                        "id": source.id,
+                        "name": source.name,
+                        "kind": source.kind,
+                        "status": source.status,
+                    },
+                    "versions": rows,
+                },
+                scope,
+            ),
+        )
+
+    async def knowledge_source_chunks(request: Request) -> Response:
+        try:
+            scope = _scope(settings, request, provide_project_scopes)
+        except DashboardAccessError as exc:
+            return _error(request, exc.status_code, exc.code, "Dashboard access denied")
+        repository = _knowledge_read_only_repository()
+        if repository is None:
+            return _response(
+                request,
+                _with_scope(
+                    {"enabled": False, "note": "PP_KNOWLEDGE_SYSTEM is off"},
+                    scope,
+                ),
+            )
+        source_id = str(request.path_params.get("source_id") or "")
+        try:
+            source = _knowledge_source_or_none(scope, repository, source_id)
+            if source is None:
+                return _not_found(request, "knowledge_source")
+            chunks = repository.list_chunks(source_id, limit=200)
+        except (OSError, sqlite3.DatabaseError):
+            return _repository_error(request)
+        return _response(
+            request,
+            _with_scope(
+                {
+                    "enabled": True,
+                    "source_id": source_id,
+                    "chunks": chunks,
+                },
+                scope,
+            ),
+        )
+
     routes = [
         Route("/dashboard", endpoint=dashboard, methods=["GET"]),
         Route("/dashboard/assets/v2/{asset_name}", endpoint=asset, methods=["GET"]),
         Route("/api/dashboard/v2/overview", endpoint=overview, methods=["GET"]),
         Route("/api/dashboard/v2/scopes", endpoint=scopes, methods=["GET"]),
+        Route("/api/dashboard/v2/collaboration", endpoint=collaboration, methods=["GET"]),
         Route("/api/dashboard/v2/requests", endpoint=requests, methods=["GET"]),
         Route("/api/dashboard/v2/memories", endpoint=memories, methods=["GET"]),
         Route("/api/dashboard/v2/passive-memory", endpoint=passive_memory, methods=["GET"]),
@@ -825,6 +1427,56 @@ def create_dashboard_v2_routes(
         Route("/api/dashboard/v2/operations", endpoint=operations, methods=["GET"]),
         Route("/api/dashboard/v2/trust-issues", endpoint=trust_issues, methods=["GET"]),
         Route("/api/dashboard/v2/configuration", endpoint=configuration, methods=["GET"]),
+        Route(
+            "/api/dashboard/v2/knowledge-sources",
+            endpoint=knowledge_sources,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-jobs",
+            endpoint=knowledge_jobs,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-semantic",
+            endpoint=knowledge_semantic,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-domains",
+            endpoint=knowledge_domains,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-artifacts",
+            endpoint=knowledge_artifacts,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-uploads",
+            endpoint=knowledge_upload,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-sources/submit",
+            endpoint=knowledge_source_submit,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-jobs/{job_id}",
+            endpoint=knowledge_job_detail,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-sources/{source_id}/versions",
+            endpoint=knowledge_source_versions,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/dashboard/v2/knowledge-sources/{source_id}/chunks",
+            endpoint=knowledge_source_chunks,
+            methods=["GET"],
+        ),
     ]
     if review_actions_enabled:
         routes.append(

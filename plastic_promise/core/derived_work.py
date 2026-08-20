@@ -34,6 +34,19 @@ _DEFAULT_MAX_ATTEMPTS = 4
 _MAX_ATTEMPTS = 32
 _MAX_PAYLOAD_BYTES = 1024 * 1024
 _MAX_RESULT_BYTES = 4 * 1024 * 1024
+_ACCELERATOR_AUDIT_TASK_KINDS = frozenset(
+    {
+        "embedding-reconcile",
+        "vector-relations",
+        "semantic-dedupe",
+        "conflict-risk",
+        "preclassification",
+        "scoring-evidence",
+        "scheduler",
+    }
+)
+_ACCELERATOR_AUDIT_EVENTS = frozenset({"admission", "scheduler"})
+_ACCELERATOR_AUDIT_DECISIONS = frozenset({"denied", "deferred"})
 
 
 class DerivedWorkError(RuntimeError):
@@ -124,6 +137,24 @@ class DerivedWorkLease:
 
     job: DerivedWorkJob
     lease_token: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class DerivedWorkClaimDecision:
+    """A bounded worker-claim decision with an observable deferral reason.
+
+    The lease itself remains the only capability that can transition a job.
+    ``reason`` is deliberately a stable non-sensitive code for scheduling
+    diagnostics; it never includes a project identifier, payload, or provider
+    response.
+    """
+
+    lease: DerivedWorkLease | None
+    reason: str
+
+    @property
+    def claimed(self) -> bool:
+        return self.lease is not None
 
 
 class DerivedWorkStore:
@@ -234,6 +265,170 @@ class DerivedWorkStore:
                 now=_utc_text(self._now()),
             )
 
+    def enqueue_accelerator(
+        self,
+        *,
+        project_id: str,
+        visibility: str,
+        config_revision: str,
+        job_kind: str,
+        provider_identity: str,
+        subject_id: str,
+        subject_hash: str,
+        dedupe_key: str,
+        payload: Mapping[str, object],
+        priority: int,
+        max_attempts: int,
+        max_queue_depth: int,
+        max_daily_tasks: int,
+    ) -> DerivedWorkCreateResult:
+        """Enqueue one background job with SQLite-enforced global budgets.
+
+        This is intentionally narrower than :meth:`enqueue`: the queue and
+        daily-admission checks execute in the same ``BEGIN IMMEDIATE``
+        transaction as the idempotent job creation.  A concurrent caller
+        therefore cannot observe spare capacity and then exceed it.  The
+        counter tracks newly admitted jobs rather than executions, so a retry
+        or idempotent replay cannot consume the daily allowance twice.
+        """
+
+        bounded_queue = _bounded_int(
+            max_queue_depth,
+            minimum=1,
+            maximum=1_000_000,
+            code="derived_work_accelerator_queue_limit_invalid",
+        )
+        bounded_daily = _bounded_int(
+            max_daily_tasks,
+            minimum=1,
+            maximum=1_000_000,
+            code="derived_work_accelerator_daily_limit_invalid",
+        )
+        values = self._validated_enqueue_values(
+            project_id=project_id,
+            visibility=visibility,
+            config_revision=config_revision,
+            job_kind=job_kind,
+            provider_identity=provider_identity,
+            subject_id=subject_id,
+            subject_hash=subject_hash,
+            dedupe_key=dedupe_key,
+            payload=payload,
+            priority=priority,
+            max_attempts=max_attempts,
+            not_before_at=None,
+            max_active_jobs=None,
+        )
+        now = self._now()
+        now_text = _utc_text(now)
+        day = now.date().isoformat()
+        with self._write_transaction() as conn:
+            existing = conn.execute(
+                "SELECT * FROM derived_work_jobs WHERE project_id = ? AND dedupe_key_hash = ?",
+                (values["project_id"], values["dedupe_key_hash"]),
+            ).fetchone()
+            if existing is not None:
+                return DerivedWorkCreateResult(job=_row_to_job(existing), created=False)
+            queued = conn.execute(
+                "SELECT COUNT(*) FROM derived_work_jobs WHERE job_kind = ? "
+                "AND status IN ('pending', 'retry_wait')",
+                (values["job_kind"],),
+            ).fetchone()[0]
+            if int(queued) >= bounded_queue:
+                raise DerivedWorkConflictError("accelerator_queue_budget_exhausted")
+            usage = conn.execute(
+                "SELECT admitted_count FROM derived_work_daily_admissions "
+                "WHERE job_kind = ? AND day_utc = ?",
+                (values["job_kind"], day),
+            ).fetchone()
+            if usage is not None and int(usage["admitted_count"]) >= bounded_daily:
+                raise DerivedWorkConflictError("accelerator_daily_budget_exhausted")
+            created = self._enqueue_in_transaction(conn, values=values, now=now_text)
+            if not created.created:
+                return created
+            conn.execute(
+                """
+                INSERT INTO derived_work_daily_admissions (job_kind, day_utc, admitted_count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(job_kind, day_utc) DO UPDATE
+                SET admitted_count = admitted_count + 1
+                """,
+                (values["job_kind"], day),
+            )
+            return created
+
+    def record_accelerator_audit_event(
+        self,
+        *,
+        event: str,
+        task_kind: str,
+        decision: str,
+        reason: str,
+    ) -> bool:
+        """Persist one bounded, daily-deduplicated accelerator decision.
+
+        This is an audit ledger, not another work queue: it deliberately
+        records no project, subject, provider, payload, result, or lease data.
+        Its explicit node-governance schema migration creates the table; this
+        runtime method only writes an already-authorized table. The daily
+        uniqueness key prevents a disabled or resource-constrained worker loop
+        from growing SQLite indefinitely while retaining durable proof that
+        the policy gate made a decision.
+        """
+
+        normalized_event = _accelerator_audit_value(
+            event,
+            "derived_work_accelerator_audit_event_invalid",
+            _ACCELERATOR_AUDIT_EVENTS,
+        )
+        normalized_task_kind = _accelerator_audit_value(
+            task_kind,
+            "derived_work_accelerator_audit_task_kind_invalid",
+            _ACCELERATOR_AUDIT_TASK_KINDS,
+        )
+        normalized_decision = _accelerator_audit_value(
+            decision,
+            "derived_work_accelerator_audit_decision_invalid",
+            _ACCELERATOR_AUDIT_DECISIONS,
+        )
+        normalized_reason = _identifier(
+            reason,
+            "derived_work_accelerator_audit_reason_invalid",
+        )
+        now = self._now()
+        try:
+            with self._read_connection() as conn:
+                table = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'derived_work_accelerator_audit_events'"
+                ).fetchone()
+        except sqlite3.Error:
+            raise DerivedWorkError("derived_work_accelerator_audit_unavailable") from None
+        if table is None:
+            raise DerivedWorkError("derived_work_accelerator_audit_schema_missing")
+        try:
+            with self._write_transaction() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO derived_work_accelerator_audit_events (
+                        event_id, event_kind, task_kind, decision, reason_code,
+                        day_utc, occurred_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "dwae_" + uuid.uuid4().hex,
+                        normalized_event,
+                        normalized_task_kind,
+                        normalized_decision,
+                        normalized_reason,
+                        now.date().isoformat(),
+                        _utc_text(now),
+                    ),
+                )
+                return cursor.rowcount == 1
+        except sqlite3.Error:
+            raise DerivedWorkError("derived_work_accelerator_audit_unavailable") from None
+
     def get(self, *, job_id: str, project_id: str) -> DerivedWorkJob:
         """Return the project-authorized durable job snapshot."""
 
@@ -305,6 +500,73 @@ class DerivedWorkStore:
                 None
                 if row is None
                 else self._claim_row(conn, row, now=now, lease_seconds=lease_for)
+            )
+
+    def claim_next_accelerator(
+        self,
+        *,
+        project_id: str,
+        job_kind: str,
+        max_concurrency: int,
+        foreground_priority_floor: int,
+        lease_seconds: int | None = None,
+    ) -> DerivedWorkClaimDecision:
+        """Claim bounded background work without overtaking foreground work.
+
+        The global foreground and accelerator-lease checks happen in the same
+        SQLite transaction as the lease acquisition.  This makes the resource
+        concurrency budget durable across workers and process restarts.  It
+        deliberately blocks new accelerator work whenever a high-priority
+        foreground job is queued *or* leased anywhere in the shared store.
+        """
+
+        normalized_project = _required_text(project_id, "derived_work_project_id_required")
+        normalized_kind = _identifier(job_kind, "derived_work_kind_invalid")
+        bounded_concurrency = _bounded_int(
+            max_concurrency,
+            minimum=1,
+            maximum=1_000_000,
+            code="derived_work_accelerator_concurrency_limit_invalid",
+        )
+        priority_floor = _bounded_int(
+            foreground_priority_floor,
+            minimum=-1_000,
+            maximum=1_000,
+            code="derived_work_accelerator_foreground_priority_invalid",
+        )
+        lease_for = self._lease_duration(lease_seconds)
+        now = self._now()
+        now_text = _utc_text(now)
+        with self._write_transaction() as conn:
+            self._recover_expired_in_transaction(conn, project_id=None, now_text=now_text)
+            foreground = conn.execute(
+                "SELECT 1 FROM derived_work_jobs WHERE job_kind != ? "
+                "AND status IN ('pending', 'retry_wait', 'leased') AND priority >= ? LIMIT 1",
+                (normalized_kind, priority_floor),
+            ).fetchone()
+            if foreground is not None:
+                return DerivedWorkClaimDecision(None, "accelerator_foreground_work_pending")
+            active = conn.execute(
+                "SELECT COUNT(*) FROM derived_work_jobs WHERE job_kind = ? AND status = 'leased'",
+                (normalized_kind,),
+            ).fetchone()[0]
+            if int(active) >= bounded_concurrency:
+                return DerivedWorkClaimDecision(None, "accelerator_concurrency_budget_exhausted")
+            row = conn.execute(
+                """
+                SELECT * FROM derived_work_jobs
+                WHERE project_id = ? AND job_kind = ?
+                  AND status IN ('pending', 'retry_wait') AND not_before_at <= ?
+                ORDER BY priority DESC, created_at, job_id
+                LIMIT 1
+                """,
+                (normalized_project, normalized_kind, now_text),
+            ).fetchone()
+            if row is None:
+                return DerivedWorkClaimDecision(None, "accelerator_no_due_work")
+            return DerivedWorkClaimDecision(
+                self._claim_row(conn, row, now=now, lease_seconds=lease_for),
+                "accelerator_claimed",
             )
 
     def claim_batch(
@@ -620,19 +882,60 @@ class DerivedWorkStore:
                 now_text=now_text,
             )
 
-    def stats(self, *, project_id: str) -> dict[str, int]:
-        """Return an explicit zero-filled status snapshot for one project."""
+    def stats(
+        self,
+        *,
+        project_id: str | None = None,
+        job_kind: str | None = None,
+    ) -> dict[str, int]:
+        """Return an explicit zero-filled status snapshot for a durable scope.
 
-        normalized_project = _required_text(project_id, "derived_work_project_id_required")
+        ``job_kind`` keeps observability adapters from reporting unrelated
+        derived jobs as node work.  Both selectors remain optional only for
+        server-owned aggregate diagnostics; callers that expose work to a user
+        must continue passing their authenticated ``project_id``.
+        """
+
+        normalized_project = (
+            None
+            if project_id is None
+            else _required_text(project_id, "derived_work_project_id_required")
+        )
+        normalized_kind = (
+            None if job_kind is None else _identifier(job_kind, "derived_work_kind_invalid")
+        )
+        clauses: list[str] = []
+        values: list[object] = []
+        if normalized_project is not None:
+            clauses.append("project_id = ?")
+            values.append(normalized_project)
+        if normalized_kind is not None:
+            clauses.append("job_kind = ?")
+            values.append(normalized_kind)
+        where = "" if not clauses else " WHERE " + " AND ".join(clauses)
         with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT status, COUNT(*) AS count FROM derived_work_jobs "
-                "WHERE project_id = ? GROUP BY status",
-                (normalized_project,),
+                + where
+                + " GROUP BY status",
+                tuple(values),
             ).fetchall()
         result = dict.fromkeys(_VISIBLE_STATUSES, 0)
         result.update({str(row["status"]): int(row["count"]) for row in rows})
         return result
+
+    def daily_admissions(self, *, job_kind: str) -> int:
+        """Return UTC-day durable admissions for one budgeted work kind."""
+
+        normalized_kind = _identifier(job_kind, "derived_work_kind_invalid")
+        day = self._now().date().isoformat()
+        with self._read_connection() as conn:
+            row = conn.execute(
+                "SELECT admitted_count FROM derived_work_daily_admissions "
+                "WHERE job_kind = ? AND day_utc = ?",
+                (normalized_kind, day),
+            ).fetchone()
+        return 0 if row is None else int(row["admitted_count"])
 
     def status(self, *, project_id: str) -> dict[str, int | str | None]:
         """Return project-scoped queue depth, age, and lifecycle counters."""
@@ -1030,6 +1333,12 @@ class DerivedWorkStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_derived_work_attempts_project
                 ON derived_work_attempts(project_id, job_id, fencing_generation);
+                CREATE TABLE IF NOT EXISTS derived_work_daily_admissions (
+                    job_kind TEXT NOT NULL,
+                    day_utc TEXT NOT NULL,
+                    admitted_count INTEGER NOT NULL CHECK(admitted_count >= 0),
+                    PRIMARY KEY(job_kind, day_utc)
+                );
                 """
             )
         except BaseException:
@@ -1162,6 +1471,13 @@ def _required_text(value: object, code: str) -> str:
 def _identifier(value: object, code: str) -> str:
     normalized = str(value or "").strip().casefold()
     if not _IDENTIFIER_RE.fullmatch(normalized):
+        raise DerivedWorkError(code)
+    return normalized
+
+
+def _accelerator_audit_value(value: object, code: str, allowed: frozenset[str]) -> str:
+    normalized = _identifier(value, code)
+    if normalized not in allowed:
         raise DerivedWorkError(code)
     return normalized
 

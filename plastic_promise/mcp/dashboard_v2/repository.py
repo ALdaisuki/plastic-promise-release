@@ -12,6 +12,10 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from plastic_promise.collaboration.contracts import (
+    CollaborationContractError,
+    CollaborationEvent,
+)
 from plastic_promise.core.chunking import chunk_manifest_hash
 from plastic_promise.core.memory_index import chunk_manifest_source_hash
 from plastic_promise.core.recall_quality import LIVE_TRACE_METADATA_KEY
@@ -26,6 +30,14 @@ if TYPE_CHECKING:
 
 class DashboardCursorError(ValueError):
     """An opaque dashboard cursor is malformed or bound to another query."""
+
+
+class DashboardCollaborationError(ValueError):
+    """The durable collaboration projection is unavailable or inconsistent."""
+
+    def __init__(self, code: str) -> None:
+        self.code = str(code)
+        super().__init__(self.code)
 
 
 _REDACTED = "[REDACTED]"
@@ -49,6 +61,76 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 _ASSIGNMENT_RE = re.compile(
     r"(?i)\b(password|secret|token|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+"
 )
+_DURABLE_COLLABORATION_REVISION = "pr5-durable-lifecycle-v2"
+_COLLABORATION_REQUIRED_COLUMNS = {
+    "collaboration_runtime_schema": frozenset({"singleton", "schema_revision"}),
+    "collaboration_agents": frozenset(
+        {
+            "project_id",
+            "agent_id",
+            "role",
+            "parent_agent_id",
+            "state",
+        }
+    ),
+    "collaboration_agent_sessions": frozenset(
+        {
+            "session_id",
+            "project_id",
+            "agent_id",
+            "coordination_session_id",
+            "state",
+            "last_heartbeat_at",
+            "expires_at",
+            "updated_at",
+        }
+    ),
+    "collaboration_work_items": frozenset(
+        {
+            "work_item_id",
+            "project_id",
+            "coordination_session_id",
+            "assigned_agent_id",
+            "state",
+            "attempt",
+            "max_attempts",
+            "created_at",
+            "updated_at",
+            "last_error",
+        }
+    ),
+    "collaboration_work_leases": frozenset(
+        {
+            "lease_id",
+            "work_item_id",
+            "project_id",
+            "coordination_session_id",
+            "owner_session_id",
+            "fencing_generation",
+            "expires_at",
+            "last_heartbeat_at",
+            "state",
+        }
+    ),
+    "collaboration_events": frozenset(
+        {
+            "sequence",
+            "event_id",
+            "project_id",
+            "coordination_session_id",
+            "actor_agent_id",
+            "actor_role",
+            "event_type",
+            "causal_parent_event_id",
+            "audience_roles_json",
+            "audience_agent_ids_json",
+            "event_json",
+            "event_sha256",
+            "created_at",
+            "expires_at",
+        }
+    ),
+}
 
 
 def _sensitive_key(key: object) -> bool:
@@ -290,6 +372,9 @@ _ACTIVE_DERIVED_STATUSES = frozenset({"pending", "retry_wait", "leased"})
 _MAX_DERIVED_FAILURE_CODES = 8
 _PROPOSAL_STATUSES = frozenset({"pending", "adopted", "rejected", "expired"})
 _PROPOSAL_CATEGORIES = frozenset({"fact", "preference", "decision"})
+_SECURITY_CANDIDATE_STATUSES = frozenset(
+    {"pending_validation", "shadowed", "canary_passed", "rolled_back"}
+)
 _PROPOSAL_COLUMNS = """
     proposal.proposal_id, proposal.project_id, proposal.visibility,
     proposal.origin_visibility, proposal.content, proposal.content_hash,
@@ -679,6 +764,375 @@ class DashboardRepository:
             raise
         except Exception as exc:
             raise DashboardCursorError("cursor_invalid") from exc
+
+    def _encode_collaboration_cursor(
+        self,
+        filters: Mapping[str, Any],
+        sequence: int,
+    ) -> str:
+        payload = {
+            "v": 1,
+            "collection": "collaboration_events",
+            "scope": self.scope.fingerprint,
+            "filters": _fingerprint(filters),
+            "sequence": int(sequence),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        wrapper = {
+            "payload": payload,
+            "fingerprint": hashlib.sha256(
+                b"dashboard-v2-collaboration-cursor\0" + encoded
+            ).hexdigest(),
+        }
+        raw = json.dumps(wrapper, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    def _decode_collaboration_cursor(
+        self,
+        cursor: str | None,
+        filters: Mapping[str, Any],
+    ) -> int:
+        if cursor is None:
+            return 0
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            wrapper = json.loads(base64.urlsafe_b64decode(cursor + padding).decode("utf-8"))
+            if set(wrapper) != {"payload", "fingerprint"}:
+                raise ValueError
+            payload = wrapper["payload"]
+            if set(payload) != {"v", "collection", "scope", "filters", "sequence"}:
+                raise ValueError
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            expected = hashlib.sha256(b"dashboard-v2-collaboration-cursor\0" + encoded).hexdigest()
+            if not hmac.compare_digest(str(wrapper["fingerprint"]), expected):
+                raise ValueError
+            if payload["v"] != 1 or payload["collection"] != "collaboration_events":
+                raise DashboardCursorError("cursor_collection_mismatch")
+            if payload["scope"] != self.scope.fingerprint:
+                raise DashboardCursorError("cursor_scope_mismatch")
+            if payload["filters"] != _fingerprint(filters):
+                raise DashboardCursorError("cursor_filter_mismatch")
+            sequence = payload["sequence"]
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+                raise ValueError
+            return sequence
+        except DashboardCursorError:
+            raise
+        except Exception as exc:
+            raise DashboardCursorError("cursor_invalid") from exc
+
+    def collaboration_snapshot(
+        self,
+        *,
+        coordination_session_id: str | None = None,
+        agent_session_id: str | None = None,
+        role: str | None = None,
+        event_cursor: str | None = None,
+        event_limit: int = 20,
+    ) -> dict[str, Any]:
+        """Return one read-only, project-bound PR5 collaboration snapshot.
+
+        The browser-selected role only narrows returned rows.  It never becomes
+        an audience identity, and targeted events remain hidden from this local
+        operator projection.  The opaque browser cursor is deliberately
+        separate from canonical Agent cursors and is never persisted.
+        """
+
+        if (
+            isinstance(event_limit, bool)
+            or not isinstance(event_limit, int)
+            or not 1 <= event_limit <= 20
+        ):
+            raise DashboardCollaborationError("collaboration_event_limit_invalid")
+        filters = {
+            "coordination_session_id": str(coordination_session_id or "").strip(),
+            "agent_session_id": str(agent_session_id or "").strip(),
+            "role": str(role or "").strip(),
+        }
+        after_sequence = self._decode_collaboration_cursor(event_cursor, filters)
+        self._verify_collaboration_projection_schema()
+        schema = self._conn.execute(
+            "SELECT schema_revision FROM collaboration_runtime_schema WHERE singleton=1"
+        ).fetchone()
+        if schema is None:
+            raise DashboardCollaborationError("collaboration_projection_schema_missing")
+        schema_revision = str(schema[0] or "")
+        if schema_revision != _DURABLE_COLLABORATION_REVISION:
+            raise DashboardCollaborationError("collaboration_projection_schema_stale")
+
+        project_id = self.scope.project_id
+        session_filter = filters["coordination_session_id"]
+        agent_session_filter = filters["agent_session_id"]
+        role_filter = filters["role"]
+
+        topology_where = ["sessions.project_id=?"]
+        topology_params: list[object] = [project_id]
+        if session_filter:
+            topology_where.append("sessions.coordination_session_id=?")
+            topology_params.append(session_filter)
+        if agent_session_filter:
+            topology_where.append("sessions.session_id=?")
+            topology_params.append(agent_session_filter)
+        if role_filter:
+            topology_where.append("agents.role=?")
+            topology_params.append(role_filter)
+        topology_rows = self._conn.execute(
+            f"""
+            SELECT agents.agent_id,agents.role,agents.parent_agent_id,
+                   agents.state AS agent_state,sessions.session_id,
+                   sessions.coordination_session_id,sessions.state AS session_state,
+                   sessions.last_heartbeat_at,sessions.expires_at,sessions.updated_at
+              FROM collaboration_agent_sessions AS sessions
+              JOIN collaboration_agents AS agents
+                ON agents.project_id=sessions.project_id AND agents.agent_id=sessions.agent_id
+             WHERE {" AND ".join(topology_where)}
+             ORDER BY sessions.updated_at DESC,sessions.session_id
+             LIMIT 65
+            """,
+            tuple(topology_params),
+        ).fetchall()
+        topology = [
+            {
+                "agent_id": str(row[0]),
+                "role": str(row[1]),
+                "parent_agent_id": str(row[2] or "") or None,
+                "agent_state": str(row[3]),
+                "session_id": str(row[4]),
+                "coordination_session_id": str(row[5]),
+                "session_state": str(row[6]),
+                "last_heartbeat_at": str(row[7]),
+                "expires_at": None if row[8] is None else str(row[8]),
+                "updated_at": str(row[9]),
+            }
+            for row in topology_rows[:64]
+        ]
+
+        work_where = ["work.project_id=?"]
+        work_params: list[object] = [project_id]
+        if session_filter:
+            work_where.append("work.coordination_session_id=?")
+            work_params.append(session_filter)
+        if agent_session_filter:
+            work_where.append("leases.owner_session_id=?")
+            work_params.append(agent_session_filter)
+        if role_filter:
+            work_where.append("agents.role=?")
+            work_params.append(role_filter)
+        work_rows = self._conn.execute(
+            f"""
+            SELECT work.work_item_id,work.coordination_session_id,
+                   work.assigned_agent_id,agents.role,work.state,work.attempt,
+                   work.max_attempts,work.created_at,work.updated_at,work.last_error,
+                   leases.state,leases.fencing_generation,leases.expires_at,
+                   leases.last_heartbeat_at
+              FROM collaboration_work_items AS work
+              LEFT JOIN collaboration_agents AS agents
+                ON agents.project_id=work.project_id AND agents.agent_id=work.assigned_agent_id
+              LEFT JOIN collaboration_work_leases AS leases
+                ON leases.work_item_id=work.work_item_id AND leases.state='active'
+             WHERE {" AND ".join(work_where)}
+             ORDER BY work.updated_at DESC,work.work_item_id
+             LIMIT 65
+            """,
+            tuple(work_params),
+        ).fetchall()
+        work_board = [
+            {
+                "work_item_id": str(row[0]),
+                "coordination_session_id": str(row[1]),
+                "assigned_agent_id": str(row[2]),
+                "assigned_role": str(row[3] or ""),
+                "state": str(row[4]),
+                "attempt": int(row[5]),
+                "max_attempts": int(row[6]),
+                "created_at": str(row[7]),
+                "updated_at": str(row[8]),
+                "last_error_present": bool(str(row[9] or "").strip()),
+                "lease": (
+                    {
+                        "state": str(row[10]),
+                        "fencing_generation": int(row[11]),
+                        "expires_at": str(row[12]),
+                        "last_heartbeat_at": str(row[13]),
+                    }
+                    if row[10] is not None
+                    else None
+                ),
+            }
+            for row in work_rows[:64]
+        ]
+
+        event_where = [
+            "project_id=?",
+            "sequence>?",
+            "audience_roles_json='[]'",
+            "audience_agent_ids_json='[]'",
+            "(expires_at IS NULL OR expires_at>?)",
+        ]
+        event_params: list[object] = [
+            project_id,
+            after_sequence,
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        ]
+        if session_filter:
+            event_where.append("coordination_session_id=?")
+            event_params.append(session_filter)
+        if agent_session_filter:
+            event_where.append(
+                "actor_agent_id=(SELECT agent_id FROM collaboration_agent_sessions "
+                "WHERE project_id=? AND session_id=?)"
+            )
+            event_params.extend((project_id, agent_session_filter))
+        if role_filter:
+            event_where.append("actor_role=?")
+            event_params.append(role_filter)
+        event_rows = self._conn.execute(
+            f"""
+            SELECT sequence,event_id,project_id,coordination_session_id,
+                   actor_agent_id,actor_role,event_type,causal_parent_event_id,
+                   audience_roles_json,audience_agent_ids_json,event_json,event_sha256,
+                   created_at,expires_at
+              FROM collaboration_events
+             WHERE {" AND ".join(event_where)}
+             ORDER BY sequence
+             LIMIT ?
+            """,
+            (*event_params, event_limit + 1),
+        ).fetchall()
+        visible_rows = event_rows[:event_limit]
+        delivered_sequence = int(visible_rows[-1][0]) if visible_rows else after_sequence
+        source_head_row = self._conn.execute(
+            "SELECT COALESCE(MAX(sequence),0) FROM collaboration_events WHERE project_id=?"
+            + (" AND coordination_session_id=?" if session_filter else ""),
+            (project_id, session_filter) if session_filter else (project_id,),
+        ).fetchone()
+        source_head = int(source_head_row[0] if source_head_row else 0)
+        has_more = len(event_rows) > event_limit
+        next_sequence = delivered_sequence if has_more else source_head
+        timeline = [self._project_collaboration_event(row) for row in visible_rows]
+        options = self._conn.execute(
+            "SELECT DISTINCT coordination_session_id FROM collaboration_agent_sessions "
+            "WHERE project_id=? ORDER BY coordination_session_id LIMIT 50",
+            (project_id,),
+        ).fetchall()
+        agent_session_options = self._conn.execute(
+            "SELECT session_id,agent_id FROM collaboration_agent_sessions "
+            "WHERE project_id=? ORDER BY updated_at DESC,session_id LIMIT 64",
+            (project_id,),
+        ).fetchall()
+        roles = self._conn.execute(
+            "SELECT DISTINCT role FROM collaboration_agents WHERE project_id=? "
+            "ORDER BY role LIMIT 32",
+            (project_id,),
+        ).fetchall()
+        return {
+            "schema_version": "dashboard-collaboration-projection/v1",
+            "availability": "available",
+            "authority_effect": "none",
+            "canonical_memory_effect": "none",
+            "write_surface": "none",
+            "source": {"kind": "canonical-sqlite-read-only", "schema_revision": schema_revision},
+            "filters": {**filters, "role_effect": "result_narrowing_only"},
+            "visibility": {
+                "mode": "broadcast-only-local-operator",
+                "work_objectives": "redacted",
+                "event_payloads": "redacted",
+                "agent_capabilities": "redacted",
+            },
+            "filter_options": {
+                "coordination_sessions": [str(row[0]) for row in options],
+                "agent_sessions": [
+                    {"session_id": str(row[0]), "agent_id": str(row[1])}
+                    for row in agent_session_options
+                ],
+                "roles": [str(row[0]) for row in roles],
+            },
+            "topology": {
+                "data": topology,
+                "limit": 64,
+                "total": len(topology_rows),
+                "returned": len(topology),
+                "truncated": len(topology_rows) > 64,
+            },
+            "work_board": {
+                "data": work_board,
+                "limit": 64,
+                "total": len(work_rows),
+                "returned": len(work_board),
+                "truncated": len(work_rows) > 64,
+            },
+            "event_timeline": {
+                "data": timeline,
+                "cursor_from": event_cursor,
+                "cursor_to": self._encode_collaboration_cursor(filters, next_sequence),
+                "next_cursor": self._encode_collaboration_cursor(filters, next_sequence),
+                "source_head_sequence": source_head,
+                "has_more": has_more,
+                "limit": event_limit,
+            },
+            "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+
+    def _verify_collaboration_projection_schema(self) -> None:
+        """Fail closed unless every read dependency matches the PR5 v2 shape."""
+
+        tables = {
+            str(row[0])
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        for table, required in _COLLABORATION_REQUIRED_COLUMNS.items():
+            if table not in tables:
+                raise DashboardCollaborationError("collaboration_projection_schema_missing")
+            available = {str(row[1]) for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if not required.issubset(available):
+                raise DashboardCollaborationError("collaboration_projection_schema_stale")
+
+    def _project_collaboration_event(self, row: Sequence[Any]) -> dict[str, Any]:
+        """Validate the stored event and emit only the public dashboard allowlist."""
+
+        try:
+            raw = json.loads(str(row[10]))
+            if not isinstance(raw, dict):
+                raise ValueError
+            event = CollaborationEvent.from_dict(raw)
+        except (TypeError, ValueError, json.JSONDecodeError, CollaborationContractError) as exc:
+            raise DashboardCollaborationError("collaboration_projection_event_invalid") from exc
+        column_binding = (
+            int(row[0]) >= 1
+            and event.event_id == str(row[1])
+            and event.project.project_id == str(row[2])
+            and event.coordination_session_id == str(row[3])
+            and event.actor.agent_id == str(row[4])
+            and event.actor.role == str(row[5])
+            and event.event_type == str(row[6])
+            and event.causal_parent_event_id == (str(row[7]) if row[7] else None)
+            and list(event.audience_roles) == _json_list(row[8])
+            and list(event.audience_agent_ids) == _json_list(row[9])
+            and event.content_sha256 == str(row[11])
+            and event.created_at == str(row[12])
+            and event.expires_at == (str(row[13]) if row[13] else None)
+        )
+        if not column_binding or event.audience_roles or event.audience_agent_ids:
+            raise DashboardCollaborationError("collaboration_projection_event_invalid")
+        return {
+            "sequence": int(row[0]),
+            "event_id": event.event_id,
+            "coordination_session_id": event.coordination_session_id,
+            "event_type": event.event_type,
+            "actor_agent_id": event.actor.agent_id,
+            "actor_role": event.actor.role,
+            "summary": event.summary,
+            "created_at": event.created_at,
+            "expires_at": event.expires_at,
+            "causal_parent_event_id": event.causal_parent_event_id,
+            "work_item_id": event.work_item_id,
+            "subject_refs": list(event.subject_refs[:32]),
+            "evidence_refs": list(event.evidence_refs[:32]),
+            "payload": "redacted",
+            "authority_effect": "none",
+        }
 
     def overview(self) -> dict[str, Any]:
         project_id = self.scope.project_id
@@ -1175,6 +1629,111 @@ class DashboardRepository:
         )
         row = _row(cursor, cursor.fetchone())
         return _project_memory_proposal(row) if row is not None else None
+
+    def list_security_remediation_candidates(
+        self,
+        *,
+        limit: int = 25,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        """Project redacted Shield candidates for one dashboard project."""
+
+        if status is not None and status not in _SECURITY_CANDIDATE_STATUSES:
+            raise ValueError("security_candidate_status_invalid")
+        bounded = _limit(limit)
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("security_remediation_candidates",),
+        ).fetchone()
+        if exists is None:
+            return self._envelope([], total=0, limit=bounded, next_cursor=None)
+        clauses = ["project_id = ?"]
+        params: list[Any] = [self.scope.project_id]
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        count = int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM security_remediation_candidates WHERE "
+                + " AND ".join(clauses),
+                params,
+            ).fetchone()[0]
+        )
+        score_exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("memory_proposal_scores",),
+        ).fetchone()
+        if score_exists is None:
+            score_columns = (
+                "NULL AS shadow_composite_score, NULL AS shadow_score_eligible, "
+                "NULL AS shadow_blocked_reason, NULL AS shadow_score_revision"
+            )
+            score_join = ""
+        else:
+            score_columns = (
+                "score.composite_score AS shadow_composite_score, "
+                "score.eligible AS shadow_score_eligible, "
+                "score.blocked_reason AS shadow_blocked_reason, "
+                "score.score_revision AS shadow_score_revision"
+            )
+            score_join = (
+                " LEFT JOIN memory_proposal_scores AS score ON "
+                "score.proposal_id = candidate.shadow_proposal_id AND "
+                "score.project_id = candidate.project_id"
+            )
+        cursor = self._conn.execute(
+            "SELECT candidate.candidate_id, candidate.project_id, candidate.finding_id, "
+            "candidate.source_version_id, candidate.redacted_pattern, candidate.severity, "
+            "candidate.status, candidate.validation_projects_json, "
+            "candidate.shadow_generation, candidate.shadow_proposal_id, "
+            "candidate.canary_result, candidate.canary_reason, "
+            "candidate.canary_evidence_json, candidate.created_at, candidate.updated_at, "
+            + score_columns
+            + " FROM security_remediation_candidates AS candidate"
+            + score_join
+            + " WHERE "
+            + " AND ".join(f"candidate.{clause}" for clause in clauses)
+            + " ORDER BY candidate.updated_at DESC, candidate.candidate_id DESC LIMIT ?",
+            (*params, bounded),
+        )
+        rows = _rows(cursor)
+        projected = []
+        for row in rows:
+            projected.append(
+                {
+                    "candidate_id": str(row["candidate_id"]),
+                    "project_id": str(row["project_id"]),
+                    "finding_id": str(row["finding_id"]),
+                    "source_version_id": str(row["source_version_id"]),
+                    "redacted_pattern": redact_value(str(row["redacted_pattern"] or "")),
+                    "severity": str(row["severity"]),
+                    "status": str(row["status"]),
+                    "validation_project_ids": [
+                        str(item)
+                        for item in _json_list(row["validation_projects_json"])
+                        if str(item).strip()
+                    ],
+                    "shadow_generation": str(row["shadow_generation"] or ""),
+                    "shadow_proposal_id": str(row["shadow_proposal_id"] or ""),
+                    "canary_result": str(row["canary_result"] or ""),
+                    "canary_reason": redact_value(str(row["canary_reason"] or "")),
+                    "canary_evidence": redact_value(_json_object(row["canary_evidence_json"])),
+                    "shadow_score": {
+                        "composite_score": row["shadow_composite_score"],
+                        "eligible": (
+                            bool(row["shadow_score_eligible"])
+                            if row["shadow_score_eligible"] is not None
+                            else None
+                        ),
+                        "blocked_reason": str(row["shadow_blocked_reason"] or ""),
+                        "score_revision": row["shadow_score_revision"],
+                        "available": row["shadow_score_revision"] is not None,
+                    },
+                    "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                }
+            )
+        return self._envelope(projected, total=count, limit=bounded, next_cursor=None)
 
     def list_requests(
         self,
@@ -1859,4 +2418,9 @@ class DashboardRepository:
         return _row(cursor, cursor.fetchone())
 
 
-__all__ = ["DashboardCursorError", "DashboardRepository", "redact_value"]
+__all__ = [
+    "DashboardCollaborationError",
+    "DashboardCursorError",
+    "DashboardRepository",
+    "redact_value",
+]

@@ -16,6 +16,7 @@ from typing import Any
 
 from plastic_promise.core.index_outbox_reconciliation import (
     canonical_source_fingerprint,
+    snapshot_index_outbox,
 )
 from plastic_promise.core.memory_index import (
     COMPACT_V2_POLICY,
@@ -88,6 +89,7 @@ class MigrationPlan:
     model_counts: dict[str, int]
     source_fingerprint: str
     protected_fingerprint: str
+    index_outbox: dict[str, Any]
     rows: tuple[_PreparedRow, ...]
 
     def public_report(self) -> dict[str, object]:
@@ -104,6 +106,7 @@ class MigrationPlan:
             "current_model_counts": self.model_counts,
             "source_fingerprint": self.source_fingerprint,
             "protected_fingerprint": self.protected_fingerprint,
+            "index_outbox": self.index_outbox,
         }
 
 
@@ -383,6 +386,7 @@ def build_migration_plan(
     *,
     target_policy: str,
     require_quiescent_outbox: bool = True,
+    target_model_name: str | None = None,
 ) -> MigrationPlan:
     target_policy = str(target_policy or "").strip().casefold()
     if target_policy not in _TARGET_POLICIES:
@@ -392,7 +396,28 @@ def build_migration_plan(
         connection,
         require_quiescent_outbox=require_quiescent_outbox,
     )
-    target_model = effective_embedding_model_name()
+    index_outbox = snapshot_index_outbox(connection)
+    status_counts = index_outbox.get("status_counts")
+    if not isinstance(status_counts, dict):
+        raise IndexMaterialMigrationError("index_outbox_snapshot_invalid")
+    unknown_statuses = set(status_counts) - {
+        "pending",
+        "processing",
+        "blocked",
+        "failed",
+        "done",
+    }
+    if unknown_statuses:
+        raise IndexMaterialMigrationError("index_outbox_status_unknown")
+    if not require_quiescent_outbox and int(status_counts.get("processing", 0) or 0) > 0:
+        raise IndexMaterialMigrationError("index_outbox_processing_job_active")
+    target_model = (
+        str(target_model_name).strip()
+        if target_model_name is not None
+        else effective_embedding_model_name()
+    )
+    if not target_model:
+        raise IndexMaterialMigrationError("target_model_identity_invalid")
     target_model_sha256 = hashlib.sha256(target_model.encode("utf-8")).hexdigest()
     cursor = connection.execute("SELECT * FROM memories ORDER BY id")
     memories = [dict(row) for row in cursor.fetchall()]
@@ -486,6 +511,7 @@ def build_migration_plan(
         model_counts=dict(sorted(model_counts.items())),
         source_fingerprint=canonical_source_fingerprint(connection),
         protected_fingerprint=protected_database_fingerprint(connection),
+        index_outbox=index_outbox,
         rows=tuple(prepared),
     )
 
@@ -494,11 +520,18 @@ def inspect_database(
     database: str | Path,
     *,
     target_policy: str,
+    allow_unresolved_index_outbox: bool = False,
+    target_model_name: str | None = None,
 ) -> MigrationPlan:
     path = _database_path(database)
     connection = _connect(path, writable=False)
     try:
-        return build_migration_plan(connection, target_policy=target_policy)
+        return build_migration_plan(
+            connection,
+            target_policy=target_policy,
+            require_quiescent_outbox=not allow_unresolved_index_outbox,
+            target_model_name=target_model_name,
+        )
     finally:
         connection.close()
 
@@ -699,31 +732,74 @@ def apply_migration(
     expected_row_count: int,
     expected_source_fingerprint: str,
     expected_target_model_sha256: str,
+    allow_unresolved_index_outbox: bool = False,
+    expected_index_outbox_watermark: int | None = None,
+    expected_index_outbox_immutable_digest: str | None = None,
+    expected_index_outbox_job_count: int | None = None,
+    expected_index_outbox_active_count: int | None = None,
+    target_model_name: str | None = None,
 ) -> dict[str, object]:
     source = _database_path(database)
     backups = _backup_directory(backup_directory)
-    initial = inspect_database(source, target_policy=target_policy)
+    initial = inspect_database(
+        source,
+        target_policy=target_policy,
+        allow_unresolved_index_outbox=allow_unresolved_index_outbox,
+        target_model_name=target_model_name,
+    )
     if initial.row_count != expected_row_count:
         raise IndexMaterialMigrationError("expected_row_count_mismatch")
     if initial.source_fingerprint != expected_source_fingerprint:
         raise IndexMaterialMigrationError("expected_source_fingerprint_mismatch")
     if initial.target_model_sha256 != expected_target_model_sha256:
         raise IndexMaterialMigrationError("expected_target_model_mismatch")
+    expected_outbox = (
+        expected_index_outbox_watermark,
+        expected_index_outbox_immutable_digest,
+        expected_index_outbox_job_count,
+        expected_index_outbox_active_count,
+    )
+    if allow_unresolved_index_outbox:
+        if any(value is None for value in expected_outbox):
+            raise IndexMaterialMigrationError("recovery_outbox_expectations_required")
+        observed_outbox = (
+            initial.index_outbox.get("watermark"),
+            initial.index_outbox.get("immutable_digest"),
+            initial.index_outbox.get("job_count"),
+            initial.index_outbox.get("active_snapshot_jobs"),
+        )
+        if observed_outbox != expected_outbox:
+            raise IndexMaterialMigrationError("expected_index_outbox_mismatch")
+    elif any(value is not None for value in expected_outbox):
+        raise IndexMaterialMigrationError("recovery_outbox_flag_required")
 
     backup, backup_sha256, backup_fingerprint = _create_online_backup(source, backups)
     if backup_fingerprint != initial.source_fingerprint:
         raise IndexMaterialMigrationError("backup_source_fingerprint_mismatch")
+    backup_connection = _connect(backup, writable=False)
+    try:
+        backup_outbox = snapshot_index_outbox(backup_connection)
+    finally:
+        backup_connection.close()
+    if backup_outbox != initial.index_outbox:
+        raise IndexMaterialMigrationError("backup_index_outbox_snapshot_mismatch")
 
     connection = _connect(source, writable=True)
     committed = False
     try:
         connection.execute("BEGIN EXCLUSIVE")
-        locked = build_migration_plan(connection, target_policy=target_policy)
+        locked = build_migration_plan(
+            connection,
+            target_policy=target_policy,
+            require_quiescent_outbox=not allow_unresolved_index_outbox,
+            target_model_name=target_model_name,
+        )
         if (
             locked.source_fingerprint != initial.source_fingerprint
             or locked.protected_fingerprint != initial.protected_fingerprint
             or locked.target_model_sha256 != initial.target_model_sha256
             or locked.row_count != initial.row_count
+            or locked.index_outbox != initial.index_outbox
         ):
             raise IndexMaterialMigrationError("canonical_source_changed_after_backup")
         next_version, source_after, protected_after = _apply_plan(connection, locked)
@@ -743,6 +819,7 @@ def apply_migration(
             verification,
             target_policy=target_policy,
             require_quiescent_outbox=False,
+            target_model_name=target_model_name,
         )
     finally:
         verification.close()

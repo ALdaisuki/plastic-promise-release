@@ -1,7 +1,9 @@
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
+import httpx
 import jsonschema
 
 import plastic_promise.mcp.server as mcp_server
@@ -241,6 +243,23 @@ def test_handler_read_optional_fields_are_declared():
     assert "bug-onramp" in session_route["enum"]
 
 
+def test_task_tools_require_explicit_project_scope():
+    tools = _tools_by_name()
+
+    for name in (
+        "task_enqueue",
+        "task_claim",
+        "task_complete",
+        "task_verify",
+        "task_inbox",
+        "task_heartbeat",
+        "task_abandon",
+    ):
+        schema = tools[name].inputSchema
+        assert "project_id" in schema["properties"]
+        assert "project_id" in schema["required"]
+
+
 def test_context_supply_debug_returns_structured_metadata(monkeypatch):
     import plastic_promise.core.embedder as embedder_mod
     from plastic_promise.core.context_engine import ContextItem, ContextPack
@@ -304,7 +323,12 @@ def test_context_supply_debug_returns_structured_metadata(monkeypatch):
     assert engine.kwargs["retrieval_mode"] == "mix"
     assert engine.kwargs["fusion_policy"] == "max-v1"
     assert data["response_mode"] == "debug"
-    assert data["diagnostics"]["summary"]["pipeline_keys"] == ["canonical_hot_count"]
+    assert data["diagnostics"]["summary"]["pipeline_keys"] == [
+        "canonical_hot_count",
+        "degradation_state",
+        "degraded",
+        "fallback_reason",
+    ]
     assert data["diagnostics"]["summary"]["per_item_count"] == 1
     assert "pipeline_stats" not in data
     assert "per_item_stats" not in data
@@ -581,6 +605,84 @@ def test_streamable_http_app_constructs_with_installed_starlette(monkeypatch):
     monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
     asyncio.run(mcp_server.run_streamable_http(0))
     assert "/mcp" in route_paths
+
+
+def test_streamable_http_health_stays_responsive_while_full_warmup_runs(monkeypatch):
+    entered_warmup = threading.Event()
+    release_warmup = threading.Event()
+    observed = {}
+
+    class BlockingEngine:
+        def refresh_runtime_mode(self, initialize_heavy=False, *, synchronize_index=False):
+            assert initialize_heavy is True
+            assert synchronize_index is True
+            entered_warmup.set()
+            assert release_warmup.wait(timeout=2)
+            return {"index_sync": {"requested": True, "ready": True, "status": "ready"}}
+
+    async def fake_serve(self):
+        app = self.config.app
+        async with app.router.lifespan_context(app):
+            assert await asyncio.to_thread(entered_warmup.wait, 1)
+            transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 43123))
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                response = await client.get("/health")
+            observed["status_code"] = response.status_code
+            observed["payload"] = response.json()
+            release_warmup.set()
+            await asyncio.sleep(0)
+
+    import uvicorn
+
+    monkeypatch.setattr(mcp_server, "get_engine", lambda: BlockingEngine())
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+
+    asyncio.run(mcp_server.run_streamable_http(0, startup_warmup_mode="rust-full"))
+
+    assert observed["status_code"] == 503
+    assert observed["payload"]["status"] == "starting"
+    assert observed["payload"]["initializing"] is True
+    assert observed["payload"]["initialization"]["mode"] == "rust-full"
+    assert observed["payload"]["initialization"]["state"] in {"pending", "running"}
+
+
+def test_streamable_http_health_bounds_stalled_identity_probe(monkeypatch):
+    entered_probe = threading.Event()
+    release_probe = threading.Event()
+    observed = {}
+
+    def blocked_identity_probe():
+        entered_probe.set()
+        assert release_probe.wait(timeout=2)
+        return {"identity_valid": True}
+
+    async def fake_serve(self):
+        app = self.config.app
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 43123))
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                response = await client.get("/health")
+            observed["status_code"] = response.status_code
+            observed["payload"] = response.json()
+            assert await asyncio.to_thread(entered_probe.wait, 1)
+            release_probe.set()
+            await asyncio.sleep(0)
+
+    import uvicorn
+
+    monkeypatch.setenv("PP_HEALTH_IDENTITY_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setattr(mcp_server, "_server_process_identity", blocked_identity_probe)
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+
+    asyncio.run(mcp_server.run_streamable_http(0))
+
+    assert observed["status_code"] == 503
+    assert observed["payload"]["status"] == "error"
+    assert observed["payload"]["identity_error"] == "health_identity_probe_timeout"
 
 
 def test_streamable_http_registers_dashboard_v2_only_with_exact_gate(monkeypatch):

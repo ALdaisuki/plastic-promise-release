@@ -24,6 +24,22 @@ class VectorTestEmbedder:
         return [[0.1] * EMB_DIM for _ in texts]
 
 
+class DimensionVectorEmbedder:
+    """Small non-fallback embedder used to exercise dimension contracts."""
+
+    model_name = "dimension-vector-test"
+
+    def __init__(self, dimension):
+        self.dim = dimension
+
+    def embed(self, text):
+        del text
+        return [0.1] * self.dim
+
+    def embed_batch(self, texts):
+        return [self.embed(text) for text in texts]
+
+
 class RecordingVectorEmbedder(VectorTestEmbedder):
     def __init__(self):
         self.texts = []
@@ -102,6 +118,37 @@ class TestLanceDBStore:
         """Table should be created automatically."""
         assert self.store._table is not None
         assert self.store.count_rows() == 0
+
+    @pytest.mark.parametrize("dimension", [1024, 2560, 768])
+    def test_new_table_schema_binds_to_embedder_dimension(self, tmp_path, dimension):
+        store = LanceDBStore(
+            str(tmp_path / f"dimension-{dimension}.lancedb"),
+            DimensionVectorEmbedder(dimension),
+        )
+
+        assert store.embedding_dimension == dimension
+        assert store._table.schema.field("vector").type.list_size == dimension
+
+    def test_existing_table_with_other_dimension_fails_closed(self, tmp_path):
+        db_path = str(tmp_path / "dimension-mismatch.lancedb")
+        LanceDBStore(db_path, DimensionVectorEmbedder(1024))
+
+        with pytest.raises(RuntimeError, match="lancedb_vector_dimension_mismatch"):
+            LanceDBStore(db_path, DimensionVectorEmbedder(2560))
+
+    def test_vector_operations_reject_wrong_dimension_before_backend(self, tmp_path):
+        store = LanceDBStore(
+            str(tmp_path / "dimension-operation-mismatch.lancedb"),
+            DimensionVectorEmbedder(2560),
+        )
+
+        with pytest.raises(RuntimeError, match="lancedb_vector_dimension_mismatch"):
+            store.insert_checked("wrong", [0.1] * 1024, "wrong dimension")
+        with pytest.raises(RuntimeError, match="lancedb_vector_dimension_mismatch"):
+            store.search([0.1] * 1024)
+        with pytest.raises(RuntimeError, match="lancedb_vector_dimension_mismatch"):
+            store.search_similar([0.1] * 1024)
+        assert store.count_rows() == 0
 
     def test_init_uses_supported_fts_index_api(self, tmp_path, recwarn):
         LanceDBStore(str(tmp_path / "supported-fts-api.lancedb"), VectorTestEmbedder())
@@ -566,6 +613,41 @@ class TestLanceDBStore:
         assert engine._memories[memory["id"]]["metadata_json"]["memory_index"]["model_name"] == (
             embedder.index_model_name
         )
+
+    def test_shadow_reindex_derives_migrated_material_without_canonical_write(
+        self, tmp_path, monkeypatch
+    ):
+        from plastic_promise.core.memory_index import build_index_material, index_metadata
+
+        monkeypatch.setenv("PP_MEMORY_CHUNKING", "structure-v1")
+        embedder = StructuredVectorEmbedder()
+        old_material = build_index_material(
+            {"content": "shadow source must remain unchanged"},
+            model_name="mxbai-embed-large",
+        )
+        memory = {
+            "id": "shadow-migrated-memory",
+            "content": "shadow source must remain unchanged",
+            "embedding_text": old_material.vector_text,
+            "search_text": old_material.search_text,
+            "embedding_hash": old_material.embedding_hash,
+            "metadata_json": {"memory_index": index_metadata(old_material)},
+            "memory_type": "experience",
+            "tier": "L1",
+            "category": "other",
+            "scope": "global",
+        }
+        before = json.loads(json.dumps(memory, sort_keys=True))
+        engine = RepairEngine({memory["id"]: memory})
+        store = LanceDBStore(
+            str(tmp_path / "shadow-migration.lancedb"),
+            embedder,
+            persist_index_material=False,
+        )
+
+        assert store._insert_engine_memory(engine, memory["id"], memory, compact=False) is True
+        assert memory == before
+        assert store.count_rows() == 1
 
     def test_sync_removes_existing_row_with_invalid_v2_chunk_manifest(self, tmp_path, monkeypatch):
         from plastic_promise.core.memory_index import build_index_material, index_metadata

@@ -45,6 +45,7 @@ def record_runtime_event(
     if status not in VALID_EVENT_STATUSES:
         raise ValueError(f"Unknown runtime event status: {status}")
 
+    caller_owned_transaction = bool(conn.in_transaction)
     event_id = event_id or new_event_id()
     ensure_traceability_schema(conn)
     conn.execute(
@@ -84,7 +85,8 @@ def record_runtime_event(
             utc_now(),
         ),
     )
-    conn.commit()
+    if not caller_owned_transaction and conn.in_transaction:
+        conn.commit()
     return event_id
 
 

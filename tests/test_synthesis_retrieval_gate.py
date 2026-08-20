@@ -1252,7 +1252,7 @@ def _governed_engine(
     monkeypatch.setenv("PP_DECAY_IN_RANKING", "0")
     engine = ContextEngine(use_sqlite=True)
     engine._ensure_heavy_init = lambda: None
-    engine._activate_principles = lambda task_type, task_description: []
+    engine._activate_principles = lambda task_type, task_description, **_kwargs: []
     engine._inject_activated_to_graph = lambda activated, task_type: 0
     engine._graph_traversal = lambda task_type: []
     engine._fts_retrieval = lambda query, scope="global", limit=None: []

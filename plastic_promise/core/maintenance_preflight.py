@@ -22,6 +22,7 @@ from plastic_promise.core.synthesis_retrieval import (
     available_ordinary_memory_sql_predicate,
     ordinary_memory_sql_predicate,
 )
+from plastic_promise.cron.project_scope import list_memory_project_ids
 from plastic_promise.mcp.tools.task_queue import _compute_payload_hash
 
 if TYPE_CHECKING:
@@ -74,9 +75,10 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
 
 def _queue_report(conn: sqlite3.Connection) -> dict[str, object]:
     rows = conn.execute(
-        "SELECT task_type, title, to_agent, source_scan, payload, created_at "
+        "SELECT project_id, task_type, title, to_agent, source_scan, payload, created_at "
         "FROM task_queue WHERE status = 'pending'"
     ).fetchall()
+    by_project = Counter(str(row["project_id"] or "unknown") for row in rows)
     by_type = Counter(str(row["task_type"] or "unknown") for row in rows)
     by_source = Counter(str(row["source_scan"] or "manual") for row in rows)
     age_buckets = Counter()
@@ -108,9 +110,10 @@ def _queue_report(conn: sqlite3.Connection) -> dict[str, object]:
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
         if payload_hash:
-            payload_counts[(str(row["task_type"]), payload_hash)] += 1
+            payload_counts[(str(row["project_id"] or ""), str(row["task_type"]), payload_hash)] += 1
         exact_counts[
             (
+                str(row["project_id"] or ""),
                 str(row["task_type"]),
                 str(row["title"]),
                 str(row["to_agent"]),
@@ -126,6 +129,7 @@ def _queue_report(conn: sqlite3.Connection) -> dict[str, object]:
     ).fetchone()
     return {
         "pending_total": len(rows),
+        "by_project": dict(sorted(by_project.items())),
         "by_type": dict(sorted(by_type.items())),
         "by_source": dict(sorted(by_source.items())),
         "age_buckets": dict(sorted(age_buckets.items())),
@@ -332,32 +336,54 @@ async def build_maintenance_preflight(
 
                 from plastic_promise.cron.scan_coupling import scan_coupling
 
-                coupling = await scan_coupling(
-                    None, connection=conn, dispatch=False, include_findings=True
-                )
-                findings = coupling.pop("projected_findings")
                 pending_hashes = {
-                    (str(row[0]), str(row[1]))
+                    (str(row[0]), str(row[1]), str(row[2]))
                     for row in conn.execute(
-                        "SELECT task_type, json_extract(payload, '$.payload_hash') "
+                        "SELECT project_id, task_type, "
+                        "json_extract(payload, '$.payload_hash') "
                         "FROM task_queue WHERE status = 'pending' "
                         "AND json_extract(payload, '$.payload_hash') IS NOT NULL"
                     ).fetchall()
                 }
-                new_findings = sum(
-                    1
-                    for finding in findings
-                    if (
-                        str(finding["task_type_field"]),
-                        _compute_payload_hash(finding),
+                project_reports = {}
+                total_findings = 0
+                total_pending = 0
+                total_new = 0
+                for project_id in list_memory_project_ids(conn):
+                    coupling = await scan_coupling(
+                        None,
+                        connection=conn,
+                        dispatch=False,
+                        include_findings=True,
+                        project_id=project_id,
                     )
-                    not in pending_hashes
-                )
+                    findings = coupling.pop("projected_findings", [])
+                    new_findings = sum(
+                        1
+                        for finding in findings
+                        if (
+                            project_id,
+                            str(finding["task_type_field"]),
+                            _compute_payload_hash(finding),
+                        )
+                        not in pending_hashes
+                    )
+                    projected = int(coupling["findings"])
+                    already_pending = projected - new_findings
+                    project_reports[project_id] = {
+                        "projected_findings": projected,
+                        "already_pending": int(already_pending),
+                        "projected_new_tasks": int(new_findings),
+                    }
+                    total_findings += projected
+                    total_pending += already_pending
+                    total_new += new_findings
                 report["scanners"] = {
                     "coupling": {
-                        "projected_findings": int(coupling["findings"]),
-                        "already_pending": int(coupling["findings"] - new_findings),
-                        "projected_new_tasks": int(new_findings),
+                        "projects": project_reports,
+                        "projected_findings": int(total_findings),
+                        "already_pending": int(total_pending),
+                        "projected_new_tasks": int(total_new),
                     }
                 }
         except sqlite3.Error:

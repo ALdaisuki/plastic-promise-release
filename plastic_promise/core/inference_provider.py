@@ -14,6 +14,11 @@ from urllib.parse import urlsplit
 
 from plastic_promise.core.cost_telemetry import TokenCostPolicy
 from plastic_promise.core.provider_http import ProviderHTTPClient, ProviderHTTPPolicy
+from plastic_promise.core.structured_token_budget import (
+    UNBOUNDED_STRUCTURED_TOKEN_LIMIT,
+    structured_tokens_allowed,
+    validate_structured_token_limit,
+)
 
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 _DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
@@ -21,8 +26,7 @@ _DEFAULT_MAX_SYSTEM_PROMPT_BYTES = 32 * 1024
 _HARD_MAX_SYSTEM_PROMPT_BYTES = 256 * 1024
 _DEFAULT_MAX_USER_PAYLOAD_BYTES = 256 * 1024
 _HARD_MAX_USER_PAYLOAD_BYTES = 2 * 1024 * 1024
-_DEFAULT_MAX_TOKENS = 2_048
-_HARD_MAX_TOKENS = 8_192
+_DEFAULT_MAX_TOKENS = UNBOUNDED_STRUCTURED_TOKEN_LIMIT
 _DEFAULT_MAX_OUTPUT_CHARS = 16_384
 _HARD_MAX_OUTPUT_CHARS = 1024 * 1024
 
@@ -68,6 +72,9 @@ class OpenAICompatibleJSONProvider:
         max_output_chars: int | None = None,
         client: object | None = None,
     ) -> None:
+        endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+        if endpoint_role and endpoint_role != "pp-compute-node":
+            raise ValueError("inference_requires_compute_node")
         self._base_url = (
             base_url
             if base_url is not None
@@ -135,12 +142,10 @@ class OpenAICompatibleJSONProvider:
             maximum=_HARD_MAX_USER_PAYLOAD_BYTES,
             reason="inference_max_user_payload_bytes_invalid",
         )
-        self._max_tokens = _bounded_int_setting(
+        self._max_tokens = _token_limit_setting(
             None,
             env_name="PP_INFERENCE_MAX_TOKENS",
             default=_DEFAULT_MAX_TOKENS,
-            minimum=1,
-            maximum=_HARD_MAX_TOKENS,
             reason="inference_max_tokens_invalid",
         )
         if not self._model or not self._model_revision:
@@ -322,6 +327,9 @@ class OllamaJSONProvider:
         max_output_chars: int | None = None,
         client: object | None = None,
     ) -> None:
+        endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+        if endpoint_role and endpoint_role != "pp-compute-node":
+            raise ValueError("inference_requires_compute_node")
         self._base_url = _normalize_ollama_base_url(
             host or os.getenv("PP_LOCAL_INFERENCE_BASE_URL") or os.getenv("OLLAMA_HOST")
         )
@@ -358,12 +366,10 @@ class OllamaJSONProvider:
             maximum=_HARD_MAX_USER_PAYLOAD_BYTES,
             reason="inference_max_user_payload_bytes_invalid",
         )
-        self._max_tokens = _bounded_int_setting(
+        self._max_tokens = _token_limit_setting(
             None,
             env_name="PP_LOCAL_INFERENCE_MAX_TOKENS",
             default=_DEFAULT_MAX_TOKENS,
-            minimum=1,
-            maximum=_HARD_MAX_TOKENS,
             reason="inference_max_tokens_invalid",
         )
         self._output_schema = _validated_output_schema(output_schema)
@@ -560,7 +566,7 @@ def _validated_inference_input(
     if (
         not isinstance(max_tokens, int)
         or isinstance(max_tokens, bool)
-        or not 0 < max_tokens <= max_tokens_limit
+        or not structured_tokens_allowed(max_tokens, max_tokens_limit)
     ):
         raise ValueError("inference_max_tokens_invalid")
     try:
@@ -733,6 +739,24 @@ def _bounded_int_setting(
         raise ValueError(reason) from None
     if not minimum <= value <= maximum:
         raise ValueError(reason)
+    return value
+
+
+def _token_limit_setting(
+    explicit: int | None,
+    *,
+    env_name: str,
+    default: int,
+    reason: str,
+) -> int:
+    raw: object = explicit if explicit is not None else os.getenv(env_name, str(default))
+    if isinstance(raw, bool):
+        raise ValueError(reason)
+    try:
+        value = int(raw)
+        validate_structured_token_limit(value)
+    except (TypeError, ValueError):
+        raise ValueError(reason) from None
     return value
 
 

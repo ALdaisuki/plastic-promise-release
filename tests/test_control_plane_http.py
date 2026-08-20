@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from typing import TYPE_CHECKING
 
 import httpx
@@ -10,6 +12,7 @@ from plastic_promise.control_plane.auth import (
     ControlPlaneCredential,
 )
 from plastic_promise.control_plane.store import ControlPlaneConfigStore
+from plastic_promise.core.node_governance_schema import apply_node_governance_schema
 from plastic_promise.core.server_status import ServerStatusSettings
 from plastic_promise.mcp.control_plane import (
     ControlPlaneSettings,
@@ -132,6 +135,54 @@ class FakeStore:
         return [{"actor": "operator", "action": "stage", "result": "ok"}]
 
 
+class FakeNodeGovernance:
+    def status(self):
+        return {
+            "schema": "plastic-promise/node-governance-status/v1",
+            "nodes": {"registered": 0, "active": 0, "quarantined": 0},
+            "tasks": {"pending": 0, "retry_wait": 0, "leased": 0, "completed": 0, "dead": 0},
+            "audit_event_count": 0,
+        }
+
+    def dashboard_projection(self):
+        return {
+            "schema": "plastic-promise/node-governance-dashboard/v1",
+            "state": "ready",
+            "summary": {
+                "nodes": {"registered": 1, "active": 1, "quarantined": 0},
+                "active_reservations": 0,
+                "audit_event_count": 3,
+            },
+            "nodes": [
+                {
+                    "node_id": "remote-a",
+                    "node_kind": "remote-node",
+                    "state": "active",
+                    "health": {"state": "fresh", "last_observed_at": "2026-08-06T00:00:00Z"},
+                    "capabilities": {"declared": ["embedding"], "observed": ["embedding"]},
+                    "embedding": {
+                        "model": "BAAI/bge-m3",
+                        "revision": "a" * 40,
+                        "dimension": 1024,
+                        "normalization": "l2",
+                    },
+                    "rerank": {"model": "reranker", "revision": "b" * 40},
+                    "capacity": {
+                        "queue_depth": 0,
+                        "available_slots": 1,
+                        "active_leases": 0,
+                        "max_concurrency": 1,
+                    },
+                    "latency": {
+                        "embedding": {"sample_count": 0, "median_ms": None},
+                        "rerank": {"sample_count": 0, "median_ms": None},
+                    },
+                    "quarantine_reason": None,
+                }
+            ],
+        }
+
+
 def _settings(tmp_path: Path) -> ControlPlaneSettings:
     authenticator = ControlPlaneAuthenticator(
         [
@@ -155,7 +206,12 @@ def _settings(tmp_path: Path) -> ControlPlaneSettings:
     )
 
 
-def _app(tmp_path: Path, store: FakeStore | None = None):
+def _app(
+    tmp_path: Path,
+    store: FakeStore | None = None,
+    *,
+    node_governance_factory=FakeNodeGovernance,
+):
     fake_store = store or FakeStore()
     app = create_control_plane_app(
         _settings(tmp_path),
@@ -168,6 +224,7 @@ def _app(tmp_path: Path, store: FakeStore | None = None):
             "lancedb": {"state": "missing"},
             "maintenance": {"state": "disabled"},
         },
+        node_governance_factory=node_governance_factory,
     )
     return app, fake_store
 
@@ -213,6 +270,124 @@ def test_status_settings_default_to_isolated_inference_job_database(tmp_path):
     assert settings.status.inference_job_db_path == (
         tmp_path / "state" / "inference" / "inference_jobs.db"
     )
+
+
+@pytest.mark.asyncio
+async def test_control_plane_mounts_node_governance_in_the_canonical_sqlite(tmp_path, monkeypatch):
+    canonical = tmp_path / "state" / "db" / "plastic_memory.db"
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(canonical))
+    canonical.parent.mkdir(parents=True)
+    with sqlite3.connect(canonical) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        apply_node_governance_schema(connection)
+        connection.commit()
+    original = _settings(tmp_path)
+    settings = ControlPlaneSettings(
+        enabled=original.enabled,
+        root=original.root,
+        authenticator=original.authenticator,
+        status=ServerStatusSettings(
+            sqlite_path=canonical,
+            inference_job_db_path=tmp_path / "state" / "inference" / "jobs.db",
+            lancedb_root=tmp_path / "state" / "lancedb",
+            maintenance_heartbeat_path=tmp_path / "state" / "maintenance.heartbeat",
+            listener_ports=(),
+        ),
+    )
+    app = create_control_plane_app(
+        settings,
+        store_factory=lambda _root, _env: FakeStore(),
+        status_collector=lambda _settings: {
+            "schema": "plastic-promise/server-status/v1",
+            "listeners": {},
+            "sqlite": {"state": "ready"},
+            "inference_jobs": {"state": "missing"},
+            "lancedb": {"state": "missing"},
+            "maintenance": {"state": "disabled"},
+        },
+    )
+
+    response = await _request(app, "GET", "/api/control/v1/status", token=_token("v"))
+
+    assert response.status_code == 200
+    assert response.json()["node_governance"] == {
+        "schema": "plastic-promise/node-governance-status/v2",
+        "state": "ready",
+        "nodes": {"registered": 0, "active": 0, "quarantined": 0},
+        "active_reservations": 0,
+        "audit_event_count": 0,
+    }
+    with sqlite3.connect(canonical) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    assert {
+        "inference_nodes",
+        "inference_node_reservations",
+        "inference_node_audit_events",
+        "derived_work_accelerator_audit_events",
+    } <= tables
+
+
+@pytest.mark.asyncio
+async def test_control_plane_surfaces_missing_node_schema_without_implicit_migration(
+    tmp_path, monkeypatch
+):
+    canonical = tmp_path / "state" / "db" / "plastic_memory.db"
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(canonical))
+    canonical.parent.mkdir(parents=True)
+    with sqlite3.connect(canonical):
+        pass
+    original = _settings(tmp_path)
+    settings = ControlPlaneSettings(
+        enabled=original.enabled,
+        root=original.root,
+        authenticator=original.authenticator,
+        status=ServerStatusSettings(
+            sqlite_path=canonical,
+            inference_job_db_path=tmp_path / "state" / "inference" / "jobs.db",
+            lancedb_root=tmp_path / "state" / "lancedb",
+            maintenance_heartbeat_path=tmp_path / "state" / "maintenance.heartbeat",
+            listener_ports=(),
+        ),
+    )
+    app = create_control_plane_app(settings, store_factory=lambda _root, _env: FakeStore())
+
+    response = await _request(app, "GET", "/api/control/v1/status", token=_token("v"))
+    nodes = await _request(app, "GET", "/api/control/v1/nodes", token=_token("v"))
+
+    assert response.status_code == 200
+    assert response.json()["node_governance"]["state"] == "schema_missing"
+    assert nodes.status_code == 200
+    assert nodes.json() == {
+        "schema": "plastic-promise/node-governance-dashboard/v1",
+        "state": "schema_missing",
+        "reason": "node_governance_schema_missing",
+        "summary": {
+            "nodes": {"registered": 0, "active": 0, "quarantined": 0},
+            "active_reservations": 0,
+            "audit_event_count": 0,
+        },
+        "nodes": [],
+    }
+    with sqlite3.connect(canonical) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inference_nodes'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_control_plane_rejects_a_node_governance_database_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "other" / "plastic_memory.db"))
+
+    with pytest.raises(ValueError, match="^control_node_governance_sqlite_mismatch$"):
+        create_control_plane_app(
+            _settings(tmp_path),
+            store_factory=lambda _root, _env: FakeStore(),
+        )
 
 
 async def _request(
@@ -369,6 +544,123 @@ async def test_safe_config_and_status_are_authenticated_read_only_views(tmp_path
         "desired_generation_id": "generation-desired",
         "desired_generation_manifest_sha256": "a" * 64,
     }
+
+
+@pytest.mark.asyncio
+async def test_nodes_projection_is_authenticated_and_never_includes_private_transport_metadata(
+    tmp_path,
+):
+    app, _store = _app(tmp_path)
+
+    denied = await _request(app, "GET", "/api/control/v1/nodes")
+    allowed = await _request(app, "GET", "/api/control/v1/nodes", token=_token("v"))
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    payload = allowed.json()
+    assert payload["schema"] == "plastic-promise/node-governance-dashboard/v1"
+    assert payload["summary"]["nodes"]["active"] == 1
+    assert payload["nodes"][0]["node_id"] == "remote-a"
+    assert "transport" not in str(payload).casefold()
+
+
+@pytest.mark.asyncio
+async def test_resource_preflight_projection_is_authenticated_policy_only_and_has_no_paths(
+    tmp_path,
+):
+    app, _store = _app(tmp_path)
+
+    denied = await _request(app, "GET", "/api/control/v1/deployment/preflight")
+    allowed = await _request(
+        app,
+        "GET",
+        "/api/control/v1/deployment/preflight",
+        token=_token("v"),
+    )
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    payload = allowed.json()
+    assert payload["schema"] == "plastic-promise/deployment-resource-preflight/v1"
+    assert payload["hard_gate"] is False
+    assert [item["profile_id"] for item in payload["profiles"]] == [
+        "local-all-in-one",
+        "local-cloud",
+        "split-accelerated",
+    ]
+    assert payload["storage"]["minimum_free_bytes"] == 10 * 1024**3
+    assert "path" not in str(payload).casefold()
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_bundle_is_explicit_authenticated_and_strictly_allowlisted(tmp_path):
+    class UnsafeNodeProjection(FakeNodeGovernance):
+        def dashboard_projection(self):
+            payload = super().dashboard_projection()
+            payload["nodes"][0].update(
+                {
+                    "endpoint": "https://private.example.invalid/inference",
+                    "transport_evidence": {"receipt": "private-receipt"},
+                    "input_reference": "memory:private-input",
+                    "task_payload": {"content": "private-content"},
+                }
+            )
+            payload["verification_receipt"] = "private-receipt"
+            return payload
+
+    app, _store = _app(tmp_path, node_governance_factory=UnsafeNodeProjection)
+
+    denied = await _request(app, "POST", "/api/control/v1/diagnostics/bundle")
+    wrong_method = await _request(app, "GET", "/api/control/v1/diagnostics/bundle")
+    allowed = await _request(
+        app,
+        "POST",
+        "/api/control/v1/diagnostics/bundle",
+        token=_token("v"),
+        headers={"Origin": "http://127.0.0.1:19020"},
+    )
+
+    assert denied.status_code == 401
+    assert wrong_method.status_code == 405
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "http://127.0.0.1:19020"
+    payload = allowed.json()
+    assert payload["schema"] == "plastic-promise/diagnostic-bundle/v1"
+    assert payload["telemetry"] == {
+        "network_egress": "disabled",
+        "export_mode": "operator_initiated",
+        "redaction": "strict_allowlist_v1",
+    }
+    assert payload["node_governance"]["nodes"] == [
+        {
+            "state": "active",
+            "health": "fresh",
+            "embedding_configured": True,
+            "embedding_dimension": 1024,
+            "rerank_configured": True,
+            "queue_depth": 0,
+            "available_slots": 1,
+            "active_leases": 0,
+            "max_concurrency": 1,
+            "embedding_latency_samples": 0,
+            "rerank_latency_samples": 0,
+            "quarantine_reason_present": False,
+        }
+    ]
+    serialized = json.dumps(payload, sort_keys=True).casefold()
+    for forbidden in (
+        "endpoint",
+        "transport",
+        "receipt",
+        "input_reference",
+        "task_payload",
+        "private-content",
+        "private.example",
+        "remote-a",
+        "bge-m3",
+        "reranker",
+    ):
+        assert forbidden not in serialized
 
 
 @pytest.mark.asyncio
@@ -695,6 +987,7 @@ async def test_real_store_stages_and_activates_non_embedding_revision_over_http(
             "lancedb": {"state": "missing"},
             "maintenance": {"state": "disabled"},
         },
+        node_governance_factory=FakeNodeGovernance,
     )
     initial = await _request(
         app,

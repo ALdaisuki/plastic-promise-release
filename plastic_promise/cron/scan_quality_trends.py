@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from plastic_promise.core.paths import get_db_path
+from plastic_promise.cron.project_scope import SYSTEM_GOVERNANCE_PROJECT_ID
 
 
 def _compute_median(values: list[float]) -> float:
@@ -91,14 +92,8 @@ async def scan_quality_trends(engine) -> dict:
             (prev_7d_start, prev_7d_end),
         ).fetchone()[0]
 
-        if prev_7d_total > 0:
-            prev_rate = prev_7d_rejected / prev_7d_total
-        else:
-            prev_rate = 0.0
-        if last_7d_total > 0:
-            last_rate = last_7d_rejected / last_7d_total
-        else:
-            last_rate = 0.0
+        prev_rate = prev_7d_rejected / prev_7d_total if prev_7d_total > 0 else 0.0
+        last_rate = last_7d_rejected / last_7d_total if last_7d_total > 0 else 0.0
 
         # Signal if rate increased by >50% AND at least 0.1 absolute increase
         if prev_rate > 0 and last_rate > 0:
@@ -221,6 +216,7 @@ async def scan_quality_trends(engine) -> dict:
                     "to_agent": f["to_agent"],
                     "priority": f["priority"],
                     "source_scan": "scan_quality_trends",
+                    "project_id": SYSTEM_GOVERNANCE_PROJECT_ID,
                     "payload": f,
                 },
             )

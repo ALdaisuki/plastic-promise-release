@@ -1,0 +1,555 @@
+name: Release Candidate Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Immutable full 40-character source commit SHA selected for the RC"
+        required: true
+        type: string
+      release_version:
+        description: "RC SemVer tag, for example v1.2.3-rc.1"
+        required: true
+        type: string
+      model_catalog_path:
+        description: "Tracked, strict relative JSON path for a split-accelerated remote model catalog"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+env:
+  PP_STATIC_RECIPE_POLICY_PYTHON_REQUIREMENT: "PyYAML>=6.0.1,<7.0.0"
+
+jobs:
+  resolve-rc-source:
+    name: Resolve and bind the immutable RC source commit
+    runs-on: ubuntu-latest
+    outputs:
+      source_commit: ${{ steps.resolve.outputs.commit }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+      model_catalog_path: ${{ steps.resolve.outputs.model_catalog_path }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - id: resolve
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          MODEL_CATALOG_PATH: ${{ inputs.model_catalog_path }}
+          WORKFLOW_SOURCE_COMMIT: ${{ github.sha }}
+          WORKFLOW_SOURCE_REF: ${{ github.ref }}
+          WORKFLOW_REF_PROTECTED: ${{ github.ref_protected }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! [[ "$REQUESTED_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "rc_source_commit_sha_required" >&2
+            exit 1
+          fi
+          if ! [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; then
+            echo "release_candidate_version_required" >&2
+            exit 1
+          fi
+          if [ -z "$MODEL_CATALOG_PATH" ]; then
+            echo "rc_model_catalog_path_required" >&2
+            exit 1
+          fi
+          if ! git ls-files --error-unmatch -- "$MODEL_CATALOG_PATH" >/dev/null; then
+            echo "rc_model_catalog_not_tracked_at_source_ref" >&2
+            exit 1
+          fi
+          resolved="$(git rev-parse HEAD)"
+          if [ "$resolved" != "$REQUESTED_SOURCE_REF" ]; then
+            echo "rc_source_commit_resolution_mismatch" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_SOURCE_COMMIT" != "$REQUESTED_SOURCE_REF" ]; then
+            echo "rc_workflow_source_commit_mismatch" >&2
+            exit 1
+          fi
+          default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)"
+          if [ -z "$default_branch" ]; then
+            echo "rc_default_branch_resolution_failed" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_SOURCE_REF" != "refs/heads/${default_branch}" ]; then
+            echo "rc_workflow_default_branch_required" >&2
+            exit 1
+          fi
+          if [ "$WORKFLOW_REF_PROTECTED" != "true" ]; then
+            echo "rc_workflow_protected_ref_required" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin \
+            "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+          if ! git merge-base --is-ancestor "$resolved" "refs/remotes/origin/${default_branch}"; then
+            echo "rc_source_not_reachable_from_default_branch" >&2
+            exit 1
+          fi
+          echo "commit=$resolved" >> "$GITHUB_OUTPUT"
+          echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "model_catalog_path=$MODEL_CATALOG_PATH" >> "$GITHUB_OUTPUT"
+
+  build-rc-artifacts:
+    name: Build candidate artifacts without publishing
+    needs: resolve-rc-source
+    runs-on: ubuntu-latest
+    # Repository settings must require reviewers/restrict deployment for this
+    # environment; the resolver separately verifies github.ref_protected.
+    environment: release-candidate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-rc-source.outputs.source_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate the tracked RC model catalog before building
+        env:
+          MODEL_CATALOG_PATH: ${{ needs.resolve-rc-source.outputs.model_catalog_path }}
+        run: |
+          if ! git ls-files --error-unmatch -- "$MODEL_CATALOG_PATH" >/dev/null; then
+            echo "rc_model_catalog_not_tracked_at_source_ref" >&2
+            exit 1
+          fi
+          python scripts/create_release_bundle.py \
+            --repository-root "$PWD" \
+            --model-catalog-path "$MODEL_CATALOG_PATH" \
+            --source-revision "${{ needs.resolve-rc-source.outputs.source_commit }}" \
+            --validate-catalog-only
+      - id: model-catalog
+        name: Resolve the exact model catalog identity
+        env:
+          MODEL_CATALOG_PATH: ${{ needs.resolve-rc-source.outputs.model_catalog_path }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+
+          from plastic_promise.deployment import ModelCatalog
+
+          payload = json.loads(Path(os.environ["MODEL_CATALOG_PATH"]).read_text(encoding="utf-8"))
+          catalog = ModelCatalog.from_dict(payload)
+          print(f"reference={catalog.catalog_id}")
+          print(f"digest={catalog.digest}")
+          PY
+      - id: release-package
+        name: Resolve the exact PEP 440 package version for image labels
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-rc-source.outputs.release_version }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from plastic_promise.release_manifest import package_version_for_release
+
+          print(f"package_version={package_version_for_release(os.environ['RELEASE_VERSION'])}")
+          PY
+      - name: Verify source package metadata before OCI work
+        env:
+          EXPECTED_PACKAGE_VERSION: ${{ steps.release-package.outputs.package_version }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          expected = os.environ["EXPECTED_PACKAGE_VERSION"]
+          payload = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          actual = payload.get("project", {}).get("version")
+          if actual != expected:
+              raise SystemExit("rc_source_package_version_mismatch")
+          PY
+      - name: Build and validate Python artifacts
+        run: |
+          python -m pip install --upgrade build twine cyclonedx-bom
+          python -m build --outdir dist
+          python -m twine check dist/*
+          python -m venv .release-package-sbom-venv
+          .release-package-sbom-venv/bin/python -m pip install --upgrade pip cyclonedx-bom
+          .release-package-sbom-venv/bin/python -m pip install dist/*.whl
+          .release-package-sbom-venv/bin/cyclonedx-py environment \
+            --of JSON --output-file dist/package.sbom.cdx.json
+          python -m venv .release-wheel-venv
+          .release-wheel-venv/bin/python -m pip install --no-deps --only-binary=:all: dist/*.whl
+          .release-wheel-venv/bin/python -c 'import plastic_promise; print(plastic_promise.__version__)'
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with:
+          name: plastic-promise-oci
+          use: true
+      - name: Reclaim disposable CI runner space
+        run: bash scripts/reclaim_ci_runner_space.sh
+      - name: Run protected OCI prebuild cleanup
+        run: python scripts/prepare_oci_build.py --execute
+      - name: Resolve immutable OCI identities from the versioned base-image catalog
+        env:
+          SOURCE_REVISION: ${{ needs.resolve-rc-source.outputs.source_commit }}
+          PACKAGE_VERSION: ${{ steps.release-package.outputs.package_version }}
+          MODEL_CATALOG_REFERENCE: ${{ steps.model-catalog.outputs.reference }}
+          MODEL_CATALOG_DIGEST: ${{ steps.model-catalog.outputs.digest }}
+        run: |
+          git ls-files --error-unmatch -- deploy/oci-base-images.json >/dev/null
+          python -m pip install --disable-pip-version-check \
+            "$PP_STATIC_RECIPE_POLICY_PYTHON_REQUIREMENT"
+          python scripts/validate_container_artifact_policy.py \
+            --repository-root . --output /tmp/rc.recipe-policy.json
+          mkdir -p dist/build-identities
+          resolve_identity() {
+            local name="$1"
+            local role="$2"
+            local platform="$3"
+            local variant="$4"
+            local variant_args=()
+            if [ "$variant" != "standard" ]; then
+              variant_args=(--artifact-variant "$variant")
+            fi
+            python scripts/resolve_container_artifact_identity.py \
+              --repository-root . \
+              --profile-id split-accelerated \
+              --source-revision "$SOURCE_REVISION" \
+              --package-version "$PACKAGE_VERSION" \
+              --platform linux/amd64 --platform linux/arm64 \
+              --compute-variant cpu --compute-variant cuda \
+              --model-catalog-reference "$MODEL_CATALOG_REFERENCE" \
+              --model-catalog-digest "$MODEL_CATALOG_DIGEST" \
+              --artifact-role "$role" \
+              --artifact-platform "$platform" \
+              "${variant_args[@]}" \
+              --output "dist/build-identities/${name}.json" >/dev/null
+          }
+          resolve_identity local-edge pp-local-edge linux/amd64 standard
+          resolve_identity server pp-server-backend linux/amd64 standard
+          resolve_identity compute-cpu pp-compute-node linux/amd64 cpu
+          resolve_identity compute-cuda pp-compute-node linux/amd64 cuda
+      - name: Build the complete split-accelerated OCI matrix without pushing
+        env:
+          SOURCE_REVISION: ${{ needs.resolve-rc-source.outputs.source_commit }}
+        run: |
+          build_arg() {
+            jq -er --arg key "$2" '.build_args[$key]' "$1"
+          }
+          build_layout() {
+            local identity="$1"
+            local tag="$2"
+            local platforms="$3"
+            local dockerfile="$4"
+            local output="$5"
+            local base_image
+            local base_digest
+            local package_version
+            local build_policy
+            local recipe_policy
+            local compute_variant
+            base_image="$(build_arg "$identity" BASE_IMAGE)"
+            base_digest="$(build_arg "$identity" BASE_IMAGE_DIGEST)"
+            package_version="$(build_arg "$identity" PACKAGE_VERSION)"
+            build_policy="$(build_arg "$identity" BUILD_POLICY_DIGEST)"
+            recipe_policy="$(build_arg "$identity" RECIPE_POLICY_DIGEST)"
+            compute_variant="$(jq -er '.build_args.COMPUTE_VARIANT // empty' "$identity" || true)"
+            variant_args=()
+            if [ -n "$compute_variant" ]; then
+              variant_args=(--build-arg "COMPUTE_VARIANT=$compute_variant")
+            fi
+            docker buildx build --builder plastic-promise-oci \
+              --platform "$platforms" \
+              --sbom=true --provenance=mode=max \
+              --tag "$tag" \
+              --file "$dockerfile" \
+              --build-arg "BASE_IMAGE=$base_image" \
+              --build-arg "BASE_IMAGE_DIGEST=$base_digest" \
+              --build-arg "SOURCE_REVISION=$SOURCE_REVISION" \
+              --build-arg "PACKAGE_VERSION=$package_version" \
+              --build-arg "BUILD_POLICY_DIGEST=$build_policy" \
+              --build-arg "RECIPE_POLICY_DIGEST=$recipe_policy" \
+              "${variant_args[@]}" \
+              --output "type=oci,dest=$output" .
+          }
+          build_layout dist/build-identities/local-edge.json \
+            "plastic-promise.invalid/local-edge:rc-${SOURCE_REVISION}" \
+            linux/amd64,linux/arm64 deploy/local-edge/Dockerfile dist/local-edge.oci.tar
+          build_layout dist/build-identities/server.json \
+            "plastic-promise.invalid/server:rc-${SOURCE_REVISION}" \
+            linux/amd64,linux/arm64 deploy/server/Dockerfile dist/server.oci.tar
+          build_layout dist/build-identities/compute-cpu.json \
+            "plastic-promise.invalid/compute-node-cpu:rc-${SOURCE_REVISION}" \
+            linux/amd64,linux/arm64 deploy/local-inference-node/Dockerfile \
+            dist/inference-cpu.oci.tar
+          build_layout dist/build-identities/compute-cuda.json \
+            "plastic-promise.invalid/compute-node-cuda:rc-${SOURCE_REVISION}" \
+            linux/amd64 deploy/local-inference-node/Dockerfile dist/inference-node.oci.tar
+      - name: Verify plan-bound OCI SBOM and provenance subjects
+        env:
+          SOURCE_REVISION: ${{ needs.resolve-rc-source.outputs.source_commit }}
+          PACKAGE_VERSION: ${{ steps.release-package.outputs.package_version }}
+          MODEL_CATALOG_REFERENCE: ${{ steps.model-catalog.outputs.reference }}
+          MODEL_CATALOG_DIGEST: ${{ steps.model-catalog.outputs.digest }}
+        run: |
+          mkdir -p dist/oci-evidence
+          verify_layout() {
+            local role="$1"
+            local variant="$2"
+            local layout="$3"
+            shift 3
+            for platform in "$@"; do
+              python scripts/verify_oci_artifact_evidence.py \
+                --repository-root . --profile-id split-accelerated \
+                --source-revision "$SOURCE_REVISION" --package-version "$PACKAGE_VERSION" \
+                --plan-platform linux/amd64 --plan-platform linux/arm64 \
+                --compute-variant cpu --compute-variant cuda \
+                --model-catalog-reference "$MODEL_CATALOG_REFERENCE" \
+                --model-catalog-digest "$MODEL_CATALOG_DIGEST" \
+                --role "$role" --platform "$platform" --variant "$variant" \
+                --oci-layout "$layout" \
+                --output "dist/oci-evidence/${role}-${platform//\//-}-${variant}.json"
+            done
+          }
+          verify_layout pp-local-edge standard dist/local-edge.oci.tar linux/amd64 linux/arm64
+          verify_layout pp-server-backend standard dist/server.oci.tar linux/amd64 linux/arm64
+          verify_layout pp-compute-node cpu dist/inference-cpu.oci.tar linux/amd64 linux/arm64
+          verify_layout pp-compute-node cuda dist/inference-node.oci.tar linux/amd64
+      - uses: anchore/sbom-action/download-syft@v0
+      - name: Generate per-artifact OCI SBOMs from the exact OCI layouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          write_sbom() {
+            local archive="$1"
+            local target_platform="$2"
+            local output="$3"
+            syft scan "oci-archive:${archive}" \
+              --platform "$target_platform" \
+              --output "cyclonedx-json=${output}"
+          }
+          write_sbom dist/local-edge.oci.tar linux/amd64 \
+            dist/local-edge-linux-amd64-standard.sbom.cdx.json
+          write_sbom dist/local-edge.oci.tar linux/arm64 \
+            dist/local-edge-linux-arm64-standard.sbom.cdx.json
+          write_sbom dist/server.oci.tar linux/amd64 \
+            dist/server-backend-linux-amd64-standard.sbom.cdx.json
+          write_sbom dist/server.oci.tar linux/arm64 \
+            dist/server-backend-linux-arm64-standard.sbom.cdx.json
+          write_sbom dist/inference-cpu.oci.tar linux/amd64 \
+            dist/compute-node-linux-amd64-cpu.sbom.cdx.json
+          write_sbom dist/inference-cpu.oci.tar linux/arm64 \
+            dist/compute-node-linux-arm64-cpu.sbom.cdx.json
+          write_sbom dist/inference-node.oci.tar linux/amd64 \
+            dist/compute-node-linux-amd64-cuda.sbom.cdx.json
+      - id: oci-digests
+        name: Read immutable OCI layout root digests used by the release manifest
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import tarfile
+          from pathlib import Path
+
+          for name in ("local-edge", "server", "inference-cpu", "inference-node"):
+              artifact = Path("dist") / f"{name}.oci.tar"
+              with tarfile.open(artifact, mode="r:*") as archive:
+                  try:
+                      index_member = archive.getmember("index.json")
+                  except KeyError as exc:
+                      raise SystemExit(f"oci_index_missing:{artifact}") from exc
+                  if not index_member.isfile() or index_member.issym() or index_member.islnk():
+                      raise SystemExit(f"oci_index_invalid:{artifact}")
+                  index_file = archive.extractfile(index_member)
+                  if index_file is None:
+                      raise SystemExit(f"oci_index_missing:{artifact}")
+                  index = index_file.read()
+              if len(index) != index_member.size or not index:
+                  raise SystemExit(f"oci_index_invalid:{artifact}")
+              digest = f"sha256:{hashlib.sha256(index).hexdigest()}"
+              print(f"{name.replace('-', '_')}_digest={digest}")
+          PY
+      - name: Create RC release manifest from exact artifacts
+        run: |
+          python scripts/create_release_manifest.py \
+            --release-version "${{ needs.resolve-rc-source.outputs.release_version }}" \
+            --source-commit "${{ needs.resolve-rc-source.outputs.source_commit }}" \
+            --dist-dir dist \
+            --sbom dist/package.sbom.cdx.json \
+            --image "local-edge=oci-layout://dist/local-edge.oci.tar@${{ steps.oci-digests.outputs.local_edge_digest }}" \
+            --image "server=oci-layout://dist/server.oci.tar@${{ steps.oci-digests.outputs.server_digest }}" \
+            --image "inference-cpu=oci-layout://dist/inference-cpu.oci.tar@${{ steps.oci-digests.outputs.inference_cpu_digest }}" \
+            --image "inference-node=oci-layout://dist/inference-node.oci.tar@${{ steps.oci-digests.outputs.inference_node_digest }}" \
+            --workflow-ref "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --output dist/release-manifest.json
+      - name: Bind the catalog to the complete OCI matrix before attestation
+        run: |
+          python scripts/create_release_bundle.py \
+            --repository-root "$PWD" \
+            --model-catalog-path "${{ needs.resolve-rc-source.outputs.model_catalog_path }}" \
+            --release-version "${{ needs.resolve-rc-source.outputs.release_version }}" \
+            --source-revision "${{ needs.resolve-rc-source.outputs.source_commit }}" \
+            --release-manifest dist/release-manifest.json \
+            --sbom dist/package.sbom.cdx.json \
+            --edge-oci-layout dist/local-edge.oci.tar \
+            --server-oci-layout dist/server.oci.tar \
+            --compute-cpu-oci-layout dist/inference-cpu.oci.tar \
+            --compute-cuda-oci-layout dist/inference-node.oci.tar \
+            --artifact-sbom local-edge-linux-amd64-standard=dist/local-edge-linux-amd64-standard.sbom.cdx.json \
+            --artifact-sbom local-edge-linux-arm64-standard=dist/local-edge-linux-arm64-standard.sbom.cdx.json \
+            --artifact-sbom server-backend-linux-amd64-standard=dist/server-backend-linux-amd64-standard.sbom.cdx.json \
+            --artifact-sbom server-backend-linux-arm64-standard=dist/server-backend-linux-arm64-standard.sbom.cdx.json \
+            --artifact-sbom compute-node-linux-amd64-cpu=dist/compute-node-linux-amd64-cpu.sbom.cdx.json \
+            --artifact-sbom compute-node-linux-arm64-cpu=dist/compute-node-linux-arm64-cpu.sbom.cdx.json \
+            --artifact-sbom compute-node-linux-amd64-cuda=dist/compute-node-linux-amd64-cuda.sbom.cdx.json \
+            --artifact-evidence dist/oci-evidence/pp-local-edge-linux-amd64-standard.json \
+            --artifact-evidence dist/oci-evidence/pp-local-edge-linux-arm64-standard.json \
+            --artifact-evidence dist/oci-evidence/pp-server-backend-linux-amd64-standard.json \
+            --artifact-evidence dist/oci-evidence/pp-server-backend-linux-arm64-standard.json \
+            --artifact-evidence dist/oci-evidence/pp-compute-node-linux-amd64-cpu.json \
+            --artifact-evidence dist/oci-evidence/pp-compute-node-linux-arm64-cpu.json \
+            --artifact-evidence dist/oci-evidence/pp-compute-node-linux-amd64-cuda.json \
+            --artifact-sbom-receipts dist/artifact-sbom-receipts.json \
+            --output-dir dist \
+            --prepare-only
+      - name: Attest the RC release manifest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release-manifest.json
+      - name: Attest the RC model catalog
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/model-catalog.json
+      - name: Attest the RC artifact binding
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/artifact-binding.json
+      - name: Attest the RC artifact SBOM receipts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/artifact-sbom-receipts.json
+      - name: Verify pre-bundle GitHub attestations and write strict evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.resolve-rc-source.outputs.source_commit }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release-rc.yml
+        run: |
+          mkdir -p dist/attestation-verification
+          for subject in release-manifest model-catalog artifact-binding artifact-sbom-receipts; do
+            gh attestation verify "dist/${subject}.json" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER_WORKFLOW" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --source-digest "$SOURCE_COMMIT" \
+              --format json \
+              > "dist/attestation-verification/${subject}.json"
+          done
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          from plastic_promise.deployment import ArtifactBundleBinding, ModelCatalog
+          from plastic_promise.release_manifest import sha256_file
+
+          root = Path("dist")
+
+          def file_digest(path: Path) -> str:
+              return f"sha256:{sha256_file(path)}"
+
+          catalog = ModelCatalog.from_dict(json.loads((root / "model-catalog.json").read_text()))
+          binding = ArtifactBundleBinding.from_dict(
+              json.loads((root / "artifact-binding.json").read_text())
+          )
+          subjects = {
+              "release-manifest": file_digest(root / "release-manifest.json"),
+              "model-catalog": catalog.digest,
+              "artifact-bundle": binding.digest,
+              "artifact-sbom-receipts": file_digest(root / "artifact-sbom-receipts.json"),
+          }
+
+          def report_has_subject(report_path: Path, expected_digest: str) -> None:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              if not isinstance(report, list) or not report:
+                  raise SystemExit(f"rc_attestation_report_invalid:{report_path.name}")
+              expected = expected_digest.removeprefix("sha256:")
+              for item in report:
+                  if not isinstance(item, dict):
+                      continue
+                  result = item.get("verificationResult")
+                  if not isinstance(result, dict):
+                      continue
+                  statement = result.get("statement")
+                  if not isinstance(statement, dict):
+                      continue
+                  subject_list = statement.get("subject")
+                  if not isinstance(subject_list, list):
+                      continue
+                  for subject in subject_list:
+                      if isinstance(subject, dict) and subject.get("digest") == {"sha256": expected}:
+                          return
+              raise SystemExit(f"rc_attestation_subject_mismatch:{report_path.name}")
+
+          report_names = {
+              "release-manifest": "release-manifest.json",
+              "model-catalog": "model-catalog.json",
+              "artifact-bundle": "artifact-binding.json",
+              "artifact-sbom-receipts": "artifact-sbom-receipts.json",
+          }
+          evidence = []
+          for subject, expected_digest in subjects.items():
+              report_path = root / "attestation-verification" / report_names[subject]
+              report_has_subject(report_path, expected_digest)
+              evidence.append(
+                  {
+                      "schema_version": "plastic-promise-release-evidence/v1",
+                      "subject": subject,
+                      "subject_digest": expected_digest,
+                      "attestation_digest": file_digest(report_path),
+                      "predicate_type": "slsa-provenance/v1",
+                      "verifier": "github-attestation-verify",
+                      "verified": True,
+                  }
+              )
+          (root / "verified-evidence.json").write_text(
+              json.dumps(evidence, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Create release bundle only from externally verified evidence
+        run: |
+          python scripts/create_release_bundle.py \
+            --repository-root "$PWD" \
+            --model-catalog-path "${{ needs.resolve-rc-source.outputs.model_catalog_path }}" \
+            --release-version "${{ needs.resolve-rc-source.outputs.release_version }}" \
+            --source-revision "${{ needs.resolve-rc-source.outputs.source_commit }}" \
+            --release-manifest dist/release-manifest.json \
+            --sbom dist/package.sbom.cdx.json \
+            --edge-oci-layout dist/local-edge.oci.tar \
+            --server-oci-layout dist/server.oci.tar \
+            --compute-cpu-oci-layout dist/inference-cpu.oci.tar \
+            --compute-cuda-oci-layout dist/inference-node.oci.tar \
+            --artifact-sbom local-edge-linux-amd64-standard=dist/local-edge-linux-amd64-standard.sbom.cdx.json \
+            --artifact-sbom local-edge-linux-arm64-standard=dist/local-edge-linux-arm64-standard.sbom.cdx.json \
+            --artifact-sbom server-backend-linux-amd64-standard=dist/server-backend-linux-amd64-standard.sbom.cdx.json \
+            --artifact-sbom server-backend-linux-arm64-standard=dist/server-backend-linux-arm64-standard.sbom.cdx.json \
+            --artifact-sbom compute-node-linux-amd64-cpu=dist/compute-node-linux-amd64-cpu.sbom.cdx.json \
+            --artifact-sbom compute-node-linux-arm64-cpu=dist/compute-node-linux-arm64-cpu.sbom.cdx.json \
+            --artifact-sbom compute-node-linux-amd64-cuda=dist/compute-node-linux-amd64-cuda.sbom.cdx.json \
+            --artifact-evidence dist/oci-evidence/pp-local-edge-linux-amd64-standard.json \
+            --artifact-evidence dist/oci-evidence/pp-local-edge-linux-arm64-standard.json \
+            --artifact-evidence dist/oci-evidence/pp-server-backend-linux-amd64-standard.json \
+            --artifact-evidence dist/oci-evidence/pp-server-backend-linux-arm64-standard.json \
+            --artifact-evidence dist/oci-evidence/pp-compute-node-linux-amd64-cpu.json \
+            --artifact-evidence dist/oci-evidence/pp-compute-node-linux-arm64-cpu.json \
+            --artifact-evidence dist/oci-evidence/pp-compute-node-linux-amd64-cuda.json \
+            --artifact-sbom-receipts dist/artifact-sbom-receipts.json \
+            --verified-evidence dist/verified-evidence.json \
+            --output-dir dist
+      - name: Attest the RC release bundle
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release-bundle.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plastic-promise-${{ needs.resolve-rc-source.outputs.release_version }}-${{ needs.resolve-rc-source.outputs.source_commit }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

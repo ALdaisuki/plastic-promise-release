@@ -8,11 +8,11 @@ import re
 import threading
 from typing import Any
 
-from plastic_promise.core.inference_provider import (
+from plastic_promise.core.memory_proposals import contains_secret
+from plastic_promise.core.server_structured_json import (
     OpenAICompatibleJSONProvider,
     StructuredJSONProvider,
 )
-from plastic_promise.core.memory_proposals import contains_secret
 from plastic_promise.skills.tool_routing import (
     OFFICIAL_WORKFLOW_ROUTES,
     invocation_policy,

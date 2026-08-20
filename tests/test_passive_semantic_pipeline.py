@@ -9,6 +9,8 @@ from plastic_promise.core.derived_work import DerivedWorkStore
 from plastic_promise.core.memory_proposals import MemoryProposalStore
 from plastic_promise.passive_memory.events import PassiveMemoryEvent
 from plastic_promise.passive_memory.semantic_pipeline import (
+    PASSIVE_SEMANTIC_INTENT_ID,
+    PASSIVE_SEMANTIC_SCHEMA_ID,
     SEMANTIC_CONFIG_REVISION,
     SEMANTIC_JOB_KIND,
     SEMANTIC_SCHEMA_VERSION,
@@ -16,6 +18,7 @@ from plastic_promise.passive_memory.semantic_pipeline import (
     _content_is_grounded,
     close_semantic_memory_runtime,
     enqueue_semantic_capture,
+    get_semantic_memory_provider,
     process_semantic_memory_jobs,
 )
 
@@ -108,6 +111,102 @@ class EchoSemanticProvider(FakeSemanticProvider):
                 }
             ],
         }
+
+
+def test_server_semantic_provider_routes_only_through_governed_compute_runtime(engine, monkeypatch):
+    """The server must never rediscover a cloud JSON provider for passive work."""
+
+    from plastic_promise.passive_memory import semantic_pipeline
+
+    class Outcome:
+        output = {
+            "schema_version": SEMANTIC_SCHEMA_VERSION,
+            "items": [],
+        }
+
+    class GovernedRuntime:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def structured_json_for_context(self, **kwargs):
+            self.calls.append(kwargs)
+            return Outcome()
+
+    runtime = GovernedRuntime()
+    engine.install_memory_index_node_runtime(runtime)
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
+    monkeypatch.setattr(semantic_pipeline, "_PROVIDER", None)
+
+    def direct_provider_forbidden(*_args, **_kwargs):
+        raise AssertionError("server must not construct a direct JSON provider")
+
+    monkeypatch.setattr(
+        semantic_pipeline,
+        "create_chunk_json_provider",
+        direct_provider_forbidden,
+        raising=False,
+    )
+
+    provider = get_semantic_memory_provider(engine)
+    output = provider.complete_json(
+        system_prompt="untrusted caller prompt",
+        user_payload={
+            "schema_version": SEMANTIC_SCHEMA_VERSION,
+            "scope": {"project_id": "project:alpha"},
+            "inputs": [{"index": 0, "user_text": "Keep this project isolated."}],
+        },
+        max_tokens=777,
+    )
+
+    assert output == Outcome.output
+    assert provider.identity == "governed-node:structured-json/v1"
+    assert runtime.calls == [
+        {
+            "project_id": "project:alpha",
+            "intent_id": PASSIVE_SEMANTIC_INTENT_ID,
+            "schema_id": PASSIVE_SEMANTIC_SCHEMA_ID,
+            "user_payload": {
+                "schema_version": SEMANTIC_SCHEMA_VERSION,
+                "scope": {"project_id": "project:alpha"},
+                "inputs": [{"index": 0, "user_text": "Keep this project isolated."}],
+            },
+            "max_tokens": 777,
+        }
+    ]
+
+
+def test_server_semantic_provider_does_not_replace_or_close_direct_provider(engine, monkeypatch):
+    """Engine-bound server adapters must not share the direct-provider cache."""
+
+    from plastic_promise.passive_memory import semantic_pipeline
+
+    class DirectProvider(FakeSemanticProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class GovernedRuntime:
+        def structured_json_for_context(self, **_kwargs):
+            raise AssertionError("provider construction must not invoke the runtime")
+
+    direct_provider = DirectProvider()
+    engine.install_memory_index_node_runtime(GovernedRuntime())
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
+    monkeypatch.setattr(semantic_pipeline, "_PROVIDER", direct_provider)
+
+    governed_provider = get_semantic_memory_provider(engine)
+
+    assert governed_provider.identity == "governed-node:structured-json/v1"
+    assert governed_provider is not direct_provider
+    assert semantic_pipeline._PROVIDER is direct_provider
+
+    close_semantic_memory_runtime(engine, timeout=0)
+
+    assert direct_provider.closed is False
+    assert semantic_pipeline._PROVIDER is direct_provider
 
 
 def test_semantic_worker_can_fuse_multiple_user_turns_into_one_grounded_proposal(engine):
@@ -206,7 +305,7 @@ def test_semantic_enqueue_preserves_original_user_text(engine, monkeypatch):
     monkeypatch.setenv("PP_PASSIVE_SEMANTIC_WORKER_AUTOSTART", "0")
     monkeypatch.setattr(
         "plastic_promise.passive_memory.semantic_pipeline.get_semantic_memory_provider",
-        lambda: EchoSemanticProvider(),
+        lambda _engine: EchoSemanticProvider(),
     )
     event = PassiveMemoryEvent(
         event="after_invoke",
@@ -250,7 +349,8 @@ def test_process_semantic_jobs_reports_runtime_initialization_failure(engine, mo
     }
 
 
-def test_semantic_worker_never_mixes_project_partitions(engine):
+def test_semantic_worker_never_mixes_project_partitions(engine, monkeypatch):
+    monkeypatch.delenv("PP_PASSIVE_SEMANTIC_MAX_TOKENS", raising=False)
     db_path = engine._sqlite._conn.execute("PRAGMA database_list").fetchone()[2]
     store = DerivedWorkStore(db_path)
     provider = EchoSemanticProvider()
@@ -284,6 +384,7 @@ def test_semantic_worker_never_mixes_project_partitions(engine):
     observed_projects = [call[1]["scope"]["project_id"] for call in provider.calls]
     assert observed_projects == ["project:alpha", "project:beta"]
     assert all(len(call[1]["inputs"]) == 1 for call in provider.calls)
+    assert all(call[2] == 32 * 1024 for call in provider.calls)
     assert store.get(job_id=alpha.job_id, project_id="project:alpha").status == "completed"
     assert store.get(job_id=beta.job_id, project_id="project:beta").status == "completed"
 

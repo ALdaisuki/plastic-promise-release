@@ -1,28 +1,42 @@
-Title: Plastic Promise C4 Level 1 Context
-Focus: External actors and protocols
-Last updated: 2026-07-04
+Title: Plastic Promise C4 Level 1 — System Context
+Focus: ownership, deployment boundary, and derived inference
+Last updated: 2026-08-07
 
-+----------------------+        MCP stdio/SSE        +-----------------------------+
-| AI Coding Agent      | <-------------------------> | Plastic Promise Governance  |
-| Claude Code / MCP    |                             | Runtime                     |
-+----------------------+                             |                             |
-                                                       | +-------------------------+ |
-+----------------------+        task events          | | MCP Server (:9020)       | |
-| Agent Team           | <-------------------------> | | tools + workflows       | |
-| Builder/Fixer/Review |        HTTP/SSE optional    | +-------------------------+ |
-+----------------------+                             |                             |
-                                                       | +-------------------------+ |
-+----------------------+        local operation      | | Memory + Context Engine  | |
-| Human Developer      | <-------------------------> | | SQLite + LanceDB + graph | |
-+----------------------+                             | +-------------------------+ |
-                                                       |                             |
-                                                       | +-------------------------+ |
-                                                       | | Daemon + Hunter Guild    | |
-                                                       | | scan -> task -> verify   | |
-                                                       | +-------------------------+ |
-                                                       +-----------------------------+
++-----------------------+       loopback HTTP / SSH LocalForward
+| User / coding agent   | =========================================>
+| Codex, MCP client     |                                          |
++-----------------------+                                          v
+                                                        +--------------------------+
+                                                        | Plastic Promise runtime  |
+                                                        | MCP + governance         |
+                                                        +------------+-------------+
+                                                                     |
+                 canonical transaction                               | derived projection
+                  => one truth                                       | => rebuildable
+                                                                     v
+              +---------------------------+              +-------------------------+
+              | SQLite WAL                |              | LanceDB generation      |
+              | memory / task / audit     |              | vector + text retrieval |
+              +---------------------------+              +-------------------------+
+                                                                     ^
+                              bounded derived inference              |
+                                             =>                      |
+  +--------------------------+      loopback-only / restricted tunnel|
+  | Cloud provider           | <=====================================+
+  | structured / embedding   |                                        |
+  +--------------------------+                                        |
+                                                                     |
+  +--------------------------+      no SQLite, LanceDB, MCP, queue, or canonical write
+  | Local heterogeneous      | <=====================================+
+  | inference node           |
+  +--------------------------+
+
++--------------------------+
+| GitHub release delivery  |  Publishes immutable software evidence only.
+| PR / RC / stable workflow|  It has no runtime-state or canonical-write path.
++--------------------------+
 
 Legend:
-  <-->  bidirectional protocol or event exchange
-  MCP   Model Context Protocol over stdio or SSE
-  HTTP  local health, notify, and event endpoints
+  => synchronous call or durable transaction
+  ~> asynchronous bounded work (shown in Level 2/3)
+  SQLite is the only canonical truth; providers and nodes return derived results only.

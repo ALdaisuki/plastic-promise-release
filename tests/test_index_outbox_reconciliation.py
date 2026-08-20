@@ -141,6 +141,29 @@ def test_snapshot_contains_watermark_and_immutable_digest():
     assert snapshot["reconciled"] is False
 
 
+def test_project_scoped_reconciliation_does_not_consume_other_project_jobs():
+    connection = _db()
+    connection.execute(
+        "INSERT INTO store_outbox "
+        "(outbox_id, tool_name, project_id, call_id, status, payload_json, metadata_json, created_at) "
+        "VALUES ('job-q', 'memory_index', 'q', 'c-q', 'pending', '{}', '{}', 't4')"
+    )
+    connection.commit()
+    snapshot = snapshot_index_outbox(connection, project_id="p")
+    assert snapshot["project_id"] == "p"
+    receipt = reconcile_index_outbox(
+        connection,
+        generation_id="generation-p",
+        manifest_hash="a" * 64,
+        evidence=snapshot,
+    )
+    assert receipt["job_count"] == 2
+    assert (
+        connection.execute("SELECT status FROM store_outbox WHERE outbox_id='job-q'").fetchone()[0]
+        == "pending"
+    )
+
+
 def test_snapshot_binds_logical_source_and_ignores_derived_memory_metadata():
     connection = _canonical_db()
     snapshot = snapshot_index_outbox(connection)

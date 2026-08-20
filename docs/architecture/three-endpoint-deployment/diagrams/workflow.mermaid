@@ -1,0 +1,139 @@
+%% Normative source: Union Six-PR Contract revision 2026-08-18.1
+%% This source/design diagram is not runtime, deployment, release, or production evidence.
+flowchart TD
+    Legend["Union contract 2026-08-18.1<br/>C: current source contract; P: focused tests passed; L: legacy-current baseline;<br/>T: target adapter/runtime; U: unverified external state"]
+
+    ArtifactRequest["C: Secret-free ArtifactRequest<br/>pinned revision · platforms · variants · opaque catalog ref"]
+    ArtifactCompiler["C: ContainerArtifactCompiler<br/>prepare / materialize"]
+    ArtifactPlan["C: ArtifactBuildPlan<br/>edge/standard · backend/standard<br/>compute/cpu · compute/cuda (amd64 only)"]
+    ArtifactExecutor["C: ArtifactBuildExecutor<br/>immutable OCI / SBOM / provenance evidence"]
+    ArtifactBundle["C: ArtifactBundle + inspection receipt<br/>descriptor evidence only"]
+    ArtifactCi["C: Protected CI may do no-push OCI verification<br/>no container start or runtime receipt"]
+    ArtifactDeferred["T: Runtime authority remains deferred<br/>no activation · tunnel · deploy · migration<br/>promotion · Maintenance · MCP restart · production"]
+    LocalBuild["T PR6: Windows/WSL2 local build/cache + GPU smoke<br/>derived inference only; no release or SQLite authority"]
+    ProtectedRelease["T PR6: GitHub protected RC/stable build<br/>immutable OCI digest + SBOM/provenance evidence"]
+    ReleaseBundle["T PR6: Release Bundle<br/>source + protocol/profile/variant matrix + catalog ref/digest"]
+    VerifiedServer["T PR6: server consumes verified selected digest<br/>sole SQLite writer; LanceDB remains derived"]
+    StableHandoff["T PR6: stable-only repository handoff<br/>explicit separately approved publication"]
+    ArtifactRequest --> ArtifactCompiler --> ArtifactPlan --> ArtifactExecutor --> ArtifactBundle
+    ArtifactBundle -. bounded verification .-> ArtifactCi
+    ArtifactBundle -. does not authorize .-> ArtifactDeferred
+    LocalBuild -. candidate inputs .-> ProtectedRelease
+    ArtifactBundle -. immutable descriptors .-> ProtectedRelease
+    ProtectedRelease --> ReleaseBundle --> VerifiedServer --> StableHandoff
+
+    FixedRoute["C PR6 contract: fixed governed route remains the sole execution authority"]
+    ComposerCandidate["T PR6 shadow-only: Workflow Composer candidate<br/>frozen plan/compiler/hard-gate/tool-policy digests"]
+    ComposerGate{"T PR6 shadow evaluation: immutable bindings and atomic-skill receipt chain valid?"}
+    ComposerReject["T PR6: discard candidate<br/>deterministic rollback to fixed route"]
+    ComposerCompare["T PR6: observe candidate versus fixed route<br/>no execution or authorization authority"]
+    ComposerCandidate --> ComposerGate
+    ComposerGate -->|No| ComposerReject --> FixedRoute
+    ComposerGate -->|Yes| ComposerCompare
+    ComposerCompare -. "observation only" .-> FixedRoute
+    FixedRoute -. "authoritative gates" .-> ArtifactRequest
+
+    User[User] --> UI["C/T PR4: static pp-local-edge browser entry<br/>127.0.0.1:19021; cache is non-authoritative"]
+    UI --> BridgeConfigured{"C/T PR4: explicit bridge configuration present?"}
+    BridgeConfigured -->|No| BridgeDisabled["C/T PR4: configuration absent -> disabled<br/>no host request; no edge proxy"]
+    BridgeConfigured -->|Yes| BridgeBase["C/T PR4: explicit base only<br/>http://127.0.0.1:<port>/ppctl/v1"]
+    UI --> Draft["C: secret-free EndpointManifestV2 candidate"]
+    BridgeBase --> InspectPost["C/T PR4: browser direct POST /inspect<br/>{installation_ref}"]
+    BridgeBase --> PreviewPost["C/T PR4: browser direct POST /preview<br/>{installation_ref, candidate_manifest}"]
+    Draft --> PreviewPost
+    InspectPost --> PPCTL["C/T: Host ppctl adapter<br/>C/T PR4: closed allowlist: inspect / preview only"]
+    PreviewPost --> PPCTL
+    PPCTL --> Inspect["C/T PR4: platform/resource/catalog/status<br/>model, controller-owned enrollment readiness, receipt projection"]
+    PPCTL --> Validate{"C/T PR4: V2 manifest/catalog valid?"}
+    Validate -->|No| Reject["C/T PR4: stable reason; no side effects"]
+    Validate -->|Yes| Plan["C: resolved plan + manifest digest"]
+    Plan --> Preflight{"C/T PR4: safe resource and identity preflight?"}
+    Preflight -->|No| Reject
+    Preflight -->|Yes| Preview["C/T PR4: digest comparison; redacted V2 topology diff only if safe active topology is supplied<br/>otherwise diff unavailable; inspection-only update class; state-bound plan hash"]
+    Preview --> Deferred["T PR5: execution unavailable in PR4<br/>mutation deferred-to-pr5"]
+
+    AuthenticatedBinding["C PR1/PR4: server-issued AgentSession policy binding required<br/>caller role/capability strings grant no authority"]
+    AcceptedLineage["C PR1/PR4: server-authenticated AcceptanceReceipt<br/>independent reviewer · policy/source/work/result/evidence digests · conflict resolved"]
+    AwarenessSource["C PR4: server-created bounded awareness source values<br/>five classes · max 64 items each · immutable source digest"]
+    WorkingSet["C PR4: ProjectWorkingSet<br/>rebuildable · non-authoritative · no adapter/database"]
+    AwarenessGate{"C PR4: authenticated policy/source receipt, project/session/audience,<br/>monotonic cursor, replay and gap checks valid? · max 20 delta events · fail closed"}
+    AwarenessReject["C PR4: stable awareness refusal<br/>no partial projection"]
+    AwarenessProjection["C PR4: server-created AgentAwarenessProjection · max 64 KiB<br/>policy-bound minimum view; no full view from caller role strings<br/>objective · capabilities · payload redacted; memory effect none"]
+    AwarenessRuntime["C/P PR5: durable collaboration source + focused tests passed<br/>schema/stores · session/role/result assignment<br/>typed events · replay/fence · reconcile · promotion outbox"]
+    Backend -. "C/P PR5 server source" .-> AwarenessRuntime
+    HookContinuation["C/P PR5: fresh-client Hook continuation<br/>agent.closed · lease release · cursor resume · shadow-to-inject gate<br/>live authenticated lifecycle E2E pending"]
+    WorkboardEntry["C/P PR5: public bounded ProjectWorkBoard lifecycle<br/>server-owned register · claim · heartbeat · review · accept"]
+    DashboardCollab["C/P PR5: Dashboard topology / work board / event timeline<br/>source and focused tests passed; real browser/runtime smoke pending"]
+    MaintenanceCollab["C/P PR5: Maintenance collaboration composition/lifecycle<br/>source and focused tests passed; live production transition pending"]
+    LifecycleReady["C/P PR5: exact-session tool reconcile<br/>bounded Stop progress/submitted events"]
+    AutoPromotion["C/P PR5: accepted-result -> atomic pending-only<br/>promotion outbox enqueue"]
+    AwarenessRuntime -. "source / focused tests" .-> HookContinuation
+    AwarenessRuntime -. "source / focused tests" .-> WorkboardEntry
+    AwarenessRuntime -. "source / focused tests" .-> DashboardCollab
+    AwarenessRuntime -. "source / focused tests" .-> MaintenanceCollab
+    AwarenessRuntime -. "source / focused tests" .-> LifecycleReady
+    AwarenessRuntime -. "target/missing" .-> AutoPromotion
+    AwarenessRuntime -. "server-issued policy/source receipts" .-> AuthenticatedBinding
+    AuthenticatedBinding --> AwarenessSource
+    AcceptedLineage -. "accepted-artifact lineage only" .-> AwarenessSource
+    AwarenessSource --> WorkingSet --> AwarenessGate
+    AwarenessGate -->|No| AwarenessReject
+    AwarenessGate -->|Yes| AwarenessProjection
+    AwarenessProjection -. "bounded display only" .-> UI
+
+    Deferred --> MigrationPlan["C/T PR5: fresh Migration Operation Plan<br/>artifact/runtime/node/state/index evidence + drift fence"]
+    MigrationPlan --> GrantCheck{"C/T PR5: separate Execution Grant<br/>matches fresh plan and server admission policy?"}
+    GrantCheck -->|No| MigrationReject["C/T PR5: stable refusal; no mutation"]
+    GrantCheck -->|Yes| Orchestrator["C/T PR5: server-owned MigrationOperation<br/>current SQLite grant/lease/fence/receipt journal<br/>pp-core sole canonical writer"]
+    Orchestrator --> PhaseAdapters["C/T PR5 source seam; T runtime adapters<br/>preflight · backup/rehearsal · cutover<br/>shadow/promotion · Maintenance · rollback"]
+    PhaseAdapters -. future classes .-> Live["T: Live apply"]
+    PhaseAdapters -. future classes .-> Restart["T: Rolling restart"]
+    PhaseAdapters -. future classes .-> Shadow["T: Shadow rebuild and promotion"]
+    PhaseAdapters -. future classes .-> Migrate["T: Backup and migration"]
+    PrepareGeneration["C/P operator seam: quality evidence -> build -> reconcile -> verify candidate<br/>atomic receipt binds manifest / index / quality / revision-env digests"]
+    HostStop["Independent host authorization: stop MCP / inference / Maintenance / Knowledge Ingest"]
+    AuthCutover["C/P operator seam: verify prepare receipt -> authenticated revision activation<br/>promote -> retarget -> live-root bootstrap/verify -> atomic pointer update"]
+    HostRestart["Independent host authorization: restart -> health/retrieval smoke<br/>separate Maintenance review/transition"]
+    Shadow -. "inactive preparation" .-> PrepareGeneration
+    PrepareGeneration --> HostStop --> AuthCutover --> HostRestart
+    AuthCutover -. "no direct Control SQLite; no restart" .-> Receipt
+    Live --> Receipt["C: durable secret-free migration receipt<br/>SQLite CAS under current fence"]
+    Restart --> Receipt
+    Shadow --> Receipt
+    Migrate --> Receipt
+
+    UI --> Recall["T: Recall or derived-work request"]
+    Recall --> Backend["C: pp-server-backend ownership<br/>T: runtime adapter"]
+    Backend --> Route{"T: Local compute healthy and stable?"}
+    Route -->|Yes| Node["C: pp-compute-node typed contract<br/>T: service"]
+    Route -->|No| CloudReady{"T: Cloud configured, healthy, enabled,<br/>and identity compatible?"}
+    CloudReady -->|Yes| Cloud["T: Explicit cloud fallback"]
+    CloudReady -->|No| Queue["L: durable derived work<br/>T: V2 queue adapter"]
+    Queue --> Text["L: verified LanceDB/text retrieval<br/>T: V2 wiring"]
+    Queue --> Poll["T: Poll local and configured cloud health"]
+    Poll --> Stable{"T: Repeated probes and stable window pass?"}
+    Stable -->|No| Poll
+    Stable -->|Yes| Route
+
+    Node --> Result["C: body-free result envelope<br/>T: transport"]
+    Cloud --> Result
+    Result --> Identity{"C: Validate identity, capability binding, lease, current fence<br/>T: runtime apply"}
+    Identity -->|No| Quarantine["T: Quarantine and retain reason"]
+    Identity -->|Yes| Commit["T: Backend commits canonical or derived state"]
+    Text --> Response["T: Explicit degraded response"]
+    Commit --> Response["T: Response"]
+
+    Backend --> SQLite[("L: Canonical SQLite<br/>C: server-only owner")]
+    Backend --> Lance[("L: Derived LanceDB<br/>C: promotion-decision owner")]
+    Node -. T: no mount .-> SQLite
+    Node -. T: no promotion .-> Lance
+    UI -. T: projection only .-> SQLite
+
+    classDef endpoint fill:#d9edf7,stroke:#31708f,color:#000;
+    classDef authority fill:#dff0d8,stroke:#3c763d,color:#000;
+    classDef decision fill:#fcf8e3,stroke:#8a6d3b,color:#000;
+    classDef failure fill:#f2dede,stroke:#a94442,color:#000;
+    class UI,Backend,Node,WorkingSet,AwarenessProjection,AwarenessRuntime,ComposerCandidate,ComposerCompare endpoint;
+    class SQLite,Lance,Commit,AuthenticatedBinding,AcceptedLineage,FixedRoute authority;
+    class Validate,Preflight,AwarenessGate,GrantCheck,Route,CloudReady,Stable,Identity,ComposerGate decision;
+    class Reject,AwarenessReject,MigrationReject,Queue,Quarantine,ArtifactDeferred,ComposerReject failure;

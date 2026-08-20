@@ -206,3 +206,34 @@ PP_DASHBOARD_REVIEW_ACTIONS=0
 ## 10. 与当前响应精简工作的结合
 
 被动调用必须默认使用 `response_mode=compact`，否则 `context_supply(debug=true)` 会把约 138 KB 检索诊断灌回模型。完整 audit、channel rankings、per-item stats 只写 trace 或通过 `diagnostics.ref` 提供。这样“被动注入”与“响应精简”是同一个控制面，而不是两套互相放大的输出。
+
+## 11. 六 PR 待办：Hook 项目作用域修复
+
+这次修复登记为后续六 PR 的共同基础项，当前只在本地完成，不改变服务器状态：
+
+- **PR1 — 作用域与身份契约**：Hook 从 `cwd`、`working_directory`、`workdir`、`workspace_root` 或 `project_root` 读取 workspace；缺少 workspace 且没有显式项目 ID 时必须 fail closed 为 `project:unknown`，不得回退到固定运行仓库。
+- **PR2 — workflow/request scope/receipt 隔离**：将项目摘要纳入 Hook call ID、turn-state 文件名和显式 `request_scope_id`，防止同一 session/turn/request 在不同项目间碰撞；turn state 持久化 `project_id` 并在读取、SessionEnd 清理时校验。
+- **PR3 — memory lifecycle 与跨项目迁移**：继续把 project scope 作为 canonical 写入和召回的硬过滤；跨项目共享只能通过有证据的派生/共享关系迁移。
+- **PR4 — 知识域与自循环治理**：域命名、关联、晋升、冲突和过时维护都必须携带 project scope，派生索引不能扩大可见范围。
+- **PR5 — Hook/Agent 治理链隔离**：完整开发链、skills、Pi/其他 Agent adapter 的 stage、proposal、outbox 和 closure 证据全部继承项目作用域；shadow/degraded 路径也要保留同一 scope。
+- **PR6 — 隔离指标与发布保护**：增加 project-isolation violations、cross-project forbidden-hit、scope collision、unknown-project 降级率指标，并以 shadow/canary、备份和可回滚配置作为生产门禁。
+
+当前实现将 turn state schema 升级为 `codex-hook-turn-v3`。旧 state 文件只会在 TTL/清理流程中逐步淘汰，不会被新项目读取为当前项目状态。
+
+当前已落地的下一阶段最小垂直切片见
+[`project-scope-security-finding-contract.md`](../project-scope-security-finding-contract.md)：
+`SecurityFinding` 已以纯领域对象实现项目作用域、DeepSec finding 安全状态/新鲜度双轴、
+accepted-risk 期限、秘密拒绝和不可变 transition；`ShieldScanStore` 已复用
+`DerivedWorkStore` 落地本地 SQLite durable outbox、项目/扫描修订分区批领、租约 fencing、
+有界重试、原子 finding-version 完成和 lineage 作用域校验。remediation/rescan/closure
+已增加本地证据门禁：`resolved` 只能由新扫描修订的 `rescan_passed=true` 生成，仍存在的
+finding 记录为 `recurring`。在此基础上，低/中风险且新鲜的修复模式会进入独立的
+`security_remediation_candidates` ledger；候选默认是 `pending_validation`，只有来自不同项目的
+同 finding/同脱敏模式/已通过 rescan 的证据才能标记 `shadowed`，并且不会直接写入 canonical
+memory。candidate 通过本地 canary 后，才可由
+`ShieldCandidateProposalBridge` 生成一个带 server provenance 的 `system` 影子提案，进入既有
+`ProposalAutomation` 评分投影；该提案仍是 `pending`，不会自动 adopt，也不会写入 canonical
+memory。失败 canary 会保留 candidate 并转为 `rolled_back`，记录有限的失败原因和指标。Dashboard
+新增只读的项目级 candidate projection，所有 evidence 在投影时继续脱敏。DeepSec 执行 worker、
+向量证据计算、generation promotion 仍按六 PR 顺序推进，尚未接入生产，也未执行生产数据库
+迁移、服务重启或 Maintenance 启动。

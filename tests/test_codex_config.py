@@ -1,7 +1,10 @@
 import shutil
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
+    import tomli as tomllib
 
 
 def test_project_codex_config_uses_streamable_http_by_default():
@@ -9,7 +12,7 @@ def test_project_codex_config_uses_streamable_http_by_default():
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
 
     plastic = data["mcp_servers"]["plastic_promise"]
-    assert plastic["url"] == "http://127.0.0.1:9020/mcp"
+    assert plastic["url"] == "http://127.0.0.1:19020/mcp"
     assert "command" not in plastic
     assert "args" not in plastic
 
@@ -43,7 +46,7 @@ def test_codex_config_preflight_rejects_missing_stdio_fallback(tmp_path):
     (config_dir / "config.toml").write_text(
         """
 [mcp_servers.plastic_promise]
-url = "http://127.0.0.1:9020/mcp"
+url = "http://127.0.0.1:19020/mcp"
 
 [profiles.stdio-fallback.mcp_servers.plastic_promise]
 command = ".venv\\\\Scripts\\\\python.exe"
@@ -56,3 +59,22 @@ args = ["-m", "plastic_promise"]
 
     assert ok is False
     assert any("stdio fallback command not found" in message for message in messages)
+
+
+def test_codex_config_preflight_rejects_server_side_listener_as_client_endpoint(tmp_path):
+    from plastic_promise.launcher.codex_config import check_project_codex_mcp_config
+
+    config_dir = tmp_path / ".codex"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        """
+[mcp_servers.plastic_promise]
+url = "http://127.0.0.1:9020/mcp"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    ok, messages = check_project_codex_mcp_config(tmp_path)
+
+    assert ok is False
+    assert any("19020/mcp" in message for message in messages)

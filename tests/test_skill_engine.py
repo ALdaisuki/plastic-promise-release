@@ -503,6 +503,79 @@ class TestSkillEngineExec:
         assert session_calls[1][0] == "complete"
 
     @pytest.mark.asyncio
+    async def test_exec_propagates_project_scope_and_degrades_unknown_to_entity_only(
+        self, mock_engine
+    ):
+        from plastic_promise.skills.engine import SkillDef, SkillEngine, SkillResult
+
+        starts = []
+
+        async def session_start(_engine, args):
+            starts.append(dict(args))
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"entity_id": f"skill:scoped:{len(starts)}"}),
+                )
+            ]
+
+        async def session_complete(_engine, _args):
+            return [TextContent(type="text", text=json.dumps({"status": "done"}))]
+
+        async def handler(_ctx, _params, _atoms):
+            return SkillResult(
+                skill_name="scoped-skill",
+                success=True,
+                data={},
+                atom_results={},
+                degrade_log=[],
+                audit_trail={},
+                errors=[],
+            )
+
+        engine = SkillEngine(mock_engine)
+        engine._atoms["skill_session_start"] = session_start
+        engine._atoms["skill_session_complete"] = session_complete
+        engine.register(
+            SkillDef(
+                name="scoped-skill",
+                domain="building",
+                description="scope propagation",
+                tier="P0",
+                handler=handler,
+                allowed_callers=["claude"],
+            )
+        )
+
+        scoped = await engine.exec(
+            "scoped-skill",
+            params={
+                "project_id": "project:alpha",
+                "stage_session_id": "stage:alpha",
+                "flow_line_id": "codex",
+            },
+            caller="claude",
+        )
+        unknown = await engine.exec(
+            "scoped-skill",
+            params={
+                "project_id": "project:unknown",
+                "stage_session_id": "stage:unknown",
+                "flow_line_id": "codex",
+            },
+            caller="claude",
+        )
+
+        assert starts[0]["project_id"] == "project:alpha"
+        assert starts[0]["stage_session_id"] == "stage:alpha"
+        assert starts[0]["flow_line_id"] == "codex"
+        assert "record_memory" not in starts[0]
+        assert scoped.audit_trail["tracking_persistence"] == "memory"
+        assert starts[1]["project_id"] == "project:unknown"
+        assert starts[1]["record_memory"] is False
+        assert unknown.audit_trail["tracking_persistence"] == "entity_only"
+
+    @pytest.mark.asyncio
     async def test_exec_unauthorized_caller_blocked(self, mock_engine):
         """Caller not in allowed_callers must be rejected before any atom call."""
         from plastic_promise.skills.engine import SkillEngine

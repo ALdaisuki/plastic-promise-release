@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Plastic Promise PR 3 container artifact verification matrix</title>
+  <desc id="desc">Union Six-PR Contract revision 2026-08-18.1 source and CI verification boundary for endpoint artifacts; no publishing, deployment, runtime, or production action is claimed.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .title{font:700 32px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#f8fafc}
+      .subtitle{font:400 16px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#cbd5e1}
+      .section{font:700 13px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#67e8f9;letter-spacing:.08em}
+      .label{font:700 16px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#f8fafc}
+      .body{font:400 13px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#dbeafe}
+      .small{font:400 12px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#94a3b8}
+      .request{fill:#172554;stroke:#60a5fa;stroke-width:1.5}
+      .contract{fill:#052e2b;stroke:#2dd4bf;stroke-width:1.5}
+      .matrix{fill:#052e16;stroke:#4ade80;stroke-width:1.5}
+      .deferred{fill:#450a0a;stroke:#f87171;stroke-width:1.5}
+      .arrow{stroke:#94a3b8;stroke-width:2;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" rx="28" fill="#0b1220"/>
+  <text x="56" y="58" class="title">PR 3 Container Artifact Boundary</text>
+  <text x="56" y="86" class="subtitle">Union contract 2026-08-18.1 · source/CI evidence only · no image/runtime/production claim</text>
+  <text x="56" y="124" class="section">SOURCE CONTRACT</text>
+
+  <rect x="56" y="146" width="204" height="112" rx="16" class="request"/>
+  <text x="76" y="178" class="label">ArtifactRequest</text>
+  <text x="76" y="202" class="body">pinned revision</text>
+  <text x="76" y="221" class="body">platform · variant · profile</text>
+  <text x="76" y="240" class="small">opaque catalog reference/digest</text>
+
+  <rect x="298" y="146" width="212" height="112" rx="16" class="contract"/>
+  <text x="318" y="178" class="label">ContainerArtifactCompiler</text>
+  <text x="318" y="202" class="body">preflight / prepare / materialize</text>
+  <text x="318" y="226" class="small">recipe + base-policy seam</text>
+
+  <rect x="548" y="146" width="204" height="112" rx="16" class="contract"/>
+  <text x="568" y="178" class="label">ArtifactBuildPlan</text>
+  <text x="568" y="202" class="body">matrix · labels · base digest</text>
+  <text x="568" y="226" class="small">recipe · plan · collaboration surface</text>
+
+  <rect x="790" y="146" width="204" height="112" rx="16" class="contract"/>
+  <text x="810" y="178" class="label">ArtifactBuildExecutor</text>
+  <text x="810" y="202" class="body">local / verify-only CI / test</text>
+  <text x="810" y="226" class="small">returns bound receipt evidence</text>
+
+  <rect x="1032" y="146" width="192" height="112" rx="16" class="contract"/>
+  <text x="1052" y="178" class="label">ArtifactBundle</text>
+  <text x="1052" y="202" class="body">body-free receipt set</text>
+  <text x="1052" y="226" class="small">surface · inventory · SBOM · provenance</text>
+
+  <path class="arrow" d="M260 202 H298"/>
+  <path class="arrow" d="M510 202 H548"/>
+  <path class="arrow" d="M752 202 H790"/>
+  <path class="arrow" d="M994 202 H1032"/>
+
+  <text x="56" y="314" class="section">ROLE × PLATFORM × VARIANT POLICY</text>
+  <rect x="56" y="336" width="268" height="112" rx="16" class="matrix"/>
+  <text x="78" y="370" class="label">pp-local-edge / standard</text>
+  <text x="78" y="394" class="body">loopback status projection only</text>
+  <text x="78" y="418" class="small">static assets only; collaboration package absent</text>
+
+  <rect x="348" y="336" width="268" height="112" rx="16" class="matrix"/>
+  <text x="370" y="370" class="label">pp-server-backend / standard</text>
+  <text x="370" y="394" class="body">collaboration source-only / unwired</text>
+  <text x="370" y="418" class="small">server allowlist; no compute/release worker</text>
+
+  <rect x="640" y="336" width="268" height="112" rx="16" class="matrix"/>
+  <text x="662" y="370" class="label">pp-compute-node / cpu</text>
+  <text x="662" y="394" class="body">embedding/v1 · rerank/v1</text>
+  <text x="662" y="418" class="small">compute allowlist; collaboration package absent</text>
+
+  <rect x="932" y="336" width="292" height="112" rx="16" class="matrix"/>
+  <text x="954" y="370" class="label">pp-compute-node / cuda</text>
+  <text x="954" y="394" class="body">same typed contract; amd64 policy</text>
+  <text x="954" y="418" class="small">same compute package; CUDA variant</text>
+
+  <text x="56" y="500" class="section">STATIC PREFLIGHT AND AUTHORITY BOUNDARY</text>
+  <rect x="56" y="522" width="1168" height="62" rx="16" class="request"/>
+  <text x="78" y="550" class="label">Static recipe preflight</text>
+  <text x="310" y="550" class="body">Dockerfile · Compose · .dockerignore · pinned base-image catalog</text>
+  <text x="78" y="572" class="small">Reject writer config, full-source final copy, cross-role package paths, and unsafe image state.</text>
+
+  <rect x="56" y="610" width="1168" height="62" rx="16" class="deferred"/>
+  <text x="78" y="638" class="label">Verify-only CI / deferred runtime</text>
+  <text x="355" y="638" class="body">no push/sign/attestation claim · no start/activation/listener/tunnel/deployment</text>
+  <text x="78" y="660" class="small">No runtime mutation. Receipt binds OCI/image, surface inventory, labels, SBOM, and provenance.</text>
+</svg>

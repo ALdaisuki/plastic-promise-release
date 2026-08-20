@@ -16,6 +16,7 @@ _OPTIONAL_MANAGED_ENV = "EnvironmentFile=-/srv/plastic-promise/state/control/man
 _REQUIRED_MANAGED_ENV = "EnvironmentFile=/srv/plastic-promise/state/control/managed.env"
 _CREDENTIALS_ENV = "EnvironmentFile=/srv/plastic-promise/state/secrets/control-credentials.env"
 _UV_PYTHON = "BindReadOnlyPaths=/home/plastic/.local/share/uv/python"
+_UTC_ENV = "Environment=TZ=UTC"
 _UNITS = {
     "plastic-promise-inference-gateway.service": {
         "exec_start": (
@@ -65,6 +66,7 @@ def test_mcp_dropin_loads_activated_environment_after_bootstrap():
 
     assert directives == [
         "[Service]",
+        _UTC_ENV,
         "EnvironmentFile=-/srv/plastic-promise/state/control/managed.env",
     ]
     assert _BASE_ENV not in directives
@@ -89,6 +91,7 @@ def test_maintenance_unit_is_fail_closed_and_loads_managed_environment_last():
         "Group=plastic",
         "WorkingDirectory=/srv/plastic-promise/runtime",
         "UMask=0077",
+        _UTC_ENV,
         _BASE_ENV,
         _OPTIONAL_MANAGED_ENV,
         "Environment=PP_MAINTENANCE_RUN_DIR=/srv/plastic-promise/state/run",
@@ -129,6 +132,7 @@ def test_systemd_unit_contract(unit_name, contract):
         "Group=plastic",
         "WorkingDirectory=/srv/plastic-promise/runtime",
         "UMask=0077",
+        _UTC_ENV,
         contract["exec_start"],
         "Restart=on-failure",
         "RestartSec=5s",
@@ -180,6 +184,12 @@ def test_gateway_mount_namespace_isolates_job_database_from_canonical_sqlite():
     assert "ReadWritePaths=/srv/plastic-promise/state/db" not in directives
     assert _REQUIRED_MANAGED_ENV in directives
     assert _OPTIONAL_MANAGED_ENV not in directives
+
+
+def test_knowledge_ingest_unit_uses_canonical_utc_runtime():
+    directives = _directives(_UNIT_ROOT / "plastic-promise-knowledge-ingest.service")
+
+    assert _UTC_ENV in directives
 
 
 def test_control_credentials_are_outside_the_control_plane_write_root():

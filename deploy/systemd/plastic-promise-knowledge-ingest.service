@@ -1,0 +1,48 @@
+[Unit]
+Description=Plastic Promise knowledge ingestion API (Markdown-first)
+Documentation=https://github.com/ALdaisuki/plastic-promise
+Wants=network-online.target plastic-promise-mcp.service
+After=network-online.target plastic-promise-mcp.service
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=plastic
+Group=plastic
+WorkingDirectory=/srv/plastic-promise/runtime
+UMask=0077
+Environment=TZ=UTC
+EnvironmentFile=/srv/plastic-promise/state/plastic-promise.env
+EnvironmentFile=-/srv/plastic-promise/state/knowledge/knowledge.env
+ExecStart=/srv/plastic-promise/runtime/.venv/bin/python -m plastic_promise.knowledge.server --port 9050
+Restart=on-failure
+RestartPreventExitStatus=3
+RestartSec=5s
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plastic-promise-knowledge-ingest
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+# Note: uv-managed venvs symlink python into /home/<user>/.local/share/uv,
+# so ProtectHome=tmpfs would make ExecStart unresolvable. Keep home readable.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/srv/plastic-promise/state/knowledge
+
+[Install]
+WantedBy=multi-user.target

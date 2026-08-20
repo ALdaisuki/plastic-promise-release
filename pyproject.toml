@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plastic-promise"
-version = "0.1.20"
+version = "0.2.15"
 description = "AI 行为治理系统 — 以约定工程替代约束工程"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Plastic Promise Contributors" },
 ]
@@ -23,7 +24,6 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -40,11 +40,16 @@ dependencies = [
     "starlette>=0.36.0",
     "httpx>=0.27.0",
     "requests>=2.31.0",
+    "PyYAML>=6.0.1,<7.0.0",
+    "tomli>=2.0.1; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 local-inference = [
-    "sentence-transformers>=2.2.0",
+    # CrossEncoder support for Qwen3-Reranker requires transformers>=4.51
+    # and a sentence-transformers release with CrossEncoder prompt support.
+    "sentence-transformers>=3.4.1",
+    "transformers>=4.51.0",
 ]
 neko = [
     "orjson>=3.10.0",
@@ -74,11 +79,17 @@ Issues = "https://github.com/ALdaisuki/plastic-promise-release/issues"
 
 [project.scripts]
 plastic-promise = "plastic_promise.cli:main"
+plastic-promise-deploy = "plastic_promise.deployment.cli:main"
 plastic-promise-http = "plastic_promise:main_http"
 plastic-promise-streamable-http = "plastic_promise:main_streamable_http"
+plastic-promise-canonical-runtime = "plastic_promise.deployment.runtime_lock:main"
 plastic-promise-sse = "plastic_promise:main_sse"
 plastic-promise-inference-gateway = "plastic_promise.mcp.inference_gateway_server:main"
+plastic-promise-knowledge-ingest = "plastic_promise.knowledge.server:main"
 plastic-promise-control-plane = "plastic_promise.mcp.control_plane_server:main"
+plastic-promise-local-inference-node = "plastic_promise.local_inference_node.server:main"
+plastic-promise-local-inference-cache-plan = "plastic_promise.local_inference_node.cache_planner:main"
+plastic-promise-release-builder = "plastic_promise.release_builder.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["plastic_promise*"]

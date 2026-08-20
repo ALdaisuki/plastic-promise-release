@@ -1,3 +1,7 @@
+# This is a versioned installation template for ALdaisuki/plastic-promise-release.
+# It is intentionally inert in the development repository: the stable-only
+# release repository owns its own history, protected environment, and PyPI OIDC
+# publisher configuration.
 name: Release Sync
 
 on:
@@ -13,13 +17,29 @@ on:
         description: "Bounded release evidence JSON (must not contain secrets)"
         required: true
         type: string
+      source_commit:
+        description: "Immutable stable source commit bound by the release manifest"
+        required: true
+        type: string
+      release_manifest_json:
+        description: "Attested release-manifest JSON from the stable source workflow"
+        required: true
+        type: string
+      server_deployment_receipt_json:
+        description: "Bounded no-secret receipt proving the server accepted the manifest-pinned digest"
+        required: true
+        type: string
 
 jobs:
   sync-and-publish:
     name: Sync from dev and publish to PyPI
+    if: github.repository == 'ALdaisuki/plastic-promise-release'
     runs-on: ubuntu-latest
+    environment: production-release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout release repo
@@ -33,10 +53,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ALdaisuki/plastic-promise
-          token: ${{ secrets.DEV_REPO_PAT }}
           path: dev-repo
           fetch-depth: 0
-          ref: main
+          ref: ${{ github.event.inputs.source_commit }}
+          # The release repository's GITHUB_TOKEN cannot read the private
+          # development repository. Use the separately provisioned,
+          # read-only cross-repository credential and keep the immutable SHA
+          # check below as the second line of defense. The secret must be a
+          # fine-grained read-only token (or GitHub App token) scoped only to
+          # ALdaisuki/plastic-promise contents.
+          token: ${{ secrets.DEV_REPO_READ_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -58,19 +84,46 @@ jobs:
           RELEASE_VERSION: ${{ github.event.inputs.version }}
           RELEASE_COMMIT_RANGE: ${{ github.event.inputs.commit_range }}
           RELEASE_EVIDENCE_JSON: ${{ github.event.inputs.release_evidence_json }}
+          RELEASE_SOURCE_COMMIT: ${{ github.event.inputs.source_commit }}
+          RELEASE_MANIFEST_JSON: ${{ github.event.inputs.release_manifest_json }}
+          SERVER_DEPLOYMENT_RECEIPT_JSON: ${{ github.event.inputs.server_deployment_receipt_json }}
         run: |
           evidence_path="$RUNNER_TEMP/plastic-promise-release-evidence.json"
+          manifest_path="$RUNNER_TEMP/plastic-promise-release-manifest.json"
+          deployment_receipt_path="$RUNNER_TEMP/plastic-promise-server-deployment-receipt.json"
           printf '%s' "$RELEASE_EVIDENCE_JSON" > "$evidence_path"
+          printf '%s' "$RELEASE_MANIFEST_JSON" > "$manifest_path"
+          printf '%s' "$SERVER_DEPLOYMENT_RECEIPT_JSON" > "$deployment_receipt_path"
+          python - "$manifest_path" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "dev-repo")
+          from plastic_promise.release_manifest import validate_release_manifest
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          validate_release_manifest(manifest)
+          if manifest["release"]["semver"] != os.environ["RELEASE_VERSION"]:
+              raise SystemExit("release_manifest_version_mismatch")
+          if manifest["release"]["channel"] != "stable":
+              raise SystemExit("release_manifest_stable_channel_required")
+          if manifest["source"]["commit"] != os.environ["RELEASE_SOURCE_COMMIT"]:
+              raise SystemExit("release_manifest_source_commit_mismatch")
+          PY
+          test "$(git -C dev-repo rev-parse HEAD)" = "$RELEASE_SOURCE_COMMIT"
           python dev-repo/scripts/release-sync.py \
             --from "$RELEASE_COMMIT_RANGE" \
             --version "$RELEASE_VERSION" \
             --release-repo release-repo \
             --validation-profile full \
             --release-evidence "$evidence_path" \
+            --release-manifest "$manifest_path" \
+            --server-deployment-receipt "$deployment_receipt_path" \
             --push
 
       - name: Build and publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: release-repo/dist/

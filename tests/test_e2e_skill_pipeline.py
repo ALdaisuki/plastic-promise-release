@@ -25,7 +25,7 @@ from mcp.types import TextContent
 # 时间工具: 使用今天的真实日期，避免孤儿检测的时序问题
 # ═══════════════════════════════════════════════════════════
 
-_NOW = datetime.datetime.now(datetime.UTC)  # UTC timestamp used throughout tests
+_NOW = datetime.datetime.now(datetime.timezone.utc)  # UTC timestamp used throughout tests
 _TODAY = _NOW.strftime("%Y-%m-%d")
 _T = lambda h, m, s=0: f"{_TODAY}T{h:02d}:{m:02d}:{s:02d}"
 _OLD = lambda hours_ago: (_NOW - datetime.timedelta(hours=hours_ago)).isoformat()
@@ -509,6 +509,7 @@ class TestS3SelfFeedbackLoop:
         # 第一次注入留下的记忆
         first_record = {
             "id": "mem_first",
+            "project_id": "project:e2e-skill-pipeline",
             "content": "[AUTO INJECT] 修复 JWT token 过期刷新问题\ncore_items: 3\nactivated_principles: 奥卡姆剃刀",
             "memory_type": "experience",
             "entity_ids": ["skill:auto_inject:claude_code:2026-01-01T00:00:00"],
@@ -559,6 +560,7 @@ class TestS3SelfFeedbackLoop:
                                         "task_type": "debugging",
                                         "source": "claude_code",
                                         "scope": "agent:claude",
+                                        "project_id": "project:e2e-skill-pipeline",
                                     },
                                 )
                             )
@@ -587,12 +589,14 @@ class TestS3SelfFeedbackLoop:
         engine._memories = {
             "mem_r1": {
                 "id": "mem_r1",
+                "project_id": "project:e2e-skill-pipeline",
                 "content": "[AUTO INJECT] 设计认证模块\ncore_items: 2",
                 "memory_type": "experience",
                 "tags": ["auto_inject"],
             },
             "mem_r2": {
                 "id": "mem_r2",
+                "project_id": "project:e2e-skill-pipeline",
                 "content": "[AUTO INJECT] 实现 JWT 登录\ncore_items: 3",
                 "memory_type": "experience",
                 "tags": ["auto_inject"],
@@ -654,6 +658,7 @@ class TestS3SelfFeedbackLoop:
                                         "task_description": "审查认证模块安全性",
                                         "task_type": "code_review",
                                         "source": "claude_code",
+                                        "project_id": "project:e2e-skill-pipeline",
                                     },
                                 )
                             )

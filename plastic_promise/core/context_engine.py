@@ -201,6 +201,16 @@ class OrdinaryMemoryConflict(RuntimeError):
     """Reject an unsafe or conflicting ordinary-memory mutation."""
 
 
+class RetrievalEmbeddingError(RuntimeError):
+    """Stable failure from the active retrieval embedding route."""
+
+    def __init__(self, code: str) -> None:
+        if not isinstance(code, str) or not code:
+            code = "retrieval_embedding_unavailable"
+        self.code = code
+        super().__init__(code)
+
+
 _ORDINARY_JSON_PATCH_FIELDS = frozenset(
     {
         "tags",
@@ -795,6 +805,46 @@ class ContextEngine:
         self._rust_health_ttl: float = 300.0  # cache TTL in seconds (5 minutes)
         self._rust_engine_instance = None  # cached Rust engine instance (reused)
         self._rust_lock = threading.Lock()  # protects all _rust_* fields from concurrent access
+        self._memory_index_node_runtime: object | None = None
+        self._memory_index_node_runtime_status: dict[str, object] = {}
+
+    def install_memory_index_node_runtime(self, runtime: object) -> None:
+        """Install a server-created governed index runtime for this process.
+
+        The bootstrap owns construction and validation.  Context supply only
+        consumes this opaque runtime for governed foreground reranking, so it
+        cannot create, select, or reconfigure a node route itself.
+        """
+
+        with self._runtime_mode_lock(), self._heavy_init_lock:
+            self._memory_index_node_runtime = runtime
+            # A hot-installed governed route invalidates all legacy model and
+            # generation bindings before the next retrieval operation.
+            self._embedder = None
+            self._ldb = None
+            self._lancedb_generation_path = ""
+            self._lancedb_generation_base_path = ""
+            self._lancedb_generation_id = ""
+            self._lancedb_generation_manifest = None
+            self._lancedb_live_lag = None
+            self._lancedb_generation_error = ""
+            self._principle_anchors = {}
+            self._heavy_init_done = False
+
+    def memory_index_node_runtime(self) -> object | None:
+        """Return the process-local governed runtime without exposing internals."""
+
+        return self._memory_index_node_runtime
+
+    def set_memory_index_node_runtime_status(self, status: Mapping[str, object]) -> None:
+        """Store the bounded no-secret bootstrap status for diagnostics."""
+
+        self._memory_index_node_runtime_status = dict(status)
+
+    def memory_index_node_runtime_status(self) -> dict[str, object]:
+        """Return a copy of the bounded no-secret node bootstrap status."""
+
+        return dict(self._memory_index_node_runtime_status)
 
     def _ensure_runtime_gate(self):
         gate = getattr(self, "_runtime_gate", None)
@@ -1079,11 +1129,31 @@ class ContextEngine:
                 self._dm_ok = False
 
             # P1: Store embedder for principle anchor computation and intent matching
-            if self._embedder is None:
+            governed_runtime = self.memory_index_node_runtime()
+            if self._embedder is None and governed_runtime is not None:
                 try:
-                    from plastic_promise.core.embedder import get_embedder
+                    from plastic_promise.core.memory_index_node_runtime import (
+                        GovernedRetrievalEmbedder,
+                    )
 
-                    self._embedder = get_embedder(fallback_on_error=True)
+                    self._embedder = GovernedRetrievalEmbedder(governed_runtime)
+                except Exception as exc:
+                    logging.warning(
+                        "ContextEngine: governed retrieval embedder unavailable (%s)",
+                        getattr(exc, "code", "node_retrieval_runtime_invalid"),
+                    )
+            elif self._embedder is None:
+                try:
+                    if os.environ.get("PP_ENDPOINT_ROLE", "").strip() == "pp-server-backend":
+                        from plastic_promise.core.server_embedder import FallbackEmbedder
+
+                        self._embedder = FallbackEmbedder(
+                            dim=int(os.environ.get("PP_EMBEDDING_DIM", "1024"))
+                        )
+                    else:
+                        from plastic_promise.core.server_embedder import get_embedder
+
+                        self._embedder = get_embedder(fallback_on_error=True)
                 except Exception:
                     logging.warning(
                         "ContextEngine: embedder unavailable — intent matching disabled"
@@ -1110,11 +1180,9 @@ class ContextEngine:
                 try:
                     from plastic_promise.core.lancedb_store import LanceDBStore
 
-                    runtime_embedder = (
-                        self._embedder
-                        if self._embedder is not None
-                        else get_embedder(fallback_on_error=True)
-                    )
+                    runtime_embedder = self._embedder
+                    if runtime_embedder is None:
+                        raise RetrievalEmbeddingError("retrieval_embedding_unavailable")
                     if generation_mode:
                         ldb_path = self._resolve_generation_lancedb_path(
                             db_path,
@@ -2337,7 +2405,10 @@ class ContextEngine:
                     )
                     break
                 try:
-                    vec = self._embedder.embed(p["content"])
+                    vec = self._retrieval_embedding(
+                        p["content"],
+                        project_id="project:legacy-global",
+                    )
                     if vec and any(v != 0.0 for v in vec):
                         anchors[p["id"]] = vec
                         consecutive_failures = 0
@@ -3262,7 +3333,89 @@ class ContextEngine:
 
     # ========== 核心方法: supply() ==========
 
-    def _embed(self, task_description: str) -> list[float]:
+    def _retrieval_embedding(self, text: str, *, project_id: str) -> list[float]:
+        """Return one vector from the active route without provider rediscovery."""
+
+        runtime = self.memory_index_node_runtime()
+        if runtime is not None:
+            operation = getattr(runtime, "embedding_for_retrieval", None)
+            if not callable(operation):
+                raise RetrievalEmbeddingError("node_retrieval_embedding_unavailable")
+            try:
+                result = operation(text=text, project_id=project_id)
+                vector = getattr(result, "vector", None)
+            except Exception as exc:
+                raise RetrievalEmbeddingError(
+                    str(getattr(exc, "code", "node_retrieval_embedding_failed"))
+                ) from exc
+        else:
+            if self._embedder is None:
+                raise RetrievalEmbeddingError("retrieval_embedding_unavailable")
+            try:
+                vector = self._embedder.embed(text)
+            except Exception as exc:
+                raise RetrievalEmbeddingError("retrieval_embedding_provider_failed") from exc
+        if not isinstance(vector, (list, tuple)) or not vector:
+            raise RetrievalEmbeddingError("retrieval_embedding_vector_invalid")
+        normalized: list[float] = []
+        for value in vector:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise RetrievalEmbeddingError("retrieval_embedding_vector_invalid")
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                raise RetrievalEmbeddingError("retrieval_embedding_vector_invalid")
+            normalized.append(numeric)
+        if not any(normalized):
+            raise RetrievalEmbeddingError("retrieval_embedding_zero_or_invalid")
+        return normalized
+
+    def retrieval_embedding_probe(
+        self,
+        text: str,
+        *,
+        project_id: str = "project:system-health",
+    ) -> list[float]:
+        """Probe the same governed route used by live context retrieval."""
+
+        self._ensure_heavy_init()
+        return self._retrieval_embedding(text, project_id=project_id)
+
+    def retrieval_embedding_identity(self) -> dict[str, object]:
+        """Return the complete active retrieval identity without secrets."""
+
+        self._ensure_heavy_init()
+        embedder = self.ensure_runtime_embedder()
+        model, revision, dimension, index_identity = _runtime_generation_embedder_identity(embedder)
+        normalization = getattr(embedder, "normalization", "")
+        return {
+            "provider": (
+                "governed-node" if self.memory_index_node_runtime() is not None else "legacy"
+            ),
+            "model": model,
+            "revision": revision,
+            "dimension": dimension,
+            "normalization": str(normalization or ""),
+            "index_identity": index_identity,
+        }
+
+    def retrieval_embedding_usage(self) -> dict[str, object]:
+        """Return usage from the same governed runtime used by retrieval probes."""
+
+        self._ensure_heavy_init()
+        runtime = self.memory_index_node_runtime()
+        if runtime is None:
+            raise RetrievalEmbeddingError("retrieval_embedding_usage_unavailable")
+        usage = getattr(runtime, "embedding_usage", None)
+        if not isinstance(usage, dict):
+            raise RetrievalEmbeddingError("retrieval_embedding_usage_unavailable")
+        return dict(usage)
+
+    def _embed(
+        self,
+        task_description: str,
+        *,
+        project_id: str = "project:legacy-global",
+    ) -> list[float]:
         """Generate embedding vector for task description.
 
         Uses the existing embedder from heavy_init. Returns zero vector
@@ -3270,11 +3423,13 @@ class ContextEngine:
         """
         try:
             self._ensure_heavy_init()
-            if hasattr(self, "_embedder") and self._embedder:
-                return self._embedder.embed(task_description)
+            return self._retrieval_embedding(task_description, project_id=project_id)
         except Exception:
             pass
-        return [0.0] * 1024  # fallback: zero vector
+        dimension = getattr(getattr(self, "_embedder", None), "dim", 1024)
+        if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
+            dimension = 1024
+        return [0.0] * dimension
 
     @_runtime_operation
     def supply(
@@ -3305,7 +3460,7 @@ class ContextEngine:
 
         # Generate embedding if not provided (backward compatibility)
         if task_vector is None:
-            task_vector = self._embed(task_description)
+            task_vector = self._embed(task_description, project_id=project_id)
 
         # Ensure vector is non-empty — if embedder fails (Ollama down, etc.),
         # use zero vector as fallback so downstream code never sees None
@@ -4736,7 +4891,11 @@ class ContextEngine:
 
         # Phase 0: 原则注入 + 图谱自动注入
         principle_started = time.perf_counter() if capture_stage_timings else None
-        activated = self._activate_principles(task_type, task_description)
+        activated = self._activate_principles(
+            task_type,
+            task_description,
+            project_id=project_id,
+        )
         if self.enable_principles:
             self._inject_activated_to_graph(activated, task_type)
         record_stage_timing("principle_injection", principle_started)
@@ -5189,13 +5348,56 @@ class ContextEngine:
             )
             # Unified reranker (Phase 1.6): multi-provider chain, default ON;
             # disable with PP_RERANK_DISABLED=1.
-            from plastic_promise.core.reranker import MultiProviderReranker
+            from plastic_promise.core.server_reranker import MultiProviderReranker
 
-            reranker = MultiProviderReranker()
             rerank_started = time.perf_counter() if capture_stage_timings else None
-            all_items = reranker.rerank(task_description, all_items)
+            governed_runtime = self.memory_index_node_runtime()
+            governed_rerank = getattr(governed_runtime, "rerank_for_context", None)
+            # Once a controlled node route has been installed (including a
+            # fail-closed blocked route), ordinary local Ollama discovery must
+            # not bypass node registration.  Its only foreground fallback is
+            # the configured cloud provider, then original ordering.
+            server_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip() == "pp-server-backend"
+            reranker = MultiProviderReranker(
+                providers=("original",) if governed_runtime is not None or server_role else None
+            )
+            governed_reason = ""
+            if callable(governed_rerank):
+                try:
+                    outcome = governed_rerank(
+                        project_id=project_id,
+                        query=task_description,
+                        documents=[str(item.content) for item in all_items],
+                    )
+                    if outcome.scores:
+                        all_items = reranker._apply_rerank_scores(all_items, outcome.scores)
+                        rerank_diagnostics = {
+                            "provider": "governed-node",
+                            "status": "success",
+                            "degraded": False,
+                            "reason": outcome.selection_reason,
+                            "candidate_count": len(all_items),
+                            "reranked_count": len(outcome.scores),
+                            "node_id": outcome.node_id or "",
+                            "cache_hit": False,
+                        }
+                    else:
+                        governed_reason = outcome.degradation_reason or outcome.selection_reason
+                        all_items = reranker.rerank(task_description, all_items)
+                        rerank_diagnostics = reranker.last_diagnostics
+                except Exception as exc:
+                    governed_reason = getattr(exc, "code", "governed_node_failed")
+                    all_items = reranker.rerank(task_description, all_items)
+                    rerank_diagnostics = reranker.last_diagnostics
+                if governed_reason:
+                    rerank_diagnostics = {
+                        **rerank_diagnostics,
+                        "governed_node_degradation": str(governed_reason)[:128],
+                    }
+            else:
+                all_items = reranker.rerank(task_description, all_items)
+                rerank_diagnostics = reranker.last_diagnostics
             record_stage_timing("rerank", rerank_started)
-            rerank_diagnostics = reranker.last_diagnostics
             # MMR diversity (Phase 1.4)
             mmr_started = time.perf_counter() if capture_stage_timings else None
             all_items = self._apply_mmr(all_items, threshold=0.85, penalty=0.70)
@@ -5566,9 +5768,22 @@ class ContextEngine:
         """Return the current embedder, recreating it after a runtime refresh if needed."""
         with self._runtime_mode_lock(), self._heavy_init_lock:
             if self._embedder is None:
-                from plastic_promise.core.embedder import get_embedder
+                runtime = self.memory_index_node_runtime()
+                if runtime is not None:
+                    try:
+                        from plastic_promise.core.memory_index_node_runtime import (
+                            GovernedRetrievalEmbedder,
+                        )
 
-                self._embedder = get_embedder(fallback_on_error=True)
+                        self._embedder = GovernedRetrievalEmbedder(runtime)
+                    except Exception as exc:
+                        raise RetrievalEmbeddingError(
+                            str(getattr(exc, "code", "node_retrieval_runtime_invalid"))
+                        ) from exc
+                else:
+                    from plastic_promise.core.server_embedder import get_embedder
+
+                    self._embedder = get_embedder(fallback_on_error=True)
             return self._embedder
 
     @_runtime_refresh
@@ -5593,7 +5808,7 @@ class ContextEngine:
     ) -> dict[str, Any]:
         """Refresh mode-coupled dependencies and optionally synchronize the derived index."""
         self.reset_rust_health()
-        from plastic_promise.core.embedder import reset_embedder
+        from plastic_promise.core.server_embedder import reset_embedder
 
         with self._heavy_init_lock:
             self._embedder = None
@@ -5763,9 +5978,19 @@ class ContextEngine:
         self._runtime_refresh_status = refresh
         return refresh
 
-    def activate_principles(self, task_type: str, task_description: str) -> list[str]:
+    def activate_principles(
+        self,
+        task_type: str,
+        task_description: str,
+        *,
+        project_id: str = "project:legacy-global",
+    ) -> list[str]:
         """Public wrapper for _activate_principles."""
-        return self._activate_principles(task_type, task_description)
+        return self._activate_principles(
+            task_type,
+            task_description,
+            project_id=project_id,
+        )
 
     def generation_live_index_status(self) -> dict[str, Any] | None:
         """Refresh bounded live-view lag counters from canonical SQLite."""
@@ -6285,7 +6510,13 @@ class ContextEngine:
 
         return edges_created
 
-    def _activate_principles(self, task_type: str, task_description: str) -> list[str]:
+    def _activate_principles(
+        self,
+        task_type: str,
+        task_description: str,
+        *,
+        project_id: str = "project:legacy-global",
+    ) -> list[str]:
         """P1: Three-channel principle activation.
 
         Channel 1 — Static task-type mapping: differentiated principle
@@ -6328,7 +6559,10 @@ class ContextEngine:
         # Channel 3: Intent vector matching (semantic)
         if self._principle_anchors and self._embedder is not None:
             try:
-                task_vec = self._embedder.embed(task_description)
+                task_vec = self._retrieval_embedding(
+                    task_description,
+                    project_id=project_id,
+                )
                 if task_vec and any(v != 0.0 for v in task_vec):
                     for pid, anchor_vec in self._principle_anchors.items():
                         if pid in activated_ids:
@@ -7390,6 +7624,28 @@ def _ensure_memory_version_schema(conn) -> None:
         raise
 
 
+def _ensure_production_attestation_schema(conn) -> None:
+    """Create the local verifier ledger required by production readiness."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS production_evidence_attestations (
+            attestation_id TEXT PRIMARY KEY,
+            subject_path_sha256 TEXT NOT NULL,
+            evidence_sha256 TEXT NOT NULL,
+            issuer TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            status TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_production_attestations_expiry "
+        "ON production_evidence_attestations (status, expires_at)"
+    )
+
+
 class _SQLiteStorage:
     """SQLite write-through backend for ContextEngine memories.
 
@@ -7408,6 +7664,14 @@ class _SQLiteStorage:
             db_path = get_db_path()
         self._db_path = str(db_path)
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
+        # SQLite foreign-key enforcement is connection-local; enabling it in
+        # a deployment migration does not survive a backend restart.  Every
+        # canonical storage connection must therefore establish and verify
+        # the invariant before any repository or runtime can use it.
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        if self._conn.execute("PRAGMA foreign_keys").fetchone() != (1,):
+            self._conn.close()
+            raise RuntimeError("sqlite_foreign_keys_required")
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS memories ("

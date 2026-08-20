@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import pytest
 
+from plastic_promise.collaboration.contracts import (
+    AgentIdentity,
+    CollaborationEvent,
+    ProjectScope,
+)
+from plastic_promise.collaboration.event_log import CollaborationEventLog
 from plastic_promise.core.chunking import build_chunk_manifest, chunk_manifest_hash
 from plastic_promise.core.memory_proposals import (
     MemoryProposalStore,
@@ -20,10 +27,12 @@ from plastic_promise.mcp.dashboard_v2.config import (
     resolve_local_scope,
 )
 from plastic_promise.mcp.dashboard_v2.repository import (
+    DashboardCollaborationError,
     DashboardCursorError,
     DashboardRepository,
     redact_value,
 )
+from tests.pr5_schema_fixture import install_pr5_collaboration_schema
 
 
 def _database() -> sqlite3.Connection:
@@ -543,6 +552,167 @@ def _seed_passive_dashboard_data(repository: DashboardRepository) -> dict[str, s
         "adopted": adopted["proposal_id"],
         "foreign": by_content["B_FOREIGN_PROPOSAL_SECRET"]["proposal_id"],
     }
+
+
+def _seed_collaboration_dashboard_data(repository: DashboardRepository) -> None:
+    conn = repository.connection
+
+    @contextmanager
+    def transaction():
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
+
+    fixed_now = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+    install_pr5_collaboration_schema(
+        conn,
+        transaction_factory=transaction,
+        clock=lambda: fixed_now,
+        suffix="dashboard-v2",
+    )
+    agents = (
+        ("agent:worker", "worker", None, "session:worker"),
+        ("agent:reviewer", "reviewer", "agent:worker", "session:reviewer"),
+    )
+    for agent_id, role, parent_agent_id, session_id in agents:
+        conn.execute(
+            "INSERT INTO collaboration_agents "
+            "(project_id,agent_id,role,parent_agent_id,identity_json,policy_json,"
+            "policy_revision,state,first_seen_at,last_seen_at,updated_at) "
+            "VALUES ('project:a',?,?,?,?, '{}','policy:v1','active',?,?,?)",
+            (
+                agent_id,
+                role,
+                parent_agent_id,
+                json.dumps(
+                    {
+                        "schema_version": "agent-identity/v1",
+                        "agent_id": agent_id,
+                        "role": role,
+                        "parent_agent_id": parent_agent_id,
+                        "capabilities": ["must-not-leak"],
+                    }
+                ),
+                "2026-08-13T11:00:00Z",
+                "2026-08-13T12:00:00Z",
+                "2026-08-13T12:00:00Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO collaboration_agent_sessions "
+            "(session_id,project_id,agent_id,coordination_session_id,identity_json,"
+            "session_json,session_sha256,policy_json,state,started_at,last_heartbeat_at,"
+            "expires_at,updated_at) VALUES (?,'project:a',?,'coordination:a','{}','{}',"
+            "'sha256:test','{}','active','2026-08-13T11:00:00Z',"
+            "'2026-08-13T12:00:00Z','2026-08-14T12:00:00Z','2026-08-13T12:00:00Z')",
+            (session_id, agent_id),
+        )
+    conn.execute(
+        "INSERT INTO collaboration_work_items "
+        "(work_item_id,project_id,coordination_session_id,work_receipt_json,"
+        "work_receipt_sha256,assigned_agent_id,state,attempt,max_attempts,created_at,"
+        "updated_at,last_error) VALUES ('work:a','project:a','coordination:a',"
+        "'{\"objective\":\"MUST_NOT_LEAK\"}','sha256:work','agent:worker','in_progress',"
+        "1,3,'2026-08-13T11:30:00Z','2026-08-13T12:00:00Z','password=SECRET')"
+    )
+    conn.execute(
+        "INSERT INTO collaboration_work_leases "
+        "(lease_id,work_item_id,project_id,coordination_session_id,owner_kind,policy_kind,"
+        "owner_id,owner_session_id,lease_json,lease_sha256,fencing_generation,attempt,"
+        "issued_at,expires_at,last_heartbeat_at,state) VALUES "
+        "('lease:a','work:a','project:a','coordination:a','agent','agent-work',"
+        "'agent:worker','session:worker','{}','sha256:lease',2,1,"
+        "'2026-08-13T11:30:00Z','2026-08-14T12:00:00Z','2026-08-13T12:00:00Z','active')"
+    )
+    event_log = CollaborationEventLog(
+        connection=conn,
+        clock=lambda: fixed_now,
+        ensure_schema=False,
+    )
+    for event in (
+        CollaborationEvent.create(
+            project=ProjectScope("project:a"),
+            coordination_session_id="coordination:a",
+            actor=AgentIdentity("agent:worker", "worker", capabilities=("hidden",)),
+            event_type="work.progressed",
+            summary="Public bounded progress",
+            work_item_id="work:a",
+            subject_refs=("symbol:safe",),
+            evidence_refs=("sha256:evidence",),
+            payload={"raw": "MUST_NOT_LEAK"},
+        ),
+        CollaborationEvent.create(
+            project=ProjectScope("project:a"),
+            coordination_session_id="coordination:a",
+            actor=AgentIdentity("agent:reviewer", "reviewer"),
+            event_type="finding.published",
+            summary="Targeted review",
+            audience_roles=("reviewer",),
+            payload={"raw": "TARGETED_SECRET"},
+        ),
+    ):
+        event_log.append(event)
+    conn.commit()
+
+
+def test_collaboration_snapshot_is_bounded_broadcast_only_and_role_is_filter_only(repository):
+    _seed_collaboration_dashboard_data(repository)
+
+    snapshot = repository.collaboration_snapshot(role="worker")
+    rendered = json.dumps(snapshot, sort_keys=True)
+
+    assert snapshot["authority_effect"] == "none"
+    assert snapshot["filters"]["role_effect"] == "result_narrowing_only"
+    assert snapshot["topology"]["returned"] == 1
+    assert snapshot["work_board"]["returned"] == 1
+    assert snapshot["work_board"]["data"][0]["last_error_present"] is True
+    assert snapshot["event_timeline"]["data"][0]["summary"] == "Public bounded progress"
+    assert snapshot["event_timeline"]["data"][0]["payload"] == "redacted"
+    assert "Targeted review" not in rendered
+    assert "MUST_NOT_LEAK" not in rendered
+    assert "TARGETED_SECRET" not in rendered
+    assert "must-not-leak" not in rendered
+    assert "policy:v1" not in rendered
+    assert "receipt_json" not in rendered
+
+
+def test_collaboration_cursor_is_ephemeral_scope_and_filter_bound(repository):
+    _seed_collaboration_dashboard_data(repository)
+    first = repository.collaboration_snapshot(event_limit=1)
+    cursor = first["event_timeline"]["next_cursor"]
+
+    resumed = repository.collaboration_snapshot(event_cursor=cursor, event_limit=1)
+    assert resumed["event_timeline"]["data"] == []
+    with pytest.raises(DashboardCursorError, match="cursor_filter_mismatch"):
+        repository.collaboration_snapshot(role="worker", event_cursor=cursor)
+    assert (
+        repository.connection.execute("SELECT COUNT(*) FROM collaboration_cursors").fetchone()[0]
+        == 0
+    )
+
+
+def test_collaboration_projection_fails_closed_on_schema_or_event_mismatch(repository):
+    with pytest.raises(
+        DashboardCollaborationError,
+        match="collaboration_projection_schema_missing",
+    ):
+        repository.collaboration_snapshot()
+
+    _seed_collaboration_dashboard_data(repository)
+    repository.connection.execute("DROP TRIGGER collaboration_events_no_update")
+    repository.connection.execute(
+        "UPDATE collaboration_events SET event_sha256='sha256:tampered' WHERE sequence=1"
+    )
+    with pytest.raises(
+        DashboardCollaborationError,
+        match="collaboration_projection_event_invalid",
+    ):
+        repository.collaboration_snapshot()
 
 
 @pytest.mark.parametrize("value", [None, "", "0", "true", "yes", "2", 1])

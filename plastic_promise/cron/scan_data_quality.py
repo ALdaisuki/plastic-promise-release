@@ -50,7 +50,7 @@ def scan_data_quality(engine: Any) -> list[dict[str, Any]]:
 def _check_embedder(engine: Any, findings: list[dict]):
     """Check if embedder is healthy (not FallbackEmbedder, produces non-zero vectors)."""
     try:
-        from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
+        from plastic_promise.core.server_embedder import FallbackEmbedder, get_embedder
 
         embedder = get_embedder(fallback_on_error=False)
         if isinstance(embedder, FallbackEmbedder):

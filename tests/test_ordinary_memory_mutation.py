@@ -1720,6 +1720,33 @@ class _CoordinatorEmbedder:
         return [0.25] * 1024
 
 
+class _ProjectScopedCorrectionEmbedder:
+    """Reject unscoped identity probes and embeddings during correction."""
+
+    _MODEL_NAME = "project-scoped-coordinator-test"
+
+    def __init__(self, expected_project_id):
+        self.expected_project_id = expected_project_id
+        self.project_calls = []
+        self._identity_ready = False
+
+    def embed(self, _text):
+        raise AssertionError("correction must not use an unscoped embed route")
+
+    def embed_for_project(self, text, *, project_id):
+        assert text
+        assert project_id == self.expected_project_id
+        self.project_calls.append((text, project_id))
+        self._identity_ready = True
+        return [1.0] + [0.0] * 1023
+
+    @property
+    def index_model_name(self):
+        if not self._identity_ready:
+            raise AssertionError("project-scoped embedding must prime model identity")
+        return self._MODEL_NAME
+
+
 def _prepare_test_correction(_pipeline, current, new_content):
     normalized = " ".join(str(new_content or "").split())
     material = build_index_material(
@@ -2253,6 +2280,40 @@ def test_prepare_correction_preserves_persisted_index_policy_and_model(rich_row)
     assert prepared.metadata["memory_index"]["model_name"] == _CoordinatorEmbedder.model_name
     assert prepared.metadata["quality"]["status"] == "current"
     assert current == before
+
+
+def test_prepare_correction_uses_source_project_for_governed_embedding(rich_row):
+    current = copy.deepcopy(rich_row)
+    embedder = _ProjectScopedCorrectionEmbedder(current["project_id"])
+    material = build_index_material(
+        {
+            "content": current["content"],
+            "raw_content": current["raw_content"],
+            "l0_abstract": current["l0_abstract"],
+            "l1_summary": current["l1_summary"],
+            "l2_content": current["l2_content"],
+        },
+        policy="compact-v2",
+        model_name=embedder._MODEL_NAME,
+    )
+    current.update(
+        {
+            "embedding_text": material.vector_text,
+            "embedding_hash": material.embedding_hash,
+            "search_text": material.search_text,
+            "metadata_json": metadata_with_index_material(current["metadata_json"], material),
+        }
+    )
+
+    prepared = MemoryPipeline(embedder=embedder).prepare_correction(
+        current,
+        "Corrected content must remain on the source project's governed route.",
+    )
+
+    assert prepared.index_material.model_name == embedder._MODEL_NAME
+    assert prepared.vector == (1.0, *([0.0] * 1023))
+    assert embedder.project_calls
+    assert all(project_id == current["project_id"] for _, project_id in embedder.project_calls)
 
 
 def test_stale_verified_dependents_is_caller_owned_and_clears_verification(

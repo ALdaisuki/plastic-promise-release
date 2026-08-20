@@ -181,6 +181,7 @@ async def wait_for_health(
     managed: ManagedProcess,
     *,
     timeout: float = 120.0,
+    allow_degraded: bool = False,
     expected_source_root: str | Path | None = None,
     expected_source_revision: str | None = None,
     expected_fusion_policy: str | None = None,
@@ -197,7 +198,6 @@ async def wait_for_health(
                 )
             try:
                 response = await client.get(url)
-                response.raise_for_status()
                 payload = response.json()
                 if payload.get("status") == "ok":
                     return require_owned_health(
@@ -207,6 +207,17 @@ async def wait_for_health(
                         expected_source_revision=expected_source_revision,
                         expected_fusion_policy=expected_fusion_policy,
                     )
+                if allow_degraded and response.status_code == 503:
+                    probe = dict(payload)
+                    probe["status"] = "ok"
+                    require_owned_health(
+                        probe,
+                        managed,
+                        expected_source_root=expected_source_root,
+                        expected_source_revision=expected_source_revision,
+                        expected_fusion_policy=expected_fusion_policy,
+                    )
+                    return dict(payload)
                 last_error = "health_not_ok"
             except Exception as exc:
                 last_error = exc.__class__.__name__

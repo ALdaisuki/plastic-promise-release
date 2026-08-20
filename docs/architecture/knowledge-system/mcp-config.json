@@ -1,0 +1,217 @@
+{
+  "schema_version": "plastic-promise-knowledge-architecture/v1",
+  "mcpServers": {
+    "plastic_promise": {
+      "type": "http",
+      "url": "http://127.0.0.1:19020/mcp",
+      "description": "Plastic Promise memory, knowledge, context, governance and audit over the existing SSH tunnel"
+    }
+  },
+  "knowledge_runtime": {
+    "server_bind": "127.0.0.1:9050",
+    "mac_local_forward": "19050:127.0.0.1:9050",
+    "dashboard_origin": "http://127.0.0.1:19020",
+    "canonical_database_env": "PLASTIC_KNOWLEDGE_DB_PATH",
+    "blob_root_env": "PLASTIC_KNOWLEDGE_BLOB_ROOT",
+    "lancedb_root_env": "PLASTIC_KNOWLEDGE_LANCEDB_PATH",
+    "provider_gateway": "http://127.0.0.1:9030",
+    "defaults": {
+      "parser_concurrency": 2,
+      "semantic_concurrency": 4,
+      "semantic_batch_chunks": 20,
+      "semantic_partial_flush_seconds": 30,
+      "job_lease_seconds": 300,
+      "max_attempts": 5,
+      "purge_retention_days": 30,
+      "hook_deadline_ms": 400,
+      "knowledge_search_timeout_seconds": 15
+    }
+  },
+  "tools": {
+    "knowledge_search": {
+      "description": "Search active source-grounded knowledge without changing memory_recall semantics",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "minLength": 1 },
+          "project_id": { "type": "string", "minLength": 1 },
+          "knowledge_space_id": { "type": "string" },
+          "domains": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "max_results": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 },
+          "evidence_mode": {
+            "type": "string",
+            "enum": ["citations", "source_only", "debug"],
+            "default": "citations"
+          },
+          "include_contested": { "type": "boolean", "default": false },
+          "request_id": { "type": "string" },
+          "stage_session_id": { "type": "string" },
+          "flow_line_id": { "type": "string" }
+        },
+        "required": ["query", "project_id"],
+        "additionalProperties": false
+      }
+    },
+    "knowledge_explain": {
+      "description": "Explain a prior knowledge search with bounded ranking, lifecycle and citation evidence",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "call_id": { "type": "string", "minLength": 1 },
+          "project_id": { "type": "string", "minLength": 1 }
+        },
+        "required": ["call_id", "project_id"],
+        "additionalProperties": false
+      }
+    },
+    "knowledge_source_submit": {
+      "description": "Register a URL, Git repository or approved server path; binary file upload uses the knowledge ingestion HTTP API",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "source_type": {
+            "type": "string",
+            "enum": ["url", "git", "server_path", "internal_experience"]
+          },
+          "source_uri": { "type": "string", "minLength": 1 },
+          "sync_policy": {
+            "type": "string",
+            "enum": ["manual", "watch", "scheduled"],
+            "default": "manual"
+          },
+          "idempotency_key": { "type": "string", "minLength": 16 },
+          "requested_domains": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["project_id", "source_type", "source_uri", "idempotency_key"],
+        "additionalProperties": false
+      }
+    },
+    "knowledge_job_status": {
+      "description": "Read the durable state and stable failure reason of one ingestion or maintenance job",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "job_id": { "type": "string", "minLength": 1 }
+        },
+        "required": ["project_id", "job_id"],
+        "additionalProperties": false
+      }
+    },
+    "knowledge_domain_list": {
+      "description": "List active and candidate knowledge domains for a project-owned knowledge space",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "minLength": 1 },
+          "status": {
+            "type": "string",
+            "enum": ["candidate", "active", "merged", "split", "retired", "all"],
+            "default": "active"
+          }
+        },
+        "required": ["project_id"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "context_fusion": {
+    "memory_tool": "memory_recall",
+    "knowledge_tool": "knowledge_search",
+    "fusion_tool": "context_supply",
+    "preserve_item_types": true,
+    "forbid_cross_project_results": true,
+    "reject_stale_or_contested_by_default": true
+  },
+  "security_review": {
+    "required_for_stage": "code-review",
+    "adapter": "deepsec_cli",
+    "upstream_commit": "3742ec0702f6b72956365bee3d23319522db5c40",
+    "package_version": "0.2.0",
+    "command_env": "PP_DEEPSEC_COMMAND",
+    "layers": ["l1", "l2"],
+    "scan_scope": "changed_supported_files",
+    "timeout_seconds": 30,
+    "stdout_format": "json",
+    "exit_code_with_high_findings": 2,
+    "network": "denied",
+    "reviewed_checkout": "read_only",
+    "credentials": "none",
+    "config_directory": "ephemeral",
+    "native_id_is_stable": false,
+    "raw_evidence_projection": "hash_and_bounded_redaction_only",
+    "spear_automation_forbidden": true,
+    "high_critical_block_review": true,
+    "security_sensitive_degradation": "fail_closed",
+    "ordinary_degradation": "visible_warning_no_positive_evidence"
+  },
+  "evolution": {
+    "evidence_interface": "EvolutionEvidence.submit",
+    "states": [
+      "observed",
+      "corroborated",
+      "candidate_rule",
+      "shadow",
+      "validated",
+      "active",
+      "contested",
+      "retired"
+    ],
+    "independence": {
+      "same_scan_is_independent": false,
+      "same_source_version_is_independent": false,
+      "generated_projection_is_independent": false,
+      "knowledge_memory_cycle_is_independent": false,
+      "rule_descendant_feedback_is_independent": false
+    },
+    "promotion_requires": [
+      "independent_corroboration",
+      "reproducible_fixture",
+      "shadow_evidence",
+      "bounded_canary",
+      "rollback_manifest",
+      "cas_activation"
+    ],
+    "self_modification_forbidden": [
+      "scanner_ignore_configuration",
+      "independence_policy",
+      "promotion_thresholds",
+      "rollback_controls"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": {
+      "mode": "local_router_and_cache",
+      "deadline_ms": 400,
+      "cloud_calls": false,
+      "on_cache_miss": "inject_tool_guidance_and_prefetch"
+    },
+    "Stop": {
+      "mode": "memory_proposal_only",
+      "attach_used_knowledge_citations": true,
+      "ingest_conversation_as_knowledge": false
+    }
+  },
+  "security": {
+    "require_auth": true,
+    "project_acl": true,
+    "roles": ["viewer", "contributor", "curator", "admin"],
+    "allowed_origins": ["http://127.0.0.1:19020"],
+    "public_listener_forbidden": true,
+    "secrets_from_environment_file_only": true
+  },
+  "promotion": {
+    "artifact_lifecycle": ["draft", "validated", "pending_review", "active", "rejected", "stale", "contested"],
+    "generation_lifecycle": ["building", "shadow", "canary", "production", "retired"],
+    "high_risk_domains": ["finance", "medical", "legal", "security", "production_operations"],
+    "high_risk_requires_curator": true,
+    "same_dimension_requires_rebuild": true
+  }
+}

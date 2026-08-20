@@ -7,6 +7,7 @@ Architecture and current status:
 - [README.md](README.md)
 - [docs/SYSTEM_FULL_CHAIN.md](docs/SYSTEM_FULL_CHAIN.md)
 - [docs/architecture/architecture.md](docs/architecture/architecture.md)
+- [docs/architecture/three-endpoint-deployment/architecture.md](docs/architecture/three-endpoint-deployment/architecture.md)
 - [docs/GOAL.md](docs/GOAL.md)
 
 ## Development Setup
@@ -92,13 +93,25 @@ Tests are required for behavior changes. Documentation-only changes should still
 
 ## Documentation Expectations
 
-Update docs when public behavior changes:
+Documentation parity is part of PR completion, not release cleanup. A PR that
+changes a subsystem interface or data flow is incomplete until the matching
+architecture reference is updated; a PR that changes roadmap status is
+incomplete until the roadmap index is updated.
+
+For every PR, audit the affected English and Chinese Markdown, architecture
+diagrams (Mermaid, ASCII/C4, and paired SVG), resource and cost-evidence tables,
+GitHub badges and their targets, internal/public links, and all commands,
+ports, environment names, profiles, image names, and model identities. Mark
+current, target, experimental, and released behavior consistently in both
+languages. Record the result with the receipt format in
+[`documentation-parity.md`](docs/architecture/three-endpoint-deployment/documentation-parity.md).
 
 - `README.md` for user-facing install, launch, architecture, or status changes.
 - `docs/README.zh-CN.md` for Chinese quickstart changes.
 - `docs/architecture/architecture.md` for subsystem or data-flow changes.
 - `docs/TODO List/README.md` when roadmap status changes.
-- `CHANGELOG.md` before releases.
+- `CHANGELOG.md` only during release preparation, after the release boundary is
+  known; ordinary implementation PRs must not present unreleased work as shipped.
 
 Project files should use clean professional text. Avoid emoji as status markers in docs and roadmaps.
 

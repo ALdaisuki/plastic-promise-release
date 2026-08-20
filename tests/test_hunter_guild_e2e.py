@@ -6,24 +6,27 @@ Exercises the full lifecycle:
   Claude verifies (accept) → trust boost → task off active board.
 """
 
-import json
 import asyncio
+import json
+
 import pytest
+
 from plastic_promise.mcp.tools.task_queue import (
-    handle_task_enqueue,
     handle_task_claim,
     handle_task_complete,
-    handle_task_verify,
-    handle_task_inbox,
+    handle_task_enqueue,
     handle_task_heartbeat,
+    handle_task_inbox,
+    handle_task_verify,
 )
 
 
 @pytest.fixture
 def e2e_db_path(tmp_path):
     """Create a temp database with task queue tables for isolated E2E testing."""
-    from plastic_promise.core.task_queue_schema import ensure_task_tables
     import sqlite3
+
+    from plastic_promise.core.task_queue_schema import ensure_task_tables
 
     db_path = str(tmp_path / "test_plastic.db")
     conn = sqlite3.connect(db_path)
@@ -47,6 +50,7 @@ def test_full_hunter_guild_lifecycle(e2e_db_path, monkeypatch):
         handle_task_enqueue(
             engine,
             {
+                "project_id": "project:plastic-promise",
                 "task_type": "fix_memory",
                 "title": "修复重复记忆集群 #DUP_042",
                 "to_agent": "pi_fixer",
@@ -68,6 +72,7 @@ def test_full_hunter_guild_lifecycle(e2e_db_path, monkeypatch):
         handle_task_inbox(
             engine,
             {
+                "project_id": "project:plastic-promise",
                 "agent_name": "pi_fixer",
                 "trust_score": 0.60,
                 "filter_status": "pending",
@@ -85,6 +90,7 @@ def test_full_hunter_guild_lifecycle(e2e_db_path, monkeypatch):
         handle_task_claim(
             engine,
             {
+                "project_id": "project:plastic-promise",
                 "agent_name": "pi_fixer",
                 "task_id": task_id,
                 "trust_score": 0.60,
@@ -99,6 +105,7 @@ def test_full_hunter_guild_lifecycle(e2e_db_path, monkeypatch):
         handle_task_claim(
             engine,
             {
+                "project_id": "project:plastic-promise",
                 "agent_name": "pi_reviewer",
                 "task_id": task_id,
                 "trust_score": 0.70,
@@ -114,6 +121,7 @@ def test_full_hunter_guild_lifecycle(e2e_db_path, monkeypatch):
         handle_task_heartbeat(
             engine,
             {
+                "project_id": "project:plastic-promise",
                 "task_id": task_id,
                 "agent_name": "pi_fixer",
             },
@@ -127,6 +135,7 @@ def test_full_hunter_guild_lifecycle(e2e_db_path, monkeypatch):
         handle_task_complete(
             engine,
             {
+                "project_id": "project:plastic-promise",
                 "task_id": task_id,
                 "agent_name": "pi_fixer",
                 "result": "已清理2条重复记忆，保留 m_001 (worth=0.78)",
@@ -145,6 +154,7 @@ def test_full_hunter_guild_lifecycle(e2e_db_path, monkeypatch):
         handle_task_verify(
             engine,
             {
+                "project_id": "project:plastic-promise",
                 "task_id": task_id,
                 "verdict": "accepted",
                 "verified_by": "claude",
@@ -162,6 +172,7 @@ def test_full_hunter_guild_lifecycle(e2e_db_path, monkeypatch):
         handle_task_inbox(
             engine,
             {
+                "project_id": "project:plastic-promise",
                 "agent_name": "pi_fixer",
                 "trust_score": 0.62,
                 "filter_status": "my_active",

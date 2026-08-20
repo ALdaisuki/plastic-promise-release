@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -548,3 +549,178 @@ def test_check_only_rejects_unresolved_index_outbox(
         ),
     ):
         migration.inspect_database(database, target_policy="legacy")
+
+
+def test_recovery_mode_reports_and_preserves_pending_index_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = _database(tmp_path, monkeypatch)
+    environment = _environment_file(tmp_path)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "INSERT INTO store_outbox ("
+        "outbox_id, tool_name, status, created_at, updated_at"
+        ") VALUES ('pending-1', 'memory_index', 'pending', '2026-07-24T00:00:00Z', "
+        "'2026-07-24T00:00:00Z')"
+    )
+    connection.commit()
+    connection.close()
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "--environment-file",
+                str(environment),
+                "--target-policy",
+                "legacy",
+                "--allow-unresolved-index-outbox",
+            ]
+        )
+        == 0
+    )
+    cli_report = json.loads(capsys.readouterr().out)
+    assert cli_report["index_outbox"]["active_snapshot_jobs"] == 1
+    assert cli_report["index_outbox"]["status_counts"] == {"pending": 1}
+
+    with migration.configured_environment([environment]):
+        plan = migration.inspect_database(
+            database,
+            target_policy="legacy",
+            allow_unresolved_index_outbox=True,
+        )
+        with pytest.raises(
+            migration.IndexMaterialMigrationError,
+            match="expected_index_outbox_mismatch",
+        ):
+            migration.apply_migration(
+                database,
+                backup_directory=backups,
+                target_policy="legacy",
+                expected_row_count=plan.row_count,
+                expected_source_fingerprint=plan.source_fingerprint,
+                expected_target_model_sha256=plan.target_model_sha256,
+                allow_unresolved_index_outbox=True,
+                expected_index_outbox_watermark=int(plan.index_outbox["watermark"]),
+                expected_index_outbox_immutable_digest=str(plan.index_outbox["immutable_digest"]),
+                expected_index_outbox_job_count=int(plan.index_outbox["job_count"]),
+                expected_index_outbox_active_count=2,
+            )
+        report = migration.apply_migration(
+            database,
+            backup_directory=backups,
+            target_policy="legacy",
+            expected_row_count=plan.row_count,
+            expected_source_fingerprint=plan.source_fingerprint,
+            expected_target_model_sha256=plan.target_model_sha256,
+            allow_unresolved_index_outbox=True,
+            expected_index_outbox_watermark=int(plan.index_outbox["watermark"]),
+            expected_index_outbox_immutable_digest=str(plan.index_outbox["immutable_digest"]),
+            expected_index_outbox_job_count=int(plan.index_outbox["job_count"]),
+            expected_index_outbox_active_count=int(plan.index_outbox["active_snapshot_jobs"]),
+        )
+
+    assert report["quick_check"] == report["integrity_check"] == "ok"
+    backup = Path(str(report["backup_path"]))
+    _, _, backup_outbox = _read_rows(backup)
+    assert [str(row["outbox_id"]) for row in backup_outbox] == ["pending-1"]
+    _, _, outbox = _read_rows(database)
+    assert len(outbox) == 4
+    assert {str(row["status"]) for row in outbox} == {"pending"}
+
+
+def test_governed_target_model_identity_is_explicitly_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A control-plane build must not silently plan against fallback-zero."""
+
+    database = _database(tmp_path, monkeypatch)
+    identity = "sha256:" + "f" * 64
+    with migration.configured_environment([]):
+        plan = migration.inspect_database(
+            database,
+            target_policy="legacy",
+            target_model_name=identity,
+        )
+
+    assert plan.target_model_identity == identity
+    assert plan.target_model_sha256 == hashlib.sha256(identity.encode()).hexdigest()
+
+
+def test_cli_uses_active_governed_index_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = _database(tmp_path, monkeypatch)
+    identity = "sha256:" + "e" * 64
+    monkeypatch.setattr(
+        _SCRIPT_MODULE,
+        "_configured_target_model_identity",
+        lambda: identity,
+    )
+
+    assert main(["--db", str(database), "--target-policy", "legacy"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["target_model_identity"] == identity
+
+
+def test_cli_normalizes_governed_identity_runtime_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = _database(tmp_path, monkeypatch)
+
+    def fail_identity() -> str:
+        raise RuntimeError("governed_control_projection_unavailable")
+
+    monkeypatch.setattr(
+        _SCRIPT_MODULE,
+        "_configured_target_model_identity",
+        fail_identity,
+    )
+
+    assert main(["--db", str(database), "--target-policy", "legacy"]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "governed_control_projection_unavailable" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_recovery_mode_rejects_processing_index_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path, monkeypatch)
+    environment = _environment_file(tmp_path)
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "INSERT INTO store_outbox ("
+        "outbox_id, tool_name, status, created_at, updated_at"
+        ") VALUES ('processing-1', 'memory_index', 'processing', "
+        "'2026-07-24T00:00:00Z', '2026-07-24T00:00:00Z')"
+    )
+    connection.commit()
+    connection.close()
+
+    with (
+        migration.configured_environment([environment]),
+        pytest.raises(
+            migration.IndexMaterialMigrationError,
+            match="index_outbox_processing_job_active",
+        ),
+    ):
+        migration.inspect_database(
+            database,
+            target_policy="legacy",
+            allow_unresolved_index_outbox=True,
+        )

@@ -140,9 +140,7 @@ async def handle_context_supply(engine, args):
     assert not any(item.id == "mcp_tool:context_supply" for item in all_items)
 
 
-def test_context_supply_canonical_hot_respects_code_memory_disabled(
-    tmp_path, monkeypatch
-):
+def test_context_supply_canonical_hot_respects_code_memory_disabled(tmp_path, monkeypatch):
     tool_dir = tmp_path / "plastic_promise" / "mcp" / "tools"
     tool_dir.mkdir(parents=True)
     (tool_dir / "context.py").write_text(
@@ -177,9 +175,7 @@ async def handle_context_supply(engine, args):
     assert "mcp_tool:context_supply" not in pack.audit_metadata["canonical_hot"]["keys"]
 
 
-def test_context_supply_reports_gate_per_item_stats_for_layered_code_items(
-    tmp_path, monkeypatch
-):
+def test_context_supply_reports_gate_per_item_stats_for_layered_code_items(tmp_path, monkeypatch):
     _write_sample_repo(tmp_path)
     monkeypatch.setenv("PP_CODE_MEMORY_ROOT", str(tmp_path))
     monkeypatch.setenv("PP_CODE_MEMORY_MAX_FILES", "20")

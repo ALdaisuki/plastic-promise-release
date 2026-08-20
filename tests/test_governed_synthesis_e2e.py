@@ -114,8 +114,7 @@ def _assert_proposals_are_isolated(
         assert proposal_ids.isdisjoint(_raw_ids(pack))
         assert proposal_content not in {item.content for item in public_items}
         assert proposal_content not in {
-            str(item.get("content") or "")
-            for item in pack.audit_metadata["raw_evidence"]
+            str(item.get("content") or "") for item in pack.audit_metadata["raw_evidence"]
         }
 
     indexed_payload = json.dumps(lancedb.inserted, ensure_ascii=False)
@@ -267,9 +266,10 @@ def test_governed_synthesis_lifecycle_and_proposal_isolation_e2e(
     visible_v1 = _supply(engine)
     assert synthesis_id in _layer_ids(visible_v1)
     assert _raw_ids(visible_v1)[:2] == [SOURCE_A, SOURCE_B]
-    assert visible_v1.audit_metadata["synthesis_provenance"][synthesis_id][
-        "verified_by_actor"
-    ] == "reviewer"
+    assert (
+        visible_v1.audit_metadata["synthesis_provenance"][synthesis_id]["verified_by_actor"]
+        == "reviewer"
+    )
     assert lancedb.inserted[-1]["memory_id"] == synthesis_id
 
     corrected_source = (

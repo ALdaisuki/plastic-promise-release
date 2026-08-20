@@ -20,9 +20,7 @@ def test_behavior_graph_schema_accepts_p0_node_and_edge_types():
         "evidence",
         "mcp_tool",
     }.issubset(VALID_NODE_TYPES)
-    assert {"calls", "imports", "tests", "documents", "exposes_tool"}.issubset(
-        VALID_EDGE_TYPES
-    )
+    assert {"calls", "imports", "tests", "documents", "exposes_tool"}.issubset(VALID_EDGE_TYPES)
 
     node = graph_node(
         node_id="code_symbol:plastic_promise.core.context_engine.ContextEngine.supply",

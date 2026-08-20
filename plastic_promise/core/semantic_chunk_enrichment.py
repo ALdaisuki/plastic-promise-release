@@ -31,7 +31,9 @@ if TYPE_CHECKING:
     from plastic_promise.core.chunking import ChunkMaterial
 
 
-DEFAULT_MODEL = "qwen3:8b"
+# Ollama remains a compatibility-only adapter.  The production default is the
+# OpenAI-compatible structured-JSON provider configured on pp-compute-node.
+DEFAULT_MODEL = "qwen3:8b"  # explicit Ollama compatibility mode only
 DEFAULT_CLOUD_MODEL = "deepseek-v4-flash"
 DEFAULT_CLOUD_BASE_URL = "https://api.deepseek.com"
 DEFAULT_PROMPT_VERSION = "semantic-chunk-enrichment-v1"
@@ -158,11 +160,14 @@ class SemanticChunkEnricher:
         prompt_version: str = DEFAULT_PROMPT_VERSION,
         inference_client: object | None = None,
     ) -> None:
-        requested_provider = (
-            (provider or os.getenv("PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER", "ollama"))
-            .strip()
-            .casefold()
-        )
+        configured_provider = provider or os.getenv("PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER")
+        # Passing a loopback ``host`` is an explicit legacy Ollama request
+        # (kept for callers that construct this compatibility class directly).
+        # A standalone enricher with no host now follows the governed cloud
+        # default and never discovers a local daemon implicitly.
+        if configured_provider is None:
+            configured_provider = "ollama" if host is not None else "openai-compatible"
+        requested_provider = configured_provider.strip().casefold()
         if requested_provider in {"cloud", "deepseek", "openai"}:
             requested_provider = "openai-compatible"
         if requested_provider not in {"ollama", "openai-compatible"}:
@@ -199,6 +204,9 @@ class SemanticChunkEnricher:
                 os.getenv("PP_INFERENCE_PATH", "/chat/completions"),
             )
         ).strip()
+        # Standalone legacy callers remain fail-closed.  The user-facing
+        # launcher explicitly supplies ``shadow``; this avoids background
+        # work for libraries that construct the compatibility class directly.
         self._mode = (mode or os.getenv("PP_MEMORY_CHUNK_ENRICHMENT", "off")).strip().lower()
         if self._mode not in {"off", "shadow", "on"}:
             logging.warning("Unknown PP_MEMORY_CHUNK_ENRICHMENT=%r; using off", self._mode)
@@ -517,6 +525,9 @@ class SemanticChunkEnricher:
     def _request_metadata(
         self, material: ChunkMaterial, source_fragment: str
     ) -> _EnrichmentAttempt:
+        endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+        if endpoint_role and endpoint_role != "pp-compute-node":
+            return _EnrichmentAttempt(error="compute_node_required")
         identifiers = extract_identifiers(source_fragment)
         user_payload = {
             "heading_path": list(material.heading_path),
@@ -599,6 +610,9 @@ class SemanticChunkEnricher:
         )
 
     def _resolve_model_digest(self) -> str:
+        endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+        if endpoint_role and endpoint_role != "pp-compute-node":
+            return ""
         if self._provider == "openai-compatible":
             fingerprint = json.dumps(
                 {
@@ -633,9 +647,11 @@ class SemanticChunkEnricher:
     def _cloud_inference_client(self):
         if self._inference_client is not None:
             return self._inference_client
-        from plastic_promise.core.inference_provider import OpenAICompatibleJSONProvider
+        from plastic_promise.core.server_structured_json import (
+            create_structured_json_provider,
+        )
 
-        self._inference_client = OpenAICompatibleJSONProvider(
+        self._inference_client = create_structured_json_provider(
             api_key=self._cloud_api_key,
             base_url=self._cloud_base_url,
             model=self._model,

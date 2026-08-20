@@ -88,7 +88,7 @@ class SoulLoop:
         # Step 2: Embed the task description into a vector
         # Graceful degradation: if Ollama is unreachable / times out,
         # fall back to zero-vector — text retrieval still works via CJK bigrams.
-        from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
+        from plastic_promise.core.server_embedder import FallbackEmbedder, get_embedder
 
         try:
             embedder = get_embedder(fallback_on_error=False)

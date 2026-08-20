@@ -1,0 +1,47 @@
+flowchart LR
+    Legend["C: source/CI verification contract (P1 correction)<br/>T: runtime/release authority deferred"]
+    Request["C: ArtifactRequest<br/>pinned revision · package · platform<br/>variants · profile · opaque catalog ref"]
+    Recipe["C: static recipe preflight<br/>Dockerfile · Compose · .dockerignore<br/>no Docker / registry / credentials"]
+    RecipeReceipt["C: RecipePolicyReceipt<br/>pinned base-image catalog<br/>recipe policy digest"]
+    Compiler["C: ContainerArtifactCompiler<br/>prepare / materialize"]
+    Plan["C: ArtifactBuildPlan<br/>role × platform × variant<br/>labels · base · recipe/plan/surface policy"]
+    Executor["C: ArtifactBuildExecutor seam<br/>local build · verify-only CI · test fake"]
+    Inventory["C: final rootfs inventory<br/>ordered layers · ordinary/opaque whiteouts<br/>role-specific collaboration surface"]
+    Evidence["C: ArtifactEvidenceReceipt set<br/>layout/image · labels · SBOM/provenance<br/>surface + application inventory digests"]
+    Bundle["C: ArtifactBundle<br/>descriptors · receipt set<br/>inspection receipt"]
+
+    Request --> Recipe
+    Recipe --> RecipeReceipt
+    Request --> Compiler
+    RecipeReceipt --> Compiler
+    Compiler --> Plan
+    Plan --> Executor
+    Executor --> Inventory
+    Inventory --> Evidence
+    Evidence --> Bundle
+
+    subgraph Matrix["C: Artifact matrix"]
+        Edge["pp-local-edge / base<br/>projection only · collaboration absent"]
+        Backend["pp-server-backend / base<br/>collaboration source-only/unwired"]
+        Cpu["pp-compute-node / cpu<br/>embedding/rerank · collaboration absent"]
+        Cuda["pp-compute-node / cuda<br/>same contracts · collaboration absent"]
+    end
+    Plan -. declares .-> Edge
+    Plan -. declares .-> Backend
+    Plan -. declares .-> Cpu
+    Plan -. declares .-> Cuda
+
+    Reject["C: fail closed<br/>floating base · unknown source/version<br/>writable root · public listener · Docker socket<br/>writer config · unsafe compute copy · forbidden package surface"]
+    Recipe --> Reject
+
+    CiVerify["C: CI verify-only, no-push OCI<br/>no signing/attestation/deployment claim"]
+    NoRuntime["T: Runtime authority remains deferred<br/>no activation · listener · tunnel · deploy<br/>SQLite migration · LanceDB promotion · Maintenance · MCP restart · production"]
+    Bundle -. bounded verification .-> CiVerify
+    Bundle -. does not authorize .-> NoRuntime
+
+    classDef contract fill:#d9edf7,stroke:#31708f,color:#000;
+    classDef matrix fill:#dff0d8,stroke:#3c763d,color:#000;
+    classDef boundary fill:#f2dede,stroke:#a94442,color:#000;
+    class Request,Recipe,RecipeReceipt,Compiler,Plan,Executor,Inventory,Evidence,Bundle,Reject,CiVerify contract;
+    class Edge,Backend,Cpu,Cuda matrix;
+    class NoRuntime boundary;

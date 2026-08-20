@@ -64,7 +64,9 @@ def build_code_index(root: str | Path, max_files: int = 400) -> CodeIndex:
     return index
 
 
-def search_code_index(index: CodeIndex, query: str, limit: int = 12) -> list[tuple[str, float, str, str]]:
+def search_code_index(
+    index: CodeIndex, query: str, limit: int = 12
+) -> list[tuple[str, float, str, str]]:
     terms = _terms(query)
     results: list[tuple[str, float, str, str]] = []
     for item in index.evidence:
@@ -162,7 +164,9 @@ def _index_python_file(
                     metadata={"path": rel, "lineno": node.lineno, "symbol_kind": "class"},
                 )
             )
-            index.edges.append(graph_edge(file_id, class_id, "contains", 0.8, source_kind=SOURCE_KIND))
+            index.edges.append(
+                graph_edge(file_id, class_id, "contains", 0.8, source_kind=SOURCE_KIND)
+            )
             index.evidence.append(_evidence(class_id, "class", node.name, rel, [_doc(node)]))
             for base in node.bases:
                 base_name = _call_name(base)
@@ -200,7 +204,9 @@ def _index_python_file(
                         _evidence(method_id, "method", method_name, rel, [_doc(child)])
                     )
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            kind = "test" if node.name.startswith("test_") or rel.startswith("tests/") else "function"
+            kind = (
+                "test" if node.name.startswith("test_") or rel.startswith("tests/") else "function"
+            )
             node_id = f"code:{kind}:{rel}:{node.name}"
             known_symbols[node.name] = node_id
             index.nodes.append(
@@ -218,9 +224,13 @@ def _index_python_file(
                     },
                 )
             )
-            index.edges.append(graph_edge(file_id, node_id, "contains", 0.78, source_kind=SOURCE_KIND))
+            index.edges.append(
+                graph_edge(file_id, node_id, "contains", 0.78, source_kind=SOURCE_KIND)
+            )
             if kind == "test":
-                index.edges.append(graph_edge(node_id, file_id, "tests", 0.5, source_kind=SOURCE_KIND))
+                index.edges.append(
+                    graph_edge(node_id, file_id, "tests", 0.5, source_kind=SOURCE_KIND)
+                )
             index.evidence.append(_evidence(node_id, kind, node.name, rel, [_doc(node)]))
             if rel.startswith("plastic_promise/mcp/tools/") and node.name.startswith("handle_"):
                 tool_name = node.name.removeprefix("handle_")
@@ -262,7 +272,9 @@ def _index_markdown_file(
     lower_text = text.lower()
     for symbol_name, symbol_id in known_symbols.items():
         if len(symbol_name) >= 3 and symbol_name.lower() in lower_text:
-            index.edges.append(graph_edge(doc_id, symbol_id, "documents", 0.62, source_kind=SOURCE_KIND))
+            index.edges.append(
+                graph_edge(doc_id, symbol_id, "documents", 0.62, source_kind=SOURCE_KIND)
+            )
 
 
 def _add_call_edges(index: CodeIndex, known_symbols: dict[str, str]) -> None:
@@ -274,7 +286,9 @@ def _add_call_edges(index: CodeIndex, known_symbols: dict[str, str]) -> None:
         for call in calls:
             target = known_symbols.get(call)
             if target and target != node["id"]:
-                index.edges.append(graph_edge(node["id"], target, "calls", 0.58, source_kind=SOURCE_KIND))
+                index.edges.append(
+                    graph_edge(node["id"], target, "calls", 0.58, source_kind=SOURCE_KIND)
+                )
 
 
 def _imports(tree: ast.AST) -> list[str]:
@@ -325,9 +339,7 @@ def _terms(query: str) -> list[str]:
     return [term.lower() for term in query.replace("_", " ").split() if len(term) >= 2]
 
 
-def _evidence(
-    item_id: str, kind: str, name: str, path: str, lines: list[str]
-) -> dict[str, Any]:
+def _evidence(item_id: str, kind: str, name: str, path: str, lines: list[str]) -> dict[str, Any]:
     return {
         "id": item_id,
         "kind": kind,

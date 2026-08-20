@@ -225,9 +225,10 @@ def save_benchmark_baseline(
         ),
     )
     conn.commit()
-    return load_benchmark_baseline(
-        conn, benchmark_name=benchmark_name, baseline_name=baseline_name
-    ) or record
+    return (
+        load_benchmark_baseline(conn, benchmark_name=benchmark_name, baseline_name=baseline_name)
+        or record
+    )
 
 
 def load_benchmark_baseline(

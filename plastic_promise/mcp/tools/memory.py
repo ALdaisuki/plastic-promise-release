@@ -60,6 +60,7 @@ from plastic_promise.mcp.response_projection import (
 from plastic_promise.mcp.tools.supply_runner import (
     float_env,
     run_bounded_engine_supply,
+    run_bounded_governed_retrieval_embedding,
 )
 
 _trusted_memory_origin = trusted_memory_origin
@@ -943,17 +944,26 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
                 )
             ]
 
-        from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
-
         domain_hint = args.get("domain_hint")
         federation = args.get("federation", True)
 
+        embedding_degradation_reason = ""
         try:
-            embedder = get_embedder(fallback_on_error=False)
-            vec = await embedder.aembed(query)
-        except Exception:
-            embedder = FallbackEmbedder()
-            vec = await embedder.aembed(query)
+            vec = await run_bounded_governed_retrieval_embedding(
+                engine,
+                text=query,
+                project_id=project_ctx.project_id,
+                executor=_MEMORY_RECALL_EXECUTOR,
+                timeout=float_env("PP_MEMORY_RECALL_EMBED_TIMEOUT_SEC", 3.0),
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            vec = []
+            embedding_degradation_reason = "retrieval_embedding_timeout"
+        except Exception as exc:
+            vec = []
+            embedding_degradation_reason = str(
+                getattr(exc, "code", "retrieval_embedding_unavailable")
+            )
         supply_args = {
             "task_description": query,
             "task_vector": vec,
@@ -1027,8 +1037,14 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             engine,
             task_type=task_type,
         )
-        retrieval_explain = build_retrieval_explain_snapshot(pack)
         audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
+        audit_metadata["retrieval_embedding"] = {
+            "route": "governed" if vec else "text-only-degraded",
+            "degraded": bool(embedding_degradation_reason),
+            "reason": embedding_degradation_reason,
+        }
+        pack.audit_metadata = audit_metadata
+        retrieval_explain = build_retrieval_explain_snapshot(pack)
         audit_metadata["request_scope"] = request_scope
         trace = {
             "call_id": call_id,
@@ -2962,15 +2978,21 @@ def refresh_memory_pipeline_cache(engine: Any) -> dict[str, Any]:
         if not pipelines:
             return {"cached": False, "rebound": 0, "buffered": 0}
 
+    runtime_reader = getattr(engine, "memory_index_node_runtime", None)
+    governed_runtime = runtime_reader() if callable(runtime_reader) else None
+    if governed_runtime is not None:
+        ensure_embedder = getattr(engine, "ensure_runtime_embedder", None)
+        if not callable(ensure_embedder):
+            raise RuntimeError("governed_runtime_embedder_unavailable")
+        embedder = ensure_embedder()
+    else:
         embedder = getattr(engine, "_embedder", None)
         if embedder is None:
-            ensure_embedder = getattr(engine, "ensure_runtime_embedder", None)
-            if callable(ensure_embedder):
-                embedder = ensure_embedder()
-            else:
-                from plastic_promise.core.embedder import get_embedder
+            from plastic_promise.core.server_embedder import get_embedder
 
-                embedder = get_embedder(fallback_on_error=True)
+            embedder = get_embedder(fallback_on_error=True)
+
+    with _fuzzy_cache_lock:
         lancedb = getattr(engine, "_ldb", None)
         domain_manager = getattr(engine, "_dm", None)
         buffered = 0
@@ -2988,28 +3010,55 @@ def _get_fuzzy_buffer(engine: Any):
     """Get or create a FuzzyBuffer attached to the engine."""
     eid = id(engine)
     with _fuzzy_cache_lock:
-        if eid not in _fuzzy_buffers:
-            from plastic_promise.core.embedder import get_embedder
-            from plastic_promise.memory.pipeline import MemoryPipeline
-            from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
+        cached = _fuzzy_buffers.get(eid)
+    if cached is not None:
+        runtime_reader = getattr(engine, "memory_index_node_runtime", None)
+        governed_runtime = runtime_reader() if callable(runtime_reader) else None
+        if governed_runtime is not None:
+            ensure_runtime_embedder = getattr(engine, "ensure_runtime_embedder", None)
+            if not callable(ensure_runtime_embedder):
+                raise RuntimeError("governed_runtime_embedder_unavailable")
+            cached.embedder = ensure_runtime_embedder()
+        return cached
 
-            rec_mem = _rec_mem_cache.get(eid, RecMem(engine))
-            try:
-                embedder = get_embedder()
-            except Exception:
-                from plastic_promise.core.embedder import FallbackEmbedder
+    from plastic_promise.memory.pipeline import MemoryPipeline
+    from plastic_promise.memory.soul_memory import MemoryTierManager, RecMem
 
-                embedder = FallbackEmbedder()
-            tier_mgr = MemoryTierManager(rec_mem)
-            _fuzzy_buffers[eid] = MemoryPipeline(
-                rec_mem=rec_mem,
-                embedder=embedder,
-                tier_manager=tier_mgr,
-                domain_manager=getattr(engine, "_dm", None),
-                lancedb=getattr(engine, "_ldb", None),
-            )
-            _rec_mem_cache[eid] = rec_mem
-        return _fuzzy_buffers[eid]
+    rec_mem = _rec_mem_cache.get(eid, RecMem(engine))
+    embedder = getattr(engine, "_embedder", None)
+    runtime_reader = getattr(engine, "memory_index_node_runtime", None)
+    governed_runtime = runtime_reader() if callable(runtime_reader) else None
+    if governed_runtime is not None:
+        ensure_runtime_embedder = getattr(engine, "ensure_runtime_embedder", None)
+        if not callable(ensure_runtime_embedder):
+            raise RuntimeError("governed_runtime_embedder_unavailable")
+        # A governed route is fail-closed: initialization errors must not
+        # rediscover a legacy local/cloud provider or fallback-zero embedder.
+        embedder = ensure_runtime_embedder()
+    elif embedder is None:
+        from plastic_promise.core.server_embedder import get_embedder
+
+        try:
+            embedder = get_embedder()
+        except Exception:
+            from plastic_promise.core.server_embedder import FallbackEmbedder
+
+            embedder = FallbackEmbedder()
+    tier_mgr = MemoryTierManager(rec_mem)
+    candidate = MemoryPipeline(
+        rec_mem=rec_mem,
+        embedder=embedder,
+        tier_manager=tier_mgr,
+        domain_manager=getattr(engine, "_dm", None),
+        lancedb=getattr(engine, "_ldb", None),
+    )
+    with _fuzzy_cache_lock:
+        existing = _fuzzy_buffers.get(eid)
+        if existing is not None:
+            return existing
+        _fuzzy_buffers[eid] = candidate
+        _rec_mem_cache[eid] = rec_mem
+        return candidate
 
 
 # ---- fuzzy_status (internal — not exposed as MCP tool) ----

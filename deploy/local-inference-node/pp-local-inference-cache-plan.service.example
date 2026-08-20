@@ -1,0 +1,13 @@
+# Read-only planner only: it emits eligible cache paths and never deletes them.
+# Populate its node-local EnvironmentFile after the installer owns manifest and
+# supervisor-status lifecycle. Do not put credentials or model weights there.
+[Unit]
+Description=Plastic Promise local inference cache cleanup planner
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/plastic-promise/local-inference-cache-plan.env
+ExecStart=/usr/local/bin/plastic-promise-local-inference-cache-plan --manifest ${PP_LOCAL_NODE_CACHE_MANIFEST} --status ${PP_LOCAL_NODE_CACHE_STATUS}
+NoNewPrivileges=yes
+PrivateTmp=yes

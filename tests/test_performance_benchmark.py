@@ -47,7 +47,9 @@ def test_run_retrieval_benchmark_records_samples_with_pipeline_stats(tmp_path):
         memory_count = 3
         _ldb = SimpleNamespace(count_rows=lambda: 2)
 
-        def supply(self, task_description, task_vector=None, task_type="general", scope="global", **kwargs):
+        def supply(
+            self, task_description, task_vector=None, task_type="general", scope="global", **kwargs
+        ):
             return SimpleNamespace(pipeline_stats={"core_count": len(task_description)})
 
     ticks = iter([0.00, 0.01, 0.01, 0.03])
@@ -117,8 +119,7 @@ def test_rust_snapshot_supply_budget_records_metadata_and_absolute_gate(tmp_path
     assert result["summary"]["p95_ms"] == 30.0
     assert result["gate"]["status"] == "fail"
     assert {
-        (regression["metric"], regression["source"])
-        for regression in result["gate"]["regressions"]
+        (regression["metric"], regression["source"]) for regression in result["gate"]["regressions"]
     } == {("p50_ms", "absolute"), ("p95_ms", "absolute")}
     assert [call[1]["debug"] for call in engine.calls] == [True, True, True]
 
@@ -269,7 +270,9 @@ def test_system_benchmark_run_records_history(tmp_path, monkeypatch):
         memory_count = 1
         _ldb = SimpleNamespace(count_rows=lambda: 0)
 
-        def supply(self, task_description, task_vector=None, task_type="general", scope="global", **kwargs):
+        def supply(
+            self, task_description, task_vector=None, task_type="general", scope="global", **kwargs
+        ):
             return SimpleNamespace(pipeline_stats={"query": task_description})
 
     monkeypatch.setenv("PLASTIC_DB_PATH", str(tmp_path / "bench.db"))

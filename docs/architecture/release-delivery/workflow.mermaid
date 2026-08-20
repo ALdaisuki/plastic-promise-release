@@ -1,0 +1,41 @@
+flowchart TD
+    source[Immutable source ref] --> pr[PR verification]
+    pr --> py[Wheel + sdist + exact local install]
+    pr --> oci[No-push OCI build]
+    py --> review{Review and merge approval}
+    oci --> review
+    review --> rcGate{Protected default-branch SHA + release-candidate approval}
+    rcGate --> rc[Manual RC candidate workflow]
+    rc --> catalog[Clean tracked fixed-revision Model Catalog]
+    catalog --> matrix{Split accelerated remote matrix only}
+    matrix --> rcOci[Edge/server/CPU multiarch + CUDA amd64 OCI layouts]
+    rcOci --> embedded[Buildx embedded SBOM/provenance attestations]
+    embedded --> subjectVerify[Verify attestation subjects against exact image digests]
+    subjectVerify --> planReceipts[Plan-bound OCI evidence receipts]
+    rcOci --> rcSboms[Opaque per-artifact CycloneDX SBOMs + verified descriptor bytes]
+    rcSboms --> sbomReceipts[Attested receipt set: layout root + image + platform + SBOM digest/size]
+    planReceipts --> rcManifest[Package manifest + canonical catalog/binding v2]
+    sbomReceipts --> rcManifest
+    rcManifest --> rcVerify[Attest and verify pre-bundle subjects]
+    rcVerify --> rcBundle[Release Bundle + final attestation]
+    rcBundle --> rcArtifacts[Short-lived candidate artifact + SBOM]
+    rcArtifacts --> testpypi{TestPyPI environment approval}
+    testpypi --> rehearsal[OIDC upload + exact version install]
+    rehearsal -. future selected-evidence verification required .-> selectedGate{PR6 selected Release Bundle/catalog/attestation gate}
+    selectedGate -. not yet wired to current publisher .-> stable{Production-release approval}
+    review --> currentStable[Current stable publisher: source_ref + version only]
+    currentStable --> stable
+    stable --> images[Push GHCR digests + convenience tags]
+    stable --> dist[Build Python artifacts + SBOM]
+    images --> manifest[Release manifest + attestation]
+    dist --> manifest
+    manifest --> sync{Release repository approval}
+    sync --> releaseRepo[Stable-only sync + PyPI OIDC]
+
+    style pr fill:#dbeafe,stroke:#2563eb,color:#111827
+    style rc fill:#fef3c7,stroke:#d97706,color:#111827
+    style selectedGate fill:#fef3c7,stroke:#d97706,color:#111827
+    style currentStable fill:#fee2e2,stroke:#dc2626,color:#111827
+    style stable fill:#fee2e2,stroke:#dc2626,color:#111827
+    style sync fill:#fee2e2,stroke:#dc2626,color:#111827
+    style releaseRepo fill:#dcfce7,stroke:#16a34a,color:#111827

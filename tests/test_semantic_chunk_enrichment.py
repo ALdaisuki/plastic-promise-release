@@ -2,6 +2,8 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from plastic_promise.core.chunking import ChunkMaterial
 from plastic_promise.core.semantic_chunk_enrichment import (
     SemanticChunkEnricher,
@@ -72,6 +74,15 @@ def _enricher(monkeypatch, tmp_path, *, mode="on") -> SemanticChunkEnricher:
         lambda *args, **kwargs: _FakeTagsResponse(),
     )
     return SemanticChunkEnricher(host="http://127.0.0.1:11434")
+
+
+def test_standalone_enricher_defaults_to_cloud_without_implicit_loopback(monkeypatch):
+    monkeypatch.delenv("PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER", raising=False)
+    enricher = SemanticChunkEnricher(mode="off")
+    try:
+        assert enricher.provider == "openai-compatible"
+    finally:
+        enricher.close()
 
 
 def test_valid_grounded_output_prepends_derived_metadata(monkeypatch, tmp_path):
@@ -282,6 +293,25 @@ def test_off_mode_does_not_resolve_or_call_local_model(monkeypatch, tmp_path):
 
     assert batch.embedding_texts == (_material().text,)
     assert batch.diagnostics["model_digest"] == "unresolved"
+
+
+def test_server_backend_cannot_resolve_or_call_semantic_inference(monkeypatch, tmp_path):
+    def fail_network(*args, **kwargs):
+        raise AssertionError("server backend must not execute semantic inference")
+
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
+    monkeypatch.setenv("PP_MEMORY_CHUNK_ENRICHMENT", "on")
+    monkeypatch.setenv("PP_MEMORY_CHUNK_ENRICHMENT_CACHE_PATH", str(tmp_path / "enrichment.db"))
+    monkeypatch.delenv("PP_MEMORY_CHUNK_ENRICHMENT_MODEL_DIGEST", raising=False)
+    monkeypatch.setattr("plastic_promise.core.semantic_chunk_enrichment.requests.get", fail_network)
+    monkeypatch.setattr(
+        "plastic_promise.core.semantic_chunk_enrichment.requests.post", fail_network
+    )
+
+    enricher = SemanticChunkEnricher(host="http://127.0.0.1:11434")
+
+    with pytest.raises(RuntimeError, match="semantic_enrichment_model_digest_unavailable"):
+        enricher.prepare_chunks([_material()], source_text=_source())
 
 
 def test_configured_digest_must_match_ollama_before_enrichment(monkeypatch, tmp_path):

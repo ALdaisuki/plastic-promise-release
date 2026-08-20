@@ -47,7 +47,7 @@
     "bundled_runtime_state": false
   },
   "deployment": {
-    "default_profile": "split-async",
+    "default_profile": "local-all-in-one",
     "profiles": {
       "local-all-in-one": {
         "topology": "single-host",
@@ -59,8 +59,18 @@
         "transport": "loopback-http",
         "async_worker_location": "local-runtime"
       },
-      "split-async": {
-        "topology": "client-server",
+      "local-cloud": {
+        "topology": "single-host-cloud-inference",
+        "frontend_location": "local",
+        "runtime_location": "local",
+        "canonical_state_location": "local-runtime",
+        "derived_index_location": "local-runtime",
+        "client_cache": "optional-bounded",
+        "transport": "loopback-http",
+        "async_worker_location": "local-runtime"
+      },
+      "split-accelerated": {
+        "topology": "server-local-inference-node",
         "frontend_location": "client",
         "runtime_location": "server",
         "canonical_state_location": "server-only",
@@ -129,14 +139,23 @@
     "artifacts": [
       "wheel",
       "sdist",
-      "annotated-source-tag"
+      "annotated-source-tag",
+      "server-oci-multiarch",
+      "inference-node-oci-linux-amd64",
+      "server-compose-template",
+      "server-systemd-template",
+      "cyclonedx-sbom",
+      "release-manifest"
     ],
     "provenance": [
       "source-head-bound",
       "release-tree-attested",
       "commit-tree-attested",
       "annotated-tag-attested",
-      "atomic-push"
+      "atomic-push",
+      "oci-digest-bound",
+      "artifact-sha256-bound",
+      "github-artifact-attestation"
     ],
     "required_gates": [
       "variant-contract",
@@ -150,7 +169,15 @@
       "artifact-metadata",
       "twine-check",
       "external-release-evidence",
-      "atomic-push"
+      "atomic-push",
+      "exact-wheel-install",
+      "oci-build-contract",
+      "sbom",
+      "release-manifest",
+      "github-artifact-attestation",
+      "testpypi-exact-install",
+      "explicit-production-approval",
+      "server-deployment-e2e-receipt"
     ]
   }
 }

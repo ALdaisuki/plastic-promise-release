@@ -251,7 +251,7 @@ def _make_entity_id(skill_name: str, idempotency_key: str = "") -> str:
     if idempotency_key:
         digest = hashlib.sha256(f"{skill_name}\x1f{idempotency_key}".encode()).hexdigest()[:32]
         return f"skill:{skill_name}:receipt-{digest}"
-    ts = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
+    ts = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
     return f"skill:{skill_name}:{ts}"
 
 
@@ -372,6 +372,8 @@ async def _store_skill_start(
     skill_name: str,
     task_description: str,
     domain: str,
+    *,
+    project_id: str = "",
 ) -> str:
     """Persist the skill session start as a lightweight memory record.
 
@@ -391,21 +393,30 @@ async def _store_skill_start(
     memory_id = _skill_start_memory_id(entity_id)
     _, _, entity_timestamp = entity_id.partition(f"skill:{skill_name}:")
     stable_timestamp = entity_timestamp or "1970-01-01T00:00:00"
+    record = {
+        "id": memory_id,
+        "content": content,
+        "memory_type": "experience",
+        "source": "skill_session",
+        "entity_ids": [entity_id],
+        "tags": tags,
+        "domain": domain,
+        "tier": "L1",
+        "category": "skill_session",
+        "created_at": stable_timestamp,
+        "last_accessed": stable_timestamp,
+    }
+    if project_id:
+        record.update(
+            {
+                "project_id": project_id,
+                "project_policy": "balanced",
+                "visibility": "project",
+            }
+        )
     created_id = await asyncio.to_thread(
         engine.create_ordinary_if_absent,
-        {
-            "id": memory_id,
-            "content": content,
-            "memory_type": "experience",
-            "source": "skill_session",
-            "entity_ids": [entity_id],
-            "tags": tags,
-            "domain": domain,
-            "tier": "L1",
-            "category": "skill_session",
-            "created_at": stable_timestamp,
-            "last_accessed": stable_timestamp,
-        },
+        record,
     )
     if not isinstance(created_id, str):
         raise TypeError("skill_start_memory_id_invalid")
@@ -426,6 +437,9 @@ def _inject_skill_entity(
     *,
     tracking_persistence: str = "memory",
     tracking_basis: str = "runtime",
+    project_id: str = "",
+    stage_session_id: str = "",
+    flow_line_id: str = "",
 ) -> dict:
     """Register skill_session entity in the context graph.
 
@@ -434,7 +448,7 @@ def _inject_skill_entity(
     so skill_session_trace can reconstruct the execution chain.
     """
     related = [parent_entity_id] if parent_entity_id else []
-    started_at = datetime.datetime.now(datetime.UTC).isoformat()
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     branch = _get_current_branch()
     tags = ["task:active", f"skill:{skill_name}"]
     if branch:
@@ -450,6 +464,9 @@ def _inject_skill_entity(
                 "lifecycle_status": "active",
                 "tracking_persistence": tracking_persistence,
                 "tracking_basis": tracking_basis,
+                "project_id": project_id,
+                "stage_session_id": stage_session_id,
+                "flow_line_id": flow_line_id,
                 "started_at": started_at,
                 "last_accessed": started_at,
                 "completed_at": "",
@@ -511,7 +528,7 @@ def _update_skill_entity_lifecycle(
     if node is None:
         return None
     metadata = dict(node.get("metadata") or {})
-    now = datetime.datetime.now(datetime.UTC).isoformat()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     tags = [str(tag) for tag in metadata.get("tags") or []]
     tags = [tag for tag in tags if tag not in {"task:active", "task:done", "task:abandoned"}]
     tags.append(
@@ -578,10 +595,12 @@ def _complete_entity_only_session(
         try:
             started = datetime.datetime.fromisoformat(started_at)
             if started.tzinfo is None:
-                started = started.replace(tzinfo=datetime.UTC)
+                started = started.replace(tzinfo=datetime.timezone.utc)
             duration_ms = max(
                 0,
-                int((datetime.datetime.now(datetime.UTC) - started).total_seconds() * 1000),
+                int(
+                    (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds() * 1000
+                ),
             )
         except (TypeError, ValueError):
             duration_ms = None
@@ -689,7 +708,7 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
         if not current_branch:
             session_scope = "current"  # fallback when not in a git repo
 
-    now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     def _graph_nodes() -> list[dict]:
         try:
@@ -993,8 +1012,19 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
     skill_name = args.get("skill_name", "")
     task_description = args.get("task_description", "")
     stage_session_id = args.get("stage_session_id") or args.get("stage_id")
+    flow_line_id = str(args.get("flow_line_id") or args.get("flow_id") or "").strip()
+    project_id = str(args.get("project_id") or "").strip()
     parent_entity_id = args.get("parent_entity_id") or get_parent_entity_id(stage_session_id)
     record_memory = bool(args.get("record_memory", True))
+    # A skill session may be tracked as an entity without a durable memory,
+    # but durable memory always needs a concrete project scope.  This guard
+    # lives in the handler as well as the MCP schema so internal callers and
+    # older clients cannot bypass the project-isolation contract.
+    project_scope_valid = bool(project_id) and project_id != "project:unknown"
+    persistence_warning = ""
+    if record_memory and not project_scope_valid:
+        record_memory = False
+        persistence_warning = "project_scope_required_for_memory_persistence"
 
     _normalized_name = (
         skill_name
@@ -1053,6 +1083,9 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
         parent_entity_id,
         tracking_persistence="memory" if record_memory else "entity_only",
         tracking_basis=tracking_basis,
+        project_id=project_id,
+        stage_session_id=str(stage_session_id or "").strip(),
+        flow_line_id=flow_line_id,
     )
     if entity_result.get("error"):
         return [
@@ -1079,6 +1112,7 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
             _normalized_name,
             task_description,
             domain,
+            project_id=project_id,
         )
 
     tags_applied = ["task:active", f"skill:{_normalized_name}", f"domain:{domain}"]
@@ -1093,10 +1127,14 @@ async def handle_skill_session_start(engine: Any, args: dict) -> list[TextConten
         "tracking_persistence": "memory" if record_memory else "entity_only",
         "tracking_basis": tracking_basis,
         "stage_session_id": _normalize_stage_session_id(stage_session_id),
+        "flow_line_id": flow_line_id,
+        "project_id": project_id or "project:unknown",
         "tags_applied": tags_applied,
         "chain_warning": chain_warning,
         "memory_id": memory_id,
     }
+    if persistence_warning:
+        response["persistence_warning"] = persistence_warning
 
     return [
         TextContent(
@@ -1117,6 +1155,9 @@ async def record_attested_composite_skills(
     skill_names: list[str],
     task_description: str,
     receipt_id: str,
+    project_id: str = "",
+    stage_session_id: str = "",
+    flow_line_id: str = "",
 ) -> list[str]:
     """Persist caller-attested composite child calls without moving the route cursor."""
     recorded: list[str] = []
@@ -1131,6 +1172,9 @@ async def record_attested_composite_skills(
                 "record_memory": False,
                 "tracking_basis": "composite_receipt",
                 "tracking_idempotency_key": f"{receipt_id}:child:{index}:{skill_name}",
+                "project_id": project_id,
+                "stage_session_id": stage_session_id,
+                "flow_line_id": flow_line_id,
             },
         )
         start_data = json.loads(started[0].text)
@@ -1428,7 +1472,7 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
         if not _patch_metadata(
             {
                 "tags": tags,
-                "last_accessed": datetime.datetime.now(datetime.UTC).isoformat(),
+                "last_accessed": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             },
             committed_result=mutation,
             expected_content=new_content,
@@ -1838,6 +1882,9 @@ async def handle_skill_auto_track(engine: Any, args: dict) -> list[TextContent]:
                 f"auto-tracked: {lookup_name}",
                 parent_entity_id,
                 tracking_persistence="entity_only",
+                project_id=str(args.get("project_id") or "").strip(),
+                stage_session_id=str(stage_session_id or "").strip(),
+                flow_line_id=str(flow_line_id or "").strip(),
             )
         except Exception as exc:
             entity_result = {"error": str(exc)}

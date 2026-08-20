@@ -84,6 +84,11 @@ from scripts.http_mcp_harness import (  # noqa: E402
     wait_for_health,
 )
 
+# These channels are useful for explainability, but they are not part of the
+# frozen fusion contract.  Keep their evidence schema explicit and stable so a
+# task-specific retrieval route cannot change the benchmark aggregate shape.
+DIAGNOSTIC_CHANNEL_ORDER = ("graph", "code", "audit", "principle")
+
 BENCHMARK_SOURCE_PATHS = (
     ROOT / "scripts" / "benchmark_recall_quality.py",
     ROOT / "scripts" / "http_mcp_harness.py",
@@ -126,6 +131,63 @@ class LivePaths:
     lancedb: Path
 
 
+def _snapshot_governed_canonical_db(target: Path) -> None:
+    """Seed an isolated benchmark DB with the server node-governance snapshot.
+
+    A governed live benchmark must exercise the same registered node and
+    identity contract as production.  The benchmark still writes only to the
+    temporary copy; the canonical SQLite file is never opened for writes.
+    Without this snapshot the isolated child starts with an empty database,
+    fails closed with ``node_governance_schema_missing`` and cannot produce a
+    publishable governed quality report.
+    """
+
+    if os.environ.get("PP_CONTROL_PLANE", "0").strip() != "1":
+        return
+    source_value = os.environ.get("PLASTIC_DB_PATH", "").strip()
+    if not source_value or source_value == ":memory:":
+        return
+    source = Path(source_value).expanduser().resolve()
+    if not source.is_file() or source.resolve() == target.resolve():
+        return
+    import sqlite3
+
+    from plastic_promise.deployment.sqlite_migrations import apply_node_governance_schema
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source_db = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    target_db = sqlite3.connect(target)
+    try:
+        target_db.execute("BEGIN")
+        apply_node_governance_schema(target_db)
+        tables = (
+            "inference_nodes",
+            "inference_node_reservations",
+            "inference_node_latency_samples",
+            "inference_node_audit_events",
+            "inference_node_identity_receipts",
+            "derived_work_accelerator_audit_events",
+        )
+        for table in tables:
+            columns = [row[1] for row in source_db.execute(f"PRAGMA table_info({table})")]
+            if not columns:
+                continue
+            rows = source_db.execute(f"SELECT * FROM {table}").fetchall()
+            placeholders = ",".join("?" for _ in columns)
+            target_db.executemany(
+                f"INSERT OR IGNORE INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
+                rows,
+            )
+        target_db.commit()
+    except BaseException:
+        target_db.rollback()
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        source_db.close()
+        target_db.close()
+
+
 def _required_rerank_credential_keys(environ: Mapping[str, str]) -> frozenset[str]:
     if environ.get("PP_RERANK_DISABLED", "0") == "1":
         return frozenset()
@@ -145,6 +207,27 @@ def _required_embedding_credential_keys(environ: Mapping[str, str]) -> frozenset
     provider = environ.get("EMBEDDER_PROVIDER", "ollama").strip().casefold()
     credential = EMBEDDING_PROVIDER_CREDENTIAL_KEYS.get(provider)
     return frozenset({credential}) if credential is not None else frozenset()
+
+
+def _required_governed_node_runtime_keys(
+    environ: Mapping[str, str],
+) -> frozenset[str]:
+    """Forward only the private-node bootstrap boundary to the child MCP."""
+
+    if environ.get("PP_CONTROL_PLANE", "0").strip() != "1":
+        return frozenset()
+    fixed = {
+        "PP_CONTROL_PLANE",
+        "PP_CONTROL_ROOT",
+        "PP_CONTROL_REVISION_ID",
+        "PP_DEPLOYMENT_MANIFEST_PATH",
+        "PP_NODE_PRIVATE_ENDPOINTS_FILE",
+    }
+    return frozenset(
+        name
+        for name in environ
+        if name in fixed or re.fullmatch(r"PP_NODE_AUTH_[A-Z0-9_]{1,96}", name)
+    )
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -931,8 +1014,18 @@ def _normalized_embedding_usage(usage: Mapping[str, Any]) -> dict[str, Any]:
 def _validated_embedding_identity(raw: object) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise RuntimeError("health_embedding_identity_missing")
-    expected = {"provider", "model", "model_revision", "dimension", "usage"}
-    if set(raw) != expected:
+    legacy_shape = {"provider", "model", "model_revision", "dimension", "usage"}
+    governed_shape = {
+        "provider",
+        "model",
+        "model_revision",
+        "dimension",
+        "normalization",
+        "index_identity",
+        "usage",
+    }
+    shape = set(raw)
+    if shape != legacy_shape and shape != governed_shape:
         raise RuntimeError("health_embedding_identity_invalid")
 
     def identity(name: str) -> str:
@@ -949,6 +1042,24 @@ def _validated_embedding_identity(raw: object) -> dict[str, Any]:
     dimension = raw.get("dimension")
     if type(dimension) is not int or dimension <= 0:
         raise RuntimeError("health_embedding_dimension_invalid")
+    if shape == governed_shape:
+        normalization = identity("normalization")
+        index_identity = identity("index_identity")
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", index_identity) is None:
+            raise RuntimeError("health_embedding_index_identity_invalid")
+        usage = raw.get("usage")
+        if not isinstance(usage, Mapping):
+            raise RuntimeError("health_embedding_usage_invalid")
+        normalized_usage = _normalized_embedding_usage(usage)
+        return {
+            "provider": identity("provider"),
+            "model": identity("model"),
+            "model_revision": identity("model_revision"),
+            "dimension": dimension,
+            "normalization": normalization,
+            "index_identity": index_identity,
+            "usage": normalized_usage,
+        }
     usage = raw.get("usage")
     if not isinstance(usage, Mapping):
         raise RuntimeError("health_embedding_usage_invalid")
@@ -1241,6 +1352,8 @@ def _bind_experiment_report(
     environment.update(
         {
             "provider": provider,
+            "configured_model": backend.get("model"),
+            "configured_model_revision": backend.get("model_revision"),
             "source_commit": _source_commit(),
             "dirty_fingerprint": _code_fingerprint(),
             "retrieval_configuration": _experiment_retrieval_configuration(
@@ -1324,6 +1437,7 @@ def _isolated_live_environment(
             sqlite=root / "canonical.db",
             lancedb=root / "lancedb",
         )
+        _snapshot_governed_canonical_db(paths.sqlite)
         overrides = {
             "PLASTIC_DB_PATH": str(paths.sqlite),
             "PLASTIC_LANCEDB_PATH": str(paths.lancedb),
@@ -1435,6 +1549,7 @@ async def _http_live_backend(
         "PP_RETRIEVAL_RRF_WINDOWS_JSON",
         *LIVE_RETRIEVAL_CONFIGURATION,
         *RECALL_QUALITY_ENVIRONMENT_KEYS,
+        *_required_governed_node_runtime_keys(os.environ),
         "EMBEDDER_PROVIDER",
         "EMBEDDER_BASE_URL",
         "EMBEDDER_PATH",
@@ -1483,6 +1598,8 @@ async def _http_live_backend(
         health = await wait_for_health(
             health_url,
             managed,
+            timeout=30.0,
+            allow_degraded=os.environ.get("PP_CONTROL_PLANE", "0").strip() == "1",
             expected_source_root=ROOT,
             expected_source_revision=_source_commit(),
             expected_fusion_policy=fusion_policy,
@@ -1506,6 +1623,16 @@ async def _http_live_backend(
             url,
             dataset,
             counts,
+        )
+        # Seeding the isolated corpus can make the derived vector index ready;
+        # require a strict green health response before measuring quality.
+        health = await wait_for_health(
+            health_url,
+            managed,
+            timeout=30.0,
+            expected_source_root=ROOT,
+            expected_source_revision=_source_commit(),
+            expected_fusion_policy=fusion_policy,
         )
     except BaseException:
         managed.terminate()
@@ -1779,13 +1906,32 @@ async def _seed_public_corpus(
                 "actor": "recall-quality-http",
                 "automatic": False,
                 "reuse_signal": False,
-                "metadata_json": {"fixture_id": record.memory_id},
+                # Compact-v2 synthesis indexing is deliberately fail-closed: the
+                # index material must be derived from the current summary fields,
+                # not reconstructed from the rendered content or a stale fixture.
+                # Keep the benchmark seed on the same contract as production
+                # memory_store callers so a live quality run exercises the real
+                # governed path instead of failing before retrieval starts.
+                "metadata_json": {
+                    "fixture_id": record.memory_id,
+                    "domain": record.domain,
+                    "category": record.category,
+                    "l0_abstract": record.l0_abstract,
+                    "l1_summary": record.l1_summary,
+                },
             },
         )
         counts["memory_store"] += 1
         actual_id = str(payload.get("memory_id") or "")
         if not payload.get("stored") or not actual_id:
-            raise RuntimeError(f"public_synthesis_seed_failed:{record.memory_id}")
+            reason = re.sub(
+                r"[^a-z0-9_.:-]",
+                "_",
+                str(payload.get("reason") or "unknown").strip().casefold(),
+            )[:96]
+            raise RuntimeError(
+                f"public_synthesis_seed_failed:{record.memory_id}:{reason or 'unknown'}"
+            )
         fixture_to_actual[record.memory_id] = actual_id
         if record.synthesis_status in {"verified", "stale"}:
             feedback = "adopted"
@@ -1826,7 +1972,16 @@ async def _seed_public_corpus(
                 )
                 counts["memory_update"] += 1
                 if not update.get("updated"):
-                    raise RuntimeError(f"public_stale_transition_failed:{record.memory_id}")
+                    reason = re.sub(
+                        r"[^a-z0-9_.:-]",
+                        "_",
+                        str(update.get("reason") or update.get("error") or "unknown")
+                        .strip()
+                        .casefold(),
+                    )[:96]
+                    raise RuntimeError(
+                        f"public_stale_transition_failed:{record.memory_id}:{reason or 'unknown'}"
+                    )
 
     eligible_count = len(ordinary) + sum(
         record.synthesis_status == "verified" for record in synthesis
@@ -1878,11 +2033,6 @@ def _remap_public_channel_evidence(
             for rank, row in enumerate(remapped, start=1):
                 row["rank"] = rank
         rankings[channel] = remapped
-    states = {
-        ("bm25" if str(name).casefold() == "lexical" else str(name)): dict(state)
-        for name, state in raw_states.items()
-        if isinstance(state, Mapping)
-    }
     missing_state = {
         "planned": True,
         "enabled": False,
@@ -1892,9 +2042,43 @@ def _remap_public_channel_evidence(
         "evidence_only": False,
         "reason": "missing_public_evidence",
     }
+
+    states: dict[str, dict[str, Any]] = {}
+    for channel in FUSION_CHANNEL_ORDER:
+        raw_state = raw_states.get(channel)
+        if raw_state is None:
+            raw_state = raw_states.get("lexical") if channel == "bm25" else None
+        if raw_state is None:
+            states[channel] = dict(missing_state)
+        elif not isinstance(raw_state, Mapping):
+            raise RuntimeError(f"public channel state {channel} is not an object")
+        else:
+            states[channel] = dict(raw_state)
+
+    for channel in DIAGNOSTIC_CHANNEL_ORDER:
+        raw_state = raw_states.get(channel)
+        if raw_state is not None and not isinstance(raw_state, Mapping):
+            raise RuntimeError(f"public channel state {channel} is not an object")
+        states[channel] = {
+            "planned": False,
+            "enabled": False,
+            "available": False,
+            "executed": False,
+            "participating": False,
+            "evidence_only": True,
+            "reason": "evidence_only",
+            "diagnostic": dict(raw_state) if isinstance(raw_state, Mapping) else {"present": False},
+        }
+
     return (
         {channel: rankings.get(channel, []) for channel in FUSION_CHANNEL_ORDER},
-        {channel: states.get(channel, dict(missing_state)) for channel in FUSION_CHANNEL_ORDER},
+        {
+            **states,
+            **{
+                channel: states.get(channel, dict(missing_state))
+                for channel in FUSION_CHANNEL_ORDER
+            },
+        },
     )
 
 
@@ -1941,12 +2125,28 @@ def _engine_diagnostic_backend(
 ]:
     from plastic_promise.core.context_engine import ContextEngine
     from plastic_promise.core.embedder import get_embedder
+    from plastic_promise.core.memory_index import effective_embedding_model_name
 
     engine = ContextEngine(use_sqlite=True)
     try:
+        if os.environ.get("PP_CONTROL_PLANE", "0").strip() == "1":
+            from plastic_promise.core.node_runtime_bootstrap import (
+                bootstrap_memory_index_node_runtime,
+            )
+
+            report = bootstrap_memory_index_node_runtime(engine)
+            if getattr(report, "state", None) != "ready":
+                raise RuntimeError(str(getattr(report, "reason", "node_routing_unavailable")))
         engine.ensure_heavy_init()
         embedder = getattr(engine, "_embedder", None) or get_embedder(fallback_on_error=False)
         model = str(getattr(embedder, "model_name", type(embedder).__name__))
+        # ``model_name`` is the human-facing model label, while governed
+        # compute nodes expose an immutable index identity (the provider
+        # digest).  SynthesisStore persists the latter, so use the same
+        # identity for every diagnostic fixture row; otherwise ordinary rows
+        # and synthesis rows are written under different material identities
+        # and the rebuild fails closed on a false model-mismatch.
+        index_model = effective_embedding_model_name(embedder)
         stats = getattr(embedder, "stats", {})
         stats = stats if isinstance(stats, Mapping) else {}
         model_revision = str(
@@ -1962,7 +2162,7 @@ def _engine_diagnostic_backend(
             embedder,
             dataset,
             candidate,
-            model,
+            index_model,
         )
         smoke = _run_store_recall_supply_smoke(
             engine,
@@ -2142,17 +2342,25 @@ def _install_live_corpus(
         source_ids = [
             fixture_to_actual[source_id] for source_id in record.metadata.get("source_ids", [])
         ]
-        artifact = synthesis_store.create_draft(
-            record.content,
-            source_ids,
-            synthesis_key=f"benchmark:{dataset.corpus_revision}:{record.memory_id}",
-            validity_scope=record.project_id,
-            project_id=record.project_id,
-            visibility="project",
-            actor="recall-quality-benchmark",
-            call_id=f"seed:{record.memory_id}",
-            automatic=False,
-            metadata={
+        # Synthesis rows are canonical memories too: when the diagnostic
+        # benchmark later rebuilds its isolated LanceDB, it must be able to
+        # read the same persisted index-material contract as production.  The
+        # previous fixture installer only stored lifecycle metadata, so a
+        # verified synthesis row reached the rebuild step without
+        # ``index_material`` and the run failed before measuring retrieval.
+        material = build_index_material(
+            {
+                "content": record.content,
+                "domain": record.domain,
+                "category": record.category,
+                "l0_abstract": record.l0_abstract,
+                "l1_summary": record.l1_summary,
+            },
+            policy=candidate,
+            model_name=model,
+        )
+        synthesis_metadata = metadata_with_index_material(
+            {
                 "fixture_id": record.memory_id,
                 "corpus_revision": dataset.corpus_revision,
                 "l0_abstract": record.l0_abstract,
@@ -2165,6 +2373,19 @@ def _install_live_corpus(
                 "fixture_verification_call_id": record.metadata.get("verification_call_id", ""),
                 "fixture_verified_at": record.metadata.get("verified_at", ""),
             },
+            material,
+        )
+        artifact = synthesis_store.create_draft(
+            record.content,
+            source_ids,
+            synthesis_key=f"benchmark:{dataset.corpus_revision}:{record.memory_id}",
+            validity_scope=record.project_id,
+            project_id=record.project_id,
+            visibility="project",
+            actor="recall-quality-benchmark",
+            call_id=f"seed:{record.memory_id}",
+            automatic=False,
+            metadata=synthesis_metadata,
         )
         if artifact is None:
             raise RuntimeError(f"synthesis fixture was not created: {record.memory_id}")
@@ -2425,7 +2646,11 @@ def _channel_evidence_from_pack(
     rankings: dict[str, list[dict[str, Any]]] = {}
     for raw_name, raw_rows in raw_rankings.items():
         channel = "bm25" if str(raw_name).casefold() == "lexical" else str(raw_name)
-        if channel not in {"vector", "bm25", "fts"}:
+        # Graph/code channels are diagnostic evidence only.  They are not
+        # constituents of the frozen fusion contract and may appear only for
+        # particular task types (for example debugging), which would make the
+        # benchmark's cross-case channel schema drift.
+        if channel not in FUSION_CHANNEL_ORDER:
             continue
         if not isinstance(raw_rows, list):
             raise RuntimeError(f"live channel ranking {channel} is not a list")
@@ -2445,13 +2670,54 @@ def _channel_evidence_from_pack(
             )
         rankings[channel] = rows
 
+    missing_state = {
+        "planned": True,
+        "enabled": False,
+        "available": False,
+        "executed": False,
+        "participating": False,
+        "evidence_only": False,
+        "reason": "missing_engine_evidence",
+    }
+
     states: dict[str, dict[str, Any]] = {}
-    for raw_name, raw_state in raw_states.items():
-        channel = "bm25" if str(raw_name).casefold() == "lexical" else str(raw_name)
+    for channel in FUSION_CHANNEL_ORDER:
+        raw_state = raw_states.get(channel)
+        if raw_state is None:
+            states[channel] = dict(missing_state)
+            continue
         if not isinstance(raw_state, Mapping):
             raise RuntimeError(f"live channel state {channel} is not an object")
         states[channel] = dict(raw_state)
-    return rankings, states
+
+    # Diagnostic channels deliberately use a fixed, evidence-only envelope.
+    # Their raw state is retained as nested metadata for explainability, while
+    # the top-level contract remains identical for every benchmark case.
+    for channel in DIAGNOSTIC_CHANNEL_ORDER:
+        raw_state = raw_states.get(channel)
+        if raw_state is not None and not isinstance(raw_state, Mapping):
+            raise RuntimeError(f"live channel state {channel} is not an object")
+        states[channel] = {
+            "planned": False,
+            "enabled": False,
+            "available": False,
+            "executed": False,
+            "participating": False,
+            "evidence_only": True,
+            "reason": "evidence_only",
+            "diagnostic": dict(raw_state) if isinstance(raw_state, Mapping) else {"present": False},
+        }
+
+    return (
+        {channel: rankings.get(channel, []) for channel in FUSION_CHANNEL_ORDER},
+        {
+            **states,
+            **{
+                channel: states.get(channel, dict(missing_state))
+                for channel in FUSION_CHANNEL_ORDER
+            },
+        },
+    )
 
 
 def _pack_is_degraded(pack: Any, audit: Mapping[str, Any]) -> bool:

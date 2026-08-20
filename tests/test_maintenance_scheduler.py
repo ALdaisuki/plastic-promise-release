@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -102,6 +104,58 @@ def _trace_engine(db_path):
     return SimpleNamespace(_sqlite=SimpleNamespace(_conn=conn), trace_db=db_path)
 
 
+def _server_engine(db_path):
+    from plastic_promise.core.context_engine import _SQLiteStorage
+
+    storage = _SQLiteStorage(str(db_path))
+    return SimpleNamespace(
+        _sqlite=storage,
+        _write_lock=threading.RLock(),
+        trace_db=db_path,
+    )
+
+
+@contextmanager
+def _storage_transaction(storage):
+    with storage.batch():
+        yield
+
+
+def _configure_project_scoped_cycle(
+    monkeypatch,
+    maintenance_daemon,
+    *,
+    collaboration_maintenance=True,
+):
+    def periodic_maintenance(_engine, *, system_authority):
+        assert system_authority is True
+        return {"decay_updated": 0}
+
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "_maintenance_project_ids",
+        lambda _engine=None: ("project:test",),
+    )
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "run_periodic_memory_maintenance",
+        periodic_maintenance,
+    )
+    if collaboration_maintenance:
+        monkeypatch.setattr(
+            maintenance_daemon,
+            "run_collaboration_maintenance",
+            lambda _engine: {
+                "schema_version": "collaboration-maintenance/v1",
+                "status": "success",
+                "reconcile": {},
+                "promotion": [],
+                "canonical_memory_mutation": False,
+                "event_delete": False,
+            },
+        )
+
+
 @pytest.mark.asyncio
 async def test_governed_cycle_persists_parent_and_ordered_children_after_reopen(
     monkeypatch, tmp_path
@@ -110,8 +164,10 @@ async def test_governed_cycle_persists_parent_and_ordered_children_after_reopen(
     from plastic_promise.core.traceability import TraceabilityStore
 
     engine = _trace_engine(tmp_path / "traceability.sqlite")
+    _configure_project_scoped_cycle(monkeypatch, maintenance_daemon)
 
-    async def lifecycle(_engine):
+    async def lifecycle(_engine, *, project_id):
+        assert project_id == "project:test"
         return {"processed": 2}
 
     async def audit():
@@ -147,6 +203,7 @@ async def test_governed_cycle_persists_parent_and_ordered_children_after_reopen(
     assert root["parent_call_id"] == "daemon-run-42"
     assert [span["stage"] for span in children] == [
         "memory_lifecycle",
+        "collaboration_maintenance",
         "proposal_expiry",
         "synthesis_integrity",
         "memory_index_replay",
@@ -154,7 +211,7 @@ async def test_governed_cycle_persists_parent_and_ordered_children_after_reopen(
         "audit",
     ]
     assert root["status"] == "success"
-    assert [span["metadata"]["order"] for span in children] == list(range(1, 7))
+    assert [span["metadata"]["order"] for span in children] == list(range(1, 8))
     assert all(span["parent_call_id"] == result["cycle_call_id"] for span in children)
 
 
@@ -166,7 +223,12 @@ async def test_governed_cycle_durably_marks_worker_runtime_failures_as_degraded(
     from plastic_promise.core.traceability import TraceabilityStore
 
     engine = _trace_engine(tmp_path / "traceability.sqlite")
-    monkeypatch.setattr(maintenance_daemon, "scan_memory_decay", lambda _engine: {"processed": 1})
+    _configure_project_scoped_cycle(monkeypatch, maintenance_daemon)
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "scan_memory_decay",
+        lambda _engine, **_kwargs: {"processed": 1},
+    )
     monkeypatch.setattr(
         maintenance_daemon,
         "expire_pending_memory_proposals",
@@ -225,9 +287,11 @@ async def test_governed_cycle_marks_parent_partial_and_continues_after_middle_fa
     from plastic_promise.core.traceability import TraceabilityStore
 
     engine = _trace_engine(tmp_path / "traceability.sqlite")
+    _configure_project_scoped_cycle(monkeypatch, maintenance_daemon)
     calls: list[str] = []
 
-    async def lifecycle(_engine):
+    async def lifecycle(_engine, *, project_id):
+        assert project_id == "project:test"
         calls.append("memory_lifecycle")
         return {"processed": 1}
 
@@ -278,15 +342,207 @@ async def test_governed_cycle_marks_parent_partial_and_continues_after_middle_fa
 
 
 @pytest.mark.asyncio
+async def test_collaboration_maintenance_missing_schema_degrades_and_later_stages_continue(
+    monkeypatch, tmp_path
+):
+    from daemons import maintenance_daemon
+
+    engine = _server_engine(tmp_path / "missing-collaboration-schema.sqlite")
+    _configure_project_scoped_cycle(
+        monkeypatch,
+        maintenance_daemon,
+        collaboration_maintenance=False,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "scan_memory_decay",
+        lambda _engine, **_kwargs: {"processed": 0},
+    )
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "expire_pending_memory_proposals",
+        lambda _engine: calls.append("proposal_expiry") or {"expired": 0},
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "scan_synthesis_integrity", lambda _engine: {"stale": 0}
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "replay_memory_index_jobs", lambda _engine: {"succeeded": 0}
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "replay_synthesis_index_jobs", lambda _engine: {"succeeded": 0}
+    )
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "run_audit",
+        lambda: calls.append("audit") or {"score": 1.0},
+    )
+
+    result = await maintenance_daemon.run_governed_maintenance_cycle(engine)
+
+    assert result["status"] == "partial"
+    assert result["results"]["collaboration_maintenance"] == {
+        "schema_version": "collaboration-maintenance-stage/v1",
+        "status": "degraded",
+        "failure_code": "durable_collaboration_schema_missing",
+        "canonical_memory_mutation": False,
+        "event_delete": False,
+    }
+    assert result["degradations"]["collaboration_maintenance"] == [
+        "durable_collaboration_schema_missing"
+    ]
+    assert calls == ["proposal_expiry", "audit"]
+    assert engine._sqlite._conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+        "AND name='collaboration_runtime_schema'"
+    ).fetchone() == (0,)
+    engine._sqlite._conn.close()
+
+
+@pytest.mark.asyncio
+async def test_collaboration_maintenance_open_transaction_rolls_back_and_reports_stable_code(
+    monkeypatch, tmp_path
+):
+    from daemons import maintenance_daemon
+
+    engine = _server_engine(tmp_path / "collaboration-open-transaction.sqlite")
+    _configure_project_scoped_cycle(
+        monkeypatch,
+        maintenance_daemon,
+        collaboration_maintenance=False,
+    )
+    engine._sqlite._conn.execute("CREATE TABLE collaboration_stage_writes (value TEXT)")
+    engine._sqlite._conn.commit()
+    later: list[str] = []
+
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "scan_memory_decay",
+        lambda _engine, **_kwargs: {"processed": 0},
+    )
+
+    def leave_transaction_open(_engine):
+        engine._sqlite._conn.execute("INSERT INTO collaboration_stage_writes VALUES ('partial')")
+        return {"schema_version": "collaboration-maintenance/v1"}
+
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "run_collaboration_maintenance",
+        leave_transaction_open,
+    )
+    monkeypatch.setattr(
+        maintenance_daemon,
+        "expire_pending_memory_proposals",
+        lambda _engine: later.append("proposal_expiry") or {"expired": 0},
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "scan_synthesis_integrity", lambda _engine: {"stale": 0}
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "replay_memory_index_jobs", lambda _engine: {"succeeded": 0}
+    )
+    monkeypatch.setattr(
+        maintenance_daemon, "replay_synthesis_index_jobs", lambda _engine: {"succeeded": 0}
+    )
+    monkeypatch.setattr(maintenance_daemon, "run_audit", lambda: {"score": 1.0})
+
+    result = await maintenance_daemon.run_governed_maintenance_cycle(engine)
+
+    assert engine._sqlite._conn.execute(
+        "SELECT COUNT(*) FROM collaboration_stage_writes"
+    ).fetchone() == (0,)
+    assert result["errors"]["collaboration_maintenance"] == "RuntimeError"
+    assert result["failure_codes"]["collaboration_maintenance"] == (
+        "maintenance_stage_left_open_transaction"
+    )
+    assert later == ["proposal_expiry"]
+    engine._sqlite._conn.close()
+
+
+def test_collaboration_maintenance_reuses_canonical_server_storage(monkeypatch, tmp_path):
+    from daemons import maintenance_daemon
+    from tests.pr5_schema_fixture import install_pr5_collaboration_schema
+
+    engine = _server_engine(tmp_path / "collaboration-maintenance.sqlite")
+    install_pr5_collaboration_schema(
+        engine._sqlite._conn,
+        transaction_factory=lambda: _storage_transaction(engine._sqlite),
+        clock=lambda: datetime(2026, 8, 14, tzinfo=timezone.utc),
+        suffix="maintenance-composition",
+    )
+    observed_connections: list[sqlite3.Connection] = []
+
+    from plastic_promise.collaboration import durable_runtime
+
+    real_maintenance = durable_runtime.DurableCollaborationRuntime.maintenance
+
+    def observe_connection(runtime):
+        observed_connections.append(runtime._connection)
+        return real_maintenance(runtime)
+
+    monkeypatch.setattr(
+        durable_runtime.DurableCollaborationRuntime,
+        "maintenance",
+        observe_connection,
+    )
+
+    result = maintenance_daemon.run_collaboration_maintenance(engine)
+
+    assert result["status"] == "success"
+    assert result["schema_version"] == "collaboration-maintenance/v1"
+    assert result["canonical_memory_mutation"] is False
+    assert result["event_delete"] is False
+    assert observed_connections == [engine._sqlite._conn]
+    assert engine._sqlite._conn.in_transaction is False
+    engine._sqlite._conn.close()
+
+
+def test_collaboration_maintenance_authority_unavailable_fails_closed(monkeypatch, tmp_path):
+    from daemons import maintenance_daemon
+    from plastic_promise.collaboration import runtime_binding
+    from plastic_promise.collaboration.durable_runtime import DurableCollaborationError
+    from tests.pr5_schema_fixture import install_pr5_collaboration_schema
+
+    engine = _server_engine(tmp_path / "collaboration-authority.sqlite")
+    install_pr5_collaboration_schema(
+        engine._sqlite._conn,
+        transaction_factory=lambda: _storage_transaction(engine._sqlite),
+        clock=lambda: datetime(2026, 8, 14, tzinfo=timezone.utc),
+        suffix="maintenance-authority",
+    )
+
+    def unavailable_authority(*_args, **_kwargs):
+        raise DurableCollaborationError("durable_collaboration_authority_cache_unavailable")
+
+    monkeypatch.setattr(runtime_binding, "_authority_bundle", unavailable_authority)
+
+    result = maintenance_daemon.run_collaboration_maintenance(engine)
+
+    assert result == {
+        "schema_version": "collaboration-maintenance-stage/v1",
+        "status": "degraded",
+        "failure_code": "durable_collaboration_authority_cache_unavailable",
+        "canonical_memory_mutation": False,
+        "event_delete": False,
+    }
+    assert engine._sqlite._conn.in_transaction is False
+    engine._sqlite._conn.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_stage_rolls_back_before_independent_error_trace(monkeypatch, tmp_path):
     from daemons import maintenance_daemon
     from plastic_promise.core.traceability import TraceabilityStore
 
     engine = _trace_engine(tmp_path / "traceability.sqlite")
+    _configure_project_scoped_cycle(monkeypatch, maintenance_daemon)
     engine._sqlite._conn.execute("CREATE TABLE stage_writes (value TEXT)")
     engine._sqlite._conn.commit()
 
-    def fail_with_open_transaction(_engine):
+    def fail_with_open_transaction(_engine, *, project_id):
+        assert project_id == "project:test"
         engine._sqlite._conn.execute("INSERT INTO stage_writes VALUES ('partial')")
         raise RuntimeError("stage failed after write")
 
@@ -557,6 +813,7 @@ def test_cycle_span_tree_rejects_self_parent_or_wrong_child_linkage(tmp_path):
     )
     stages = [
         "memory_lifecycle",
+        "collaboration_maintenance",
         "proposal_expiry",
         "synthesis_integrity",
         "memory_index_replay",
@@ -575,3 +832,40 @@ def test_cycle_span_tree_rejects_self_parent_or_wrong_child_linkage(tmp_path):
     with pytest.raises(ValueError, match="invalid_maintenance_cycle_span_tree"):
         store.get_cycle_span_tree("valid-root")
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_governed_cycle_bootstraps_the_same_node_runtime_before_index_replay(
+    monkeypatch, tmp_path
+):
+    import plastic_promise.core.node_runtime_bootstrap as node_bootstrap
+    from daemons import maintenance_daemon
+
+    engine = _trace_engine(tmp_path / "traceability.sqlite")
+    _configure_project_scoped_cycle(monkeypatch, maintenance_daemon)
+    calls: list[str] = []
+
+    def bootstrap(target):
+        assert target is engine
+        calls.append("bootstrap")
+        target._memory_index_node_runtime = object()
+
+    monkeypatch.setattr(node_bootstrap, "bootstrap_memory_index_node_runtime", bootstrap)
+    monkeypatch.setattr(maintenance_daemon, "scan_memory_decay", lambda _engine, **_kwargs: {})
+    monkeypatch.setattr(maintenance_daemon, "expire_pending_memory_proposals", lambda _engine: {})
+    monkeypatch.setattr(maintenance_daemon, "scan_synthesis_integrity", lambda _engine: {})
+
+    def replay(target):
+        assert target._memory_index_node_runtime is not None
+        calls.append("memory_index_replay")
+        return {"succeeded": 0}
+
+    monkeypatch.setattr(maintenance_daemon, "replay_memory_index_jobs", replay)
+    monkeypatch.setattr(maintenance_daemon, "replay_synthesis_index_jobs", lambda _engine: {})
+    monkeypatch.setattr(maintenance_daemon, "run_audit", lambda: {})
+
+    report = await maintenance_daemon.run_governed_maintenance_cycle(engine)
+    engine._sqlite._conn.close()
+
+    assert report["status"] == "success"
+    assert calls == ["bootstrap", "memory_index_replay"]

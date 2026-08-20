@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Plastic Promise 联合端点与协作权限合同</title>
+  <desc id="desc">联合六 PR 合同 revision 2026-08-18.1 定义端点所有权、协作权威与规范权威；此图仅表达源码/设计，不证明 runtime 已激活或 production 已部署。</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="runtime" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#155e75"/>
+      <stop offset="1" stop-color="#312e81"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#020617" flood-opacity="0.45"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#67e8f9"/>
+    </marker>
+    <marker id="arrowDerived" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#c4b5fd"/>
+    </marker>
+    <style>
+      .title { fill:#f8fafc; font:700 38px -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+      .subtitle { fill:#cbd5e1; font:400 18px -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+      .label { fill:#f8fafc; font:700 21px -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+      .body { fill:#cbd5e1; font:400 15px -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+      .micro { fill:#94a3b8; font:400 13px -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+      .pill { fill:#a7f3d0; font:700 12px -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+    </style>
+  </defs>
+  <rect width="1280" height="640" rx="28" fill="url(#background)"/>
+
+  <text class="title" x="64" y="68">Plastic Promise</text>
+  <text class="subtitle" x="64" y="99">唯一规范真相源；派生推理与索引保持可重建、可替换。</text>
+  <text class="micro" x="64" y="122">联合合同 2026-08-18.1 · 仅源码/设计视图 · runtime 与 production 需独立证据</text>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="160" width="246" height="180" rx="18" fill="#172554" stroke="#60a5fa" stroke-width="2"/>
+    <text class="label" x="88" y="205">pp-local-edge</text>
+    <text class="body" x="88" y="240">Dashboard · 部署界面</text>
+    <text class="body" x="88" y="267">MCP bridge · 有界协作感知</text>
+    <rect x="88" y="289" width="173" height="26" rx="13" fill="#1d4ed8"/>
+    <text class="pill" x="103" y="307">loopback / SSH 转发</text>
+  </g>
+
+  <path d="M326 250 H402" stroke="#67e8f9" stroke-width="4" fill="none" marker-end="url(#arrow)"/>
+  <text class="micro" x="334" y="232">MCP / HTTP</text>
+
+  <g filter="url(#shadow)">
+    <rect x="418" y="132" width="442" height="250" rx="20" fill="url(#runtime)" stroke="#67e8f9" stroke-width="2"/>
+    <text class="label" x="446" y="178">pp-server-backend</text>
+    <text class="body" x="446" y="214">MCP  →  治理 / 协作  →  持久工作</text>
+    <text class="body" x="446" y="244">规范/协作权威；SQLite + outbox</text>
+    <text class="body" x="446" y="274">Registry、工作板、事件、reconcile、promotion</text>
+    <rect x="446" y="310" width="170" height="30" rx="15" fill="#0f766e"/>
+    <text class="pill" x="464" y="330">规范写入只在此处</text>
+    <rect x="632" y="310" width="180" height="30" rx="15" fill="#4c1d95"/>
+    <text class="pill" x="650" y="330">显式降级模式</text>
+  </g>
+
+  <path d="M606 399 V457 H454" stroke="#67e8f9" stroke-width="4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M673 399 V457 H830" stroke="#c4b5fd" stroke-width="4" fill="none" marker-end="url(#arrowDerived)"/>
+  <text class="micro" x="461" y="438">规范事务</text>
+  <text class="micro" x="696" y="438">派生投影</text>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="474" width="390" height="112" rx="18" fill="#134e4a" stroke="#34d399" stroke-width="2"/>
+    <text class="label" x="90" y="516">SQLite WAL</text>
+    <text class="body" x="90" y="545">唯一规范写入者：pp-server-backend</text>
+    <text class="micro" x="90" y="570">不做多机可写同步</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="700" y="474" width="322" height="112" rx="18" fill="#312e81" stroke="#a78bfa" stroke-width="2"/>
+    <text class="label" x="726" y="516">LanceDB</text>
+    <text class="body" x="726" y="545">派生且绑定 generation 的检索索引</text>
+    <text class="micro" x="726" y="570">Shadow 重建 → 门禁 → 原子 promotion</text>
+  </g>
+
+  <path d="M876 246 H963" stroke="#c4b5fd" stroke-width="4" fill="none" marker-end="url(#arrowDerived)"/>
+  <text class="micro" x="842" y="226">派生请求</text>
+  <g filter="url(#shadow)">
+    <rect x="980" y="145" width="236" height="213" rx="18" fill="#3f1d5b" stroke="#c4b5fd" stroke-width="2"/>
+    <text class="label" x="1004" y="188">pp-compute-node</text>
+    <text class="body" x="1004" y="222">类型化 embedding</text>
+    <text class="body" x="1004" y="246">rerank · 可选类型化 JSON</text>
+    <text class="body" x="1004" y="270">身份兼容的云端 fallback</text>
+    <rect x="1004" y="294" width="170" height="28" rx="14" fill="#5b21b6"/>
+    <text class="pill" x="1019" y="313">仅返回派生结果</text>
+  </g>
+
+  <text class="micro" x="64" y="618">身份凭证：模型 + 固定 revision + 维度 + 归一化 + artifact hash + transport evidence</text>
+</svg>

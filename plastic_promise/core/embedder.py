@@ -1,18 +1,24 @@
 """Plastic Promise Embedder — text-to-vector with provider abstraction.
 
-Default: Ollama (mxbai-embed-large, 1024 dim) over loopback HTTP.
-Select the in-process local model explicitly with EMBEDDER_PROVIDER=local;
-select a cloud endpoint with EMBEDDER_PROVIDER=openai-compatible.
+The governed production path is an authenticated compute node.  Its local
+default is llama.cpp and its cloud JSON/embedding providers are selected by
+the compute-node projection.  This module remains a legacy compatibility
+facade for callers that have not migrated to ``MemoryIndexNodeRuntime``:
+without an explicit provider it uses the OpenAI-compatible contract and
+degrades to text-only fallback when credentials are absent.  Ollama is
+compatibility-only and must be selected explicitly with
+``EMBEDDER_PROVIDER=ollama``.
 
 Provider selection is explicit:
-  1. ollama  — local HTTP server, mxbai-embed-large (default)
+  1. openai-compatible — configured cloud endpoint (legacy facade default)
+  2. ollama  — local HTTP server, explicit compatibility mode
   2. local   — sentence-transformers, in-process, zero HTTP
-  3. openai-compatible — cloud API, text-embedding-v4 (1024 dim)
-  4. fallback — zero vectors, text-only retrieval
+  4. openai — official OpenAI endpoint
+  5. fallback — zero vectors, text-only retrieval
 
 Environment variables:
   EMBEDDER_PROVIDER=ollama|local|openai|openai-compatible|cloud|fallback
-                                              (default: ollama)
+                                              (default: openai-compatible)
   EMBEDDER_BASE_URL=https://.../v1
   EMBEDDER_API_KEY=<EnvironmentFile only>
   EMBEDDER_MODEL=text-embedding-v4
@@ -26,9 +32,12 @@ Environment variables:
   EMBEDDER_CACHE_SIZE=256          (default: 256, set to 0 to disable)
   EMBEDDER_CACHE_TTL=300           (TTL in seconds, default: 300)
   EMBEDDER_TIMEOUT=5               (HTTP timeout for Ollama/OpenAI, default: 5)
-  PP_MEMORY_CHUNKING=off|shadow|structure-v1  (default: off)
-  PP_MEMORY_CHUNK_ENRICHMENT=off|shadow|on  (default: off; structure-v1 only)
-  PP_MEMORY_CHUNK_ENRICHMENT_MODEL=qwen3:8b
+  PP_MEMORY_CHUNKING=off|shadow|structure-v1  (default: off for legacy callers;
+  the launcher and compute-node projection default to structure-v1)
+  PP_MEMORY_CHUNK_ENRICHMENT=off|shadow|on  (default: off for legacy callers;
+  the launcher defaults to shadow; structure-v1 only)
+  PP_MEMORY_CHUNK_ENRICHMENT_MODEL=<compute-node structured-JSON model>
+      (qwen3:8b is compatibility-only when the Ollama adapter is explicit)
   PP_MEMORY_CHUNK_ENRICHMENT_TIMEOUT=45
   EMBEDDER_CHUNK_CHARS=512         (legacy size / structure-v1 soft target)
   EMBEDDER_MAX_CHUNKS=8            (legacy cap only)
@@ -343,6 +352,9 @@ class OllamaEmbedder(Embedder):
         *,
         expected_dim: int | None = None,
     ) -> None:
+        endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+        if endpoint_role and endpoint_role != "pp-compute-node":
+            raise ValueError("inference_requires_compute_node")
         if expected_dim is None and (
             "PP_EMBEDDING_DIM" in os.environ or "EMBEDDER_DIMENSION" in os.environ
         ):
@@ -1524,6 +1536,9 @@ class LocalSentenceEmbedder(Embedder):
         expected_dim: int | None = None,
         allow_ollama_recovery: bool = True,
     ) -> None:
+        endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+        if endpoint_role and endpoint_role != "pp-compute-node":
+            raise ValueError("inference_requires_compute_node")
         self._model_name = model_name or os.getenv("EMBEDDER_LOCAL_MODEL", self._DEFAULT_MODEL)
         if expected_dim is None and (
             "PP_EMBEDDING_DIM" in os.environ or "EMBEDDER_DIMENSION" in os.environ
@@ -1644,8 +1659,10 @@ def reset_embedder() -> Embedder | None:
 def get_embedder(fallback_on_error: bool = True) -> Embedder:
     """Factory: returns embedder based on EMBEDDER_PROVIDER env var.
 
-    Provider selection is explicit: ``ollama`` (default), ``local``, the
-    cloud aliases ``openai``, ``openai-compatible``/``cloud``, or ``fallback``.
+    Provider selection is explicit: ``openai-compatible`` (legacy facade
+    default), ``ollama`` (compatibility-only), ``local``, the cloud alias
+    ``openai``, or ``fallback``.  The production local path is llama.cpp in
+    ``MemoryIndexNodeRuntime`` and does not use this factory.
     A provider failure may produce a zero-vector fallback when
     ``fallback_on_error`` is enabled; providers are never probed implicitly.
 
@@ -1661,11 +1678,25 @@ def get_embedder(fallback_on_error: bool = True) -> Embedder:
     if _embedder_singleton is not None:
         return _embedder_singleton
 
+    # The canonical backend may expose a governed node route, but it is never
+    # an inference execution plane.  Keep legacy callers alive with a stable
+    # text-only fallback until they are migrated to MemoryIndexNodeRuntime.
+    endpoint_role = os.environ.get("PP_ENDPOINT_ROLE", "").strip()
+    if endpoint_role == "pp-server-backend":
+        with _embedder_lock:
+            if _embedder_singleton is None:
+                _embedder_singleton = FallbackEmbedder(
+                    dim=_embedding_schema_dimension(default=1024)
+                )
+            return _embedder_singleton
+    if endpoint_role and endpoint_role != "pp-compute-node":
+        raise ValueError("inference_requires_compute_node")
+
     with _embedder_lock:
         if _embedder_singleton is not None:
             return _embedder_singleton
 
-        provider = os.getenv("EMBEDDER_PROVIDER", "ollama").strip().casefold()
+        provider = os.getenv("EMBEDDER_PROVIDER", "openai-compatible").strip().casefold()
         supported_providers = {
             "ollama",
             "local",

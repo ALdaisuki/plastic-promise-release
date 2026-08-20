@@ -68,7 +68,7 @@ def _context_engine_with_one_result():
     result = ("memory-1", 0.7, "useful context", "vector")
     engine = ContextEngine(use_sqlite=False)
     engine._ensure_heavy_init = lambda: None
-    engine._activate_principles = lambda _task_type, _task_description: []
+    engine._activate_principles = lambda _task_type, _task_description, **_kwargs: []
     engine._inject_activated_to_graph = lambda _activated, _task_type: 0
     engine._graph_traversal = lambda _task_type: []
     engine._text_retrieval = lambda _query, trust_boost=1.0, domain_hint=None: []
@@ -292,9 +292,12 @@ def test_cloud_rerank_missing_key_does_not_call_client(monkeypatch):
     assert reranker.last_diagnostics["reason"] == "cloud_missing_api_key"
 
 
-def test_cloud_client_uses_shared_http_policy():
+def test_cloud_client_uses_shared_http_policy(monkeypatch):
     from plastic_promise.core.provider_http import ProviderHTTPClient, ProviderHTTPPolicy
 
+    # Hosted reranking is owned by the compute node; the backend path must
+    # fail closed instead of constructing a cloud client.
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-compute-node")
     reranker = MultiProviderReranker()
     client = reranker._cloud_client()
     try:
@@ -672,3 +675,58 @@ def test_unknown_rerank_provider_fails_during_configuration(monkeypatch):
 
     with pytest.raises(ValueError, match="^rerank_provider_invalid$"):
         MultiProviderReranker(http_client=_FakeClient())
+
+
+def test_context_supply_prefers_governed_node_rerank_and_keeps_explanation(monkeypatch):
+    engine = _context_engine_with_one_result()
+    engine._layered_fuse = lambda _graph, _text, _vector: [
+        ("memory-1", 0.7, "first document", "vector"),
+        ("memory-2", 0.6, "second document", "vector"),
+    ]
+    engine._memories["memory-2"] = dict(engine._memories["memory-1"])
+
+    class GovernedRuntime:
+        def rerank_for_context(self, *, project_id, query, documents):
+            assert project_id == "project:alpha"
+            assert query == "find second"
+            assert documents == ["first document", "second document"]
+            return SimpleNamespace(
+                scores={0: 0.1, 1: 0.9},
+                node_id="remote-a",
+                selection_reason="pinned-node",
+                degradation_reason="",
+            )
+
+    engine.install_memory_index_node_runtime(GovernedRuntime())
+    monkeypatch.setattr(
+        MultiProviderReranker,
+        "rerank",
+        lambda *_args, **_kwargs: pytest.fail("ungoverned fallback should not run"),
+    )
+
+    pack = engine._supply_python("find second", [0.0], project_id="project:alpha", debug=True)
+
+    assert pack.audit_metadata["rerank_status"] == "governed-node_success"
+    assert pack.audit_metadata["rerank"]["node_id"] == "remote-a"
+    assert pack.audit_metadata["rerank"]["reason"] == "pinned-node"
+
+
+def test_blocked_governed_runtime_uses_only_original_order_fallback(monkeypatch):
+    engine = _context_engine_with_one_result()
+    engine._layered_fuse = lambda _graph, _text, _vector: [
+        ("memory-1", 0.7, "first document", "vector"),
+        ("memory-2", 0.6, "second document", "vector"),
+    ]
+    engine._memories["memory-2"] = dict(engine._memories["memory-1"])
+    engine.install_memory_index_node_runtime(object())
+    observed: list[list[str]] = []
+
+    def rerank(self, _query, items):
+        observed.append(list(self._providers))
+        return items
+
+    monkeypatch.setattr(MultiProviderReranker, "rerank", rerank)
+
+    engine._supply_python("find second", [0.0], project_id="project:alpha")
+
+    assert observed == [["original"]]

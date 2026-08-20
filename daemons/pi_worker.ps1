@@ -55,6 +55,7 @@ CRITICAL: Do NOT output markdown. Your final output must be valid JSON matching 
     } else {
         pi --print "You are $($cfg.Role), domain $($cfg.Domain), mode=$Mode.`n`nPlastic Promise worker role: $Mode.`n`n1. Call memory_recall(domain_hint='$($cfg.Domain)', query='$($cfg.Query)') to find your input.`n2. Process it according to your assigned role.`n3. When done, call memory_store(content='<summary>', memory_type='experience', domain='$($cfg.Domain)', tags=[$($cfg.OutputTags | ForEach-Object { "'$_'" } | Join-String -Separator ',')]).`n`nIf no matching memories found, reply IDLE." `
         --session-id "${Mode}_worker" 2>&1 | Select-Object -Last 5
+    }
 
     Start-Sleep -Seconds $Interval
 }

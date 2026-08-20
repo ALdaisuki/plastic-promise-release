@@ -67,9 +67,7 @@ def test_traceability_tables_exist(tmp_path):
         ).fetchall()
     }
 
-    assert {"projects", "call_spans", "memory_lineage", "degradation_events"}.issubset(
-        table_names
-    )
+    assert {"projects", "call_spans", "memory_lineage", "degradation_events"}.issubset(table_names)
     store._conn.close()
 
 
@@ -77,8 +75,7 @@ def test_synthesis_artifacts_table_exists(tmp_path):
     store = _SQLiteMemoryStore(str(tmp_path / "mem.db"))
 
     columns = {
-        row[1]
-        for row in store._conn.execute("PRAGMA table_info(synthesis_artifacts)").fetchall()
+        row[1] for row in store._conn.execute("PRAGMA table_info(synthesis_artifacts)").fetchall()
     }
 
     assert {"memory_id", "synthesis_key", "status", "revision", "source_fingerprint"} <= columns
@@ -89,8 +86,7 @@ def test_memory_proposals_table_exists(tmp_path):
     store = _SQLiteMemoryStore(str(tmp_path / "mem.db"))
 
     columns = {
-        row[1]
-        for row in store._conn.execute("PRAGMA table_info(memory_proposals)").fetchall()
+        row[1] for row in store._conn.execute("PRAGMA table_info(memory_proposals)").fetchall()
     }
 
     assert {

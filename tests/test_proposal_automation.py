@@ -386,3 +386,43 @@ def test_auto_promotion_on_calls_atomic_promoter_once(conn, monkeypatch):
     assert result["status"] == "promoted"
     assert result["memory_id"] == "memory:promoted"
     assert len(calls) == 1
+
+
+def test_auto_promotion_queue_mode_persists_eligible_task_without_canonical_write(
+    conn, monkeypatch
+):
+    proposal_id = _observed_proposal(conn)
+    _make_eligible(conn, proposal_id)
+    ProposalAutomation(conn).record_signal(
+        proposal_id,
+        signal_type="query_similarity",
+        evidence_key="query:queued",
+        value=0.9,
+        metadata={"embedding_identity": _FakeEmbedder.index_model_name},
+    )
+    monkeypatch.setenv("PP_MEMORY_PROPOSAL_AUTO_ADOPT", "on")
+    monkeypatch.setenv("PP_MEMORY_PROPOSAL_PROMOTION_QUEUE", "on")
+
+    result = evaluate_auto_promotion(_vector_engine(conn), proposal_id)
+
+    assert result["status"] == "queued"
+    assert result["risk_tier"] == "medium"
+    task = tuple(
+        conn.execute(
+            "SELECT proposal_id, project_id, status, risk_tier FROM "
+            "memory_proposal_promotion_tasks WHERE task_id = ?",
+            (result["task_id"],),
+        ).fetchone()
+    )
+    assert task == (
+        proposal_id,
+        "project:repo:github.com/example/project",
+        "queued",
+        "medium",
+    )
+    assert (
+        conn.execute(
+            "SELECT status FROM memory_proposals WHERE proposal_id = ?", (proposal_id,)
+        ).fetchone()[0]
+        == "pending"
+    )

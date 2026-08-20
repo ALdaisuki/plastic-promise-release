@@ -100,6 +100,7 @@ def test_skill_session_start_uses_lightweight_creation_only_memory():
                 {
                     "skill_name": "grill-with-docs",
                     "task_description": "lightweight startup",
+                    "project_id": "project:test",
                 },
             )
         )

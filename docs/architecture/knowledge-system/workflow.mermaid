@@ -1,0 +1,94 @@
+flowchart TD
+    HCUR["Human Curator"] --> DASH["Dashboard V2"]
+    DASH --> A["Knowledge Ingestion API :9050"]
+    WATCH["Scheduled Source Connector"] --> A
+    A --> IC["Ingestion Coordinator"]
+    IC --> SA["Source Adapter"]
+    SA --> Q["Quarantine and SHA-256 Admission"]
+    Q --> D{"Existing Version for this Source?"}
+    D -->|Yes| N["Return Existing Version and Audit No-op"]
+    D -->|No| J["Durable Ingest Job"]
+
+    J --> P["Structure Parser"]
+    P --> C["Build structure-v1 Evidence Chunks"]
+    C --> B["Batch Adjacent Chunks by Project and Source"]
+    B --> S["Semantic Analyzer JSON"]
+    S --> V{"Schema and Citation Validation"}
+    V -->|Invalid| R{"Retryable Failure?"}
+    R -->|Yes| B
+    R -->|No| DF["Stable Failure or Dead Letter"]
+    V -->|Valid| G["Maintain Domains, Claims, Links and Conflicts"]
+    G --> W["Wiki Maintainer"]
+    W --> L["Knowledge Linter"]
+    L --> K{"Promotion Evaluator"}
+    K -->|High Risk| H["Curator Review"]
+    H -->|Reject| X["Rejected Revision"]
+    H -->|Approve| T["Canonical Knowledge Commit"]
+    K -->|Low Risk Pass| T
+    K -->|Fail| X
+    T --> O["Knowledge Index Outbox"]
+    O --> I["Shadow Knowledge Generation"]
+    I --> E{"Evaluation and Reconciliation"}
+    E -->|Fail| F["Keep Current Production Generation"]
+    E -->|Pass| Y["Canary Queries"]
+    Y --> Z{"Production CAS Promotion"}
+    Z -->|Fail| F
+    Z -->|Pass| PR["Production Knowledge Generation"]
+
+    UP["User Prompt"] --> HR["Hook Router <= 400 ms"]
+    HR --> HC{"Project-session Cache Hit?"}
+    HC -->|Yes| INJ["Inject Compact Typed Knowledge Guidance"]
+    HC -->|No| PF["Inject Tool Guidance and Enqueue Prefetch"]
+    PF -->|Async Prefetch| KQ["Knowledge Query Engine"]
+    KQ --> KS["knowledge_search"]
+    INJ --> CS["context_supply"]
+    KS --> CS
+    MR["memory_recall"] --> CS
+    CS["Context Fusion via context_supply"] --> OUT["Typed Core, Related and Divergent Context"]
+
+    CR["Every code-review"] --> REV["Resolve Revision and Changed Supported Files"]
+    REV --> DS["DeepSec Shield L1/L2"]
+    DS --> SR{"SecurityScanResult"}
+    SR -->|"Critical or High"| RB["Deterministic Review Blocker"]
+    SR -->|"Clean"| LP["LLM and Existing Quality Review"]
+    SR -->|"Degraded"| FD{"Security-sensitive Change?"}
+    FD -->|"Yes"| RB
+    FD -->|"No"| DW["Visible Degraded Review Warning"]
+    RB --> EL["Evolution Evidence Ledger"]
+    LP --> EL
+    DW --> EL
+
+    FS["Scheduled Full-project Security and Smell Scans"] --> EL
+    OP["Production Outcomes and Human Feedback"] --> EL
+    EL --> ID{"Independent Corroboration and Reproduction?"}
+    ID -->|"No"| EO["Observed or Contested Evidence"]
+    ID -->|"Yes"| EC["Evolution Candidate Compiler"]
+    EC --> FX["Regression Fixture Replay"]
+    FX --> SH{"Shadow Validation"}
+    SH -->|"Fail"| CT["Contest Candidate and Keep Active Rule"]
+    SH -->|"Pass"| CY["Bounded Canary"]
+    CY --> PM{"Governed CAS Promotion"}
+    PM -->|"Fail"| CT
+    PM -->|"Pass"| AR["Active Evolution Rule"]
+    AR --> CR
+    AR --> FS
+    AR --> HR
+
+    EL --> KO["Knowledge Projection Outbox"]
+    KO --> KF["Cited Security Finding or Internal Knowledge Candidate"]
+    KF --> IC
+    T --> KE["Knowledge-derived Evolution Evidence"]
+    KE --> EL
+    AR -. "ancestry retained; not independent" .-> EL
+
+    style Q fill:#fff4cc,stroke:#8a6d00,color:#000
+    style T fill:#d9ead3,stroke:#38761d,color:#000
+    style PR fill:#d9ead3,stroke:#38761d,color:#000
+    style DF fill:#f4cccc,stroke:#990000,color:#000
+    style X fill:#f4cccc,stroke:#990000,color:#000
+    style F fill:#fce5cd,stroke:#b45f06,color:#000
+    style HR fill:#cfe2f3,stroke:#0b5394,color:#000
+    style DS fill:#cfe2f3,stroke:#0b5394,color:#000
+    style RB fill:#f4cccc,stroke:#990000,color:#000
+    style CT fill:#fce5cd,stroke:#b45f06,color:#000
+    style AR fill:#d9ead3,stroke:#38761d,color:#000

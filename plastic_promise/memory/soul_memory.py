@@ -811,7 +811,7 @@ class RecMem:
             分层上下文包，包含 core/related/divergent 三层 ContextItem。
         """
         try:
-            from plastic_promise.core.embedder import get_embedder
+            from plastic_promise.core.server_embedder import get_embedder
 
             embedder = get_embedder()
             vec = embedder.embed(query)

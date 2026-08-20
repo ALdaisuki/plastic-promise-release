@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -35,14 +36,139 @@ from plastic_promise.mcp.response_projection import (
 from plastic_promise.mcp.tools.supply_runner import (
     float_env,
     run_bounded_engine_supply,
+    run_bounded_governed_retrieval_embedding,
 )
 
 logger = logging.getLogger(__name__)
+
+_RETRIEVAL_DEGRADATION_REASON_RE = re.compile(r"\A[a-z][a-z0-9_]{0,95}\Z")
+_COLLABORATION_CONTEXT_TIMEOUT_MAX_SEC = 1.0
+
+
+def _collaboration_awareness_mode() -> str:
+    mode = os.environ.get("PP_COLLABORATION_AWARENESS", "shadow").strip().casefold()
+    return mode if mode in {"off", "shadow", "inject"} else "off"
+
 
 _CONTEXT_SUPPLY_EXECUTOR = ThreadPoolExecutor(
     max_workers=max(1, int(os.environ.get("PP_CONTEXT_SUPPLY_MAX_WORKERS", "2"))),
     thread_name_prefix="context-supply",
 )
+
+
+def _stable_retrieval_embedding_reason(exc: Exception) -> str:
+    """Return a safe, stable public reason for governed-route degradation."""
+
+    candidate = getattr(exc, "code", "")
+    if isinstance(candidate, str) and _RETRIEVAL_DEGRADATION_REASON_RE.fullmatch(candidate):
+        return candidate
+    return "retrieval_embedding_unavailable"
+
+
+def _context_supply_item(item: Any) -> dict[str, Any]:
+    """Project one memory-plane item into the bounded collaboration input."""
+
+    return compact_context_item(
+        {
+            "id": getattr(item, "id", ""),
+            "content": getattr(item, "content", ""),
+            "relevance": getattr(item, "relevance", 0.0),
+            "source": getattr(item, "source", ""),
+            "freshness": getattr(item, "freshness", ""),
+            "worth_score": getattr(item, "worth_score", 0.0),
+        },
+        content_chars=180,
+    )
+
+
+def _collaboration_memory_context(
+    pack: Any,
+    *,
+    project_id: str,
+    request_scope_id: str,
+) -> dict[str, object]:
+    """Build the bounded memory input used solely for collaboration relevance.
+
+    This is deliberately a projection: the collaboration read plane cannot
+    mutate memory scores, content, or canonical state through this seam.
+    """
+
+    return {
+        "schema_version": "context-supply-memory-context/v1",
+        "project_id": project_id,
+        "request_scope_id": request_scope_id,
+        "core": [_context_supply_item(item) for item in getattr(pack, "core", [])[:4]],
+        "related": [_context_supply_item(item) for item in getattr(pack, "related", [])[:4]],
+        "divergent": [_context_supply_item(item) for item in getattr(pack, "divergent", [])[:2]],
+        "activated_principles": list(getattr(pack, "activated_principles", [])[:8]),
+    }
+
+
+async def _read_collaboration_context(
+    runtime: Any | None,
+    *,
+    memory_context: dict[str, object],
+    project_id: str,
+    project_degraded: bool,
+    request_scope_id: str,
+    response_mode: str,
+    args: dict[str, Any],
+) -> Any | None:
+    """Read an optional authenticated collaboration projection fail-open.
+
+    PR4 owns only this injected read seam.  Opening a server runtime, binding
+    identities, and advancing a durable feed remain PR5 responsibilities.
+    """
+
+    if runtime is None or project_degraded:
+        return None
+
+    from plastic_promise.collaboration.context_supply_runtime import (
+        CollaborationContextReadRequest,
+        CollaborationContextReadResult,
+    )
+    from plastic_promise.collaboration.contracts import ProjectScope
+
+    try:
+        cursor = args.get("collaboration_cursor")
+        if cursor is not None and not isinstance(cursor, dict):
+            raise ValueError("collaboration_cursor_invalid")
+        request = CollaborationContextReadRequest(
+            project=ProjectScope(project_id),
+            request_scope_id=request_scope_id,
+            response_mode=response_mode,
+            after_sequence=(cursor or {}).get("after_sequence"),
+            limit=args.get("collaboration_limit", 20),
+        )
+    except Exception:
+        return CollaborationContextReadResult(
+            state="rejected",
+            reason="collaboration_context_request_invalid",
+        )
+
+    timeout = min(
+        _COLLABORATION_CONTEXT_TIMEOUT_MAX_SEC,
+        max(0.01, float_env("PP_COLLABORATION_CONTEXT_TIMEOUT_SEC", 0.25)),
+    )
+    try:
+        return await asyncio.wait_for(
+            runtime.compose(memory_context=memory_context, request=request),
+            timeout=timeout,
+        )
+    except asyncio.CancelledError:
+        raise
+    except (TimeoutError, asyncio.TimeoutError):
+        return CollaborationContextReadResult(
+            state="degraded",
+            reason="collaboration_context_timeout",
+            retryable=True,
+        )
+    except Exception:
+        return CollaborationContextReadResult(
+            state="degraded",
+            reason="collaboration_context_source_unavailable",
+            retryable=True,
+        )
 
 
 def _degraded_context_response(
@@ -108,7 +234,12 @@ def _degraded_context_response(
     return [TextContent(type="text", text=prompt)]
 
 
-async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
+async def handle_context_supply(
+    engine: Any,
+    args: dict,
+    *,
+    _collaboration_runtime: Any | None = None,
+) -> list[TextContent]:
     """Handle context_supply tool call.
 
     Core tool: calls ContextEngine.supply() and returns a three-layer
@@ -122,7 +253,6 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         list[TextContent]: MCP response.
     """
     try:
-        from plastic_promise.core.embedder import FallbackEmbedder, get_embedder
         from plastic_promise.core.project_context import infer_project_context
         from plastic_promise.core.traceability import (
             defer_record_call_span,
@@ -146,20 +276,25 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         embed_timeout = float_env("PP_CONTEXT_EMBED_TIMEOUT_SEC", 3.0)
         supply_timeout = float_env("PP_CONTEXT_SUPPLY_TIMEOUT_SEC", 12.0)
 
+        embedding_degradation_reason = ""
         try:
-            embedder = get_embedder(fallback_on_error=False)
-            task_vector = await asyncio.wait_for(
-                embedder.aembed(task_description),
+            task_vector = await run_bounded_governed_retrieval_embedding(
+                engine,
+                text=task_description,
+                project_id=project_ctx.project_id,
+                executor=_CONTEXT_SUPPLY_EXECUTOR,
                 timeout=embed_timeout,
             )
         except (TimeoutError, asyncio.TimeoutError):
             logger.warning("context_supply embedding timed out after %.2fs", embed_timeout)
-            task_vector = FallbackEmbedder().embed(task_description)
-        except Exception:
-            # Embedding service unavailable — use zero-vector fallback.
-            # ContextEngine._text_retrieval uses pure text matching
-            # (CJK bigrams / word split) which works without embeddings.
-            task_vector = FallbackEmbedder().embed(task_description)
+            task_vector = []
+            embedding_degradation_reason = "retrieval_embedding_timeout"
+        except Exception as exc:
+            # The ContextEngine-owned route is unavailable.  Pass an empty
+            # vector so supply() selects its established text-only fallback;
+            # never rediscover a legacy provider from this MCP boundary.
+            task_vector = []
+            embedding_degradation_reason = _stable_retrieval_embedding_reason(exc)
 
         try:
             supply_args = {
@@ -244,8 +379,17 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             engine,
             task_type=task_type,
         )
-        retrieval_explain = build_retrieval_explain_snapshot(pack)
         pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
+        project_warnings = project_ctx.warning_list()
+        embedding_degraded = bool(embedding_degradation_reason)
+        # Preserve the established project-context warning behavior while
+        # making governed embedding degradation equally observable.
+        response_degraded = bool(project_warnings or embedding_degraded)
+        retrieval_embedding = {
+            "route": "governed" if task_vector else "text-only-degraded",
+            "degraded": embedding_degraded,
+            "reason": embedding_degradation_reason,
+        }
         pack.audit_metadata["request_scope"] = request_scope
         pack.audit_metadata["project_context"] = project_ctx.to_dict()
         pack.audit_metadata["trace"] = {
@@ -253,7 +397,17 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             "request_scope_id": request_scope["request_scope_id"],
             "project_id": project_ctx.project_id,
         }
-        project_warnings = project_ctx.warning_list()
+        pack.audit_metadata["retrieval_embedding"] = retrieval_embedding
+        pack.audit_metadata["degraded"] = response_degraded
+        if embedding_degraded:
+            pack.audit_metadata["fallback_used"] = "text-only-degraded"
+            pack.audit_metadata["fallback_reason"] = embedding_degradation_reason
+        pack.pipeline_stats = dict(getattr(pack, "pipeline_stats", {}) or {})
+        pack.pipeline_stats["degraded"] = response_degraded
+        if embedding_degraded:
+            pack.pipeline_stats["degradation_state"] = "text-only-degraded"
+            pack.pipeline_stats["fallback_reason"] = embedding_degradation_reason
+        retrieval_explain = build_retrieval_explain_snapshot(pack)
         if project_warnings:
             pack.audit_metadata["warnings"] = project_warnings
             pack.audit_metadata["minimum_result"] = "project_restricted_context"
@@ -267,6 +421,8 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             "response_mode": response_mode,
             "diagnostics_level": diagnostics_level,
             "warnings": project_warnings,
+            "retrieval_embedding": retrieval_embedding,
+            "degradation_reason": embedding_degradation_reason,
         }
         if retrieval_explain is not None:
             span_metadata[RETRIEVAL_EXPLAIN_METADATA_KEY] = retrieval_explain
@@ -301,8 +457,62 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 minimum_result="project_restricted_context",
                 metadata={"warnings": project_warnings},
             )
+        if embedding_degraded:
+            defer_record_degradation_event(
+                engine,
+                call_id=call_id,
+                request_scope_id=request_scope["request_scope_id"],
+                project_id=project_ctx.project_id,
+                tool_name="context_supply",
+                link_name="retrieval_embedding",
+                policy="text_only_degraded",
+                level="warning",
+                fallback_used="text-only-degraded",
+                minimum_result="text_only_context",
+                metadata={"reason": embedding_degradation_reason},
+            )
 
         prompt = pack.to_prompt()
+        if embedding_degraded:
+            prompt = "\n".join(
+                (
+                    prompt,
+                    "",
+                    "## [RETRIEVAL_DEGRADED]",
+                    "- route: text-only-degraded",
+                    f"- reason: {embedding_degradation_reason}",
+                )
+            )
+        memory_context = _collaboration_memory_context(
+            pack,
+            project_id=project_ctx.project_id,
+            request_scope_id=request_scope["request_scope_id"],
+        )
+        collaboration_mode = _collaboration_awareness_mode()
+        collaboration_result = await _read_collaboration_context(
+            _collaboration_runtime if collaboration_mode != "off" else None,
+            memory_context=memory_context,
+            project_id=project_ctx.project_id,
+            project_degraded=project_ctx.degraded,
+            request_scope_id=request_scope["request_scope_id"],
+            response_mode=response_mode,
+            args=args,
+        )
+        if collaboration_result is not None:
+            span_metadata["collaboration"] = {
+                "mode": collaboration_mode,
+                "state": collaboration_result.state,
+                "reason": collaboration_result.reason,
+                "retryable": collaboration_result.retryable,
+                "replayed": collaboration_result.replayed,
+                "canonical_memory_effect": "none",
+            }
+            if (
+                collaboration_mode == "inject"
+                and collaboration_result.projection is not None
+                and collaboration_result.prompt_section
+            ):
+                prompt = "\n\n".join((prompt, collaboration_result.prompt_section))
         if response_mode == "standard":
             span_metadata["response_bytes"] = len(prompt.encode("utf-8"))
             defer_record_call_span(
@@ -315,7 +525,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 project_id=project_ctx.project_id,
                 tool_name="context_supply",
                 status="success",
-                degraded=bool(project_warnings),
+                degraded=response_degraded,
                 metadata=span_metadata,
                 started_at=trace_started_at,
             )
@@ -324,33 +534,28 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
         channel_rankings, channel_states = _serialize_channel_evidence(pack)
         audit_metadata = getattr(pack, "audit_metadata", {}) or {}
 
-        def _item_to_dict(item: Any) -> dict[str, Any]:
-            return compact_context_item(
-                {
-                    "id": getattr(item, "id", ""),
-                    "content": getattr(item, "content", ""),
-                    "relevance": getattr(item, "relevance", 0.0),
-                    "source": getattr(item, "source", ""),
-                    "freshness": getattr(item, "freshness", ""),
-                    "worth_score": getattr(item, "worth_score", 0.0),
-                },
-                content_chars=180,
-            )
-
         payload = {
             "schema_version": "context-supply-response-v1",
             "response_mode": response_mode,
             "ephemeral": True,
-            "core": [_item_to_dict(item) for item in getattr(pack, "core", [])[:4]],
-            "related": [_item_to_dict(item) for item in getattr(pack, "related", [])[:4]],
-            "divergent": [_item_to_dict(item) for item in getattr(pack, "divergent", [])[:2]],
+            "core": memory_context["core"],
+            "related": memory_context["related"],
+            "divergent": memory_context["divergent"],
             "activated_principles": getattr(pack, "activated_principles", [])[:8],
             "request_scope_id": request_scope["request_scope_id"],
             "project_id": project_ctx.project_id,
             "trace": audit_metadata.get("trace", {}),
-            "degraded": bool(project_warnings),
+            "degraded": response_degraded,
+            "degradation_reason": embedding_degradation_reason,
+            "retrieval_embedding": retrieval_embedding,
             "warnings": project_warnings,
-            "minimum_result": "project_restricted_context" if project_ctx.degraded else "",
+            "minimum_result": (
+                "project_restricted_context"
+                if project_ctx.degraded
+                else "text_only_context"
+                if embedding_degraded
+                else ""
+            ),
             "diagnostics": build_diagnostics(
                 call_id=call_id,
                 audit=audit_metadata,
@@ -362,6 +567,17 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
                 max_bytes=3072,
             ),
         }
+        if collaboration_result is not None:
+            payload["collaboration_status"] = {
+                "mode": collaboration_mode,
+                "state": collaboration_result.state,
+                "reason": collaboration_result.reason,
+                "retryable": collaboration_result.retryable,
+                "replayed": collaboration_result.replayed,
+                "canonical_memory_effect": "none",
+            }
+            if collaboration_mode == "inject" and collaboration_result.projection is not None:
+                payload["collaboration"] = collaboration_result.projection
         response_text = json.dumps(payload, ensure_ascii=False)
         span_metadata["response_bytes"] = len(response_text.encode("utf-8"))
         defer_record_call_span(
@@ -374,7 +590,7 @@ async def handle_context_supply(engine: Any, args: dict) -> list[TextContent]:
             project_id=project_ctx.project_id,
             tool_name="context_supply",
             status="success",
-            degraded=bool(project_warnings),
+            degraded=response_degraded,
             metadata=span_metadata,
             started_at=trace_started_at,
         )
@@ -579,6 +795,12 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
     )
 
     values = dict(args or {})
+    durable_lifecycle = values.pop("_durable_collaboration_lifecycle", None)
+    if not isinstance(durable_lifecycle, dict):
+        durable_lifecycle = {
+            "state": "deferred",
+            "reason": "durable_collaboration_lifecycle_not_composed",
+        }
     event = str(values.get("event") or "before_invoke").strip().casefold()
     source = str(values.get("source") or "manual")
     task_description = str(values.get("task_description") or "")
@@ -586,6 +808,27 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
     entity_id = None
     tracked_principles: list[dict[str, Any]] = []
     errors: list[str] = []
+
+    # SessionEnd is a transport lifecycle signal, not a passive-memory or
+    # skill-tracking invocation.  Return the server-owned lifecycle result
+    # directly so disabled capture/context gates cannot suppress cleanup and
+    # no proposal, context preload, or synthetic skill session is created.
+    if event == "session_end":
+        durable = durable_lifecycle.get("state") == "durable"
+        payload = {
+            "entity_id": None,
+            "skill_name": skill_name,
+            "event": event,
+            "status": "completed" if durable else "deferred",
+            "reason": durable_lifecycle.get("reason"),
+            "queued": False,
+            "inject_memory_id": None,
+            "persistent": durable,
+            "durable_collaboration_lifecycle": durable_lifecycle,
+            "errors": None,
+            "partial": False,
+        }
+        return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
 
     disabled_reason = ""
     proposal_error = ""
@@ -626,6 +869,7 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
             "request_scope_id": request_scope["request_scope_id"],
             "errors": configuration_errors,
             "partial": bool(configuration_errors),
+            "durable_collaboration_lifecycle": durable_lifecycle,
         }
         if event == "before_invoke":
             payload.update(
@@ -732,6 +976,7 @@ async def handle_auto_context_inject(engine: Any, args: dict) -> list[TextConten
         "entity_id": entity_id,
         "skill_name": skill_name,
         **payload,
+        "durable_collaboration_lifecycle": durable_lifecycle,
         "inject_memory_id": None,
         "errors": errors or payload.get("errors"),
         "partial": bool(errors or payload.get("partial") or payload.get("status") == "degraded"),

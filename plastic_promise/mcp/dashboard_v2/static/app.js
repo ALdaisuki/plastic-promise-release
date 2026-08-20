@@ -4,6 +4,54 @@
   var API_ROOT = "/api/dashboard/v2";
   var PAGE_LIMIT = 25;
   var MAX_JSON_CHARS = 50000;
+  var DEPLOYMENT_CENTER_DEFAULT_INSTALLATION_REF = "local-installation";
+  var DEPLOYMENT_CENTER_DEFAULT_CANDIDATE = {
+    schema_version: "plastic-promise-deployment/v2",
+    deployment_id: "developer-laptop",
+    profile: "split-accelerated",
+    modules: {},
+    endpoints: [
+      {
+        id: "local-edge",
+        role: "pp-local-edge",
+        protocol: { family: "edge", major: 1, minor: 0 },
+        capabilities: [],
+        transport_ref: "loopback",
+        resource_policy_ref: "edge-default"
+      },
+      {
+        id: "server-backend",
+        role: "pp-server-backend",
+        protocol: { family: "backend", major: 1, minor: 0 },
+        capabilities: [],
+        transport_ref: "backend-private",
+        resource_policy_ref: "backend-default"
+      },
+      {
+        id: "compute-node",
+        role: "pp-compute-node",
+        protocol: { family: "compute", major: 1, minor: 0 },
+        capabilities: [
+          { kind: "embedding", contract_version: "embedding/v1" },
+          { kind: "rerank", contract_version: "rerank/v1" }
+        ],
+        max_concurrency: 4,
+        transport_ref: "compute-registry",
+        resource_policy_ref: "compute-default"
+      }
+    ],
+    resource_budget: {
+      image_layers_bytes: 1073741824,
+      image_unpack_bytes: 1073741824,
+      model_cache_bytes: 2147483648,
+      lancedb_shadow_rebuild_bytes: 1073741824,
+      rollback_coexistence_bytes: 1073741824
+    },
+    resource_locations: {
+      container_store: "container-store",
+      model_cache: "model-cache"
+    }
+  };
   var SENSITIVE_KEY = /(api[_-]?key|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;
   var STATUS_LABELS = {
     ok: "正常",
@@ -251,6 +299,11 @@
       endpoint: "/requests",
       paginated: true
     },
+    collaboration: {
+      title: "Agent 协作",
+      description: "只读查看 Agent 拓扑、项目工作板和广播事件增量；角色筛选不授予任何权限。",
+      endpoint: "/collaboration"
+    },
     memories: {
       title: "记忆",
       description: "查看当前本地项目范围内可见的规范记忆。",
@@ -286,6 +339,48 @@
       endpoint: "/operations",
       paginated: true
     },
+    "knowledge-sources": {
+      title: "知识源",
+      description: "查看项目范围内的知识源、不可变版本与证据块统计。",
+      endpoint: "/knowledge-sources",
+      paginated: true
+    },
+    "knowledge-jobs": {
+      title: "摄入任务",
+      description: "查看 Markdown 知识摄入任务的状态与结果。",
+      endpoint: "/knowledge-jobs",
+      paginated: true
+    },
+    "knowledge-semantic": {
+      title: "语义状态",
+      description: "查看当前项目的语义编译队列与运行门禁。",
+      endpoint: "/knowledge-semantic",
+      paginated: false
+    },
+    "knowledge-domains": {
+      title: "知识领域",
+      description: "查看从来源证据派生的候选、活跃与退役领域。",
+      endpoint: "/knowledge-domains",
+      paginated: false
+    },
+    "knowledge-artifacts": {
+      title: "Wiki 产物",
+      description: "查看带引用覆盖率与治理状态的派生知识产物。",
+      endpoint: "/knowledge-artifacts",
+      paginated: false
+    },
+    "knowledge-upload": {
+      title: "知识上传",
+      description: "上传 Markdown/文本资料到当前项目知识库（先检疫，再建源解析）。",
+      endpoint: "/knowledge-sources",
+      paginated: false
+    },
+    "knowledge-detail": {
+      title: "知识详情",
+      description: "查看知识源的不可变版本与证据块。",
+      endpoint: "/knowledge-sources",
+      paginated: false
+    },
     "trust-issues": {
       title: "信任与问题",
       description: "查看当前权限、信任历史与需要干预的问题。",
@@ -306,6 +401,31 @@
     "control-status": {
       title: "服务器状态",
       description: "查看服务器监听、数据存储、索引与期望配置的只读状态。",
+      endpoint: "/status",
+      control: true
+    },
+    "control-nodes": {
+      title: "推理节点",
+      description: "查看已登记推理节点的受控健康、模型身份、容量与延迟观测。",
+      endpoint: "/nodes",
+      control: true,
+      topbarIcon: "cpu"
+    },
+    "control-preflight": {
+      title: "部署预检",
+      description: "查看发布 profile 的资源策略和当前主机容量观测；不执行安装或迁移。",
+      endpoint: "/deployment/preflight",
+      control: true
+    },
+    "deployment-center": {
+      title: "部署中心",
+      description: "通过本地边缘桥接执行受限的只读检查与候选预览，不接触权威状态。",
+      deploymentCenter: true,
+      topbarIcon: "workflow"
+    },
+    "control-diagnostics": {
+      title: "脱敏诊断",
+      description: "仅在操作者明确点击后生成本地下载的严格脱敏诊断包；不会向外发送。",
       endpoint: "/status",
       control: true
     },
@@ -335,7 +455,8 @@
     payloads: Object.create(null),
     pagination: Object.create(null),
     filters: Object.assign(Object.create(null), {
-      "memory-proposals": { status: "pending", category: "" }
+      "memory-proposals": { status: "pending", category: "" },
+      collaboration: { coordinationSessionId: "", agentSessionId: "", role: "" }
     }),
     filterTimers: Object.create(null),
     operationTab: "runtime",
@@ -349,9 +470,16 @@
     activeProjectId: "",
     scopeOptions: [],
     liveRefreshTimer: null,
+    collaboration: {
+      cursor: null,
+      filterKey: "",
+      events: []
+    },
     featureFlags: {
       retrievalExplain: null,
-      proposalReview: false
+      proposalReview: false,
+      knowledge: false,
+      defaults: null
     },
     control: {
       token: "",
@@ -359,11 +487,24 @@
       role: "",
       etag: "",
       activeRevisionId: "",
+      safeConfig: {},
       epoch: 0,
       controllers: new Set(),
       retryKeys: new Map(),
       configDraft: "{}",
       busy: false
+    },
+    deploymentCenter: {
+      controller: null,
+      sequence: 0,
+      actionSequence: 0,
+      busy: false,
+      bridge: null,
+      errorCode: "",
+      inspection: null,
+      preview: null,
+      installationRef: DEPLOYMENT_CENTER_DEFAULT_INSTALLATION_REF,
+      candidateText: JSON.stringify(DEPLOYMENT_CENTER_DEFAULT_CANDIDATE, null, 2)
     }
   };
 
@@ -374,7 +515,10 @@
     mobileToggle: document.getElementById("mobile-toggle"),
     mobileBackdrop: document.getElementById("mobile-backdrop"),
     mainNav: document.getElementById("main-nav"),
+    mainPanel: document.getElementById("main-panel"),
     topbarTitle: document.getElementById("topbar-title"),
+    topbarViewIcon: document.getElementById("topbar-view-icon"),
+    topbarViewIconUse: document.getElementById("topbar-view-icon-use"),
     refreshButton: document.getElementById("refresh-button"),
     scopeSelect: document.getElementById("project-scope-select"),
     scopeChip: document.getElementById("scope-chip"),
@@ -572,6 +716,20 @@
     }).format(number);
   }
 
+  function formatStorageBytes(value) {
+    var bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes < 0) {
+      return "--";
+    }
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    var index = 0;
+    while (bytes >= 1024 && index < units.length - 1) {
+      bytes /= 1024;
+      index += 1;
+    }
+    return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(bytes) + " " + units[index];
+  }
+
   function formatTimestamp(value) {
     if (!value) {
       return "--";
@@ -582,8 +740,9 @@
     }
     return new Intl.DateTimeFormat("zh-CN", {
       dateStyle: "medium",
-      timeStyle: "medium"
-    }).format(date);
+      timeStyle: "medium",
+      timeZone: "UTC"
+    }).format(date) + " UTC";
   }
 
   function formatDuration(value, row) {
@@ -894,9 +1053,12 @@
     ]);
   }
 
-  function showLoading() {
+  function showLoading(options) {
+    var preserveContent = options && options.preserveContent === true;
     refs.viewRoot.setAttribute("aria-busy", "true");
-    refs.viewRoot.replaceChildren(loadingState());
+    if (!preserveContent || !refs.viewRoot.childElementCount) {
+      refs.viewRoot.replaceChildren(loadingState());
+    }
     refs.refreshButton.classList.add("is-loading");
     refs.refreshButton.disabled = true;
   }
@@ -939,6 +1101,30 @@
         : String(warning);
       notices.push(makeNotice("warning", "", message));
     });
+    var defaults = state.featureFlags.defaults;
+    if (isObject(defaults)) {
+      var dashboard = isObject(defaults.dashboard) && defaults.dashboard.enabled === true;
+      var slicing = isObject(defaults.structured_slicing)
+        ? String(defaults.structured_slicing.mode || "")
+        : "";
+      var enrichment = isObject(defaults.semantic_enrichment)
+        ? String(defaults.semantic_enrichment.mode || "")
+        : "";
+      var semantic = isObject(defaults.knowledge_semantic)
+        ? String(defaults.knowledge_semantic.mode || "")
+        : "";
+      if (dashboard && (slicing || enrichment || semantic)) {
+        notices.push(makeNotice(
+          "info",
+          "默认功能已启用",
+          "Dashboard、结构化切片、语义富化和知识语义门控均已显式显示；" +
+            "当前模式：切片=" + (slicing || "未配置") +
+            "，富化=" + (enrichment || "未配置") +
+            "，知识语义=" + (semantic || "未配置") +
+            "。可在“有效配置”或“云端期望配置”中受控调整。"
+        ));
+      }
+    }
     refs.noticeStack.replaceChildren.apply(refs.noticeStack, notices);
   }
 
@@ -1053,16 +1239,72 @@
 
   function scheduleLiveRefresh() {
     stopLiveRefresh();
-    if (
-      document.hidden
-      || (state.currentView !== "passive-memory" && state.currentView !== "memory-proposals")
-    ) {
+    var passiveView = state.currentView === "passive-memory" || state.currentView === "memory-proposals";
+    var collaborationView = state.currentView === "collaboration";
+    var controlView = state.currentView === "control-status" || state.currentView === "control-nodes";
+    if (document.hidden || (!passiveView && !collaborationView && !controlView) || (controlView && (!state.control.token || state.control.busy))) {
       return;
     }
     state.liveRefreshTimer = window.setTimeout(function () {
       state.liveRefreshTimer = null;
-      loadCurrentView({ background: true });
-    }, 5000);
+      loadCurrentView({ background: true, preserveContent: true });
+    }, passiveView || collaborationView ? 5000 : 10000);
+  }
+
+  function captureMainPanelScroll() {
+    if (!refs.mainPanel) {
+      return null;
+    }
+    return { left: refs.mainPanel.scrollLeft, top: refs.mainPanel.scrollTop };
+  }
+
+  function restoreMainPanelScroll(position) {
+    if (!refs.mainPanel || !position) {
+      return;
+    }
+    window.requestAnimationFrame(function () {
+      refs.mainPanel.scrollLeft = position.left;
+      refs.mainPanel.scrollTop = Math.min(
+        position.top,
+        Math.max(0, refs.mainPanel.scrollHeight - refs.mainPanel.clientHeight)
+      );
+    });
+  }
+
+  function routeMainPanelKeyboardScroll(event) {
+    if (
+      event.defaultPrevented
+      || event.altKey
+      || event.ctrlKey
+      || event.metaKey
+      || refs.detailDialog.open
+      || !refs.mainPanel
+    ) {
+      return;
+    }
+    var target = event.target;
+    if (
+      target instanceof Element
+      && target.closest("input, textarea, select, [contenteditable='true'], [role='textbox']")
+    ) {
+      return;
+    }
+    var pageStep = Math.max(1, Math.floor(refs.mainPanel.clientHeight * 0.9));
+    var delta = event.key === "ArrowDown" ? 48
+      : event.key === "ArrowUp" ? -48
+        : event.key === "PageDown" ? pageStep
+          : event.key === "PageUp" ? -pageStep
+            : 0;
+    if (!delta) {
+      return;
+    }
+    var maximum = Math.max(0, refs.mainPanel.scrollHeight - refs.mainPanel.clientHeight);
+    var next = Math.max(0, Math.min(maximum, refs.mainPanel.scrollTop + delta));
+    if (next === refs.mainPanel.scrollTop) {
+      return;
+    }
+    event.preventDefault();
+    refs.mainPanel.scrollTop = next;
   }
 
   function toast(message, isError) {
@@ -1167,6 +1409,26 @@
 
   function pageParams(view) {
     var definition = VIEWS[view];
+    if (view === "collaboration") {
+      var collaborationFilters = state.filters.collaboration || {};
+      var filterKey = [
+        collaborationFilters.coordinationSessionId || "",
+        collaborationFilters.agentSessionId || "",
+        collaborationFilters.role || ""
+      ].join("\u0000");
+      if (filterKey !== state.collaboration.filterKey) {
+        state.collaboration.filterKey = filterKey;
+        state.collaboration.cursor = null;
+        state.collaboration.events = [];
+      }
+      return {
+        coordination_session_id: collaborationFilters.coordinationSessionId || "",
+        agent_session_id: collaborationFilters.agentSessionId || "",
+        role: collaborationFilters.role || "",
+        cursor: state.collaboration.cursor,
+        limit: 20
+      };
+    }
     if (!definition.paginated) {
       return {};
     }
@@ -1615,6 +1877,123 @@
     root.appendChild(toolbar);
     root.appendChild(tableHost);
     update();
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function collaborationSelect(label, value, options, onChange) {
+    var select = h("select", {
+      className: "select",
+      attrs: { "aria-label": label },
+      on: { change: function () { onChange(select.value); } }
+    });
+    select.appendChild(h("option", { text: label, attrs: { value: "" } }));
+    options.forEach(function (option) {
+      var optionValue = typeof option === "string" ? option : String(option.value || "");
+      var optionText = typeof option === "string" ? option : String(option.text || optionValue);
+      select.appendChild(h("option", {
+        text: optionText,
+        attrs: { value: optionValue, selected: optionValue === value }
+      }));
+    });
+    return select;
+  }
+
+  function resetCollaborationFeed() {
+    state.collaboration.cursor = null;
+    state.collaboration.events = [];
+    loadCurrentView();
+  }
+
+  function renderCollaboration(payload) {
+    var data = envelopeObject(payload);
+    var filters = state.filters.collaboration;
+    var options = isObject(data.filter_options) ? data.filter_options : {};
+    var topology = asArray(data.topology && data.topology.data);
+    var workBoard = asArray(data.work_board && data.work_board.data);
+    var timeline = isObject(data.event_timeline) ? data.event_timeline : {};
+    var incomingEvents = asArray(timeline.data);
+    var knownEvents = new Map(state.collaboration.events.map(function (event) {
+      return [String(event.event_id || event.sequence), event];
+    }));
+    incomingEvents.forEach(function (event) {
+      knownEvents.set(String(event.event_id || event.sequence), event);
+    });
+    state.collaboration.events = Array.from(knownEvents.values()).sort(function (left, right) {
+      return Number(left.sequence || 0) - Number(right.sequence || 0);
+    }).slice(-64);
+    if (timeline.next_cursor) {
+      state.collaboration.cursor = String(timeline.next_cursor);
+    }
+
+    var sessionOptions = asArray(options.coordination_sessions);
+    var agentSessionOptions = asArray(options.agent_sessions).map(function (item) {
+      return {
+        value: String(item.session_id || ""),
+        text: compactId(item.session_id) + " / " + compactId(item.agent_id)
+      };
+    });
+    var roleOptions = asArray(options.roles).map(function (role) {
+      return { value: String(role), text: roleLabel(role) };
+    });
+    var toolbar = h("div", { className: "toolbar" }, [
+      collaborationSelect("全部协调会话", filters.coordinationSessionId, sessionOptions, function (value) {
+        filters.coordinationSessionId = value;
+        resetCollaborationFeed();
+      }),
+      collaborationSelect("全部 Agent 会话", filters.agentSessionId, agentSessionOptions, function (value) {
+        filters.agentSessionId = value;
+        resetCollaborationFeed();
+      }),
+      collaborationSelect("全部角色", filters.role, roleOptions, function (value) {
+        filters.role = value;
+        resetCollaborationFeed();
+      }),
+      makeBadge("只读", "info"),
+      makeBadge("角色仅筛选", "neutral")
+    ]);
+    var root = h("div", {}, [
+      viewHeader(VIEWS.collaboration.title, VIEWS.collaboration.description),
+      toolbar
+    ]);
+
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("Agent 拓扑", (data.topology && data.topology.truncated) ? "最多显示 64 条" : "当前筛选"),
+      topology.length ? tableNode([
+        { label: "Agent", width: "20%", value: function (row) { return row.agent_id; }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: value } }); } },
+        { label: "角色", width: "14%", value: function (row) { return row.role; }, render: function (value) { return makeBadge(roleLabel(value)); } },
+        { label: "父 Agent", width: "18%", value: function (row) { return row.parent_agent_id || "--"; }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: value } }); } },
+        { label: "Agent 会话", width: "20%", value: function (row) { return row.session_id; }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: value } }); } },
+        { label: "状态", width: "12%", value: function (row) { return row.session_state; }, render: function (value) { return makeBadge(value); } },
+        { label: "最近心跳", width: "16%", value: function (row) { return row.last_heartbeat_at; }, render: formatTimestamp }
+      ], topology) : statePanel("empty", "暂无 Agent 会话", "当前项目和筛选条件下没有可展示的 Agent 拓扑。")
+    ]));
+
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("ProjectWorkBoard", (data.work_board && data.work_board.truncated) ? "最多显示 64 条" : "目标与错误正文已隐藏"),
+      workBoard.length ? tableNode([
+        { label: "工作项", width: "23%", value: function (row) { return row.work_item_id; }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: value } }); } },
+        { label: "指派 Agent", width: "20%", value: function (row) { return row.assigned_agent_id; }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: value } }); } },
+        { label: "角色", width: "13%", value: function (row) { return row.assigned_role || "--"; }, render: function (value) { return makeBadge(roleLabel(value)); } },
+        { label: "状态", width: "14%", value: function (row) { return row.state; }, render: function (value) { return makeBadge(value); } },
+        { label: "尝试", width: "10%", value: function (row) { return row.attempt + " / " + row.max_attempts; } },
+        { label: "租约", width: "10%", value: function (row) { return row.lease ? row.lease.state : "--"; }, render: function (value) { return makeBadge(value); } },
+        { label: "已记录错误", width: "10%", value: function (row) { return row.last_error_present ? "是" : "否"; } }
+      ], workBoard) : statePanel("empty", "暂无工作项", "当前项目和筛选条件下没有 ProjectWorkBoard 记录。")
+    ]));
+
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("广播事件时间线", "浏览器内存游标 / 最近 64 条"),
+      state.collaboration.events.length ? tableNode([
+        { label: "序号", width: "9%", value: function (row) { return row.sequence; } },
+        { label: "类型", width: "18%", value: function (row) { return row.event_type; }, render: function (value) { return makeBadge(value); } },
+        { label: "Agent / 角色", width: "22%", value: function (row) { return compactId(row.actor_agent_id) + " / " + roleLabel(row.actor_role); } },
+        { label: "摘要", width: "31%", value: function (row) { return row.summary; }, className: "cell-primary" },
+        { label: "工作项", width: "10%", value: function (row) { return row.work_item_id || "--"; }, render: function (value) { return h("code", { className: "cell-code", text: compactId(value), attrs: { title: value } }); } },
+        { label: "时间", width: "10%", value: function (row) { return row.created_at; }, render: formatTimestamp }
+      ], state.collaboration.events, {
+        caption: timeline.has_more ? "仍有更多广播事件；再次刷新将从当前浏览器游标继续。" : "已追到当前广播事件源头。"
+      }) : statePanel("empty", "暂无广播事件", "当前游标之后没有新的公开广播事件；定向事件不会显示在本地操作者投影中。")
+    ]));
     refs.viewRoot.replaceChildren(root);
   }
 
@@ -2172,6 +2551,431 @@
       }
     }));
     refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderKnowledgeSources(payload) {
+    var data = envelopeObject(payload);
+    var rows = envelopeRows(payload, ["sources", "items", "results"]);
+    var enabled = data.enabled === true;
+    var actions = enabled
+      ? [textButton("上传资料", function () { navigate("knowledge-upload"); }, { icon: "upload", primary: true })]
+      : [];
+    var root = h("div", {}, [
+      viewHeader(VIEWS["knowledge-sources"].title, VIEWS["knowledge-sources"].description, actions.concat([
+        makeBadge(enabled ? "已启用" : "未启用", enabled ? "success" : "info")
+      ]))
+    ]);
+    if (!enabled) {
+      root.appendChild(makeNotice("warning", "知识系统未启用", "设置 PP_KNOWLEDGE_SYSTEM=on 或 shadow 后显示知识源。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    if (!rows.length) {
+      root.appendChild(paginatedEmptyState(payload, "knowledge-sources", "没有知识源", "当前项目范围内还没有 Markdown 知识源。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(tableNode([
+      { label: "名称", width: "24%", value: function (row) { return row.name; }, render: function (value) { return h("span", { className: "cell-text cell-primary", text: formatScalar(value) }); } },
+      { label: "类型", width: "10%", value: function (row) { return row.kind; }, render: function (value) { return makeBadge(value); } },
+      { label: "状态", width: "10%", value: function (row) { return row.status; }, render: function (value) { return makeBadge(value); } },
+      { label: "版本", width: "22%", value: function (row) { return row.versions && row.versions.length ? row.versions[0].version_no : "--"; }, render: function (value, row) {
+        var version = row.versions && row.versions[0];
+        return h("span", { className: "cell-wrap", text: version ? "v" + version.version_no + " · " + version.chunk_count + " 块" : "--" });
+      } },
+      { label: "最近更新", width: "20%", value: function (row) { return row.updated_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+      { label: "来源引用", width: "14%", value: function (row) { return row.origin_ref || "--"; }, render: function (value) { return h("span", { className: "cell-wrap mono", text: formatScalar(value) }); } }
+    ], rows, {
+      payload: payload,
+      view: "knowledge-sources",
+      rowLabel: function (row) { return "打开知识源 " + compactId(row.id); },
+      onRow: function (row) {
+        navigate("knowledge-detail", { source_id: row.id });
+      }
+    }));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderKnowledgeJobs(payload) {
+    var data = envelopeObject(payload);
+    var rows = envelopeRows(payload, ["jobs", "items", "results"]);
+    var enabled = data.enabled === true;
+    var root = h("div", {}, [
+      viewHeader(VIEWS["knowledge-jobs"].title, VIEWS["knowledge-jobs"].description, [
+        makeBadge(enabled ? "已启用" : "未启用", enabled ? "success" : "info")
+      ])
+    ]);
+    if (!enabled) {
+      root.appendChild(makeNotice("warning", "知识系统未启用", "设置 PP_KNOWLEDGE_SYSTEM=on 或 shadow 后显示摄入任务。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    if (!rows.length) {
+      root.appendChild(paginatedEmptyState(payload, "knowledge-jobs", "没有摄入任务", "当前项目范围内还没有知识摄入任务。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(tableNode([
+      { label: "任务", width: "18%", value: function (row) { return row.id; }, render: function (value) { return h("span", { className: "mono", text: compactId(value) }); } },
+      { label: "阶段", width: "10%", value: function (row) { return row.stage; }, render: function (value) { return makeBadge(value, "brand"); } },
+      { label: "状态", width: "12%", value: function (row) { return row.status; }, render: function (value) { return makeBadge(value); } },
+      { label: "尝试", width: "8%", value: function (row) { return row.attempts; } },
+      { label: "结果", width: "22%", value: function (row) { return row.result; }, render: function (value) {
+        if (!value) { return h("span", { className: "cell-text", text: "--" }); }
+        return h("span", { className: "cell-wrap mono", text: "v" + (value.version_no || "--") + " · " + (value.chunk_count || 0) + " 块" });
+      } },
+      { label: "错误", width: "18%", value: function (row) { return row.error; }, render: function (value) { return value ? h("span", { className: "cell-wrap", text: formatScalar(value) }) : h("span", { className: "cell-text", text: "--" }); } },
+      { label: "创建时间", width: "12%", value: function (row) { return row.created_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } }
+    ], rows, {
+      payload: payload,
+      view: "knowledge-jobs",
+      rowLabel: function (row) { return "打开摄入任务 " + compactId(row.id); }
+    }));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderKnowledgeSemantic(payload) {
+    var data = envelopeObject(payload);
+    var enabled = data.enabled === true;
+    var status = isObject(data.status) ? data.status : {};
+    var root = h("div", {}, [
+      viewHeader(VIEWS["knowledge-semantic"].title, VIEWS["knowledge-semantic"].description, [
+        makeBadge(enabled ? data.mode || "on" : "未启用", enabled ? statusKind(data.mode) : "info")
+      ])
+    ]);
+    if (!enabled) {
+      root.appendChild(makeNotice("warning", "知识系统未启用", "语义编译队列当前不可用。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(h("div", { className: "kpi-grid" }, [
+      kpiCard("待处理", status.pending || 0, "等待语义编译"),
+      kpiCard("处理中", status.building || 0, "持有工作租约"),
+      kpiCard("已完成", status.done || 0, "已写入 SQLite"),
+      kpiCard("失败", status.failed || 0, "已达到重试上限")
+    ]));
+    root.appendChild(makeNotice(
+      "info",
+      "真相源：SQLite",
+      data.derived_index === "rebuildable_only"
+        ? "领域、语义单元和 Wiki 产物均为可重建投影；向量索引不授予权限。"
+        : "当前仅展示项目范围内的持久状态。"
+    ));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderKnowledgeDomains(payload) {
+    var data = envelopeObject(payload);
+    var rows = envelopeRows(payload, ["domains", "items", "results"]);
+    var enabled = data.enabled === true;
+    var root = h("div", {}, [
+      viewHeader(VIEWS["knowledge-domains"].title, VIEWS["knowledge-domains"].description, [
+        makeBadge(enabled ? data.mode || "off" : "未启用", enabled ? statusKind(data.mode) : "info")
+      ])
+    ]);
+    if (!enabled) {
+      root.appendChild(makeNotice("warning", "知识系统未启用", "当前没有可读取的领域投影。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    if (!rows.length) {
+      root.appendChild(statePanel("empty", "没有知识领域", "当前项目还没有语义领域候选。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(tableNode([
+      { label: "名称", width: "18%", value: function (row) { return row.name; }, render: function (value) { return h("span", { className: "cell-text cell-primary", text: formatScalar(value) }); } },
+      { label: "状态", width: "10%", value: function (row) { return row.kind; }, render: function (value) { return makeBadge(value); } },
+      { label: "说明", width: "28%", value: function (row) { return row.description; }, render: function (value) { return h("span", { className: "cell-wrap", text: formatScalar(value) }); } },
+      { label: "来源", width: "9%", value: function (row) { return row.source_count; } },
+      { label: "空间", width: "9%", value: function (row) { return row.distinct_spaces; } },
+      { label: "别名", width: "14%", value: function (row) { return row.aliases; }, render: function (value) { return h("span", { className: "cell-wrap", text: formatScalar(value) }); } },
+      { label: "更新时间", width: "12%", value: function (row) { return row.updated_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } }
+    ], rows, {
+      caption: "当前项目最多显示 100 条知识领域。",
+      rowLabel: function (row) { return "打开知识领域 " + formatScalar(row.name); },
+      onRow: function (row, index, trigger) { openRecordDetail(row.name || "领域详情", "知识领域", row, trigger); }
+    }));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderKnowledgeArtifacts(payload) {
+    var data = envelopeObject(payload);
+    var rows = envelopeRows(payload, ["artifacts", "items", "results"]);
+    var enabled = data.enabled === true;
+    var root = h("div", {}, [
+      viewHeader(VIEWS["knowledge-artifacts"].title, VIEWS["knowledge-artifacts"].description, [
+        makeBadge(enabled ? data.mode || "off" : "未启用", enabled ? statusKind(data.mode) : "info")
+      ])
+    ]);
+    if (!enabled) {
+      root.appendChild(makeNotice("warning", "知识系统未启用", "当前没有可读取的 Wiki 产物。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    if (!rows.length) {
+      root.appendChild(statePanel("empty", "没有 Wiki 产物", "当前项目还没有派生知识产物。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(tableNode([
+      { label: "标题", width: "24%", value: function (row) { return row.title; }, render: function (value) { return h("span", { className: "cell-text cell-primary", text: formatScalar(value) }); } },
+      { label: "类型", width: "12%", value: function (row) { return row.kind; }, render: function (value) { return makeBadge(value, "brand"); } },
+      { label: "状态", width: "11%", value: function (row) { return row.status; }, render: function (value) { return makeBadge(value); } },
+      { label: "风险", width: "9%", value: function (row) { return row.risk_tier; }, render: function (value) { return makeBadge(value); } },
+      { label: "引用覆盖", width: "12%", value: function (row) { return row.citation_coverage; }, render: function (value) { return h("span", { className: "mono", text: formatRatio(value) }); } },
+      { label: "来源", width: "14%", value: function (row) { return row.source_ids; }, render: function (value) { return h("span", { className: "cell-wrap mono", text: formatScalar(value) }); } },
+      { label: "更新时间", width: "18%", value: function (row) { return row.updated_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } }
+    ], rows, {
+      caption: "当前项目最多显示 100 条 Wiki 产物。",
+      rowLabel: function (row) { return "打开 Wiki 产物 " + formatScalar(row.title); },
+      onRow: function (row, index, trigger) { openRecordDetail(row.title || "产物详情", "Wiki 产物", row, trigger); }
+    }));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function uploadKnowledgeFile(fileInput, nameInput, spaceInput, resultBox, submitButton) {
+    var file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      toast("请先选择 Markdown 或文本文件", true);
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast("文件超过 8 MiB 限制", true);
+      return;
+    }
+    submitButton.disabled = true;
+    resultBox.textContent = "上传检疫中…";
+    var projectId = activeProjectId();
+    var uploadUrl = new URL(API_ROOT + "/knowledge-uploads", window.location.origin);
+    uploadUrl.searchParams.set("project_id", projectId);
+    var mediaType = /\.(md|markdown)$/i.test(file.name || "")
+      ? "text/markdown"
+      : "text/plain";
+    fetch(uploadUrl.toString(), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "Content-Type": mediaType },
+      body: file
+    }).then(function (response) {
+      return response.text().then(function (body) {
+        var payload = {};
+        if (body) {
+          try {
+            payload = JSON.parse(body);
+          } catch (error) {
+            payload = { error: body.slice(0, 300) };
+          }
+        }
+        if (!response.ok) {
+          var detail = firstValue(payload, [
+            "error.message", "message", "error.code"
+          ], response.statusText || "上传失败");
+          throw new ApiError(response.status + " " + detail, response.status, payload);
+        }
+        return payload;
+      });
+    }).then(function (upload) {
+      var data = envelopeObject(upload);
+      var uploadId = String(firstValue(data, ["upload_id"], "")).trim();
+      if (!uploadId) {
+        throw new ApiError("上传响应缺少 upload_id", 502, upload);
+      }
+      resultBox.textContent = "检疫完成，注册知识源…";
+      var sourceName = String(nameInput.value || "").trim() || file.name;
+      var spaceName = String(spaceInput.value || "").trim() || "default";
+      return apiMutation("/knowledge-sources/submit", {
+        project_id: projectId,
+        source_name: sourceName,
+        content_sha256: uploadId,
+        space_name: spaceName
+      }).then(function (submission) {
+        return { uploadId: uploadId, submission: submission };
+      });
+    }).then(function (combined) {
+      var data = envelopeObject(combined.submission);
+      var submission = firstValue(data, ["submission"], {});
+      var jobId = String(
+        submission.job_id
+        || (isObject(submission.job) ? submission.job.id : "")
+        || ""
+      ).trim();
+      resultBox.textContent = "任务已创建，等待解析…";
+      return pollKnowledgeJob(jobId, projectId, resultBox).then(function (job) {
+        return { combined: combined, job: job };
+      });
+    }).then(function (result) {
+      var data = envelopeObject(result.combined.submission);
+      var submission = firstValue(data, ["submission"], {});
+      var job = isObject(result.job) ? result.job : {};
+      var status = String(job.status || submission.status || "done").toLowerCase();
+      resultBox.replaceChildren(
+        makeBadge(status === "done" ? "已入库" : status, status === "done" ? "success" : "warning"),
+        h("span", {
+          className: "cell-wrap mono",
+          text: "源 " + compactId(String(submission.source_id || "--")) + " · 任务 " + compactId(String(submission.job_id || job.id || "--"))
+        })
+      );
+      toast("知识源已入库", false);
+    }).catch(function (error) {
+      resultBox.replaceChildren(
+        makeNotice("danger", "上传失败", error && error.message ? error.message : "未知错误")
+      );
+      toast(error && error.message ? error.message : "上传失败", true);
+    }).finally(function () {
+      submitButton.disabled = false;
+    });
+  }
+
+  function pollKnowledgeJob(jobId, projectId, resultBox, attemptsLeft) {
+    var remaining = attemptsLeft === undefined ? 10 : attemptsLeft;
+    if (!jobId || remaining <= 0) {
+      return Promise.resolve(null);
+    }
+    return apiRequest("/knowledge-jobs/" + encodeURIComponent(jobId), {}, null).then(function (payload) {
+      var data = envelopeObject(payload);
+      var job = firstValue(data, ["job"], {});
+      var status = String(job.status || "").toLowerCase();
+      if (status === "done" || status === "failed" || status === "error") {
+        return job;
+      }
+      return new Promise(function (resolve) {
+        window.setTimeout(function () {
+          resolve(pollKnowledgeJob(jobId, projectId, resultBox, remaining - 1));
+        }, 1200);
+      });
+    });
+  }
+
+  function renderKnowledgeUpload(payload) {
+    var data = envelopeObject(payload);
+    var enabled = data.enabled === true;
+    var root = h("div", {}, [
+      viewHeader(VIEWS["knowledge-upload"].title, VIEWS["knowledge-upload"].description, [
+        makeBadge(enabled ? "已启用" : "未启用", enabled ? "success" : "info")
+      ])
+    ]);
+    if (!enabled) {
+      root.appendChild(makeNotice(
+        "warning",
+        "知识系统未启用",
+        "设置 PP_KNOWLEDGE_SYSTEM=on 或 shadow 后可使用上传入口。"
+      ));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    var fileInput = h("input", {
+      className: "input",
+      attrs: {
+        type: "file",
+        accept: ".md,.markdown,.txt,text/markdown,text/plain",
+        "aria-label": "选择 Markdown 或文本文件"
+      }
+    });
+    var nameInput = h("input", {
+      className: "input",
+      attrs: {
+        type: "text",
+        placeholder: "资料名称（留空使用文件名）",
+        "aria-label": "资料名称"
+      }
+    });
+    var spaceInput = h("input", {
+      className: "input",
+      attrs: {
+        type: "text",
+        value: "default",
+        placeholder: "知识空间（默认 default）",
+        "aria-label": "知识空间"
+      }
+    });
+    var resultBox = h("div", { className: "notice-copy" });
+    var submitButton = textButton("上传并建源", function () {
+      uploadKnowledgeFile(fileInput, nameInput, spaceInput, resultBox, submitButton);
+    }, { icon: "upload", primary: true });
+    var form = h("div", { className: "control-form-grid" }, [
+      h("div", { className: "field" }, [h("label", { text: "Markdown/文本文件" }), fileInput]),
+      h("div", { className: "field" }, [h("label", { text: "资料名称" }), nameInput]),
+      h("div", { className: "field" }, [h("label", { text: "知识空间" }), spaceInput]),
+      h("div", { className: "field" }, [submitButton])
+    ]);
+    root.appendChild(form);
+    root.appendChild(makeNotice(
+      "info",
+      "仅 Markdown / 纯文本",
+      "先内容寻址检疫，再建源解析为结构证据块；超过 8 MiB 会拒绝。"
+    ));
+    root.appendChild(resultBox);
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderKnowledgeDetail(payload, params) {
+    var sourceId = String(params && params.source_id || "").trim();
+    var root = h("div", {}, [
+      viewHeader(VIEWS["knowledge-detail"].title, VIEWS["knowledge-detail"].description, [
+        textButton("返回知识源", function () { navigate("knowledge-sources"); }, { icon: "chevron-left" })
+      ])
+    ]);
+    if (!sourceId) {
+      root.appendChild(makeNotice("warning", "缺少 source_id", "请从知识源列表进入详情。"));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    refs.viewRoot.replaceChildren(
+      root,
+      h("div", { className: "skeleton-stack", attrs: { "aria-label": "正在加载知识详情" } }, [
+        h("div", { className: "skeleton-header" }),
+        h("div", { className: "skeleton-cards" }, [h("div", { className: "skeleton-card" })])
+      ])
+    );
+    var encoded = encodeURIComponent(sourceId);
+    Promise.all([
+      apiRequest("/knowledge-sources/" + encoded + "/versions", {}, null),
+      apiRequest("/knowledge-sources/" + encoded + "/chunks", {}, null)
+    ]).then(function (results) {
+      var versionsData = envelopeObject(results[0]);
+      var source = firstValue(versionsData, ["source"], {});
+      var versions = asArray(firstValue(versionsData, ["versions"], []));
+      var chunks = asArray(firstValue(envelopeObject(results[1]), ["chunks"], []));
+      var content = h("div", {}, [
+        h("div", { className: "badge-row" }, [
+          makeBadge(String(source.name || compactId(sourceId)), "brand"),
+          makeBadge(String(source.kind || "upload")),
+          makeBadge(String(source.status || "--"))
+        ]),
+        h("h2", { text: "版本" }),
+        versions.length
+          ? tableNode([
+              { label: "版本", width: "10%", value: function (row) { return row.version_no; }, render: function (value) { return h("span", { className: "cell-text", text: "v" + value }); } },
+              { label: "状态", width: "10%", value: function (row) { return row.status; }, render: function (value) { return makeBadge(value); } },
+              { label: "块数", width: "10%", value: function (row) { return row.chunk_count; } },
+              { label: "解析器", width: "14%", value: function (row) { return row.parser_id; }, render: function (value) { return h("span", { className: "cell-text mono", text: formatScalar(value) }); } },
+              { label: "标题", width: "30%", value: function (row) { return row.document_title; }, render: function (value) { return h("span", { className: "cell-wrap", text: formatScalar(value) }); } },
+              { label: "创建时间", width: "26%", value: function (row) { return row.created_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } }
+            ], versions, {})
+          : statePanel("empty", "暂无版本", "该知识源还没有解析版本。"),
+        h("h2", { text: "证据块" }),
+        chunks.length
+          ? tableNode([
+              { label: "块", width: "16%", value: function (row) { return row.chunk_id; }, render: function (value) { return h("span", { className: "mono", text: compactId(value) }); } },
+              { label: "版本", width: "8%", value: function (row) { return row.version_no; }, render: function (value) { return h("span", { className: "cell-text", text: "v" + value }); } },
+              { label: "序号", width: "8%", value: function (row) { return row.ordinal; } },
+              { label: "类型", width: "10%", value: function (row) { return row.kind; }, render: function (value) { return makeBadge(value, "brand"); } },
+              { label: "路径", width: "14%", value: function (row) { return row.header_path; }, render: function (value) { return h("span", { className: "cell-wrap mono", text: formatScalar(value) }); } },
+              { label: "片段", width: "44%", value: function (row) { return row.snippet; }, render: function (value) { return h("span", { className: "cell-wrap", text: formatScalar(value) }); } }
+            ], chunks, {})
+          : statePanel("empty", "暂无证据块", "该版本尚未切出证据块。")
+      ]);
+      refs.viewRoot.replaceChildren(root, content);
+    }).catch(function (error) {
+      root.appendChild(statePanel(
+        "error",
+        "无法加载知识详情",
+        error && error.message ? error.message : "请求失败",
+        function () { renderKnowledgeDetail(payload, params); }
+      ));
+      refs.viewRoot.replaceChildren(root);
+    });
   }
 
   function detailSection(title, content) {
@@ -3827,6 +4631,396 @@
     state.control.controllers.clear();
   }
 
+  function isDeploymentCenterBridgeContract(payload) {
+    return isObject(payload)
+      && payload.schema_version === "pp-local-edge-ppctl-bridge/v1"
+      && payload.method === "POST"
+      && payload.content_type === "application/json"
+      && Array.isArray(payload.operations)
+      && payload.operations.length === 2
+      && payload.operations.indexOf("inspect") !== -1
+      && payload.operations.indexOf("preview") !== -1;
+  }
+
+  function deploymentCenterBridgeBase(payload) {
+    if (!isDeploymentCenterBridgeContract(payload) || payload.status !== "configured") {
+      return "";
+    }
+    if (typeof payload.endpoint !== "string") {
+      return "";
+    }
+    try {
+      var url = new URL(payload.endpoint);
+      var port = Number(url.port);
+      if (url.protocol !== "http:"
+        || url.hostname !== "127.0.0.1"
+        || !Number.isInteger(port)
+        || port < 1
+        || port > 65535
+        || url.username
+        || url.password
+        || url.pathname !== "/ppctl/v1"
+        || url.search
+        || url.hash) {
+        return "";
+      }
+      return "http://127.0.0.1:" + String(port) + "/ppctl/v1";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function deploymentCenterBridgeState(payload) {
+    if (!isDeploymentCenterBridgeContract(payload)) {
+      return { status: "unavailable", endpoint: "", errorCode: "deployment_center_bridge_config_invalid" };
+    }
+    if (payload.status === "disabled" && payload.endpoint === null) {
+      return { status: "disabled", endpoint: "", errorCode: "" };
+    }
+    var endpoint = deploymentCenterBridgeBase(payload);
+    if (!endpoint) {
+      return { status: "unavailable", endpoint: "", errorCode: "deployment_center_bridge_config_invalid" };
+    }
+    return { status: "configured", endpoint: endpoint, errorCode: "" };
+  }
+
+  function deploymentCenterErrorCode(error) {
+    var code = String(firstValue(error && error.payload || {}, ["error.code", "code"], ""));
+    if (/^[a-z][a-z0-9_:-]{1,127}$/.test(code)) {
+      return code;
+    }
+    return "deployment_center_bridge_unavailable";
+  }
+
+  function deploymentCenterJsonResponse(response) {
+    return response.text().then(function (body) {
+      var payload = {};
+      if (body) {
+        try {
+          payload = JSON.parse(body);
+        } catch (error) {
+          payload = {};
+        }
+      }
+      if (!response.ok) {
+        throw new ApiError("deployment_center_bridge_unavailable", response.status, payload);
+      }
+      return payload;
+    });
+  }
+
+  function deploymentCenterFetchBridgeConfig(signal) {
+    return fetch("/pp-local-edge/v1/bridge-config.json", {
+      method: "GET",
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      headers: { Accept: "application/json" },
+      signal: signal
+    }).then(deploymentCenterJsonResponse).then(deploymentCenterBridgeState);
+  }
+
+  function deploymentCenterPost(endpoint, body, signal) {
+    return fetch(endpoint, {
+      method: "POST",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: signal
+    }).then(deploymentCenterJsonResponse);
+  }
+
+  function deploymentCenterInspect(endpoint, installationRef, signal) {
+    return deploymentCenterPost(endpoint + "/inspect", {
+      installation_ref: installationRef
+    }, signal);
+  }
+
+  function deploymentCenterPreview(endpoint, installationRef, candidateManifest, signal) {
+    return deploymentCenterPost(endpoint + "/preview", {
+      installation_ref: installationRef,
+      candidate_manifest: candidateManifest
+    }, signal);
+  }
+
+  function abortDeploymentCenterRequest() {
+    state.deploymentCenter.sequence += 1;
+    state.deploymentCenter.actionSequence += 1;
+    if (state.deploymentCenter.controller) {
+      state.deploymentCenter.controller.abort();
+      state.deploymentCenter.controller = null;
+    }
+  }
+
+  function deploymentCenterCandidate() {
+    var parsed;
+    try {
+      parsed = JSON.parse(state.deploymentCenter.candidateText);
+    } catch (error) {
+      throw new ApiError("deployment_center_candidate_json_invalid", 0, {
+        error: { code: "deployment_center_candidate_json_invalid" }
+      });
+    }
+    if (!isObject(parsed)) {
+      throw new ApiError("deployment_center_candidate_object_required", 0, {
+        error: { code: "deployment_center_candidate_object_required" }
+      });
+    }
+    return parsed;
+  }
+
+  function deploymentCenterResult(title, payload) {
+    return h("section", { className: "section-block" }, [
+      sectionHeader(title, "仅保留在当前页面内存"),
+      h("pre", { className: "json-view", text: safeJson(payload) })
+    ]);
+  }
+
+  function renderDeploymentCenter() {
+    var center = state.deploymentCenter;
+    var bridge = center.bridge || { status: "unavailable", endpoint: "", errorCode: "deployment_center_bridge_unavailable" };
+    var configured = bridge.status === "configured" && Boolean(bridge.endpoint);
+    var installation = h("input", {
+      className: "input",
+      attrs: {
+        type: "text",
+        value: center.installationRef,
+        autocomplete: "off",
+        spellcheck: "false",
+        "aria-label": "安装引用"
+      },
+      on: {
+        input: function (event) {
+          center.installationRef = String(event.target.value || "").trim();
+        }
+      }
+    });
+    var candidate = h("textarea", {
+      className: "control-textarea",
+      attrs: {
+        rows: "20",
+        spellcheck: "false",
+        "aria-label": "V2 候选清单 JSON"
+      },
+      on: {
+        input: function (event) {
+          center.candidateText = String(event.target.value || "");
+        }
+      }
+    });
+    candidate.value = center.candidateText;
+
+    var inspectButton = textButton("检查", function () {
+      if (!configured || center.busy) {
+        return;
+      }
+      deploymentCenterRunInspect();
+    }, { icon: "file-search", disabled: !configured || center.busy });
+    var previewButton = textButton("预览候选", function () {
+      if (!configured || center.busy) {
+        return;
+      }
+      deploymentCenterRunPreview();
+    }, { primary: true, icon: "gauge", disabled: !configured || center.busy });
+
+    var root = h("div", {}, [
+      viewHeader(VIEWS["deployment-center"].title, VIEWS["deployment-center"].description),
+      makeNotice(
+        "warning",
+        "非权威预览。",
+        "计划哈希仅供检查（plan hash is inspection-only）；任何变更操作延后至 PR5（mutation is deferred to PR5）；浏览器和缓存状态均非权威（browser/cache state is non-authoritative）。"
+      )
+    ]);
+
+    if (bridge.status === "configured") {
+      root.appendChild(makeNotice(
+        "info",
+        "本地桥接已配置。",
+        "本页仅允许调用 inspect 与 preview；候选和结果不会写入浏览器持久化存储。"
+      ));
+    } else if (bridge.status === "disabled") {
+      root.appendChild(statePanel(
+        "empty",
+        "本地桥接已禁用",
+        "边缘配置没有启用受限只读桥接，因此不会发出任何主机请求。"
+      ));
+    } else {
+      root.appendChild(statePanel(
+        "error",
+        "本地桥接不可用 / 错误",
+        "无法获得有效的受限桥接配置；请刷新本页后重试。",
+        function () { loadCurrentView(); }
+      ));
+    }
+
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("只读检查与候选预览", configured ? "受限桥接" : "桥接不可用"),
+      h("div", { className: "control-config-form" }, [
+        h("div", { className: "field" }, [
+          h("label", { text: "安装引用（不接受存储位置或命令）" }),
+          installation
+        ]),
+        h("div", { className: "field" }, [
+          h("label", { text: "Endpoint Manifest V2 候选 JSON" }),
+          candidate
+        ]),
+        h("div", { className: "control-form-actions" }, [inspectButton, previewButton])
+      ])
+    ]));
+
+    if (center.busy) {
+      root.appendChild(makeNotice("info", "正在请求受限只读投影。", "可安全离开此视图；请求不会改变运行状态。"));
+    }
+    if (center.errorCode) {
+      root.appendChild(makeNotice("danger", "受限请求未完成。", "原因代码：" + center.errorCode));
+    }
+    if (center.inspection) {
+      root.appendChild(deploymentCenterResult("检查结果", center.inspection));
+    }
+    if (center.preview) {
+      root.appendChild(deploymentCenterResult("候选预览结果", center.preview));
+    }
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function deploymentCenterRunInspect() {
+    var center = state.deploymentCenter;
+    if (!center.bridge || center.bridge.status !== "configured" || !center.bridge.endpoint) {
+      return;
+    }
+    abortDeploymentCenterRequest();
+    var sequence = ++center.actionSequence;
+    var controller = new AbortController();
+    center.controller = controller;
+    center.busy = true;
+    center.errorCode = "";
+    renderDeploymentCenter();
+    deploymentCenterInspect(center.bridge.endpoint, center.installationRef, controller.signal).then(function (payload) {
+      if (sequence === center.actionSequence) {
+        center.inspection = payload;
+      }
+    }).catch(function (error) {
+      if (error && error.name === "AbortError") {
+        return;
+      }
+      if (sequence === center.actionSequence) {
+        center.errorCode = deploymentCenterErrorCode(error);
+      }
+    }).finally(function () {
+      if (sequence === center.actionSequence) {
+        center.busy = false;
+        center.controller = null;
+        if (state.currentView === "deployment-center") {
+          renderDeploymentCenter();
+        }
+      }
+    });
+  }
+
+  function deploymentCenterRunPreview() {
+    var center = state.deploymentCenter;
+    if (!center.bridge || center.bridge.status !== "configured" || !center.bridge.endpoint) {
+      return;
+    }
+    var candidate;
+    try {
+      candidate = deploymentCenterCandidate();
+    } catch (error) {
+      center.errorCode = deploymentCenterErrorCode(error);
+      renderDeploymentCenter();
+      return;
+    }
+    abortDeploymentCenterRequest();
+    var sequence = ++center.actionSequence;
+    var controller = new AbortController();
+    center.controller = controller;
+    center.busy = true;
+    center.errorCode = "";
+    renderDeploymentCenter();
+    deploymentCenterPreview(center.bridge.endpoint, center.installationRef, candidate, controller.signal).then(function (payload) {
+      if (sequence === center.actionSequence) {
+        center.preview = payload;
+      }
+    }).catch(function (error) {
+      if (error && error.name === "AbortError") {
+        return;
+      }
+      if (sequence === center.actionSequence) {
+        center.errorCode = deploymentCenterErrorCode(error);
+      }
+    }).finally(function () {
+      if (sequence === center.actionSequence) {
+        center.busy = false;
+        center.controller = null;
+        if (state.currentView === "deployment-center") {
+          renderDeploymentCenter();
+        }
+      }
+    });
+  }
+
+  function loadDeploymentCenterCurrentView(options) {
+    var center = state.deploymentCenter;
+    var preserveContent = options && options.preserveContent === true;
+    var scrollPosition = preserveContent ? captureMainPanelScroll() : null;
+    abortDeploymentCenterRequest();
+    var sequence = ++center.sequence;
+    var controller = new AbortController();
+    center.controller = controller;
+    center.busy = false;
+    center.errorCode = "";
+    showLoading(options);
+    refs.noticeStack.replaceChildren();
+    refs.dashboardMode.textContent = "本地边缘只读预览 / 非权威";
+    deploymentCenterFetchBridgeConfig(controller.signal).then(function (bridge) {
+      if (sequence !== center.sequence || state.currentView !== "deployment-center") {
+        return;
+      }
+      center.bridge = bridge;
+      center.errorCode = bridge.errorCode || "";
+      renderDeploymentCenter();
+      restoreMainPanelScroll(scrollPosition);
+      if (bridge.status === "configured") {
+        setConnection("ready", "本地桥接已配置");
+        setReadiness("预览", "info");
+      } else if (bridge.status === "disabled") {
+        setConnection("", "本地桥接已禁用");
+        setReadiness("已禁用", "warning");
+      } else {
+        setConnection("error", "本地桥接不可用");
+        setReadiness("不可用", "danger");
+      }
+      refs.lastUpdated.textContent = "更新于 " + formatTimestamp(new Date().toISOString());
+    }).catch(function (error) {
+      if (error && error.name === "AbortError") {
+        return;
+      }
+      if (sequence !== center.sequence || state.currentView !== "deployment-center") {
+        return;
+      }
+      center.bridge = { status: "unavailable", endpoint: "", errorCode: deploymentCenterErrorCode(error) };
+      center.errorCode = center.bridge.errorCode;
+      renderDeploymentCenter();
+      setConnection("error", "本地桥接不可用");
+      setReadiness("不可用", "danger");
+    }).finally(function () {
+      if (sequence === center.sequence) {
+        if (center.controller === controller) {
+          center.controller = null;
+        }
+        refs.refreshButton.classList.remove("is-loading");
+        refs.refreshButton.disabled = false;
+        refs.viewRoot.setAttribute("aria-busy", "false");
+      }
+    });
+  }
+
   function resetControlSecretEditors(scope) {
     (scope || document).querySelectorAll("[data-secret-name]").forEach(function (row) {
       var operation = row.querySelector("select");
@@ -3857,6 +5051,7 @@
     state.control.role = "";
     state.control.etag = "";
     state.control.activeRevisionId = "";
+    state.control.safeConfig = {};
     state.control.configDraft = "{}";
     state.control.busy = false;
     state.control.retryKeys.clear();
@@ -3944,6 +5139,7 @@
     var payload = isObject(result && result.payload) ? result.payload : {};
     state.control.etag = String(result && result.etag || payload.etag || "");
     state.control.activeRevisionId = String(firstValue(payload, ["active_revision_id", "revision_id"], ""));
+    state.control.safeConfig = isObject(payload.config) ? payload.config : {};
     return result;
   }
 
@@ -4231,7 +5427,7 @@
 
   function configuredSecretRows(payload) {
     var secrets = isObject(payload.secrets) ? payload.secrets : {};
-    return ["embedding_api_key", "rerank_api_key", "chunk_inference_api_key"].map(function (name) {
+    return ["embedding_api_key", "rerank_api_key", "chunk_inference_api_key", "compute_node_cloud_api_key"].map(function (name) {
       var raw = secrets[name];
       return {
         name: name,
@@ -4398,11 +5594,11 @@
     return {
       embedding: {
         enabled: true,
-        base_url: "https://api.syuan.org",
-        path: "/v1/embeddings",
-        model: "Qwen3-Embedding-8B",
-        model_revision: "Qwen3-Embedding-8B",
-        dimension: 1024,
+        base_url: "https://provider.example/v1",
+        path: "/embeddings",
+        model: "Qwen3-Embedding-4B",
+        model_revision: "Qwen3-Embedding-4B",
+        dimension: 2560,
         send_dimensions: true,
         cost_per_million_tokens: null,
         cost_currency: "",
@@ -4410,15 +5606,15 @@
       },
       rerank: {
         enabled: true,
-        base_url: "https://api.syuan.org",
-        path: "/v1/rerank",
-        model: "BAAI/bge-reranker-v2-m3",
-        model_revision: "BAAI/bge-reranker-v2-m3"
+        base_url: "https://provider.example/v1",
+        path: "/rerank",
+        model: "Qwen3-Reranker-0.6B",
+        model_revision: "Qwen3-Reranker-0.6B"
       },
       chunk_inference: {
         chunking_mode: "structure-v1",
         enrichment_mode: "shadow",
-        base_url: "https://api.deepseek.com",
+        base_url: "https://provider.example/v1",
         path: "/chat/completions",
         model: "deepseek-v4-flash",
         model_revision: "deepseek-v4-flash",
@@ -4436,6 +5632,296 @@
       },
       gateway: { enabled: true }
     };
+  }
+
+  function renderControlNodes(payload) {
+    var summary = isObject(payload.summary) ? payload.summary : {};
+    var counts = isObject(summary.nodes) ? summary.nodes : {};
+    var nodes = asArray(payload.nodes);
+    var recentRoutes = asArray(payload.recent_routes);
+    var derivedWork = isObject(payload.derived_work) ? payload.derived_work : {};
+    var nodeQueue = isObject(derivedWork.node_inference) ? derivedWork.node_inference : {};
+    var acceleratorQueue = isObject(derivedWork.accelerator_max) ? derivedWork.accelerator_max : {};
+    var acceleratorAudit = isObject(payload.accelerator_audit) ? payload.accelerator_audit : {};
+    var acceleratorEvents = asArray(acceleratorAudit.recent_events);
+    var acceleratorActive = Number(firstValue(acceleratorQueue, ["pending"], 0))
+      + Number(firstValue(acceleratorQueue, ["retry_wait"], 0))
+      + Number(firstValue(acceleratorQueue, ["leased"], 0));
+    var safeConfig = isObject(state.control.safeConfig) ? state.control.safeConfig : {};
+    var routing = isObject(safeConfig.node_routing) ? safeConfig.node_routing : {};
+    var stateValue = firstValue(payload, ["state"], "unknown");
+    var root = h("div", {}, [
+      controlViewHeader("control-nodes"),
+      h("div", { className: "kpi-grid" }, [
+        kpiCard("已登记", formatNumber(firstValue(counts, ["registered"], 0)), "节点登记册"),
+        kpiCard("可用", formatNumber(firstValue(counts, ["active"], 0)), "通过健康与身份校验"),
+        kpiCard("隔离", formatNumber(firstValue(counts, ["quarantined"], 0)), "需匹配健康观测后恢复"),
+        kpiCard("活动租约", formatNumber(firstValue(summary, ["active_reservations"], 0)), "服务器持有任务租约"),
+        kpiCard("后台队列", formatNumber(acceleratorActive), "accelerator-max 待处理 / 重试 / 执行中"),
+        kpiCard("节点审计", formatNumber(firstValue(summary, ["audit_event_count"], 0)), "身份、健康与隔离事件"),
+        kpiCard("后台审计", formatNumber(acceleratorEvents.length), "accelerator-max 准入与结果")
+      ])
+    ]);
+    if (stateValue === "schema_missing") {
+      root.appendChild(makeNotice(
+        "warning",
+        "节点治理模式尚未初始化。",
+        "控制面保持只读；请通过受控部署迁移创建节点治理表，页面不会自行修改 SQLite。"
+      ));
+    }
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("受控调度与 accelerator-max", state.control.activeRevisionId || "未激活修订"),
+      h("dl", { className: "key-value-grid" }, [
+        { label: "推理模式", value: firstValue(routing, ["inference_mode"], "未配置") },
+        { label: "Embedding 策略", value: firstValue(routing, ["embedding_policy"], "未配置") },
+        { label: "Rerank 策略", value: firstValue(routing, ["rerank_policy"], "未配置") },
+        { label: "结构化 JSON 策略", value: firstValue(routing, ["structured_json_policy"], "未配置") },
+        { label: "允许节点", value: asArray(routing.allowed_node_ids).join(" · ") || "未配置" },
+        { label: "Embedding Pin", value: firstValue(routing, ["embedding_pinned_node_id"], "--") },
+        { label: "Rerank Pin", value: firstValue(routing, ["rerank_pinned_node_id"], "--") },
+        { label: "accelerator-max", value: firstValue(routing, ["accelerator_max_enabled"], false) ? "已启用" : "已关闭" },
+        { label: "后台并发", value: firstValue(routing, ["accelerator_max_concurrency"], "--") },
+        { label: "队列上限", value: firstValue(routing, ["accelerator_max_queue_depth"], "--") },
+        { label: "每日任务预算", value: firstValue(routing, ["accelerator_max_daily_tasks"], "--") },
+        { label: "今日已准入", value: firstValue(acceleratorAudit, ["daily_admissions"], 0) },
+        { label: "最低空闲内存", value: firstValue(routing, ["accelerator_min_free_memory_mib"], "--") },
+        { label: "节点推理待处理", value: Number(firstValue(nodeQueue, ["pending"], 0)) + Number(firstValue(nodeQueue, ["retry_wait"], 0)) },
+        { label: "后台任务待处理", value: Number(firstValue(acceleratorQueue, ["pending"], 0)) + Number(firstValue(acceleratorQueue, ["retry_wait"], 0)) },
+        { label: "后台任务执行中", value: firstValue(acceleratorQueue, ["leased"], 0) },
+        { label: "后台任务已完成", value: firstValue(acceleratorQueue, ["completed"], 0) }
+      ].map(function (item) {
+        return h("div", { className: "key-value" }, [
+          h("dt", { text: item.label }),
+          h("dd", { text: formatScalar(item.value) })
+        ]);
+      }))
+    ]));
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("accelerator-max 审计", acceleratorEvents.length + " 条"),
+      acceleratorEvents.length ? tableNode([
+        { label: "时间", width: "22%", value: function (row) { return row.occurred_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+        { label: "任务", width: "23%", value: function (row) { return row.task_kind; }, render: function (value) { return h("code", { className: "cell-code", text: formatScalar(value) }); } },
+        { label: "审计阶段", width: "18%", value: function (row) { return row.event; }, render: function (value) { return makeBadge(formatScalar(value)); } },
+        { label: "决策 / 结果", width: "19%", value: function (row) { return row.decision; }, render: function (value) { return makeBadge(formatScalar(value)); } },
+        { label: "稳定原因码", width: "18%", value: function (row) { return row.reason; }, render: function (value) { return h("code", { className: "cell-code", text: formatScalar(value) }); } }
+      ], acceleratorEvents, {
+        onRow: function (row, _index, trigger) {
+          openRecordDetail("后台任务审计", "只显示 durable 准入、领取和结果的受限字段", row, trigger);
+        }
+      }) : statePanel("empty", "暂无后台任务审计", "任务准入、领取、完成、重试或失败后，会在这里显示稳定原因码，不含项目或任务内容。")
+    ]));
+    if (!nodes.length) {
+      root.appendChild(statePanel(
+        stateValue === "schema_missing" ? "info" : "empty",
+        stateValue === "schema_missing" ? "等待受控迁移" : "暂无已登记节点",
+        stateValue === "schema_missing"
+          ? "迁移完成并经过身份校验后，节点观测会显示在这里。"
+          : "仅能通过部署清单或受控配置修订登记推理节点。"
+      ));
+      refs.viewRoot.replaceChildren(root);
+      return;
+    }
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("节点观测", nodes.length + " 个"),
+      tableNode([
+        {
+          label: "节点",
+          width: "13%",
+          value: function (row) { return row.node_id; },
+          render: function (value) {
+            return h("code", { className: "cell-code cell-primary", text: formatScalar(value) });
+          }
+        },
+        {
+          label: "状态",
+          width: "11%",
+          value: function (row) { return row.state; },
+          render: function (value, row) {
+            var health = isObject(row.health) ? row.health : {};
+            return h("div", { className: "table-stack" }, [
+              makeBadge(value),
+              h("span", { className: "cell-muted", text: "健康 " + formatScalar(firstValue(health, ["state"], "unknown")) }),
+              h("span", { className: "cell-muted", text: "推理 " + formatScalar(firstValue(row, ["provider_class"], "unknown")) })
+            ]);
+          }
+        },
+        {
+          label: "能力",
+          width: "12%",
+          value: function (row) { return row.capabilities; },
+          render: function (value) {
+            var capabilities = isObject(value) ? value : {};
+            return h("span", { className: "cell-wrap", text: asArray(capabilities.observed).join(" · ") || "--" });
+          }
+        },
+        {
+          label: "Embedding 身份",
+          width: "20%",
+          value: function (row) { return row.embedding; },
+          render: function (value) {
+            var embedding = isObject(value) ? value : {};
+            return h("div", { className: "table-stack" }, [
+              h("code", { className: "cell-code", text: formatScalar(firstValue(embedding, ["model"], "--")) }),
+              h("span", { className: "cell-muted", text: compactId(firstValue(embedding, ["revision"], "--")) + " · " + formatScalar(firstValue(embedding, ["dimension"], "--")) + " 维" })
+            ]);
+          }
+        },
+        {
+          label: "Rerank 身份",
+          width: "18%",
+          value: function (row) { return row.rerank; },
+          render: function (value) {
+            var rerank = isObject(value) ? value : {};
+            return h("div", { className: "table-stack" }, [
+              h("code", { className: "cell-code", text: formatScalar(firstValue(rerank, ["model"], "--")) }),
+              h("span", { className: "cell-muted", text: compactId(firstValue(rerank, ["revision"], "--")) })
+            ]);
+          }
+        },
+        {
+          label: "容量",
+          width: "12%",
+          value: function (row) { return row.capacity; },
+          render: function (value) {
+            var capacity = isObject(value) ? value : {};
+            return h("span", { className: "cell-wrap", text: "槽位 " + formatScalar(firstValue(capacity, ["available_slots"], 0)) + " / " + formatScalar(firstValue(capacity, ["max_concurrency"], 0)) + " · 队列 " + formatScalar(firstValue(capacity, ["queue_depth"], 0)) });
+          }
+        },
+        {
+          label: "最近延迟",
+          width: "14%",
+          value: function (row) { return row.latency; },
+          render: function (value) {
+            var latency = isObject(value) ? value : {};
+            var embedding = isObject(latency.embedding) ? latency.embedding : {};
+            var rerank = isObject(latency.rerank) ? latency.rerank : {};
+            return h("div", { className: "table-stack" }, [
+              h("span", { className: "cell-text", text: "嵌入 " + formatNumber(firstValue(embedding, ["median_ms"], null)) + " ms" }),
+              h("span", { className: "cell-muted", text: "重排 " + formatNumber(firstValue(rerank, ["median_ms"], null)) + " ms" })
+            ]);
+          }
+        }
+      ], nodes, {
+        onRow: function (row, _index, trigger) {
+          openRecordDetail("节点详情", "受限节点观测", row, trigger);
+        }
+      })
+    ]));
+    var quarantined = nodes.filter(function (node) {
+      return String(node.state || "") === "quarantined";
+    });
+    if (quarantined.length) {
+      root.appendChild(makeNotice(
+        "warning",
+        "存在已隔离节点。",
+        quarantined.map(function (node) {
+          return formatScalar(node.node_id) + "：" + formatScalar(node.quarantine_reason || "identity_or_health_mismatch");
+        }).join("；")
+      ));
+    }
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("最近路由与降级", recentRoutes.length + " 条"),
+      recentRoutes.length ? tableNode([
+        { label: "时间", width: "20%", value: function (row) { return row.occurred_at; }, render: function (value) { return h("span", { className: "cell-text", text: formatTimestamp(value) }); } },
+        { label: "节点", width: "16%", value: function (row) { return row.node_id; }, render: function (value) { return h("code", { className: "cell-code", text: formatScalar(value) }); } },
+        { label: "结果", width: "16%", value: function (row) { return row.outcome; }, render: function (value) { return makeBadge(formatScalar(value)); } },
+        { label: "实际选择原因", width: "24%", value: function (row) { return row.selection_reason; }, render: function (value) { return h("code", { className: "cell-code", text: formatScalar(value) }); } },
+        { label: "降级 / 失败原因", width: "24%", value: function (row) { return row.degradation_reason || row.failure_code; }, render: function (value) { return h("code", { className: "cell-code", text: formatScalar(value) }); } }
+      ], recentRoutes, {
+        onRow: function (row, _index, trigger) {
+          openRecordDetail("路由详情", "受限调度观测", row, trigger);
+        }
+      }) : statePanel("empty", "暂无路由记录", "成功、降级和失败均会以不含输入内容的稳定原因码显示。")
+    ]));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function renderControlPreflight(payload) {
+    var storage = isObject(payload.storage) ? payload.storage : {};
+    var profiles = asArray(payload.profiles);
+    var observed = firstValue(storage, ["state"], "unavailable") === "observed";
+    var sufficient = firstValue(storage, ["satisfies_policy"], null);
+    var root = h("div", {}, [
+      controlViewHeader("control-preflight"),
+      h("div", { className: "kpi-grid" }, [
+        kpiCard("观测状态", observed ? "已观测" : "不可用", "只读本机容量探测"),
+        kpiCard("可用空间", formatStorageBytes(firstValue(storage, ["available_bytes"], null)), "当前可用容量"),
+        kpiCard("策略阈值", formatStorageBytes(firstValue(storage, ["required_free_bytes"], null)), "max(20%, 10 GiB)"),
+        kpiCard("策略检查", sufficient === null ? "待观测" : sufficient ? "通过" : "不足", "不替代部署控制器的最终判定"),
+        kpiCard("硬门禁", firstValue(payload, ["hard_gate"], false) ? "已启用" : "规划预览", "严格零副作用门禁在安装器阶段执行")
+      ])
+    ]);
+    root.appendChild(makeNotice(
+      "info",
+      "这是规划级资源预览。",
+      firstValue(payload, ["state"], "unknown") === "planning_only"
+        ? "它展示已发布 profile 的容量策略与当前观测，不下载模型、不创建数据库、不迁移，也不会替代后续部署控制器的最终检查。"
+        : "当前无法观测容量；仍可查看 profile 资源策略。"
+    ));
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("稳定 profile", profiles.length + " 个"),
+      profiles.length ? tableNode([
+        { label: "Profile", width: "18%", value: function (row) { return row.profile_id; }, render: function (value) { return h("code", { className: "cell-code cell-primary", text: formatScalar(value) }); } },
+        { label: "拓扑", width: "21%", value: function (row) { return row.topology; }, render: function (value) { return h("span", { className: "cell-wrap", text: formatScalar(value) }); } },
+        { label: "默认调度", width: "17%", value: function (row) { return row.scheduling_default; }, render: function (value) { return makeBadge(formatScalar(value), "info"); } },
+        { label: "最低可用空间", width: "16%", value: function (row) { return isObject(row.resource_policy) ? row.resource_policy.minimum_free_bytes : null; }, render: function (value) { return h("span", { className: "cell-text", text: formatStorageBytes(value) }); } },
+        { label: "最低占比", width: "12%", value: function (row) { return isObject(row.resource_policy) ? row.resource_policy.minimum_free_fraction : null; }, render: function (value) { return h("span", { className: "cell-text", text: formatRatio(value) }); } },
+        { label: "模型资产", width: "16%", value: function (row) { return isObject(row.resource_policy) ? row.resource_policy.model_artifacts_bundled : null; }, render: function (value) { return makeBadge(value === false ? "不随包提供" : "需核对", value === false ? "neutral" : "warning"); } }
+      ], profiles) : statePanel("empty", "没有可展示的 profile", "发行目录没有返回稳定部署 profile。")
+    ]));
+    refs.viewRoot.replaceChildren(root);
+  }
+
+  function downloadControlDiagnosticBundle(button) {
+    if (state.control.busy) {
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "正在生成…";
+    controlRequest("/diagnostics/bundle", { method: "POST" }).then(function (result) {
+      var documentBlob = new Blob([
+        JSON.stringify(result.payload, null, 2) + "\n"
+      ], { type: "application/json" });
+      var download = document.createElement("a");
+      var objectUrl = URL.createObjectURL(documentBlob);
+      download.href = objectUrl;
+      download.download = "plastic-promise-diagnostic-bundle.json";
+      download.click();
+      window.setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 0);
+      toast("已生成严格脱敏诊断包；文件仅下载到当前浏览器。", false);
+    }).catch(function (error) {
+      toast(controlErrorMessage(error), true);
+    }).finally(function () {
+      button.disabled = false;
+      button.textContent = "生成并下载诊断包";
+    });
+  }
+
+  function renderControlDiagnostics(payload) {
+    var root = h("div", {}, controlViewHeader("control-diagnostics"));
+    var listeners = isObject(payload.listeners) ? payload.listeners : {};
+    root.appendChild(makeNotice(
+      "info",
+      "默认零外传 telemetry。",
+      "此页面不会自动生成或上传诊断数据。点击下载后，控制 API 只会从严格字段白名单构建 JSON：不包含端点、主机/端口、路径、凭据、配置值、请求/任务 payload、SQLite 正文或模型标识。"
+    ));
+    root.appendChild(h("div", { className: "kpi-grid" }, [
+      kpiCard("MCP", formatScalar(firstValue(listeners.mcp || {}, ["state"], "unknown")), "当前只读监听状态"),
+      kpiCard("SQLite", formatScalar(firstValue(payload.sqlite || {}, ["state"], "unknown")), "当前只读观测状态"),
+      kpiCard("LanceDB", formatScalar(firstValue(payload.lancedb || {}, ["state"], "unknown")), "当前派生索引状态")
+    ]));
+    var generate = h("button", {
+      className: "button button-primary",
+      text: "生成并下载诊断包",
+      attrs: { type: "button" }
+    });
+    generate.addEventListener("click", function () { downloadControlDiagnosticBundle(generate); });
+    root.appendChild(h("section", { className: "section-block" }, [
+      sectionHeader("本地诊断导出", "显式操作"),
+      h("p", { className: "muted-copy", text: "适合在故障排查时自行保存或交给受信任的支持人员；该操作不创建配置修订、不触发部署、不修改数据库。" }),
+      generate
+    ]));
+    refs.viewRoot.replaceChildren(root);
   }
 
   function renderControlConfig(payload) {
@@ -4484,12 +5970,35 @@
     var formChildren = [
       h("div", { className: "field" }, [h("label", { text: "严格配置补丁 JSON" }), patch])
     ];
+    var mode = h("select", {
+      className: "select",
+      attrs: { "aria-label": "计算节点推理模式" }
+    }, [
+      h("option", { text: "本地", attrs: { value: "local" } }),
+      h("option", { text: "云端", attrs: { value: "cloud" } }),
+      h("option", { text: "混合", attrs: { value: "hybrid" } })
+    ]);
+    mode.value = isObject(config.node_routing) ? String(config.node_routing.inference_mode || "local") : "local";
+    mode.addEventListener("change", function () {
+      var candidate;
+      try { candidate = JSON.parse(patch.value || "{}"); } catch (_error) { candidate = {}; }
+      candidate.node_routing = isObject(candidate.node_routing) ? candidate.node_routing : {};
+      candidate.node_routing.inference_mode = mode.value;
+      patch.value = JSON.stringify(candidate, null, 2);
+      state.control.configDraft = patch.value;
+    });
+    formChildren.push(h("div", { className: "field" }, [
+      h("label", { text: "计算节点推理模式（可热切换）" }),
+      mode,
+      h("p", { className: "muted-copy", text: "模式只改变受控节点路由：后端不直接调用云 provider；密钥通过只写通道进入计算节点运行时。" })
+    ]));
     if (role >= 2) {
       formChildren.push(h("fieldset", { className: "control-secret-editor" }, [
         h("legend", { text: "密钥操作（暂存成功后清空）" }),
         controlSecretEditor("embedding_api_key"),
         controlSecretEditor("rerank_api_key"),
-        controlSecretEditor("chunk_inference_api_key")
+        controlSecretEditor("chunk_inference_api_key"),
+        controlSecretEditor("compute_node_cloud_api_key")
       ]));
     }
     var resultHost = h("div", { className: "control-action-result", attrs: { "aria-live": "polite" } });
@@ -4693,6 +6202,9 @@
   function renderControlPayload(view, payload) {
     switch (view) {
       case "control-status": renderControlStatus(payload); break;
+      case "control-nodes": renderControlNodes(payload); break;
+      case "control-preflight": renderControlPreflight(payload); break;
+      case "control-diagnostics": renderControlDiagnostics(payload); break;
       case "control-config": renderControlConfig(payload); break;
       case "control-revisions": renderControlRevisions(payload); break;
       case "control-audit": renderControlAudit(payload); break;
@@ -4700,9 +6212,11 @@
     }
   }
 
-  function loadControlCurrentView() {
+  function loadControlCurrentView(options) {
     var view = state.currentView;
     var definition = VIEWS[view];
+    var preserveContent = options && options.preserveContent === true;
+    var scrollPosition = preserveContent ? captureMainPanelScroll() : null;
     if (!state.control.token || !state.control.role) {
       refs.refreshButton.classList.remove("is-loading");
       refs.refreshButton.disabled = false;
@@ -4715,7 +6229,7 @@
     state.requestSequence += 1;
     var sequence = state.requestSequence;
     abortControlRequests();
-    showLoading();
+    showLoading(options);
     refs.noticeStack.replaceChildren();
     var requestCurrentView;
     if (definition.endpoint === "/config/safe") {
@@ -4732,6 +6246,7 @@
       }
       updateControlChrome();
       renderControlPayload(view, result.payload);
+      restoreMainPanelScroll(scrollPosition);
       refs.viewRoot.setAttribute("aria-busy", "false");
     }).catch(function (error) {
       if (error && (error.name === "AbortError" || error.name === "ControlStaleRequest")) {
@@ -4752,6 +6267,7 @@
         refs.refreshButton.classList.remove("is-loading");
         refs.refreshButton.disabled = false;
         refs.viewRoot.setAttribute("aria-busy", "false");
+        scheduleLiveRefresh();
       }
     });
   }
@@ -4763,6 +6279,9 @@
         break;
       case "requests":
         renderRequests(payload);
+        break;
+      case "collaboration":
+        renderCollaboration(payload);
         break;
       case "memories":
         renderMemories(payload);
@@ -4781,6 +6300,27 @@
         break;
       case "operations":
         renderOperations(payload);
+        break;
+      case "knowledge-sources":
+        renderKnowledgeSources(payload);
+        break;
+      case "knowledge-jobs":
+        renderKnowledgeJobs(payload);
+        break;
+      case "knowledge-semantic":
+        renderKnowledgeSemantic(payload);
+        break;
+      case "knowledge-domains":
+        renderKnowledgeDomains(payload);
+        break;
+      case "knowledge-artifacts":
+        renderKnowledgeArtifacts(payload);
+        break;
+      case "knowledge-upload":
+        renderKnowledgeUpload(payload);
+        break;
+      case "knowledge-detail":
+        renderKnowledgeDetail(payload, params);
         break;
       case "trust-issues":
         renderTrustIssues(payload);
@@ -4801,10 +6341,24 @@
     var background = settings.background === true;
     var view = state.currentView;
     var definition = VIEWS[view];
+    var preserveContent = options && options.preserveContent === true;
+    var scrollPosition = preserveContent ? captureMainPanelScroll() : null;
     if (!definition) {
       navigate("overview");
       return;
     }
+    if (definition.deploymentCenter) {
+      stopLiveRefresh();
+      state.requestSequence += 1;
+      if (state.controller) {
+        state.controller.abort();
+        state.controller = null;
+      }
+      abortControlRequests();
+      loadDeploymentCenterCurrentView({ preserveContent: preserveContent });
+      return;
+    }
+    abortDeploymentCenterRequest();
     if (definition.control) {
       stopLiveRefresh();
       state.requestSequence += 1;
@@ -4812,7 +6366,7 @@
         state.controller.abort();
         state.controller = null;
       }
-      loadControlCurrentView();
+      loadControlCurrentView({ preserveContent: preserveContent });
       return;
     }
     abortControlRequests();
@@ -4826,7 +6380,7 @@
     }
     state.controller = new AbortController();
     if (!background) {
-      showLoading();
+      showLoading({ preserveContent: preserveContent });
       renderNotices(null);
     }
     apiRequest(definition.endpoint, pageParams(view), state.controller.signal).then(function (payload) {
@@ -4837,6 +6391,7 @@
       renderNotices(payload);
       updateEnvelopeChrome(payload);
       renderPayload(view, payload, state.routeParams);
+      restoreMainPanelScroll(scrollPosition);
       refs.viewRoot.setAttribute("aria-busy", "false");
     }).catch(function (error) {
       if (error && error.name === "AbortError") {
@@ -4914,6 +6469,12 @@
 
   function applyFeatureGates() {
     var explainLink = refs.mainNav.querySelector('[data-feature="retrieval-explain"]');
+    var knowledgeLinks = refs.mainNav.querySelectorAll('[data-feature="knowledge"]');
+    knowledgeLinks.forEach(function (link) {
+      var visible = state.featureFlags.knowledge === true;
+      link.classList.toggle("is-hidden", !visible);
+      link.setAttribute("aria-hidden", String(!visible));
+    });
     if (!explainLink) {
       return;
     }
@@ -4933,17 +6494,21 @@
       var dashboard = isObject(data.dashboard) ? data.dashboard : {};
       state.featureFlags.retrievalExplain = dashboard.retrieval_explain_enabled === true;
       state.featureFlags.proposalReview = dashboard.proposal_review_enabled === true;
+      state.featureFlags.knowledge = dashboard.knowledge_enabled === true;
+      state.featureFlags.defaults = isObject(data.feature_defaults) ? data.feature_defaults : null;
       if (refs.dashboardMode) {
         refs.dashboardMode.textContent = state.featureFlags.proposalReview
           ? "运行投影 + 受治理提案审核"
           : "只读运行投影";
       }
       applyFeatureGates();
+      renderNotices(state.payloads[state.currentView] || null);
     }).catch(function () {
       // Keep the link visible when configuration cannot be read. The route
       // itself remains the final authority and will return a diagnosed 404.
       state.featureFlags.retrievalExplain = null;
       state.featureFlags.proposalReview = false;
+      state.featureFlags.defaults = null;
       if (refs.dashboardMode) {
         refs.dashboardMode.textContent = "只读运行投影";
       }
@@ -4953,6 +6518,15 @@
   function updateNavigation() {
     var definition = VIEWS[state.currentView];
     refs.topbarTitle.textContent = definition.title;
+    if (refs.topbarViewIcon && refs.topbarViewIconUse) {
+      var iconName = typeof definition.topbarIcon === "string" ? definition.topbarIcon.trim() : "";
+      refs.topbarViewIcon.toggleAttribute("hidden", !iconName);
+      if (iconName) {
+        refs.topbarViewIconUse.setAttribute("href", "#icon-" + iconName);
+      } else {
+        refs.topbarViewIconUse.removeAttribute("href");
+      }
+    }
     document.title = definition.title + " | Plastic Promise 管理控制台";
     refs.mainNav.querySelectorAll("[data-view]").forEach(function (link) {
       var active = link.dataset.view === state.currentView;
@@ -5015,10 +6589,18 @@
     closeMobileNavigation();
     updateNavigation();
     loadCurrentView();
-    refs.viewRoot.focus({ preventScroll: true });
+    refs.mainPanel.focus({ preventScroll: true });
   }
 
   function initializeSidebar() {
+    var requestsLink = refs.mainNav.querySelector('[data-view="requests"]');
+    if (requestsLink && !refs.mainNav.querySelector('[data-view="collaboration"]')) {
+      requestsLink.insertAdjacentElement("afterend", h("a", {
+        className: "nav-item",
+        attrs: { href: "#/collaboration" },
+        dataset: { view: "collaboration" }
+      }, [makeIcon("workflow"), h("span", { text: "Agent 协作" })]));
+    }
     var collapsed = false;
     try {
       collapsed = window.localStorage.getItem("pp_dashboard_sidebar_collapsed") === "true";
@@ -5050,6 +6632,7 @@
 
   function initialize() {
     initializeSidebar();
+    document.addEventListener("keydown", routeMainPanelKeyboardScroll);
     refs.scopeSelect.addEventListener("change", function () {
       if (state.control.busy) {
         renderScopeSelector();
@@ -5064,6 +6647,7 @@
       state.activeProjectId = selected;
       state.pagination = Object.create(null);
       state.payloads = Object.create(null);
+      state.collaboration = { cursor: null, filterKey: "", events: [] };
       closeDialog();
       navigate(state.currentView, { project_id: selected });
     });
@@ -5072,7 +6656,7 @@
         toast("控制操作进行期间不能刷新。", true);
         return;
       }
-      loadCurrentView();
+      loadCurrentView({ preserveContent: true });
     });
     refs.detailClose.addEventListener("click", closeDialog);
     refs.detailDialog.addEventListener("click", function (event) {
@@ -5121,6 +6705,7 @@
     });
     window.addEventListener("pagehide", function () {
       stopLiveRefresh();
+      abortDeploymentCenterRequest();
       resetControlSession();
     });
     window.addEventListener("pageshow", function (event) {

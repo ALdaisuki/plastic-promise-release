@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,20 @@ from pathlib import Path
 
 MODULE_NAME = "context_engine_core"
 _MISSING_MODULE = object()
+
+
+def _cargo_build_environment() -> dict[str, str]:
+    """Keep direct macOS Cargo smoke builds compatible with PyO3 extensions."""
+
+    environment = os.environ.copy()
+    if sys.platform == "darwin":
+        dynamic_lookup = "-C link-arg=-undefined -C link-arg=dynamic_lookup"
+        existing = environment.get("RUSTFLAGS", "").strip()
+        if dynamic_lookup not in existing:
+            environment["RUSTFLAGS"] = " ".join(
+                value for value in (existing, dynamic_lookup) if value
+            )
+    return environment
 
 
 def _import_from_temp_artifact(importable):
@@ -65,6 +80,7 @@ def test_release_context_engine_core_import_contract(tmp_path):
             str(wheel_dir),
         ],
         cwd=repo,
+        env=_cargo_build_environment(),
         check=True,
     )
 

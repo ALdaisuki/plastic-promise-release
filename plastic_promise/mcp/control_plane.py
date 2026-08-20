@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,8 +21,14 @@ from plastic_promise.control_plane.auth import (
     ControlPlanePrincipal,
 )
 from plastic_promise.control_plane.store import ControlPlaneConfigStore, ControlPlaneError
-from plastic_promise.core.paths import inference_jobs_path_for
+from plastic_promise.core.node_governance import (
+    NodeGovernanceError,
+    NodeGovernanceStore,
+    open_server_node_governance,
+)
+from plastic_promise.core.paths import get_db_path, inference_jobs_path_for
 from plastic_promise.core.server_status import ServerStatusSettings, collect_server_status
+from plastic_promise.deployment import stable_profiles
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,52 @@ _BODY_TIMEOUT_SECONDS = 5.0
 _IDEMPOTENCY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
 _REVISION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _ERROR_RE = re.compile(r"control_[a-z0-9_]{1,96}|embedding_generation_required")
+_DIAGNOSTIC_STATES = frozenset(
+    {
+        "active",
+        "catalog_missing",
+        "completed",
+        "current-generation",
+        "degraded",
+        "disabled",
+        "failed",
+        "fresh",
+        "missing",
+        "no-current-generation",
+        "not-running",
+        "observed",
+        "planning_only",
+        "quarantined",
+        "reachable",
+        "ready",
+        "schema_missing",
+        "stale",
+        "unavailable",
+        "unreachable",
+    }
+)
+_DIAGNOSTIC_COUNT_KEYS = (
+    "pending",
+    "processing",
+    "blocked",
+    "failed",
+    "done",
+    "claimed",
+    "executing",
+    "pending_review",
+    "verified",
+    "reassigned",
+    "leased",
+    "completed",
+    "expired",
+    "reserved",
+    "preparing",
+    "finalized",
+    "released",
+    "retry_wait",
+    "dead",
+    "cancelled",
+)
 _DEFAULT_ALLOWED_ORIGINS = (
     "http://127.0.0.1:19020",
     "http://127.0.0.1:9020",
@@ -60,6 +113,266 @@ class ControlPlaneHTTPError(ValueError):
         super().__init__(code)
         self.status_code = status_code
         self.code = code
+
+
+def _resource_preflight_projection(root: Path) -> dict[str, object]:
+    """Return a planning-only resource projection without mutating deployment state.
+
+    PR 4 deliberately renders the deployment catalog and current filesystem
+    capacity, but it cannot estimate an unselected installer plan or make the
+    PR 5 deploy controller's final allow/deny decision.  The result therefore
+    has no filesystem path, no manifest and no write side effect.
+    """
+
+    profiles = stable_profiles()
+    profile_rows = [
+        {
+            "profile_id": profile.id,
+            "topology": profile.topology,
+            "scheduling_default": profile.scheduling_default,
+            "resource_policy": {
+                "minimum_free_bytes": profile.resource_policy.minimum_free_bytes,
+                "minimum_free_fraction": profile.resource_policy.minimum_free_fraction,
+                "state_hosts": list(profile.resource_policy.state_hosts),
+                "model_artifacts_bundled": profile.resource_policy.model_artifacts_bundled,
+            },
+        }
+        for profile in profiles
+    ]
+    if not profiles:
+        return {
+            "schema": "plastic-promise/deployment-resource-preflight/v1",
+            "state": "catalog_missing",
+            "hard_gate": False,
+            "storage": {"state": "unavailable"},
+            "profiles": [],
+        }
+    policy = profiles[0].resource_policy
+    storage = {
+        "state": "unavailable",
+        "minimum_free_bytes": policy.minimum_free_bytes,
+        "minimum_free_fraction": policy.minimum_free_fraction,
+        "required_free_bytes": None,
+        "available_bytes": None,
+        "total_bytes": None,
+        "satisfies_policy": None,
+    }
+    existing = _nearest_existing_directory(root)
+    if existing is not None:
+        try:
+            usage = shutil.disk_usage(existing)
+            required_free_bytes = max(
+                policy.minimum_free_bytes,
+                int(usage.total * policy.minimum_free_fraction),
+            )
+            storage = {
+                "state": "observed",
+                "minimum_free_bytes": policy.minimum_free_bytes,
+                "minimum_free_fraction": policy.minimum_free_fraction,
+                "required_free_bytes": required_free_bytes,
+                "available_bytes": int(usage.free),
+                "total_bytes": int(usage.total),
+                "satisfies_policy": usage.free >= required_free_bytes,
+            }
+        except OSError:
+            pass
+    return {
+        "schema": "plastic-promise/deployment-resource-preflight/v1",
+        "state": "planning_only",
+        "hard_gate": False,
+        "storage": storage,
+        "profiles": profile_rows,
+    }
+
+
+def _diagnostic_bundle_projection(
+    server_status: object,
+    node_projection: object,
+    safe_config: object,
+) -> dict[str, object]:
+    """Create an operator-requested, allowlisted diagnostic document.
+
+    This is deliberately *not* a generic object sanitizer.  A generic
+    serializer is too easy to extend with endpoint documents, paths, payloads
+    or configuration values.  The bundle keeps only stable states, bounded
+    counters and booleans from known projections.  It never returns a raw
+    model/identity value, node ID, reason text, filesystem path, host/port,
+    receipt, request payload, SQLite row, or credential.
+    """
+
+    status = _mapping_or_empty(server_status)
+    nodes = _mapping_or_empty(node_projection)
+    config = _mapping_or_empty(safe_config)
+    sqlite = _mapping_or_empty(status.get("sqlite"))
+    inference_jobs = _mapping_or_empty(status.get("inference_jobs"))
+    lancedb = _mapping_or_empty(status.get("lancedb"))
+    maintenance = _mapping_or_empty(status.get("maintenance"))
+    manifest = _mapping_or_empty(lancedb.get("manifest"))
+    summary = _mapping_or_empty(nodes.get("summary"))
+
+    return {
+        "schema": "plastic-promise/diagnostic-bundle/v1",
+        "telemetry": {
+            "network_egress": "disabled",
+            "export_mode": "operator_initiated",
+            "redaction": "strict_allowlist_v1",
+        },
+        "configuration": {
+            "active_revision_configured": _present(config.get("active_revision_id")),
+            "desired_generation_configured": _present(config.get("desired_generation_id")),
+        },
+        "server": {
+            "listeners": _diagnostic_listener_states(status.get("listeners")),
+            "sqlite": {
+                "state": _diagnostic_state(sqlite.get("state")),
+                "read_only_observation": _mapping_or_empty(sqlite.get("access")).get("query_only")
+                is True,
+                "outbox": _diagnostic_counter_summary(
+                    _mapping_or_empty(sqlite.get("tables")).get("store_outbox")
+                ),
+                "tasks": _diagnostic_counter_summary(
+                    _mapping_or_empty(sqlite.get("tables")).get("task_queue")
+                ),
+            },
+            "inference_jobs": {
+                "state": _diagnostic_state(inference_jobs.get("state")),
+                "jobs": _diagnostic_counter_summary(inference_jobs.get("jobs")),
+                "reservations": _diagnostic_counter_summary(inference_jobs.get("reservations")),
+            },
+            "lancedb": {
+                "state": _diagnostic_state(lancedb.get("state")),
+                "generation_configured": _present(manifest.get("generation_id")),
+                "embedding_dimension": _diagnostic_count(manifest.get("embedding_dimension")),
+                "build_state": _diagnostic_state(manifest.get("build_status")),
+                "verification_state": _diagnostic_state(manifest.get("verification_status")),
+                "quality_gate_state": _diagnostic_state(manifest.get("quality_gate_status")),
+            },
+            "maintenance": {
+                "enabled": maintenance.get("enabled") is True,
+                "state": _diagnostic_state(maintenance.get("state")),
+            },
+        },
+        "node_governance": {
+            "state": _diagnostic_state(nodes.get("state")),
+            "registered": _diagnostic_count(
+                _mapping_or_empty(summary.get("nodes")).get("registered")
+            ),
+            "active": _diagnostic_count(_mapping_or_empty(summary.get("nodes")).get("active")),
+            "quarantined": _diagnostic_count(
+                _mapping_or_empty(summary.get("nodes")).get("quarantined")
+            ),
+            "active_reservations": _diagnostic_count(summary.get("active_reservations")),
+            "audit_event_count": _diagnostic_count(summary.get("audit_event_count")),
+            "nodes": _diagnostic_node_rows(nodes.get("nodes")),
+            "recent_routes": _diagnostic_route_rows(nodes.get("recent_routes")),
+        },
+    }
+
+
+def _mapping_or_empty(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _present(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _diagnostic_state(value: object) -> str:
+    candidate = str(value or "").strip().casefold()
+    return candidate if candidate in _DIAGNOSTIC_STATES else "unknown"
+
+
+def _diagnostic_count(value: object) -> int | None:
+    if type(value) is not int or value < 0 or value > 1_000_000_000_000:
+        return None
+    return value
+
+
+def _diagnostic_counter_summary(value: object) -> dict[str, object]:
+    row = _mapping_or_empty(value)
+    counts = _mapping_or_empty(row.get("counts"))
+    return {
+        "state": _diagnostic_state(row.get("state")),
+        "counts": {
+            key: count
+            for key in _DIAGNOSTIC_COUNT_KEYS
+            if (count := _diagnostic_count(counts.get(key))) is not None
+        },
+    }
+
+
+def _diagnostic_listener_states(value: object) -> dict[str, str]:
+    listeners = _mapping_or_empty(value)
+    return {
+        name: _diagnostic_state(_mapping_or_empty(listeners.get(name)).get("state"))
+        for name in ("mcp", "inference_gateway", "config_control")
+        if name in listeners
+    }
+
+
+def _diagnostic_node_rows(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, object]] = []
+    for raw in value[:50]:
+        node = _mapping_or_empty(raw)
+        capacity = _mapping_or_empty(node.get("capacity"))
+        embedding = _mapping_or_empty(node.get("embedding"))
+        rerank = _mapping_or_empty(node.get("rerank"))
+        latency = _mapping_or_empty(node.get("latency"))
+        result.append(
+            {
+                "state": _diagnostic_state(node.get("state")),
+                "health": _diagnostic_state(_mapping_or_empty(node.get("health")).get("state")),
+                "embedding_configured": _present(embedding.get("model")),
+                "embedding_dimension": _diagnostic_count(embedding.get("dimension")),
+                "rerank_configured": _present(rerank.get("model")),
+                "queue_depth": _diagnostic_count(capacity.get("queue_depth")),
+                "available_slots": _diagnostic_count(capacity.get("available_slots")),
+                "active_leases": _diagnostic_count(capacity.get("active_leases")),
+                "max_concurrency": _diagnostic_count(capacity.get("max_concurrency")),
+                "embedding_latency_samples": _diagnostic_count(
+                    _mapping_or_empty(latency.get("embedding")).get("sample_count")
+                ),
+                "rerank_latency_samples": _diagnostic_count(
+                    _mapping_or_empty(latency.get("rerank")).get("sample_count")
+                ),
+                "quarantine_reason_present": _present(node.get("quarantine_reason")),
+            }
+        )
+    return result
+
+
+def _diagnostic_route_rows(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, object]] = []
+    for raw in value[:20]:
+        row = _mapping_or_empty(raw)
+        result.append(
+            {
+                "outcome": _diagnostic_state(row.get("outcome")),
+                "degraded": _present(row.get("degradation_reason")),
+                "failed": _present(row.get("failure_code")),
+            }
+        )
+    return result
+
+
+def _nearest_existing_directory(root: Path) -> Path | None:
+    """Find an existing ancestor for read-only capacity observation."""
+
+    candidate = root.expanduser()
+    while True:
+        try:
+            if candidate.exists():
+                return candidate if candidate.is_dir() else candidate.parent
+        except OSError:
+            return None
+        parent = candidate.parent
+        if parent == candidate:
+            return None
+        candidate = parent
 
 
 @dataclass(frozen=True)
@@ -176,6 +489,7 @@ def create_control_plane_app(
     *,
     store_factory: Callable[[Path, Mapping[str, object]], ControlPlaneConfigStore] | None = None,
     status_collector: Callable[[ServerStatusSettings], dict[str, object]] | None = None,
+    node_governance_factory: Callable[[], NodeGovernanceStore] | None = None,
 ) -> Any:
     """Create the standalone 9040 ASGI app.
 
@@ -195,6 +509,22 @@ def create_control_plane_app(
     factory = store_factory or (lambda root, env: ControlPlaneConfigStore(root, base_env=env))
     store = factory(settings.root, os.environ)
     collect_status = status_collector or collect_server_status
+    node_governance: NodeGovernanceStore | Any | None
+    node_governance_state: str | None = None
+    if node_governance_factory is None:
+        runtime_canonical_path = Path(get_db_path()).expanduser().resolve()
+        status_canonical_path = settings.status.sqlite_path.expanduser().resolve()
+        if runtime_canonical_path != status_canonical_path:
+            raise ValueError("control_node_governance_sqlite_mismatch")
+        try:
+            node_governance = open_server_node_governance()
+        except NodeGovernanceError as exc:
+            if exc.code != "node_governance_schema_missing":
+                raise
+            node_governance = None
+            node_governance_state = exc.code
+    else:
+        node_governance = node_governance_factory()
 
     def response(
         request: Request,
@@ -250,7 +580,76 @@ def create_control_plane_app(
                 "desired_generation_manifest_sha256"
             ),
         }
+        payload["node_governance"] = (
+            {
+                "schema": "plastic-promise/node-governance-status/v2",
+                "state": "schema_missing",
+                "reason": node_governance_state,
+                "nodes": {"registered": 0, "active": 0, "quarantined": 0},
+                "active_reservations": 0,
+                "audit_event_count": 0,
+            }
+            if node_governance is None
+            else await asyncio.to_thread(node_governance.status)
+        )
         return response(request, payload)
+
+    async def nodes(request: Request) -> JSONResponse:
+        """Serve the registry's safe Dashboard projection to control principals."""
+
+        _principal(request, authenticator, allowed_origins=settings.allowed_origins)
+        payload = await node_dashboard_projection()
+        return response(request, payload)
+
+    async def node_dashboard_projection() -> dict[str, object]:
+        return (
+            {
+                "schema": "plastic-promise/node-governance-dashboard/v1",
+                "state": "schema_missing",
+                "reason": node_governance_state,
+                "summary": {
+                    "nodes": {"registered": 0, "active": 0, "quarantined": 0},
+                    "active_reservations": 0,
+                    "audit_event_count": 0,
+                },
+                "nodes": [],
+            }
+            if node_governance is None
+            else await asyncio.to_thread(node_governance.dashboard_projection)
+        )
+
+    async def deployment_preflight(request: Request) -> JSONResponse:
+        """Expose a no-side-effect resource-policy preview for the Dashboard."""
+
+        _principal(request, authenticator, allowed_origins=settings.allowed_origins)
+        payload = await asyncio.to_thread(_resource_preflight_projection, settings.root)
+        return response(request, payload)
+
+    async def diagnostic_bundle(request: Request) -> JSONResponse:
+        """Generate a local, redacted support bundle only when explicitly requested."""
+
+        _principal(request, authenticator, allowed_origins=settings.allowed_origins)
+        server_status = await asyncio.to_thread(collect_status, settings.status)
+        safe = await asyncio.to_thread(store.safe_config)
+        node_payload = (
+            {
+                "schema": "plastic-promise/node-governance-dashboard/v1",
+                "state": "schema_missing",
+                "summary": {
+                    "nodes": {"registered": 0, "active": 0, "quarantined": 0},
+                    "active_reservations": 0,
+                    "audit_event_count": 0,
+                },
+                "nodes": [],
+                "recent_routes": [],
+            }
+            if node_governance is None
+            else await asyncio.to_thread(node_governance.dashboard_projection)
+        )
+        return response(
+            request,
+            _diagnostic_bundle_projection(server_status, node_payload, _public(safe)),
+        )
 
     async def safe_config(request: Request) -> JSONResponse:
         _principal(request, authenticator, allowed_origins=settings.allowed_origins)
@@ -380,6 +779,9 @@ def create_control_plane_app(
         Route("/health/live", live, methods=["GET"]),
         Route("/api/control/v1/session", session, methods=["GET"]),
         Route("/api/control/v1/status", status, methods=["GET"]),
+        Route("/api/control/v1/nodes", nodes, methods=["GET"]),
+        Route("/api/control/v1/deployment/preflight", deployment_preflight, methods=["GET"]),
+        Route("/api/control/v1/diagnostics/bundle", diagnostic_bundle, methods=["POST"]),
         Route("/api/control/v1/config/safe", safe_config, methods=["GET"]),
         Route("/api/control/v1/config/revisions", revisions, methods=["GET"]),
         Route(
@@ -426,6 +828,10 @@ def create_control_plane_app(
             Exception: exception_handler,
         },
     )
+    # The store is deliberately created by the server runtime, from
+    # ``PLASTIC_DB_PATH`` only.  It is not supplied by a node or client and
+    # therefore cannot turn a secondary SQLite file into a durable authority.
+    app.state.node_governance = node_governance
     cors_app = CORSMiddleware(
         app,
         allow_origins=list(settings.allowed_origins),

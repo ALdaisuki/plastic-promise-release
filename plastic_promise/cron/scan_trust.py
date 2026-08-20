@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from plastic_promise.core.paths import get_db_path
+from plastic_promise.cron.project_scope import SYSTEM_GOVERNANCE_PROJECT_ID
 
 
 async def scan_trust(engine) -> dict:
@@ -212,6 +213,7 @@ async def scan_trust(engine) -> dict:
                     "to_agent": f["to_agent"],
                     "priority": f["priority"],
                     "source_scan": "scan_trust",
+                    "project_id": SYSTEM_GOVERNANCE_PROJECT_ID,
                     "payload": f,
                 },
             )

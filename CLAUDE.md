@@ -3,6 +3,17 @@
 > 📋 完整架构、当前状态、路线图见 **[GOAL.md](docs/GOAL.md)**。
 > 核心范式：**约定工程** — 内化约定替代外部约束。
 
+## 联合六 PR 权威合同
+
+可组合部署与项目级 Agent 协作共用同一条六 PR 交付线。任何相关实现、审查、状态汇报或
+文档更新都必须以
+[`docs/standards/union-six-pr-contract.json`](docs/standards/union-six-pr-contract.json)
+为唯一规范源。每个 PR 的 `delivery_scope` 与 `collaboration_scope` 缺一不可；不得从
+路线图标题、已合并基础设施 PR 或局部测试推断整个 PR 已完成。中英文合同文档由规范源
+生成，规范变更必须通过漂移门禁。
+
+只有交付范围、协作范围和所需证据全部通过，PR 才算完成；任一单侧完成都不等于 PR 完成。
+
 ## 会话启动
 
 每次会话开始，依次执行：
@@ -44,7 +55,7 @@
 | **Skill Track (5)** | **skill_session_start, skill_session_complete, skill_session_trace, skill_session_audit, skill_auto_track** |
 | **Skills (3)** | **session-init, smart-remember, step-closure** |
 | **Domain (1)** | **domain(action=stats\|merge\|unmerge\|rename\|rebuild)** |
-| **Dispatch (7)** | **task_enqueue, task_claim, task_complete, task_verify, task_inbox, task_heartbeat, task_abandon** |
+| **Dispatch (7)** | **task_enqueue, task_claim, task_complete, task_verify, task_inbox, task_heartbeat, task_abandon（全部要求 canonical project_id）** |
 | **Review (1)** | **review_run(action=prepare\|evaluate\|apply\|full)** |
 | **Commercial Audit (1)** | **commercial_audit_export(project_id, since, until, include_outbox)** |
 | **Market (7)** | **market_list, market_install, market_upgrade, market_remove, market_enable, market_disable, market_status** |
@@ -238,10 +249,38 @@ Daemon 是**全域创新调度中心**，发现记忆问题/任务异常/架构�
 ### 委托生命周期
 
 ```
-task_enqueue → pending → task_claim → claimed → executing → task_complete → done → task_verify → verified
+task_enqueue(project_id=PROJECT_ID) → pending
+  → task_claim(project_id=PROJECT_ID, task_id=TASK_ID) → claimed → executing
+  → task_complete(project_id=PROJECT_ID, task_id=TASK_ID) → done
+  → task_verify(project_id=PROJECT_ID, task_id=TASK_ID) → verified
                  ↑ 委托人挂榜   ↑ 猎人揭榜(原子)  ↑ 心跳保活   ↑ 交委托(自动创建验收子委托)  ↑ 长老验收
                                                                                     ↓ rejected → reassigned → 自动重派子委托
 心跳超时 → 释放回 pending（escalation_count++） → 超3次升级给 Claude（S级兜底）
+```
+
+### 项目与权限合同
+
+- 七个 Task Queue 工具必须显式传入 canonical `project_id`（例如 `project:plastic-promise`）；空值、`project:unknown` 和非项目作用域 fail closed。
+- `project:legacy-quarantine` 只保存迁移或恢复时无法证明归属的历史任务。普通 Task Queue 工具不得读取、认领、修改或向该作用域写入；只有 server-owned migration/recovery authority 可以处置。
+- `from_agent`、`agent_name`、`trust_score`、`verified_by` 只是调用方声明，用于路由、显示和审计；它们不能授予 mutation/reviewer authority，也不能扩大项目可见性。
+- 真正的 mutation/reviewer authority 由服务器持有，并绑定可信传输身份及 server-owned runtime/session scope。声明与服务端 authority 不一致时必须拒绝；审批、验收、重派和升级子任务始终继承父任务 `project_id`。
+- `task_queue` 的归属和状态以服务器 canonical SQLite 为准；LanceDB 与其他派生索引不得参与任务 authority 判定。
+
+现行调用形态：
+
+```text
+PROJECT_ID = "project:plastic-promise"
+TASK_ID = "t_..."
+AGENT_NAME = "pi_fixer"
+TRUST_SCORE = 0.60
+
+task_enqueue(project_id=PROJECT_ID, task_type="fix_memory", title="...", to_agent=AGENT_NAME)
+task_inbox(project_id=PROJECT_ID, agent_name=AGENT_NAME, trust_score=TRUST_SCORE)
+task_claim(project_id=PROJECT_ID, task_id=TASK_ID, agent_name=AGENT_NAME, trust_score=TRUST_SCORE)
+task_heartbeat(project_id=PROJECT_ID, task_id=TASK_ID, agent_name=AGENT_NAME)
+task_complete(project_id=PROJECT_ID, task_id=TASK_ID, agent_name=AGENT_NAME, result="...")
+task_verify(project_id=PROJECT_ID, task_id=TASK_ID, verdict="accepted", verified_by="claude")
+task_abandon(project_id=PROJECT_ID, task_id=TASK_ID, agent_name=AGENT_NAME, reason="...")
 ```
 
 ### 委托类型
@@ -262,13 +301,13 @@ task_enqueue → pending → task_claim → claimed → executing → task_compl
 
 | 工具 | 公会比喻 | 用途 |
 |------|---------|------|
-| `task_enqueue` | 挂委托 | Daemon/Claude 发现问题，挂上委托板。支持委托人信任分验证 |
-| `task_claim` | 揭榜 | 猎人认领委托（原子操作，先到先得），自动检查等级匹配 |
-| `task_complete` | 交委托 | 猎人完成委托，自动创建验收子委托给 Claude |
-| `task_verify` | 长老验收 | Claude 验收，通过→信任分+0.02，打回→信任分-0.03+自动重派 |
-| `task_inbox` | 查看委托板 | 显示可接委托、等级匹配度、我的进行中任务 |
-| `task_heartbeat` | 心跳保活 | 猎人每60s汇报存活，超时释放委托 |
-| `task_abandon` | 主动弃单 | 放弃委托，信任分-0.02，累计5次降级到D |
+| `task_enqueue` | 挂委托 | 传入 canonical `project_id`，只向该项目委托板写入；调用者身份和信任分是声明 |
+| `task_claim` | 揭榜 | 按 `project_id + task_id` 原子认领；等级声明不能绕过 server-owned authority |
+| `task_complete` | 交委托 | 按项目完成任务，并自动创建同项目验收子委托 |
+| `task_verify` | 长老验收 | 仅 server-owned reviewer authority 可验收；通过或打回均保持项目作用域 |
+| `task_inbox` | 查看委托板 | 只显示指定 `project_id` 的委托、等级匹配度与活跃任务 |
+| `task_heartbeat` | 心跳保活 | 按 `project_id + task_id` 保活；不能更新其他项目任务 |
+| `task_abandon` | 主动弃单 | 只释放指定项目任务，弃单计数也按项目统计 |
 
 ### 5 个发现扫描器（Daemon 定时执行）
 
@@ -299,7 +338,7 @@ python daemons/maintenance_daemon.py                # 全域调度守护进程�
 ### 数据库
 
 委托系统使用 4 张新表（全部在 `plastic_memory.db`）：
-- `task_queue` — 委托板
+- `task_queue` — canonical 项目委托板；每行必须有 `project_id`，未知历史归属进入不可由普通工具访问的 `project:legacy-quarantine`
 - `task_subscriptions` — 猎人订阅（9条默认规则）
 - `hunter_failure_log` — 失败记录
 - `metric_history` — 扫描器指标历史
@@ -463,7 +502,7 @@ defense(action="get") → 根据 tier 决定行为:
 创建分支 → 开发 → 提交 → git push → 创建 PR
   → CI 自动运行 (P0: lint/test/security, P1: style/coverage)
   → Code Review (至少 1 人 approve)
-  → Squash Merge → task_verify → 闭环
+  → Squash Merge → task_verify(project_id=PROJECT_ID, task_id=TASK_ID, verdict=VERDICT) → 闭环
 ```
 
 - PR 必须关联 Hunter Guild 委托 (task_id)
@@ -515,11 +554,11 @@ python scripts/init_and_start.py
 
 ```
 scan_scheduler_health 发现问题
-  → task_enqueue(type="fix_scanner", to="pi_fixer", priority=2)
+  → task_enqueue(project_id="project:plastic-promise", task_type="fix_scanner", to_agent="pi_fixer", priority=2)
   → Agent claim → git checkout -b fix/<scanner>-noise
   → 修复 → commit → push → PR
   → CI (P0: lint/test/security) → Code Review → Squash Merge
-  → task_verify(accepted) → 信任分 +0.02
+  → task_verify(project_id="project:plastic-promise", task_id=TASK_ID, verdict="accepted") → 信任分 +0.02
 ```
 
 ### 记忆衰减 (Weibull)

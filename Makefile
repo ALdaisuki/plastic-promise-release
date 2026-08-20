@@ -1,4 +1,9 @@
-.PHONY: help install dev-install test lint format clean check build run run-http run-sse daemon audit watchdog
+.PHONY: help install dev-install test lint format clean check docs-contract build run run-http run-sse daemon audit watchdog
+
+PYTHON ?= python3
+PREVIOUS_CONTRACT ?= docs/standards/history/union-six-pr-contract-2026-08-11.3.json
+BASE_REVISION ?=
+SOURCE_REVISION ?=
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -29,6 +34,22 @@ format:  ## Format with ruff
 check:  ## Full check: lint + type-check
 	ruff check plastic_promise/
 	mypy plastic_promise/ --ignore-missing-imports
+
+docs-contract:  ## Verify the authoritative union six-PR contract and generated views
+	$(PYTHON) scripts/render_union_six_pr_contract.py
+	@if [ -n "$(BASE_REVISION)" ] || [ -n "$(SOURCE_REVISION)" ]; then \
+		if [ -z "$(BASE_REVISION)" ] || [ -z "$(SOURCE_REVISION)" ]; then \
+			echo "BASE_REVISION and SOURCE_REVISION must be supplied together" >&2; \
+			exit 1; \
+		fi; \
+		$(PYTHON) scripts/verify_union_six_pr_contract.py --repo-root . \
+			--base-revision "$(BASE_REVISION)" --source-revision "$(SOURCE_REVISION)"; \
+	elif [ -n "$(PREVIOUS_CONTRACT)" ]; then \
+		$(PYTHON) scripts/verify_union_six_pr_contract.py --repo-root . --previous-contract "$(PREVIOUS_CONTRACT)"; \
+	else \
+		$(PYTHON) scripts/verify_union_six_pr_contract.py --repo-root .; \
+	fi
+	$(PYTHON) -m pytest -q --no-cov tests/test_union_six_pr_contract.py
 
 clean:  ## Remove build artifacts and caches
 	@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true

@@ -1,72 +1,29 @@
 sequenceDiagram
-    participant U as 👤 User
-    participant C as 🎯 Claude (PM)
-    participant SI as session-init
-    participant RS as Request Scope
-    participant CE as ⚡ ContextEngine
-    participant M as 🧠 Memory
-    participant D as 🤖 Daemon
-    participant PB as 🔨 Pi Builder
-    participant PR as 👀 Pi Reviewer
-    participant PF as 🔧 Pi Fixer
-    participant SC as 🔄 step-closure
+    participant Client as MCP client / Codex Hook
+    participant MCP as MCP Gateway
+    participant Context as Context Engine
+    participant SQLite as SQLite WAL
+    participant Lance as LanceDB generation
+    participant Maint as Maintenance
+    participant Infer as Provider or local node
 
-    Note over U,SC: === Session Initialization ===
-    U->>C: Task description
-    C->>SI: session-init(task_description, context_mode="light")
-    SI->>CE: principle_activate(domain_hint)
-    CE-->>SI: 12 principles (domain-filtered)
-    opt context_mode=light
-        SI->>M: local lexical memory preview (1-2, bounded)
-        M-->>SI: optional light context_status
+    Client->>MCP: context_supply or memory_recall
+    MCP->>Context: request scope (project, call, flow)
+    par Canonical facts
+        Context->>SQLite: scoped canonical lookup
+    and Derived retrieval
+        Context->>Lance: query active derived generation
     end
-    SI-->>C: principles + trust + chain_state + context_status
+    Context-->>MCP: ranked core / related / divergent context
+    MCP-->>Client: bounded context plus audit metadata
 
-    Note over U,SC: === Task Execution ===
-    C->>RS: context_supply(..., stage_session_id, flow_line_id, request_id)
-    RS->>CE: derive request_scope_id + audit metadata
-    CE->>M: memory_recall (3-way retrieval, scoped cache)
-    Note over CE,M: rust-full debug recall stays on Rust snapshot path
-    M-->>CE: Core + related memories
-    CE-->>C: Core + related + divergent context
-    C->>C: Decompose task
-    C->>D: task_enqueue (via memory_store tags)
-    D->>D: Zero-token poll (SQLite)
-    D->>PB: Spawn Pi Builder
-    PB->>RS: memory_recall + context_supply with request scope
-    RS->>CE: isolated context request
-    CE-->>PB: Context injection
-    PB->>PB: Implement (TDD)
-    PB->>M: memory_store (completion)
-    PB->>D: /notify (task done)
-
-    D->>D: Detect task:done tag
-    D->>PR: Spawn Pi Reviewer
-    PR->>RS: context_supply(task_type="code_review", request scope)
-    RS->>CE: isolated review context request
-    CE-->>PR: Review context
-    PR->>PR: Code review
-    PR->>C: Review report
-
-    alt Review Passed
-        C->>C: task_verify → approved
-        C->>SC: step-closure(mode="full")
-        SC->>SC: Principle alignment check
-        SC->>SC: SCARF 5-dim introspection
-        SC->>SC: Hormone update
-        SC->>SC: Trust score linkage
-        SC->>M: Reflection memory store
-        SC-->>C: CEI composite index
-    else Review Rejected
-        C->>D: task rejected → auto-dispatch
-        D->>PF: Spawn Pi Fixer
-        PF->>PF: Fix issues
-        PF->>M: memory_store (fix)
-        PF->>D: /notify → re-review
-    end
-
-    Note over U,SC: === Background (Continuous) ===
-    D->>D: Heartbeat monitoring (60s)
-    D->>D: Task timeout recovery (5min)
-    D->>D: 11-dimension audit (hourly)
-    D->>M: memory_gc (weekly)
+    Client->>MCP: capture or derived-work request
+    MCP->>SQLite: canonical transaction + durable outbox row
+    SQLite-->>MCP: committed request id
+    MCP-->>Client: durable admission accepted
+    Maint->>SQLite: claim bounded project/config/provider batch
+    Maint->>Infer: derived embedding, rerank, or structured work
+    Infer-->>Maint: result or explicit failure
+    Maint->>SQLite: persist job state, retry reason, reconcile evidence
+    Maint->>Lance: update derived projection or shadow generation
+    Note over Infer: No SQLite, LanceDB, MCP, or canonical write authority

@@ -1,0 +1,792 @@
+{
+  "schema": "plastic-promise/union-six-pr-derived-documents/v1",
+  "contract": {
+    "path": "docs/standards/union-six-pr-contract.json",
+    "schema": "plastic-promise/union-six-pr-contract/v1",
+    "revision": "2026-08-18.1",
+    "sha256": "2c7e4a532e17cde229830479712aabe3ca36a13e21fafbe9fcf781cd91305722",
+    "digest_algorithm": "sha256-raw-source-bytes"
+  },
+  "policy": {
+    "path_base": "repository-root",
+    "required_locales": [
+      "en",
+      "zh_CN"
+    ],
+    "enforcement_values": [
+      "required",
+      "tracked-drift"
+    ],
+    "tracked_drift_is_passing": false,
+    "content_set_algorithm": "sha256-entry-id-locale-path-content-v1",
+    "content_set_sha256": "63ae48cabf3786370eef420a7f3fb7414e85e463e692c37312fb776e6c4fdc6e",
+    "rules": [
+      "every listed path is part of the critical derived-document family and must be checked on each affected PR",
+      "tracked-drift is a blocking evidence record, not a waiver, exception, or successful parity result",
+      "a bilingual pair must preserve the same architecture, status, completion, badge, link, resource, and pricing claims even when wording differs",
+      "document kinds are closed and dispatched: bilingual Markdown uses en/zh_CN paths while a language-neutral governance document uses exactly one path",
+      "every required Markdown document declares semantic claims whose markers must be present in each governed locale",
+      "an asset that carries architecture or status claims must bind the current union-contract revision",
+      "SVG semantic claims are read only from visible text/tspan content; script, foreignObject, event-handler attributes, and external href targets fail closed",
+      "the content-set digest binds every registered locale path and its present or missing raw-content state"
+    ]
+  },
+  "documents": [
+    {
+      "id": "root-readme",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "README.md",
+        "zh_CN": "docs/README.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Plastic Promise"
+            ],
+            "zh_CN": [
+              "Plastic Promise 中文指南"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "composable-deployment-roadmap",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/roadmap/composable-deployment.md",
+        "zh_CN": "docs/roadmap/composable-deployment.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Composable deployment roadmap"
+            ],
+            "zh_CN": [
+              "可组合部署路线图"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "three-endpoint-architecture",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/three-endpoint-deployment/architecture.md",
+        "zh_CN": "docs/architecture/three-endpoint-deployment/architecture.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Plastic Promise Three-Endpoint Deployment Architecture"
+            ],
+            "zh_CN": [
+              "Plastic Promise 三端部署架构"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "three-endpoint-implementation-notes",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/three-endpoint-deployment/implementation-notes.md",
+        "zh_CN": "docs/architecture/three-endpoint-deployment/implementation-notes.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Three-Endpoint Deployment Implementation Notes"
+            ],
+            "zh_CN": [
+              "三端部署实施说明"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "three-endpoint-documentation-parity",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/three-endpoint-deployment/documentation-parity.md",
+        "zh_CN": "docs/architecture/three-endpoint-deployment/documentation-parity.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Union Six-PR Documentation Parity Standard"
+            ],
+            "zh_CN": [
+              "联合六 PR 文档一致性标准"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "six-pr-release-readiness",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/release/six-pr-readiness.md",
+        "zh_CN": "docs/release/six-pr-readiness.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Union Six-PR Readiness and Controlled Release Plan"
+            ],
+            "zh_CN": [
+              "联合六 PR 就绪度与受控发行计划"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "deployment-readme",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/deployment/README.md",
+        "zh_CN": "docs/deployment/README.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Deployment and Runtime Guide"
+            ],
+            "zh_CN": [
+              "部署与运行指南"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "todo-index",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/TODO List/README.md",
+        "zh_CN": "docs/TODO List/README.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Plastic Promise Roadmap Status"
+            ],
+            "zh_CN": [
+              "Plastic Promise 路线图状态"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "release-delivery-guide",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/release/delivery.md",
+        "zh_CN": "docs/release/delivery.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": false,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Release Delivery and Installation Profiles"
+            ],
+            "zh_CN": [
+              "发行交付与安装 Profile"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "release-delivery-architecture",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/release-delivery/architecture.md",
+        "zh_CN": "docs/architecture/release-delivery/architecture.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": false,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Plastic Promise Release Delivery Architecture"
+            ],
+            "zh_CN": [
+              "Plastic Promise 发行交付架构"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "release-delivery-implementation-notes",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/release-delivery/implementation-notes.md",
+        "zh_CN": "docs/architecture/release-delivery/implementation-notes.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": false,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Release Delivery Implementation Notes"
+            ],
+            "zh_CN": [
+              "发行交付实施说明"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "local-inference-node",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/deployment/local-inference-node.md",
+        "zh_CN": "docs/deployment/local-inference-node.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": false,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Local heterogeneous inference node"
+            ],
+            "zh_CN": [
+              "本地异机推理节点合同"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "deployment-profiles",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/deployment/profiles.md",
+        "zh_CN": "docs/deployment/profiles.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": false,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Deployment profiles and endpoint manifest contracts"
+            ],
+            "zh_CN": [
+              "部署档案与端点 Manifest 合同"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "resource-planning",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/deployment/resource-planning.md",
+        "zh_CN": "docs/deployment/resource-planning.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": false,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Resource planning"
+            ],
+            "zh_CN": [
+              "资源规划"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "container-artifact-contract",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/three-endpoint-deployment/container-artifacts.md",
+        "zh_CN": "docs/architecture/three-endpoint-deployment/container-artifacts.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": false,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "Container Artifact Boundary"
+            ],
+            "zh_CN": [
+              "容器制品边界"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "union-contract-adr",
+      "kind": "bilingual-markdown-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/adr/0009-union-six-pr-contract-is-normative.md",
+        "zh_CN": "docs/adr/0009-union-six-pr-contract-is-normative.zh-CN.md"
+      },
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": true,
+      "semantic_claims": [
+        {
+          "id": "document-purpose",
+          "markers": {
+            "en": [
+              "The union six-PR contract is normative"
+            ],
+            "zh_CN": [
+              "联合六 PR 合同是规范源"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "agent-governance-protocol",
+      "kind": "language-neutral-governance-document",
+      "enforcement": "required",
+      "path": "AGENTS.md",
+      "must_exist": true,
+      "must_link_contract": true,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "sole-union-authority",
+          "markers": {
+            "neutral": [
+              "联合六 PR 权威合同",
+              "唯一规范源"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "coordination-glossary",
+      "kind": "language-neutral-governance-document",
+      "enforcement": "required",
+      "path": "CONTEXT.md",
+      "must_exist": true,
+      "must_link_contract": false,
+      "must_state_union_completion": false,
+      "semantic_claims": [
+        {
+          "id": "delivery-program-not-second-authority",
+          "markers": {
+            "neutral": [
+              "Delivery Program Contract",
+              "cannot silently become a second authority"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    }
+  ],
+  "assets": [
+    {
+      "id": "readme-runtime-architecture",
+      "kind": "bilingual-svg-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": ".github/readme-runtime-architecture.svg",
+        "zh_CN": ".github/readme-runtime-architecture.zh-CN.svg"
+      },
+      "must_exist": true,
+      "must_have_semantic_parity": true,
+      "must_bind_contract_revision": true,
+      "semantic_claims": [
+        {
+          "id": "canonical-single-writer",
+          "markers": {
+            "en": [
+              "Sole canonical writer: pp-server-backend"
+            ],
+            "zh_CN": [
+              "唯一规范写入者：pp-server-backend"
+            ]
+          }
+        },
+        {
+          "id": "compute-derived-only",
+          "markers": {
+            "en": [
+              "derived results only"
+            ],
+            "zh_CN": [
+              "仅返回派生结果"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "readme-release-delivery",
+      "kind": "bilingual-svg-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": ".github/readme-release-delivery.svg",
+        "zh_CN": ".github/readme-release-delivery.zh-CN.svg"
+      },
+      "must_exist": true,
+      "must_have_semantic_parity": true,
+      "must_bind_contract_revision": true,
+      "semantic_claims": [
+        {
+          "id": "publication-separate-authorization",
+          "markers": {
+            "en": [
+              "each publication separately authorized",
+              "NO AUTO-PUBLISH"
+            ],
+            "zh_CN": [
+              "每种发布均需独立授权",
+              "不自动发布"
+            ]
+          }
+        },
+        {
+          "id": "canonical-state-excluded",
+          "markers": {
+            "en": [
+              "SQLite, LanceDB, models, logs, keys, and deployment environment files never enter release artifacts or container images."
+            ],
+            "zh_CN": [
+              "SQLite、LanceDB、模型、日志、密钥和部署环境文件不会进入发行制品或容器镜像。"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "distribution-profiles",
+      "kind": "bilingual-svg-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/distribution-profiles.svg",
+        "zh_CN": "docs/architecture/distribution-profiles.zh-CN.svg"
+      },
+      "must_exist": true,
+      "must_have_semantic_parity": true,
+      "must_bind_contract_revision": true,
+      "semantic_claims": [
+        {
+          "id": "server-only-sqlite-writer",
+          "markers": {
+            "en": [
+              "Only pp-server-backend writes SQLite; LanceDB and inference results remain derived."
+            ],
+            "zh_CN": [
+              "只有 pp-server-backend 写 SQLite；LanceDB 和推理结果始终为派生状态。"
+            ]
+          }
+        },
+        {
+          "id": "compute-no-canonical-access",
+          "markers": {
+            "en": [
+              "typed results; no canonical access"
+            ],
+            "zh_CN": [
+              "类型化结果，无 canonical 权限"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "plastic-promise-flow",
+      "kind": "bilingual-svg-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/plastic-promise-flow.svg",
+        "zh_CN": "docs/architecture/plastic-promise-flow.zh-CN.svg"
+      },
+      "must_exist": true,
+      "must_have_semantic_parity": true,
+      "must_bind_contract_revision": true,
+      "semantic_claims": [
+        {
+          "id": "server-canonical-authority",
+          "markers": {
+            "en": [
+              "server-only canonical writer"
+            ],
+            "zh_CN": [
+              "仅 server 可写 canonical"
+            ]
+          }
+        },
+        {
+          "id": "compute-tool-boundary",
+          "markers": {
+            "en": [
+              "no prompt, file, or shell"
+            ],
+            "zh_CN": [
+              "无任意 Prompt、文件或 Shell"
+            ]
+          }
+        },
+        {
+          "id": "runtime-evidence-separate",
+          "markers": {
+            "en": [
+              "runtime, migration, promotion, cutover, and production need separate receipts."
+            ],
+            "zh_CN": [
+              "runtime、migration、promotion、cutover 与 production 均需独立凭证。"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "container-artifact-matrix",
+      "kind": "bilingual-svg-pair",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/three-endpoint-deployment/diagrams/container-artifact-matrix.svg",
+        "zh_CN": "docs/architecture/three-endpoint-deployment/diagrams/container-artifact-matrix.zh-CN.svg"
+      },
+      "must_exist": true,
+      "must_have_semantic_parity": true,
+      "must_bind_contract_revision": true,
+      "semantic_claims": [
+        {
+          "id": "source-ci-only",
+          "markers": {
+            "en": [
+              "source/CI evidence only · no image/runtime/production claim"
+            ],
+            "zh_CN": [
+              "仅源码/CI 证据 · 不声称 image/runtime/production 已完成"
+            ]
+          }
+        },
+        {
+          "id": "edge-compute-no-collaboration-package",
+          "markers": {
+            "en": [
+              "collaboration package absent"
+            ],
+            "zh_CN": [
+              "不含 collaboration package"
+            ]
+          }
+        },
+        {
+          "id": "no-runtime-mutation",
+          "markers": {
+            "en": [
+              "No runtime mutation. Receipt binds OCI/image, surface inventory, labels, SBOM, and provenance."
+            ],
+            "zh_CN": [
+              "不执行 runtime mutation。receipt 绑定 OCI/image、surface inventory、label、SBOM 与 provenance。"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "three-endpoint-workflow",
+      "kind": "language-neutral-mermaid",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/three-endpoint-deployment/diagrams/workflow.mermaid",
+        "zh_CN": "docs/architecture/three-endpoint-deployment/diagrams/workflow.mermaid"
+      },
+      "must_exist": true,
+      "must_have_semantic_parity": true,
+      "must_bind_contract_revision": true,
+      "semantic_claims": [
+        {
+          "id": "fixed-route-authority",
+          "markers": {
+            "en": [
+              "fixed governed route remains the sole execution authority"
+            ],
+            "zh_CN": [
+              "fixed governed route remains the sole execution authority"
+            ]
+          }
+        },
+        {
+          "id": "caller-role-no-authority",
+          "markers": {
+            "en": [
+              "caller role/capability strings grant no authority"
+            ],
+            "zh_CN": [
+              "caller role/capability strings grant no authority"
+            ]
+          }
+        },
+        {
+          "id": "acceptance-independent-reviewer",
+          "markers": {
+            "en": [
+              "independent reviewer · policy/source/work/result/evidence digests · conflict resolved"
+            ],
+            "zh_CN": [
+              "independent reviewer · policy/source/work/result/evidence digests · conflict resolved"
+            ]
+          }
+        }
+      ],
+      "drift": null
+    },
+    {
+      "id": "three-endpoint-ascii-architecture",
+      "kind": "language-neutral-ascii",
+      "enforcement": "required",
+      "paths": {
+        "en": "docs/architecture/three-endpoint-deployment/diagrams/architecture.txt",
+        "zh_CN": "docs/architecture/three-endpoint-deployment/diagrams/architecture.txt"
+      },
+      "must_exist": true,
+      "must_have_semantic_parity": true,
+      "must_bind_contract_revision": true,
+      "semantic_claims": [
+        {
+          "id": "caller-role-no-full-view",
+          "markers": {
+            "en": [
+              "Caller-supplied coordinator/reviewer strings grant no authority or full view."
+            ],
+            "zh_CN": [
+              "Caller-supplied coordinator/reviewer strings grant no authority or full view."
+            ]
+          }
+        },
+        {
+          "id": "server-authenticated-awareness",
+          "markers": {
+            "en": [
+              "Full active work requires a server-issued AgentSession policy binding",
+              "cursor/project/session/audience/policy/source fail closed; no partial projection."
+            ],
+            "zh_CN": [
+              "Full active work requires a server-issued AgentSession policy binding",
+              "cursor/project/session/audience/policy/source fail closed; no partial projection."
+            ]
+          }
+        }
+      ],
+      "drift": null
+    }
+  ]
+}

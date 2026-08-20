@@ -1,0 +1,44 @@
+# Immutable-image runtime for the static ``pp-local-edge`` role. This service
+# intentionally has no state/model/credential/Docker-socket mount and never
+# proxies to the server backend. Its bridge is internal; only the explicit
+# loopback host port is published for a local browser.
+services:
+  pp-local-edge:
+    image: "${PP_LOCAL_EDGE_IMAGE:?set an immutable local-edge image digest from the release manifest}"
+    pull_policy: never
+    environment:
+      TZ: "UTC"
+      # Empty by default: the browser cannot reach a host ppctl adapter until
+      # an operator explicitly supplies the exact loopback bridge endpoint.
+      # The image accepts only http://127.0.0.1:<port>/ppctl/v1 and publishes
+      # a fixed inspect/preview-only contract; it never proxies the endpoint.
+      PP_LOCAL_EDGE_PPCTL_BRIDGE_ENDPOINT: "${PP_LOCAL_EDGE_PPCTL_BRIDGE_ENDPOINT:-}"
+    ports:
+      - "127.0.0.1:${PP_LOCAL_EDGE_PORT:-19021}:8080"
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    labels:
+      org.plastic-promise.endpoint.role: pp-local-edge
+      org.plastic-promise.authority: local-edge,bounded-awareness-display,bounded-event-submission
+    tmpfs:
+      # nginxinc/nginx-unprivileged uses /tmp for its pid and temporary paths.
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+      # Ephemeral only: this is the bounded edge-session-cache policy, never
+      # a canonical database, a durable browser profile, or a token store.
+      - /var/lib/plastic-promise/edge-session-cache:rw,noexec,nosuid,size=32m,mode=1777
+    networks:
+      - local-edge
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  local-edge:
+    internal: true

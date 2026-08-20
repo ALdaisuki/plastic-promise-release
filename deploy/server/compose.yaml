@@ -1,0 +1,40 @@
+# ``pp-server-backend`` is the sole container role allowed to mount the
+# canonical state root. The image variable must contain the exact immutable
+# digest recorded in a reviewed release manifest; Compose never pulls a tag.
+# The container and native systemd unit take the same state-root file lock, so
+# a second runtime fails before it can open canonical SQLite. The MCP process
+# itself binds 127.0.0.1:9020 only. Do not add a Docker socket, SSH material,
+# or compute-model volume to this service.
+services:
+  pp-server-backend:
+    image: "${PLASTIC_PROMISE_SERVER_IMAGE:?set an immutable server image digest from the release manifest}"
+    pull_policy: never
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    labels:
+      org.plastic-promise.endpoint.role: pp-server-backend
+      org.plastic-promise.authority: agent-registry-authority,work-board-authority,canonical-memory-authority,collaboration-event-writer
+    environment:
+      TZ: "UTC"
+      PP_ENDPOINT_ROLE: "pp-server-backend"
+      PLASTIC_DB_PATH: "${PLASTIC_DB_PATH:?set the canonical database path}"
+      PLASTIC_LANCEDB_PATH: "${PLASTIC_LANCEDB_PATH:?set the derived index path}"
+      PLASTIC_RUNTIME_LOCK_PATH: "${PLASTIC_RUNTIME_LOCK_PATH:?set the shared canonical runtime lock path}"
+      PLASTIC_RUNTIME_MODE: "${PLASTIC_RUNTIME_MODE:-normal}"
+    volumes:
+      - type: bind
+        source: "${PP_SERVER_STATE_DIRECTORY:?set the server-owned state directory}"
+        target: /var/lib/plastic-promise
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"

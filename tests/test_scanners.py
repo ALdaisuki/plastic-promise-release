@@ -365,9 +365,7 @@ async def test_scan_memory_decay_marks_stale_low_worth_without_hard_delete(monke
         assert mutation["operation"] == "forgotten"
         assert mutation["reason"] == "lifecycle:stale"
         assert mutation["actor"] == "scan_memory_decay"
-        assert mutation["call_id"].startswith(
-            "internal:scan_memory_decay:lifecycle:stale:"
-        )
+        assert mutation["call_id"].startswith("internal:scan_memory_decay:lifecycle:stale:")
         assert mutation["expected_project_id"] == "project:test"
         assert mutation["expected_content_hash"]
         assert mutation["expected_source_snapshot"]["decay_multiplier"] == 0.1
@@ -433,9 +431,7 @@ async def test_scan_memory_decay_marks_duplicate_conflict_replacement(monkeypatc
         assert mutation["operation"] == "forgotten"
         assert mutation["reason"] == "lifecycle:duplicate_replacement:dup_winner"
         assert mutation["actor"] == "scan_memory_decay"
-        assert mutation["call_id"].startswith(
-            "internal:scan_memory_decay:lifecycle:duplicate:"
-        )
+        assert mutation["call_id"].startswith("internal:scan_memory_decay:lifecycle:duplicate:")
         assert mutation["expected_project_id"] == "project:test"
         assert mutation["expected_content_hash"]
         assert mutation["expected_source_snapshot"]["worth_failure"] == 4
@@ -473,7 +469,11 @@ def test_lifecycle_scan_discovers_candidates_without_raw_ordinary_writes(tmp_pat
     conn.set_trace_callback(statements.append)
     engine = MutationSpyEngine()
 
-    lifecycle = _run_lifecycle_maintenance(conn, engine)
+    lifecycle = _run_lifecycle_maintenance(
+        conn,
+        engine,
+        project_id="project:test",
+    )
 
     assert lifecycle["stale_marked"] == 1
     assert lifecycle["conflicts_marked"] == 1
@@ -518,7 +518,11 @@ def test_lifecycle_scan_unindexable_rows_do_not_starve_valid_candidate(tmp_path)
     conn.commit()
     engine = MutationSpyEngine()
 
-    lifecycle = _run_lifecycle_maintenance(conn, engine)
+    lifecycle = _run_lifecycle_maintenance(
+        conn,
+        engine,
+        project_id="project:test",
+    )
 
     assert lifecycle["stale_marked"] == 1
     assert [mutation["memory_id"] for mutation in engine.mutations] == ["valid-stale"]
@@ -567,9 +571,7 @@ def test_lifecycle_scan_projectless_rows_do_not_starve_valid_candidate(tmp_path)
     lifecycle = _run_lifecycle_maintenance(conn, engine)
 
     assert lifecycle["stale_marked"] == 1
-    assert [mutation["memory_id"] for mutation in engine.mutations] == [
-        "valid-project-stale"
-    ]
+    assert [mutation["memory_id"] for mutation in engine.mutations] == ["valid-project-stale"]
     conn.close()
 
 
@@ -706,12 +708,14 @@ def test_lifecycle_malformed_duplicate_clusters_do_not_occupy_fixed_limit(tmp_pa
     conn.commit()
     engine = MutationSpyEngine()
 
-    lifecycle = _run_lifecycle_maintenance(conn, engine)
+    lifecycle = _run_lifecycle_maintenance(
+        conn,
+        engine,
+        project_id="project:zz-valid",
+    )
 
     assert lifecycle["conflicts_marked"] == 1
-    assert [mutation["memory_id"] for mutation in engine.mutations] == [
-        "zz-valid-loser"
-    ]
+    assert [mutation["memory_id"] for mutation in engine.mutations] == ["zz-valid-loser"]
     conn.close()
 
 
@@ -757,19 +761,13 @@ def test_lifecycle_scan_repeatedly_leaves_unavailable_sources_byte_stable(tmp_pa
         )
         malformed = unavailable("malformed-source", "current")
         assert storage.upsert_ordinary("malformed-source", malformed)
-        storage._conn.execute(
-            "UPDATE memories SET tags = '{' WHERE id = 'malformed-source'"
-        )
+        storage._conn.execute("UPDATE memories SET tags = '{' WHERE id = 'malformed-source'")
         storage._conn.commit()
         discovery = sqlite3.connect(db_path)
         discovery.row_factory = sqlite3.Row
-        before_rows = discovery.execute(
-            "SELECT * FROM memories ORDER BY id"
-        ).fetchall()
+        before_rows = discovery.execute("SELECT * FROM memories ORDER BY id").fetchall()
         before_version = read_memory_version(discovery)
-        before_jobs = discovery.execute(
-            "SELECT * FROM store_outbox ORDER BY outbox_id"
-        ).fetchall()
+        before_jobs = discovery.execute("SELECT * FROM store_outbox ORDER BY outbox_id").fetchall()
         before_lineage = discovery.execute(
             "SELECT * FROM memory_lineage ORDER BY lineage_id"
         ).fetchall()
@@ -781,12 +779,14 @@ def test_lifecycle_scan_repeatedly_leaves_unavailable_sources_byte_stable(tmp_pa
         assert second["stale_marked"] == second["conflicts_marked"] == 0
         assert discovery.execute("SELECT * FROM memories ORDER BY id").fetchall() == before_rows
         assert read_memory_version(discovery) == before_version
-        assert discovery.execute(
-            "SELECT * FROM store_outbox ORDER BY outbox_id"
-        ).fetchall() == before_jobs
-        assert discovery.execute(
-            "SELECT * FROM memory_lineage ORDER BY lineage_id"
-        ).fetchall() == before_lineage
+        assert (
+            discovery.execute("SELECT * FROM store_outbox ORDER BY outbox_id").fetchall()
+            == before_jobs
+        )
+        assert (
+            discovery.execute("SELECT * FROM memory_lineage ORDER BY lineage_id").fetchall()
+            == before_lineage
+        )
     finally:
         if "discovery" in locals():
             discovery.close()
@@ -834,12 +834,8 @@ def test_lifecycle_duplicate_rejects_changed_survivor(tmp_path, survivor_change)
             (loser_id,),
         ).fetchone()
         before_version = read_memory_version(storage._conn)
-        before_lineage = storage._conn.execute(
-            "SELECT COUNT(*) FROM memory_lineage"
-        ).fetchone()[0]
-        before_jobs = storage._conn.execute(
-            "SELECT COUNT(*) FROM store_outbox"
-        ).fetchone()[0]
+        before_lineage = storage._conn.execute("SELECT COUNT(*) FROM memory_lineage").fetchone()[0]
+        before_jobs = storage._conn.execute("SELECT COUNT(*) FROM store_outbox").fetchone()[0]
 
         class RacingEngine:
             def mutate_ordinary_source(self, memory_id, **mutation):
@@ -854,8 +850,7 @@ def test_lifecycle_duplicate_rejects_changed_survivor(tmp_path, survivor_change)
                     )
                 else:
                     storage._conn.execute(
-                        "UPDATE memories SET worth_success = 0, worth_failure = 100 "
-                        "WHERE id = ?",
+                        "UPDATE memories SET worth_success = 0, worth_failure = 100 WHERE id = ?",
                         (survivor_id,),
                     )
                 storage._conn.commit()
@@ -864,17 +859,21 @@ def test_lifecycle_duplicate_rejects_changed_survivor(tmp_path, survivor_change)
         lifecycle = _run_lifecycle_maintenance(discovery, RacingEngine())
 
         assert lifecycle["conflicts_marked"] == 0
-        assert storage._conn.execute(
-            "SELECT * FROM memories WHERE id = ?",
-            (loser_id,),
-        ).fetchone() == before_loser
+        assert (
+            storage._conn.execute(
+                "SELECT * FROM memories WHERE id = ?",
+                (loser_id,),
+            ).fetchone()
+            == before_loser
+        )
         assert read_memory_version(storage._conn) == before_version
-        assert storage._conn.execute(
-            "SELECT COUNT(*) FROM memory_lineage"
-        ).fetchone()[0] == before_lineage
-        assert storage._conn.execute(
-            "SELECT COUNT(*) FROM store_outbox"
-        ).fetchone()[0] == before_jobs
+        assert (
+            storage._conn.execute("SELECT COUNT(*) FROM memory_lineage").fetchone()[0]
+            == before_lineage
+        )
+        assert (
+            storage._conn.execute("SELECT COUNT(*) FROM store_outbox").fetchone()[0] == before_jobs
+        )
     finally:
         if "discovery" in locals():
             discovery.close()
@@ -962,14 +961,12 @@ def test_recmem_content_update_and_forget_use_coordinator_evidence():
 
 
 @pytest.mark.asyncio
-async def test_scan_memory_decay_binds_periodic_maintenance_to_supplied_engine(monkeypatch):
-    from plastic_promise.cron.scan_memory_decay import scan_memory_decay
+async def test_periodic_memory_maintenance_binds_to_supplied_engine(monkeypatch):
+    from plastic_promise.cron.scan_memory_decay import run_periodic_memory_maintenance
 
     engine = MockEngine()
     _PeriodicMaintenanceProbe.received_engine = None
-    monkeypatch.setattr(
-        "plastic_promise.memory.soul_memory.RecMem", _PeriodicMaintenanceProbe
-    )
+    monkeypatch.setattr("plastic_promise.memory.soul_memory.RecMem", _PeriodicMaintenanceProbe)
     monkeypatch.setattr("plastic_promise.memory.soul_memory.EvolveR", _PeriodicEvolveProbe)
     monkeypatch.setattr(
         "plastic_promise.mcp.tools.task_queue.handle_task_enqueue", lambda *args, **kwargs: []
@@ -980,12 +977,19 @@ async def test_scan_memory_decay_binds_periodic_maintenance_to_supplied_engine(m
     try:
         create_test_db(db_path)
         monkeypatch.setenv("PLASTIC_DB_PATH", db_path)
-        result = await scan_memory_decay(engine)
+        result = run_periodic_memory_maintenance(engine, system_authority=True)
 
         assert _PeriodicMaintenanceProbe.received_engine is engine
-        assert result["scanner"] == "scan_memory_decay"
+        assert result["evolved"] is True
     finally:
         os.unlink(db_path)
+
+
+def test_periodic_memory_maintenance_requires_explicit_system_authority():
+    from plastic_promise.cron.scan_memory_decay import run_periodic_memory_maintenance
+
+    with pytest.raises(PermissionError, match="system_authority=True"):
+        run_periodic_memory_maintenance(MockEngine())
 
 
 @pytest.mark.asyncio
@@ -1031,10 +1035,16 @@ async def test_scan_memory_decay_never_changes_reserved_synthesis(monkeypatch, r
         result = await scan_memory_decay(MockEngine())
 
         conn = sqlite3.connect(db_path)
-        assert conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone() == before_memory
-        assert conn.execute(
-            "SELECT * FROM synthesis_artifacts WHERE memory_id = ?", (memory_id,)
-        ).fetchone() == before_control
+        assert (
+            conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            == before_memory
+        )
+        assert (
+            conn.execute(
+                "SELECT * FROM synthesis_artifacts WHERE memory_id = ?", (memory_id,)
+            ).fetchone()
+            == before_control
+        )
         conn.close()
         assert result["lifecycle"] == {
             "stale_marked": 0,

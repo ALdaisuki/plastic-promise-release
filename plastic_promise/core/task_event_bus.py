@@ -25,45 +25,67 @@ class TaskEventBus:
     """Manages SSE client connections and broadcasts task events."""
 
     def __init__(self):
-        self._clients: dict[str, list] = {}
+        self._clients: dict[tuple[str, str], list] = {}
 
-    def register(self, agent_name: str, send_func):
-        """Register an SSE client connection for an agent.
+    def register(self, project_id: str, agent_name: str, send_func):
+        """Register an SSE client connection for one project-scoped agent.
 
         Multiple connections per agent are supported (e.g. multiple
-        browser tabs or MCP sessions).
+        browser tabs or MCP sessions).  Project scope is mandatory: a
+        connection for the same agent in another project is a different
+        subscriber and never receives this project's payloads.
         """
-        if agent_name not in self._clients:
-            self._clients[agent_name] = []
-        self._clients[agent_name].append(send_func)
-        logger.debug("SSE client registered: %s", agent_name)
+        key = (str(project_id).strip(), str(agent_name).strip())
+        if not all(key):
+            raise ValueError("project_id and agent_name are required")
+        if key not in self._clients:
+            self._clients[key] = []
+        self._clients[key].append(send_func)
+        logger.debug("SSE client registered: %s/%s", *key)
 
-    def unregister(self, agent_name: str, send_func):
+    def unregister(self, project_id: str, agent_name: str, send_func):
         """Remove a disconnected SSE client."""
-        if agent_name in self._clients:
+        key = (str(project_id).strip(), str(agent_name).strip())
+        if key in self._clients:
             try:
-                self._clients[agent_name].remove(send_func)
-                if not self._clients[agent_name]:
-                    del self._clients[agent_name]
+                self._clients[key].remove(send_func)
+                if not self._clients[key]:
+                    del self._clients[key]
             except ValueError:
                 pass
 
-    async def broadcast(self, event_type: str, data: dict, to_agents: list[str]) -> int:
+    async def broadcast(
+        self,
+        project_id: str,
+        event_type: str,
+        data: dict,
+        to_agents: list[str],
+    ) -> int:
         """Broadcast a task event to specified agents.
 
         Returns the number of clients that received the event.
         Failed sends trigger automatic unregister (dead connection cleanup).
         """
-        payload = json.dumps({"event": event_type, "data": data}, ensure_ascii=False)
+        normalized_project_id = str(project_id).strip()
+        if not normalized_project_id:
+            return 0
+        payload = json.dumps(
+            {
+                "event": event_type,
+                "data": {**data, "project_id": normalized_project_id},
+            },
+            ensure_ascii=False,
+        )
         notified = 0
         for agent in to_agents:
-            if agent in self._clients:
-                for send_func in self._clients[agent]:
+            key = (normalized_project_id, str(agent).strip())
+            if key in self._clients:
+                for send_func in list(self._clients[key]):
                     try:
                         await send_func(payload)
                         notified += 1
                     except Exception:
-                        self.unregister(agent, send_func)
+                        self.unregister(normalized_project_id, agent, send_func)
         return notified
 
     async def broadcast_task_event(self, event_type: str, task: dict) -> int:
@@ -79,6 +101,9 @@ class TaskEventBus:
           task:escalated -- claude
           hunter:rank_change -- agent + claude
         """
+        project_id = str(task.get("project_id") or "").strip()
+        if not project_id:
+            return 0
         to_agents: list[str] = []
 
         if event_type == "task:new":
@@ -108,8 +133,10 @@ class TaskEventBus:
         to_agents = [a for a in to_agents if a]  # Filter empty strings
 
         return await self.broadcast(
+            project_id,
             event_type,
             {
+                "project_id": project_id,
                 "task_id": task.get("task_id", task.get("id", "")),
                 "task_type": task.get("task_type", ""),
                 "priority": task.get("priority", 3),

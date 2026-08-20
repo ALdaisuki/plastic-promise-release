@@ -1,12 +1,12 @@
 """Tests for scan_scheduler_health — the 6-dimension meta-audit scanner."""
 
-import pytest
-import sqlite3
-import os
 import json
+import os
+import sqlite3
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
 
+import pytest
 
 # ═══════════════════════════════════════════════════════════════
 # Helpers
@@ -45,6 +45,7 @@ def create_test_db(db_path: str):
         "  last_accessed TEXT,"
         "  tags TEXT NOT NULL DEFAULT '[]',"
         "  domain TEXT NOT NULL DEFAULT 'uncategorized',"
+        "  project_id TEXT NOT NULL DEFAULT 'project:system-governance',"
         "  decay_multiplier REAL NOT NULL DEFAULT 1.0,"
         "  effective_half_life REAL NOT NULL DEFAULT 3.0"
         ")"
@@ -91,6 +92,7 @@ def create_test_db(db_path: str):
         "  memory_id TEXT,"
         "  principle_id TEXT,"
         "  source_scan TEXT,"
+        "  project_id TEXT NOT NULL DEFAULT 'project:system-governance',"
         "  parent_task_id TEXT,"
         "  claimed_by TEXT,"
         "  claimed_at TEXT,"

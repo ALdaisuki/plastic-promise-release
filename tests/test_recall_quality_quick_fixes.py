@@ -23,6 +23,23 @@ def test_extraction_keeps_reference_url_in_one_memory():
     assert memories[0].l0_abstract == text[:80]
 
 
+def test_server_backend_uses_rule_only_extraction(monkeypatch):
+    monkeypatch.setenv("PP_ENDPOINT_ROLE", "pp-server-backend")
+
+    def fail_network(*args, **kwargs):
+        raise AssertionError("server backend must not call Ollama")
+
+    monkeypatch.setattr("plastic_promise.smart_extractor.requests.post", fail_network)
+
+    memories = extract_memories(
+        "用户决定采用 compute node 负责推理并且服务器只负责持久化",
+        max_llm_calls=3,
+    )
+
+    assert memories
+    assert memories[0].category == "decision"
+
+
 def test_noise_filter_rejects_low_information_and_partial_urls():
     assert is_noise("No file edits")
     assert is_noise("md files only")

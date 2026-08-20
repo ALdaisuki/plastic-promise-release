@@ -19,6 +19,7 @@ MEMORY_INDEX_JOB_SCHEMA = "memory-index/v3"
 _MEMORY_INDEX_ACTIONS = frozenset({"upsert", "delete"})
 _MAINTENANCE_CYCLE_STAGES = (
     "memory_lifecycle",
+    "collaboration_maintenance",
     "proposal_expiry",
     "synthesis_integrity",
     "memory_index_replay",
@@ -134,7 +135,8 @@ class TraceabilityStore:
             return False
         if root["parent_call_id"] == cycle_call_id or root["stage"] != "maintenance_cycle":
             return False
-        if not isinstance(root["metadata"], dict) or len(children) != 6:
+        expected_count = len(_MAINTENANCE_CYCLE_STAGES)
+        if not isinstance(root["metadata"], dict) or len(children) != expected_count:
             return False
         if [child["stage"] for child in children] != list(_MAINTENANCE_CYCLE_STAGES):
             return False
@@ -142,7 +144,7 @@ class TraceabilityStore:
             child["metadata"].get("order") if isinstance(child["metadata"], dict) else None
             for child in children
         ]
-        if orders != list(range(1, 7)):
+        if orders != list(range(1, expected_count + 1)):
             return False
         return all(
             child["call_id"] != cycle_call_id and child["parent_call_id"] == cycle_call_id

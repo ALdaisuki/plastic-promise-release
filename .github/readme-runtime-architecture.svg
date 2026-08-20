@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Plastic Promise union endpoint and collaboration authority contract</title>
+  <desc id="desc">Union Six-PR Contract revision 2026-08-18.1 defines endpoint ownership plus collaboration and canonical authority. This source/design view does not prove runtime activation or production deployment.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="runtime" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#155e75"/>
+      <stop offset="1" stop-color="#312e81"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#020617" flood-opacity="0.45"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#67e8f9"/>
+    </marker>
+    <marker id="arrowDerived" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#c4b5fd"/>
+    </marker>
+    <style>
+      .title { fill:#f8fafc; font:700 38px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+      .subtitle { fill:#cbd5e1; font:400 18px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+      .label { fill:#f8fafc; font:700 21px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+      .body { fill:#cbd5e1; font:400 15px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+      .micro { fill:#94a3b8; font:400 13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+      .pill { fill:#a7f3d0; font:700 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+    </style>
+  </defs>
+  <rect width="1280" height="640" rx="28" fill="url(#background)"/>
+
+  <text class="title" x="64" y="68">Plastic Promise</text>
+  <text class="subtitle" x="64" y="99">One canonical truth source. Derived inference and indexes remain replaceable.</text>
+  <text class="micro" x="64" y="122">Union contract 2026-08-18.1 · source/design view only · runtime and production require separate evidence</text>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="160" width="246" height="180" rx="18" fill="#172554" stroke="#60a5fa" stroke-width="2"/>
+    <text class="label" x="88" y="205">pp-local-edge</text>
+    <text class="body" x="88" y="240">Dashboard · deploy UI</text>
+    <text class="body" x="88" y="267">MCP bridge · bounded awareness</text>
+    <rect x="88" y="289" width="173" height="26" rx="13" fill="#1d4ed8"/>
+    <text class="pill" x="103" y="307">loopback / SSH forward</text>
+  </g>
+
+  <path d="M326 250 H402" stroke="#67e8f9" stroke-width="4" fill="none" marker-end="url(#arrow)"/>
+  <text class="micro" x="334" y="232">MCP / HTTP</text>
+
+  <g filter="url(#shadow)">
+    <rect x="418" y="132" width="442" height="250" rx="20" fill="url(#runtime)" stroke="#67e8f9" stroke-width="2"/>
+    <text class="label" x="446" y="178">pp-server-backend</text>
+    <text class="body" x="446" y="214">MCP  →  Governance / Collaboration  →  Durable work</text>
+    <text class="body" x="446" y="244">Canonical/coordination authority; SQLite + outbox</text>
+    <text class="body" x="446" y="274">Registry, work board, events, reconcile, promotion</text>
+    <rect x="446" y="310" width="170" height="30" rx="15" fill="#0f766e"/>
+    <text class="pill" x="464" y="330">canonical writes here</text>
+    <rect x="632" y="310" width="180" height="30" rx="15" fill="#4c1d95"/>
+    <text class="pill" x="650" y="330">explicit degraded mode</text>
+  </g>
+
+  <path d="M606 399 V457 H454" stroke="#67e8f9" stroke-width="4" fill="none" marker-end="url(#arrow)"/>
+  <path d="M673 399 V457 H830" stroke="#c4b5fd" stroke-width="4" fill="none" marker-end="url(#arrowDerived)"/>
+  <text class="micro" x="461" y="438">canonical transaction</text>
+  <text class="micro" x="696" y="438">derived projection</text>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="474" width="390" height="112" rx="18" fill="#134e4a" stroke="#34d399" stroke-width="2"/>
+    <text class="label" x="90" y="516">SQLite WAL</text>
+    <text class="body" x="90" y="545">Sole canonical writer: pp-server-backend</text>
+    <text class="micro" x="90" y="570">No multi-machine writable synchronization</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="700" y="474" width="322" height="112" rx="18" fill="#312e81" stroke="#a78bfa" stroke-width="2"/>
+    <text class="label" x="726" y="516">LanceDB</text>
+    <text class="body" x="726" y="545">Derived, generation-bound retrieval index</text>
+    <text class="micro" x="726" y="570">Shadow rebuild → gate → atomic promotion</text>
+  </g>
+
+  <path d="M876 246 H963" stroke="#c4b5fd" stroke-width="4" fill="none" marker-end="url(#arrowDerived)"/>
+  <text class="micro" x="842" y="226">derived request</text>
+  <g filter="url(#shadow)">
+    <rect x="980" y="145" width="236" height="213" rx="18" fill="#3f1d5b" stroke="#c4b5fd" stroke-width="2"/>
+    <text class="label" x="1004" y="188">pp-compute-node</text>
+    <text class="body" x="1004" y="222">typed embedding</text>
+    <text class="body" x="1004" y="246">rerank · optional typed JSON</text>
+    <text class="body" x="1004" y="270">compatible cloud fallback</text>
+    <rect x="1004" y="294" width="170" height="28" rx="14" fill="#5b21b6"/>
+    <text class="pill" x="1019" y="313">derived results only</text>
+  </g>
+
+  <text class="micro" x="64" y="618">Identity proof: model + fixed revision + dimension + normalization + artifact hash + transport evidence</text>
+</svg>

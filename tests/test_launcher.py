@@ -12,7 +12,11 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 import pytest
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10.
+    import tomli as tomllib
 
 from plastic_promise.launcher.bootstrap_checker import check_bootstrap
 from plastic_promise.launcher.env_checker import run_env_checks
@@ -200,8 +204,8 @@ async def test_daemon_preflight_is_read_only_and_does_not_require_enablement(
     ensure_traceability_schema(conn)
     conn.execute(
         "INSERT INTO task_queue "
-        "(id, task_type, title, to_agent, status, source_scan, payload, created_at) "
-        "VALUES ('old-finding', 'investigate_coupling', 'old', 'pi_reviewer', "
+        "(id, project_id, task_type, title, to_agent, status, source_scan, payload, created_at) "
+        "VALUES ('old-finding', 'project:plastic-promise', 'investigate_coupling', 'old', 'pi_reviewer', "
         "'pending', 'scan_coupling', ?, datetime('now', '-10 days'))",
         (json.dumps({"kind": "stable", "payload_hash": "deadbeef"}),),
     )
@@ -612,6 +616,7 @@ def test_launcher_configures_default_project_identity(monkeypatch, tmp_path):
     monkeypatch.delenv("PLASTIC_LANCEDB_PATH", raising=False)
     monkeypatch.delenv("PLASTIC_PROJECT_ID", raising=False)
     monkeypatch.delenv("PP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PP_ENDPOINT_ROLE", raising=False)
 
     module.configure_default_environment(str(tmp_path))
 
@@ -620,6 +625,40 @@ def test_launcher_configures_default_project_identity(monkeypatch, tmp_path):
     )
     assert os.environ["PLASTIC_LANCEDB_PATH"] == os.path.join(str(tmp_path), "data", "lancedb")
     assert os.environ["PLASTIC_PROJECT_ID"] == "project:plastic-promise"
+
+
+def test_launcher_exposes_governed_features_by_default(monkeypatch, tmp_path):
+    module = _load_init_and_start()
+    for key in (
+        "PP_DASHBOARD_V2",
+        "PP_RETRIEVAL_EXPLAIN",
+        "PP_MEMORY_CHUNKING",
+        "PP_MEMORY_CHUNK_ENRICHMENT",
+        "PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER",
+        "PP_KNOWLEDGE_SYSTEM",
+        "PP_KNOWLEDGE_SEMANTIC",
+        "PP_PASSIVE_CONTEXT",
+        "PP_PASSIVE_MEMORY",
+        "PP_PASSIVE_TOOL_ROUTING",
+        "PP_PASSIVE_SEMANTIC_CAPTURE",
+        "PP_PASSIVE_SEMANTIC_ROUTING",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    module.configure_default_environment(str(tmp_path))
+
+    assert os.environ["PP_DASHBOARD_V2"] == "1"
+    assert os.environ["PP_RETRIEVAL_EXPLAIN"] == "1"
+    assert os.environ["PP_MEMORY_CHUNKING"] == "structure-v1"
+    assert os.environ["PP_MEMORY_CHUNK_ENRICHMENT"] == "shadow"
+    assert os.environ["PP_MEMORY_CHUNK_ENRICHMENT_PROVIDER"] == "openai-compatible"
+    assert os.environ["PP_KNOWLEDGE_SYSTEM"] == "on"
+    assert os.environ["PP_KNOWLEDGE_SEMANTIC"] == "shadow"
+    assert os.environ["PP_PASSIVE_CONTEXT"] == "on"
+    assert os.environ["PP_PASSIVE_MEMORY"] == "on"
+    assert os.environ["PP_PASSIVE_TOOL_ROUTING"] == "on"
+    assert os.environ["PP_PASSIVE_SEMANTIC_CAPTURE"] == "shadow"
+    assert os.environ["PP_PASSIVE_SEMANTIC_ROUTING"] == "shadow"
 
 
 def test_launcher_preserves_pp_project_id_fallback(monkeypatch, tmp_path):
@@ -641,7 +680,7 @@ def test_launcher_configures_stable_embedder_timeout(monkeypatch, tmp_path):
 
     module.configure_default_environment(str(tmp_path))
 
-    assert os.environ["EMBEDDER_TIMEOUT"] == "30"
+    assert os.environ["EMBEDDER_TIMEOUT"] == "10"
 
 
 def test_launcher_preserves_embedder_timeout_override(monkeypatch, tmp_path):
@@ -1691,6 +1730,7 @@ def test_direct_mcp_server_streamable_http_configures_default_project_identity(m
     monkeypatch.delenv("PLASTIC_LANCEDB_PATH", raising=False)
     monkeypatch.delenv("PLASTIC_PROJECT_ID", raising=False)
     monkeypatch.delenv("PP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PP_ENDPOINT_ROLE", raising=False)
     monkeypatch.setattr(sys, "argv", ["server.py", "--streamable-http", "9020"])
     monkeypatch.setattr(mcp_server, "run_streamable_http", fake_run_streamable_http)
 
@@ -1706,13 +1746,20 @@ def test_direct_mcp_server_streamable_http_configures_default_project_identity(m
 def test_direct_mcp_server_applies_explicit_full_runtime_mode(monkeypatch):
     from plastic_promise.mcp import server as mcp_server
 
+    calls = []
+    monkeypatch.delenv("PP_ENDPOINT_ROLE", raising=False)
+
     class FakeEngine:
         def refresh_runtime_mode(self, initialize_heavy=False, *, synchronize_index=False):
-            assert initialize_heavy is True
-            assert synchronize_index is True
+            calls.append((initialize_heavy, synchronize_index))
             return {"index_sync": {"requested": True, "ready": True, "status": "ready"}}
 
-    async def fake_run_streamable_http(_port):
+    async def fake_run_streamable_http(_port, *, startup_warmup_mode=None):
+        # Full-mode work must start only after Streamable HTTP owns its
+        # loopback listener.  A stalled cloud embedding provider must not make
+        # the MCP port disappear during process startup.
+        assert calls == []
+        assert startup_warmup_mode == "rust-full"
         return None
 
     monkeypatch.setenv("PLASTIC_RUNTIME_MODE", "rust-full")
@@ -1727,6 +1774,7 @@ def test_direct_mcp_server_applies_explicit_full_runtime_mode(monkeypatch):
 
     asyncio.run(mcp_server.main())
 
+    assert calls == []
     assert os.environ["PP_MEMORY_CHUNKING"] == "structure-v1"
     assert os.environ["PP_MEMORY_CHUNK_ENGINE"] == "rust"
 
@@ -1735,6 +1783,8 @@ def test_direct_mcp_server_legacy_sse_alias_still_routes_to_streamable_http(monk
     from plastic_promise.mcp import server as mcp_server
 
     captured = {}
+
+    monkeypatch.delenv("PP_ENDPOINT_ROLE", raising=False)
 
     async def fake_run_streamable_http(port):
         captured["port"] = port
@@ -1796,7 +1846,10 @@ def test_server_cloud_profile_does_not_install_local_model_runtime():
 
     assert not any(item.startswith("sentence-transformers") for item in dependencies)
     assert not any(item.startswith("sentence-transformers") for item in requirements)
-    assert optional["local-inference"] == ["sentence-transformers>=2.2.0"]
+    assert optional["local-inference"] == [
+        "sentence-transformers>=3.4.1",
+        "transformers>=4.51.0",
+    ]
 
 
 def test_top_level_module_accepts_streamable_http_and_legacy_sse_flags():
@@ -1923,7 +1976,7 @@ def test_startup_recovery_reports_released_stale_claims(monkeypatch):
     monkeypatch.setattr(
         module,
         "release_stale_claims",
-        lambda: {"released_count": 2, "escalated_count": 1},
+        lambda **_kwargs: {"released_count": 2, "escalated_count": 1},
     )
 
     ok, msg = module.run_startup_recovery()
@@ -1935,7 +1988,7 @@ def test_startup_recovery_reports_released_stale_claims(monkeypatch):
 def test_startup_recovery_degrades_without_blocking(monkeypatch):
     module = _load_init_and_start()
 
-    def fail_recovery():
+    def fail_recovery(**_kwargs):
         raise RuntimeError("database locked")
 
     monkeypatch.setattr(module, "release_stale_claims", fail_recovery)

@@ -293,7 +293,7 @@ def _compute_semantic_signal(context: str, dim_key: str) -> float:
     if not anchors:
         return 0.0
     try:
-        from plastic_promise.core.embedder import get_embedder
+        from plastic_promise.core.server_embedder import get_embedder
 
         embedder = get_embedder()
         ctx_vec = embedder.embed(context)
@@ -367,7 +367,7 @@ def _compute_dimension_score(
             score = _DEFAULT_SCORE + heuristic
             # Detect degradation cause
             try:
-                from plastic_promise.core.embedder import get_embedder
+                from plastic_promise.core.server_embedder import get_embedder
 
                 emb = get_embedder()
                 if getattr(emb, "model_name", "") == "fallback-zero":
@@ -476,7 +476,7 @@ class SCARFReflector:
             ),
         }
         result["timestamp"] = (
-            datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
+            datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
         )
 
         self.history.append(result)

@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant User as User
+    participant Edge as T: pp-local-edge
+    participant Backend as C: pp-server-backend contract / T: runtime
+    participant Node as C: pp-compute-node contract / T: service
+    participant Cloud as T: configured cloud adapter
+    participant Queue as L: durable work / T: V2 adapter
+    participant Index as L: verified LanceDB / T: V2 wiring
+
+    Note over Edge,Index: C = source contract; L = legacy-current baseline; T = target runtime; U = unverified live state
+    Note over Edge,Index: PR 2 supplies protocol, identity, admission, lease, current-fence, and result shapes only.
+
+    User->>Edge: T: Recall request
+    Edge->>Backend: T: Authenticated MCP request
+    Backend->>Node: T: Typed embedding request with C: identity and lease
+    Node--xBackend: T: Timeout or unhealthy
+    Backend->>Backend: T: Record explicit degradation and open circuit
+
+    alt T: Cloud enabled and embedding identity matches
+        Backend->>Cloud: T: Explicit fallback request
+        alt T: Cloud succeeds
+            Cloud-->>Backend: T: Identity-bound derived result
+            Backend->>Backend: C: Validate identity, lease, and current fence
+        else T: Cloud fails
+            Cloud--xBackend: T: Failure with stable reason
+            Backend->>Queue: T: Enqueue idempotent derived work
+            Backend->>Index: T: Retrieve current verified generation
+            Backend->>Backend: T: Fuse text/BM25/symbolic results
+        end
+    else T: Cloud absent, disabled, or incompatible
+        Backend->>Queue: T: Enqueue idempotent derived work
+        Backend->>Index: T: Retrieve current verified generation
+        Backend->>Backend: T: Fuse text/BM25/symbolic results
+    end
+
+    Backend-->>Edge: T: Result with vector_degraded and fallback evidence
+    Edge-->>User: T: Render result and provider state
+
+    loop T: Bounded health polling
+        Backend->>Node: T: Health, identity, and golden probes
+        Backend->>Cloud: T: Health and identity probe when configured
+    end
+    Node-->>Backend: T: Consecutive valid probes
+    Backend->>Backend: T: Wait stable recovery window
+    Backend->>Node: T: Final capability probe
+    Node-->>Backend: T: Healthy-stable
+    Backend->>Queue: T: Reconcile eligible pending work
+    Queue-->>Node: T: Leased typed jobs
+    Node-->>Backend: T: Idempotent derived results
+    Backend->>Backend: C: Accept only the current fencing generation
+    Note over Edge,Index: U: MCP returned HTTP 502 in this task; no runtime or production proof.

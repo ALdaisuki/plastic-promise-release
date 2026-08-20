@@ -1,0 +1,14 @@
+{
+  "schema_version": "plastic-promise-deployment/v1",
+  "deployment_id": "local-cloud-laptop",
+  "profile": "local-cloud",
+  "modules": {},
+  "nodes": [],
+  "resource_budget": {
+    "image_layers_bytes": 0,
+    "image_unpack_bytes": 0,
+    "model_cache_bytes": 0,
+    "lancedb_shadow_rebuild_bytes": 1,
+    "rollback_coexistence_bytes": 1
+  }
+}

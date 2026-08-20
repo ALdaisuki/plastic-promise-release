@@ -1,0 +1,26 @@
+{
+  "schema_version": "plastic-promise-deployment/v1",
+  "deployment_id": "server-with-accelerator",
+  "profile": "split-accelerated",
+  "modules": {},
+  "nodes": [
+    {
+      "id": "home-accelerator",
+      "role": "local-heterogeneous-inference-node",
+      "ssh_host": "home-accelerator",
+      "capabilities": {"embedding": true, "rerank": true},
+      "max_concurrency": 1
+    }
+  ],
+  "resource_locations": {
+    "container_store": "/var/lib/plastic-promise/container-store",
+    "model_cache": "/var/lib/plastic-promise/model-cache"
+  },
+  "resource_budget": {
+    "image_layers_bytes": 1,
+    "image_unpack_bytes": 1,
+    "model_cache_bytes": 1,
+    "lancedb_shadow_rebuild_bytes": 1,
+    "rollback_coexistence_bytes": 1
+  }
+}
