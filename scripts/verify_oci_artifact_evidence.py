@@ -415,6 +415,33 @@ def _role_receipt_paths(inventory: tuple[str, ...]) -> tuple[str, ...]:
     )
 
 
+def _report_inventory_delta(
+    code: str,
+    expected: set[str],
+    observed: set[str],
+    *,
+    label: str,
+) -> None:
+    """Emit bounded path diagnostics before preserving the stable failure code."""
+
+    print(
+        json.dumps(
+            {
+                "error": code,
+                "inventory": label,
+                "expected_count": len(expected),
+                "observed_count": len(observed),
+                "missing_sample": sorted(expected - observed)[:20],
+                "extra_sample": sorted(observed - expected)[:20],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    _fail(code)
+
+
 def _validate_role_package_inventory(
     repository_root: Path,
     role: str,
@@ -476,7 +503,12 @@ def _validate_role_package_inventory(
         if normalised is not None:
             observed[normalised] = tuple(physical_paths)
     if set(observed) != set(expected):
-        _fail("container_artifact_role_package_inventory_mismatch")
+        _report_inventory_delta(
+            "container_artifact_role_package_inventory_mismatch",
+            set(expected),
+            set(observed),
+            label="rootfs",
+        )
     if any(len(paths) != 1 for paths in observed.values()):
         _fail("container_artifact_role_package_duplicate_path")
     return _digest(receipt_bytes)
@@ -509,8 +541,20 @@ def _validate_role_package_sbom_inventory(
 
     rootfs_paths = logical_paths(rootfs_inventory)
     sbom_paths = logical_paths(sbom_inventory)
-    if set(rootfs_paths) != expected or set(sbom_paths) != expected:
-        _fail("container_artifact_sbom_role_package_inventory_mismatch")
+    if set(rootfs_paths) != expected:
+        _report_inventory_delta(
+            "container_artifact_sbom_role_package_inventory_mismatch",
+            expected,
+            set(rootfs_paths),
+            label="rootfs-via-sbom-check",
+        )
+    if set(sbom_paths) != expected:
+        _report_inventory_delta(
+            "container_artifact_sbom_role_package_inventory_mismatch",
+            expected,
+            set(sbom_paths),
+            label="sbom",
+        )
     if any(len(paths) != 1 for paths in sbom_paths.values()):
         _fail("container_artifact_sbom_role_package_duplicate_path")
     if set(_role_receipt_paths(rootfs_inventory)) != set(_role_receipt_paths(sbom_inventory)):
@@ -735,6 +779,20 @@ def _attestation_layers(
                 _validate_server_compute_exclusions(role, sbom_inventory, sbom=True)
                 if role in {"pp-server-backend", "pp-compute-node"}:
                     if not _role_receipt_paths(sbom_inventory):
+                        print(
+                            json.dumps(
+                                {
+                                    "error": "container_artifact_sbom_role_package_inventory_missing",
+                                    "inventory": "sbom",
+                                    "rootfs_receipts": list(_role_receipt_paths(rootfs_inventory)),
+                                    "sbom_receipts": list(_role_receipt_paths(sbom_inventory)),
+                                    "sbom_file_count": len(sbom_inventory),
+                                },
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            file=sys.stderr,
+                        )
                         _fail("container_artifact_sbom_role_package_inventory_missing")
                     _validate_role_package_sbom_inventory(
                         repository_root, role, package_version, rootfs_inventory, sbom_inventory
