@@ -261,6 +261,14 @@ def test_each_oci_verification_job_installs_static_recipe_policy_dependency_firs
 def test_release_verification_emits_plan_bound_no_push_oci_evidence_for_every_artifact():
     verification = Path(".github/workflows/release-verify.yml").read_text(encoding="utf-8")
 
+    # The human-facing PR tag may remain ``pr-verify``, but the version passed
+    # into the Python package and OCI labels must be valid PEP 440.  This keeps
+    # the protected GitHub build path from failing during role-package
+    # materialization while preserving a recognizable evidence tag.
+    assert "PP_PR_VERIFY_PACKAGE_VERSION: 0.0.0+pr.verify" in verification
+    assert "--package-version pr-verify" not in verification
+    assert verification.count('--package-version "$PP_PR_VERIFY_PACKAGE_VERSION"') == 8
+
     expected_jobs = {
         "local-edge-image": {
             "role": "pp-local-edge",

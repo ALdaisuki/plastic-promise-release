@@ -45,6 +45,11 @@ permissions:
 env:
   PP_PR_VERIFY_MODEL_CATALOG_REFERENCE: pr-verify-model-catalog
   PP_PR_VERIFY_MODEL_CATALOG_DIGEST: sha256:bb32706f1224df4e3c03d00ed03dd5baafac6576ac4caafc9cecf7d0450f3cf6
+  # PR verification must still pass through Python packaging and Dockerfile
+  # metadata validation.  Keep the tag human-readable, but use a legal PEP
+  # 440 value for the package version embedded in the role package and OCI
+  # labels.
+  PP_PR_VERIFY_PACKAGE_VERSION: 0.0.0+pr.verify
   PP_STATIC_RECIPE_POLICY_PYTHON_REQUIREMENT: "PyYAML>=6.0.1,<7.0.0"
 
 jobs:
@@ -198,7 +203,7 @@ jobs:
             --repository-root . \
             --profile-id split-accelerated \
             --source-revision "${{ github.sha }}" \
-            --package-version pr-verify \
+            --package-version "$PP_PR_VERIFY_PACKAGE_VERSION" \
             --platform linux/amd64 --platform linux/arm64 \
             --compute-variant cpu --compute-variant cuda \
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
@@ -236,7 +241,7 @@ jobs:
         run: |
           common=(
             --repository-root . --profile-id split-accelerated
-            --source-revision "${{ github.sha }}" --package-version pr-verify
+            --source-revision "${{ github.sha }}" --package-version "$PP_PR_VERIFY_PACKAGE_VERSION"
             --plan-platform linux/amd64 --plan-platform linux/arm64
             --compute-variant cpu --compute-variant cuda
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE"
@@ -272,7 +277,7 @@ jobs:
             --repository-root . \
             --profile-id split-accelerated \
             --source-revision "${{ github.sha }}" \
-            --package-version pr-verify \
+            --package-version "$PP_PR_VERIFY_PACKAGE_VERSION" \
             --platform linux/amd64 --platform linux/arm64 \
             --compute-variant cpu --compute-variant cuda \
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
@@ -308,7 +313,7 @@ jobs:
         run: |
           common=(
             --repository-root . --profile-id split-accelerated
-            --source-revision "${{ github.sha }}" --package-version pr-verify
+            --source-revision "${{ github.sha }}" --package-version "$PP_PR_VERIFY_PACKAGE_VERSION"
             --plan-platform linux/amd64 --plan-platform linux/arm64
             --compute-variant cpu --compute-variant cuda
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE"
@@ -344,7 +349,7 @@ jobs:
             --repository-root . \
             --profile-id split-accelerated \
             --source-revision "${{ github.sha }}" \
-            --package-version pr-verify \
+            --package-version "$PP_PR_VERIFY_PACKAGE_VERSION" \
             --platform linux/amd64 --platform linux/arm64 \
             --compute-variant cpu --compute-variant cuda \
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
@@ -382,7 +387,7 @@ jobs:
         run: |
           common=(
             --repository-root . --profile-id split-accelerated
-            --source-revision "${{ github.sha }}" --package-version pr-verify
+            --source-revision "${{ github.sha }}" --package-version "$PP_PR_VERIFY_PACKAGE_VERSION"
             --plan-platform linux/amd64 --plan-platform linux/arm64
             --compute-variant cpu --compute-variant cuda
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE"
@@ -418,7 +423,7 @@ jobs:
             --repository-root . \
             --profile-id split-accelerated \
             --source-revision "${{ github.sha }}" \
-            --package-version pr-verify \
+            --package-version "$PP_PR_VERIFY_PACKAGE_VERSION" \
             --platform linux/amd64 \
             --compute-variant cpu --compute-variant cuda \
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \
@@ -455,7 +460,7 @@ jobs:
         run: |
           python scripts/verify_oci_artifact_evidence.py \
             --repository-root . --profile-id split-accelerated \
-            --source-revision "${{ github.sha }}" --package-version pr-verify \
+            --source-revision "${{ github.sha }}" --package-version "$PP_PR_VERIFY_PACKAGE_VERSION" \
             --plan-platform linux/amd64 \
             --compute-variant cpu --compute-variant cuda \
             --model-catalog-reference "$PP_PR_VERIFY_MODEL_CATALOG_REFERENCE" \

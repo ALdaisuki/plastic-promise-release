@@ -120,12 +120,35 @@ deployment planning/controller leaves needed for parse, plan, preflight, and
 in-memory asset rendering. A server runtime dependency is therefore not an
 implicit requirement of this source-only boundary.
 
+## Build authority and runtime split
+
+All Docker/OCI image construction is now a GitHub Actions responsibility. The
+protected `release-verify.yml`, `release-rc.yml`, and `release-publish.yml`
+workflows own Buildx, multi-architecture output, SBOM/provenance attestations,
+and registry publication. A Mac, Windows, or WSL2 checkout must not build a
+release image locally and must not be treated as equivalent evidence.
+
+Local machines may still run source-only checks, recipe validation, resource
+preflight, and an already-published compute-node image for derived-inference
+smoke. They consume a verified image digest; they do not create the digest.
+
+```text
+source SHA -> GitHub protected Buildx -> SBOM/provenance -> immutable digest
+           -> selected release evidence -> server/edge/compute deployment
+```
+
+The checked-in local build helpers are retained for compatibility with older
+operator environments, but they are not part of the release authority and
+their output must never be promoted to RC or stable evidence. New release
+instructions should dispatch the GitHub workflow instead of invoking a local
+`docker build` or `docker buildx build` command.
+
 ## Target build and runtime split
 
 ```text
 +-------------------- Windows / WSL2 --------------------+
-| local build/cache + GPU smoke for derived inference     |
-| no SQLite writer; no final release proof; no server run  |
+| source checks + digest-pinned runtime/GPU smoke          |
+| no image build; no SQLite writer; no release authority   |
 +------------------------+--------------------------------+
                          | candidate inputs only
                          v
@@ -146,11 +169,11 @@ implicit requirement of this source-only boundary.
 +----------------------------------------------------------+
 ```
 
-Windows/WSL2 is a target local builder, cache, and GPU-smoke location only. It
-may produce **derived inference** smoke evidence; it may not become a canonical
-writer or substitute for protected release evidence. GitHub protected automation
-is the target producer of immutable release evidence. The server is a target
-consumer of a verified digest, never the build authority: it performs a
+Windows/WSL2 is a source-check and digest-pinned runtime/GPU-smoke location
+only. It may produce **derived inference** smoke evidence; it may not build a
+release image, become a canonical writer, or substitute for protected release
+evidence. GitHub protected automation is the producer of immutable release
+evidence. The server is a consumer of a verified digest, never the build authority: it performs a
 **manifest-pinned** pull only after verification. It returns a bounded **MCP E2E receipt**
 before any **stable-only release repository** handoff is considered.
 

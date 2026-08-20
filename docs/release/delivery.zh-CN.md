@@ -100,12 +100,32 @@ source distribution 有意包含 `scripts/init_and_start.py`，但它仅是供 o
 和内存 asset rendering 所需的纯 deployment leaf module。因此 server runtime dependency
 不是这个 source-only 边界的隐式前提。
 
-## 目标构建与 runtime 分工
+## 构建权威与运行时分离
+
+现在所有 Docker/OCI 镜像构建都由 GitHub Actions 负责。受保护的
+`release-verify.yml`、`release-rc.yml` 与 `release-publish.yml` 工作流统一负责
+Buildx、多架构产物、SBOM/provenance 证明以及 registry 发布。Mac、Windows 或
+WSL2 工作区不得再本地构建发行镜像，也不能把本地构建当作等价的发行证据。
+
+本地机器仍可执行源码检查、recipe 校验、资源预检，并使用已经发布的、按 digest
+固定的计算节点镜像进行派生推理 smoke。它们只消费已验证的镜像 digest，不产生
+该 digest。
+
+```text
+源码 SHA -> GitHub 受保护 Buildx -> SBOM/provenance -> 不可变 digest
+         -> 选定发行证据 -> server/edge/compute 部署
+```
+
+仓库中的本地构建辅助脚本为兼容旧环境而保留，但它们不属于发行权威，其输出不得
+晋升为 RC 或 stable 证据。新的发行操作应调度 GitHub 工作流，而不是执行本地
+`docker build` 或 `docker buildx build`。
+
+### 运行时拓扑
 
 ```text
 +------------------- Windows / WSL2 --------------------+
-| 本地 build/cache + 仅派生推理 GPU smoke                |
-| 非 SQLite writer；不产生最终发布证明；不运行服务器      |
+| 源码检查 + digest 固定的运行时/GPU smoke              |
+| 不构建镜像；不写 SQLite；不拥有发行权威               |
 +------------------------+-------------------------------+
                          | 仅 candidate input
                          v
@@ -126,9 +146,9 @@ source distribution 有意包含 `scripts/init_and_start.py`，但它仅是供 o
 +---------------------------------------------------------+
 ```
 
-Windows/WSL2 仅是目标本地 builder、cache 和 GPU-smoke 位置。它可以产生**派生推理**
-smoke evidence；不能成为 canonical writer，也不能替代 protected release evidence。
-GitHub protected automation 是 immutable release evidence 的目标生产者。服务器只拉取
+Windows/WSL2 现在只用于源码检查和 digest 固定的运行时/GPU smoke。它可以产生
+**派生推理** smoke evidence；不能构建发行镜像、成为 canonical writer，也不能替代
+protected release evidence。GitHub protected automation 是 immutable release evidence 的生产者。服务器只拉取
 manifest 固定且已验证的 digest，绝不是 build authority；服务器必须返回有界的 **MCP E2E 回执**，
 之后才可考虑向 **stable-only 发行仓库**交接。
 
