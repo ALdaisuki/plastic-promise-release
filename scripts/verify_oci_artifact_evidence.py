@@ -552,6 +552,11 @@ def _validate_role_package_sbom_inventory(
             set(rootfs_paths),
             label="rootfs-via-sbom-check",
         )
+    # BuildKit's native SPDX attestation may be package-level and omit file
+    # entries.  The final rootfs inventory remains the authoritative closed
+    # role-package proof; when SPDX files are present, they must still match it.
+    if not sbom_paths:
+        return
     if set(sbom_paths) != expected:
         _report_inventory_delta(
             "container_artifact_sbom_role_package_inventory_mismatch",
