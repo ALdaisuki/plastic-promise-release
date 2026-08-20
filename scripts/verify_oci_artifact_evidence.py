@@ -393,6 +393,10 @@ def _package_relative_paths(
         if index < 0:
             continue
         logical = wrapped[index + 1 :]
+        # The receipt is governance metadata stored inside the installed
+        # package so Syft includes it in SPDX, but it is not a source member.
+        if logical.rsplit("/", 1)[-1] == "role-package.receipt.json":
+            continue
         values.setdefault(logical, []).append(path)
     return {key: tuple(sorted(paths)) for key, paths in sorted(values.items())}
 

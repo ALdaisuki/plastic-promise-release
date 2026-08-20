@@ -732,7 +732,7 @@ def test_server_recipe_rejects_cleanup_before_package_install(tmp_path: Path):
     text = target.read_text(encoding="utf-8")
     text = text.replace(
         "RUN python -m pip install --no-cache-dir . \\\n"
-        "    && python -c \"import shutil,site; shutil.move('/app/role-package.receipt.json', site.getsitepackages()[0] + '/role-package.receipt.json')\" \\\n"
+        "    && python -c \"import shutil,site; shutil.move('/app/role-package.receipt.json', site.getsitepackages()[0] + '/plastic_promise/role-package.receipt.json')\" \\\n"
         "    && rm -rf /app/plastic_promise /app/build \\\n",
         "RUN rm -rf /app/plastic_promise\nRUN python -m pip install --no-cache-dir . \\\n",
         1,

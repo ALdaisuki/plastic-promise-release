@@ -87,6 +87,17 @@ def test_oci_layer_inventory_does_not_dereference_symlink_targets(tmp_path: Path
     assert rootfs_paths == {"bin/busybox", "bin/sh"}
 
 
+def test_role_receipt_inside_package_is_not_source_inventory():
+    package_root = "usr/local/lib/python3.12/site-packages/plastic_promise"
+    inventory = (
+        f"{package_root}/__init__.py",
+        f"{package_root}/role-package.receipt.json",
+    )
+    projected = _VERIFY_MODULE._package_relative_paths(inventory)
+    assert "plastic_promise/role-package.receipt.json" not in projected
+    assert projected == {"plastic_promise/__init__.py": (f"{package_root}/__init__.py",)}
+
+
 def _write_oci_layout(
     path: Path,
     *,
@@ -312,8 +323,11 @@ def test_oci_evidence_cli_requires_and_binds_a_complete_compute_role_package(tmp
         f"usr/local/lib/python3/site-packages/{path}" for path in materialized.source_paths
     )
     rootfs_files = {path: path.encode("utf-8") for path in package_paths}
-    rootfs_files["app/role-package.receipt.json"] = receipt_bytes
-    sbom_files = package_paths + ("app/role-package.receipt.json",)
+    receipt_path = (
+        "usr/local/lib/python3.12/site-packages/plastic_promise/role-package.receipt.json"
+    )
+    rootfs_files[receipt_path] = receipt_bytes
+    sbom_files = package_paths + (receipt_path,)
     layout = tmp_path / "compute-role-package.oci.tar"
     output = tmp_path / "receipt.json"
     _write_oci_layout(
