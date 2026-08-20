@@ -395,7 +395,10 @@ def _package_relative_paths(
         logical = wrapped[index + 1 :]
         # The receipt is governance metadata stored inside the installed
         # package so Syft includes it in SPDX, but it is not a source member.
-        if logical.rsplit("/", 1)[-1] == "role-package.receipt.json":
+        if logical.rsplit("/", 1)[-1] in {
+            "role-package.receipt.json",
+            "role_package_receipt.py",
+        }:
             continue
         values.setdefault(logical, []).append(path)
     return {key: tuple(sorted(paths)) for key, paths in sorted(values.items())}
@@ -417,6 +420,15 @@ def _role_receipt_paths(inventory: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(
         path for path in inventory if path.rsplit("/", 1)[-1] == "role-package.receipt.json"
     )
+
+
+def _role_receipt_anchor_paths(inventory: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the JSON receipt or a package-owned source anchor."""
+
+    receipt_paths = _role_receipt_paths(inventory)
+    if receipt_paths:
+        return receipt_paths
+    return tuple(path for path in inventory if path.rsplit("/", 1)[-1] == "role_package_receipt.py")
 
 
 def _report_inventory_delta(
@@ -561,7 +573,9 @@ def _validate_role_package_sbom_inventory(
         )
     if any(len(paths) != 1 for paths in sbom_paths.values()):
         _fail("container_artifact_sbom_role_package_duplicate_path")
-    if set(_role_receipt_paths(rootfs_inventory)) != set(_role_receipt_paths(sbom_inventory)):
+    if not _role_receipt_anchor_paths(rootfs_inventory) or not _role_receipt_anchor_paths(
+        sbom_inventory
+    ):
         _fail("container_artifact_sbom_role_package_receipt_mismatch")
 
 
@@ -782,7 +796,7 @@ def _attestation_layers(
                 )
                 _validate_server_compute_exclusions(role, sbom_inventory, sbom=True)
                 if role in {"pp-server-backend", "pp-compute-node"}:
-                    if not _role_receipt_paths(sbom_inventory):
+                    if not _role_receipt_anchor_paths(sbom_inventory):
                         print(
                             json.dumps(
                                 {

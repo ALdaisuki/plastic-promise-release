@@ -22,8 +22,11 @@ def test_compute_materialization_is_closed_and_has_no_server_surface(tmp_path: P
     assert (tmp_path / "compute" / "pyproject.toml").is_file()
     assert (tmp_path / "compute" / "role-package.receipt.json").is_file()
     assert (tmp_path / "compute" / "plastic_promise" / "role-package.receipt.json").is_file()
+    assert (tmp_path / "compute" / "plastic_promise" / "role_package_receipt.py").is_file()
     metadata = (tmp_path / "compute" / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"plastic_promise" = ["py.typed", "role-package.receipt.json"]' in metadata
+    assert (
+        '"plastic_promise" = ["py.typed", "role-package.receipt.json", "role_package_receipt.py"]'
+    ) in metadata
 
 
 def test_server_materialization_excludes_compute_transport_modules(tmp_path: Path):
@@ -37,7 +40,9 @@ def test_server_materialization_excludes_compute_transport_modules(tmp_path: Pat
     assert "plastic_promise/local_inference_node/app.py" not in files
     assert "plastic_promise/release_builder/cli.py" not in files
     metadata = (tmp_path / "server" / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"plastic_promise" = ["py.typed", "role-package.receipt.json"]' in metadata
+    assert (
+        '"plastic_promise" = ["py.typed", "role-package.receipt.json", "role_package_receipt.py"]'
+    ) in metadata
     assert (
         '"plastic_promise.mcp.dashboard_v2" = ["static/app.css", "static/app.js", '
         '"static/index.html"]'

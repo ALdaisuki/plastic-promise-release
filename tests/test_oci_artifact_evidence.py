@@ -92,10 +92,16 @@ def test_role_receipt_inside_package_is_not_source_inventory():
     inventory = (
         f"{package_root}/__init__.py",
         f"{package_root}/role-package.receipt.json",
+        f"{package_root}/role_package_receipt.py",
     )
     projected = _VERIFY_MODULE._package_relative_paths(inventory)
     assert "plastic_promise/role-package.receipt.json" not in projected
     assert projected == {"plastic_promise/__init__.py": (f"{package_root}/__init__.py",)}
+
+
+def test_role_receipt_anchor_accepts_package_owned_python_marker():
+    inventory = ("usr/local/lib/python3.12/site-packages/plastic_promise/role_package_receipt.py",)
+    assert _VERIFY_MODULE._role_receipt_anchor_paths(inventory) == inventory
 
 
 def _write_oci_layout(
