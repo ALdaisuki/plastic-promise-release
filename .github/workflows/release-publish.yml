@@ -281,9 +281,44 @@ jobs:
             BUILD_POLICY_DIGEST=${{ steps.identities.outputs.compute_cuda_build_policy_digest }}
             RECIPE_POLICY_DIGEST=${{ steps.identities.outputs.compute_cuda_recipe_policy_digest }}
 
+  publish-pypi:
+    name: Publish the exact stable Python distribution to PyPI
+    runs-on: ubuntu-latest
+    environment: production-release
+    needs: [resolve-source, build-python-evidence]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-python-evidence
+          path: dist
+      - name: Verify the downloaded stable distributions
+        env:
+          EXPECTED_VERSION: ${{ needs.resolve-source.outputs.release_version }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          expected = os.environ["EXPECTED_VERSION"].removeprefix("v")
+          distributions = sorted(
+              path.name for path in Path("dist").iterdir()
+              if path.suffix in {".whl", ".gz"}
+          )
+          if not any(expected in name for name in distributions):
+              raise SystemExit("stable_pypi_distribution_missing")
+          print("stable distributions:", ", ".join(distributions))
+          PY
+      - name: Publish the exact stable distributions with PyPI trusted publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
   create-release-manifest:
     name: Bind release evidence to source, hashes, and OCI digests
-    needs: [resolve-source, build-python-evidence, publish-oci-images]
+    needs: [resolve-source, build-python-evidence, publish-oci-images, publish-pypi]
     runs-on: ubuntu-latest
     environment: production-release
     steps:
