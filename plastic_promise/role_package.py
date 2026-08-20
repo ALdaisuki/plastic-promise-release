@@ -136,13 +136,6 @@ class RolePackageCompiler:
                 + "\n",
                 encoding="utf-8",
             )
-            receipt_json = json.dumps(
-                receipt.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
-            (destination / "plastic_promise" / "role_package_receipt.py").write_text(
-                f"# generated role-package SBOM anchor\nRECEIPT_JSON = {receipt_json!r}\n",
-                encoding="utf-8",
-            )
         return receipt
 
     def source_paths_for(self, role: str) -> tuple[str, ...]:
@@ -209,9 +202,7 @@ class RolePackageCompiler:
                 source_root, selected
             ).items()
         }
-        package_data.setdefault("plastic_promise", set()).update(
-            {"role-package.receipt.json", "role_package_receipt.py"}
-        )
+        package_data.setdefault("plastic_promise", set()).add("role-package.receipt.json")
         package_data_block = "\n".join(
             f'"{package}" = [{", ".join(json.dumps(pattern) for pattern in sorted(patterns))}]'
             for package, patterns in sorted(package_data.items())
