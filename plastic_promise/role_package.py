@@ -126,6 +126,16 @@ class RolePackageCompiler:
             + "\n",
             encoding="utf-8",
         )
+        if contract.package_kind == "python":
+            package_receipt = destination / "plastic_promise" / "role-package.receipt.json"
+            package_receipt.parent.mkdir(parents=True, exist_ok=True)
+            package_receipt.write_text(
+                json.dumps(
+                    receipt.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         return receipt
 
     def source_paths_for(self, role: str) -> tuple[str, ...]:
@@ -186,10 +196,16 @@ class RolePackageCompiler:
         script_block = "\n".join(
             f'"{name}" = "{target}"' for name, target in contract.package_scripts
         )
-        package_data = RolePackageCompiler._package_data_for(source_root, selected)
+        package_data = {
+            package: set(patterns)
+            for package, patterns in RolePackageCompiler._package_data_for(
+                source_root, selected
+            ).items()
+        }
+        package_data.setdefault("plastic_promise", set()).add("role-package.receipt.json")
         package_data_block = "\n".join(
-            f'"{package}" = [{", ".join(json.dumps(pattern) for pattern in patterns)}]'
-            for package, patterns in package_data.items()
+            f'"{package}" = [{", ".join(json.dumps(pattern) for pattern in sorted(patterns))}]'
+            for package, patterns in sorted(package_data.items())
         )
         metadata = f'''[build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -263,7 +279,7 @@ def _directory_digest(root: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = _as_posix(path.relative_to(root))
-        if relative == "role-package.receipt.json":
+        if path.name == "role-package.receipt.json":
             continue
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
