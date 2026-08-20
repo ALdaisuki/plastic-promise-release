@@ -210,7 +210,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["plastic_promise*"]
-exclude = ["plastic_promise.tests*", "plastic_promise.skills*"]
+exclude = ["plastic_promise.tests*"]
 
 [tool.setuptools.package-data]
 {package_data_block}

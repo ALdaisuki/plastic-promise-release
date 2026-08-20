@@ -89,6 +89,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     && /opt/plastic-promise-venv/bin/python -m pip install \
         --retries 10 --timeout 60 \
         --index-url "${PIP_INDEX_URL}" . \
+    && /opt/plastic-promise-venv/bin/python -c "import shutil,site; shutil.move('/app/role-package.receipt.json', site.getsitepackages()[0] + '/role-package.receipt.json')" \
     && rm -rf /app/plastic_promise /app/build
 
 ENV PATH="/opt/plastic-promise-venv/bin:${PATH}"

@@ -58,6 +58,7 @@ ENV TZ=UTC \
 WORKDIR /app
 COPY --from=server-package /role-package /app
 RUN python -m pip install --no-cache-dir . \
+    && python -c "import shutil,site; shutil.move('/app/role-package.receipt.json', site.getsitepackages()[0] + '/role-package.receipt.json')" \
     && rm -rf /app/plastic_promise /app/build \
     && useradd --create-home --shell /usr/sbin/nologin ppruntime
 
