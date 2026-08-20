@@ -1,0 +1,38 @@
+{
+  "schema_version": "plastic-promise-model-catalog/v1",
+  "catalog_id": "qwen3-4b-llamacpp-2560-v1",
+  "profile": "split-accelerated",
+  "runtime": "remote-inference",
+  "resource_estimate": {
+    "model_cache_bytes": 5368709120,
+    "minimum_system_memory_bytes": 17179869184,
+    "minimum_gpu_memory_bytes": 8589934592
+  },
+  "capabilities": [
+    {
+      "kind": "embedding",
+      "contract_version": "embedding/v1"
+    },
+    {
+      "kind": "rerank",
+      "contract_version": "rerank/v1"
+    }
+  ],
+  "embedding": {
+    "model": "Qwen3-Embedding-4B-GGUF",
+    "revision": "f4602530db1d980e16da9d7d3a70294cf5c190be",
+    "dimension": 2560,
+    "normalization": "l2",
+    "metric": "cosine",
+    "tokenization": "qwen3",
+    "pooling": "last-token",
+    "artifact_sha256": "sha256:2b0cf8f17b4c723c27303015383c27ec4bf2d8314bb677d05e920dd70bb0f16b",
+    "golden_vector_sha256": "sha256:58b705a81488240af79ab81037c731f421b767d5796b1529be6f4b962f87f8a4"
+  },
+  "rerank": {
+    "model": "Qwen3-Reranker-4B-GGUF",
+    "revision": "1b452c803342e73ac3644551b727dfd51a09fd5b",
+    "artifact_sha256": "sha256:2a693b22cc8122353562c2d261a3894301c14c6eecce7304bc29968f8994258b",
+    "scoring_schema": "rerank-score/v1"
+  }
+}
