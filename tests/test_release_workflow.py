@@ -157,9 +157,23 @@ def test_release_workflow_roles_keep_pr_rc_and_stable_publishing_separate():
     assert "docker/login-action@v3" in stable
     assert "registry: ghcr.io" in stable
     assert "password: ${{ secrets.GITHUB_TOKEN }}" in stable
+    assert "ghcr.io/aldaisuki/plastic-promise-local-edge" in stable
     assert "ghcr.io/aldaisuki/plastic-promise-server" in stable
     assert "ghcr.io/aldaisuki/plastic-promise-local-inference-node" in stable
     assert ":sha-${{ needs.resolve-source.outputs.source_commit }}" in stable
+    assert ":sha-${{ needs.resolve-source.outputs.source_commit }}-cpu" in stable
+    assert ":sha-${{ needs.resolve-source.outputs.source_commit }}-cuda" in stable
+    assert "Publish multi-architecture local-edge image by immutable digest" in stable
+    assert "Publish multi-architecture CPU inference-node image by immutable digest" in stable
+    assert "Publish Linux NVIDIA inference-node image by immutable digest" in stable
+    assert "Enforce the compressed CUDA control-image size budget" in stable
+    assert 'MAX_COMPRESSED_BYTES: "1073741824"' in stable
+    assert "stable_cuda_control_image_size_budget_exceeded" in stable
+    assert "platforms: linux/amd64,linux/arm64" in stable
+    assert "COMPUTE_VARIANT=cpu" in stable
+    assert "COMPUTE_VARIANT=cuda" in stable
+    for image_name in ("local-edge", "server", "inference-cpu", "inference-node"):
+        assert f'--image "{image_name}=' in stable
     assert "resolve-source:" in stable
     assert "stable_source_commit_sha_required" in stable
     assert "stable_release_version_required" in stable

@@ -33,7 +33,9 @@ _RELEASE_VERSION = re.compile(
 _COMMIT_SHA = re.compile(r"^[0-9a-f]{40,64}$")
 _OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REQUIRED_IMAGE_PLATFORMS = {
+    "local-edge": ("linux/amd64", "linux/arm64"),
     "server": ("linux/amd64", "linux/arm64"),
+    "inference-cpu": ("linux/amd64", "linux/arm64"),
     "inference-node": ("linux/amd64",),
 }
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -407,7 +409,9 @@ def validate_release_manifest(payload: Mapping[str, Any]) -> None:
         for item in images
         if isinstance(item, Mapping) and isinstance(item.get("name"), str)
     }
-    if set(images_by_name) != set(_REQUIRED_IMAGE_PLATFORMS) or len(images) != 2:
+    if set(images_by_name) != set(_REQUIRED_IMAGE_PLATFORMS) or len(images) != len(
+        _REQUIRED_IMAGE_PLATFORMS
+    ):
         raise ReleaseManifestError("release_manifest_image_set_invalid")
     for name, platforms in _REQUIRED_IMAGE_PLATFORMS.items():
         image = images_by_name[name]

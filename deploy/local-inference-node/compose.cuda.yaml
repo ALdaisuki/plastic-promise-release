@@ -1,6 +1,8 @@
-# CUDA ``pp-compute-node`` build and runtime template. NVIDIA access is the
-# only difference from compose.cpu.yaml; both variants expose the same typed
-# embedding/v1 and rerank/v1 contracts and mount model files read-only.
+# CUDA-aware ``pp-compute-node`` control-plane template. NVIDIA access is used
+# for resource telemetry and overload avoidance; model execution and CUDA
+# libraries stay in the operator-managed llama.cpp workers. Both variants
+# expose the same typed embedding/v1, rerank/v1, and structured-json/v1
+# contracts and mount model files read-only.
 services:
   pp-compute-node:
     build:

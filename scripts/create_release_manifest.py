@@ -47,7 +47,10 @@ def _parser() -> argparse.ArgumentParser:
         type=_image_reference,
         default=[],
         metavar="NAME=REFERENCE",
-        help="Immutable OCI reference; provide server and inference-node exactly once",
+        help=(
+            "Immutable OCI reference; provide local-edge, server, inference-cpu, "
+            "and inference-node exactly once"
+        ),
     )
     parser.add_argument("--workflow-ref", required=True, help="Public GitHub Actions run URL")
     parser.add_argument("--output", type=Path, required=True, help="New output manifest path")
