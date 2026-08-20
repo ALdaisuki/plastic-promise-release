@@ -177,9 +177,9 @@ adapter：
   绑定，因此中批 A->B->A 替换无法被完全排除；把这些向量交给 LanceDB generation
   仍需要单独验证的 shadow rebuild 与 promotion 门控。Ollama 永远不会获得
   canonical-state access；
-- `qwen3-cross-encoder` rerank（`Qwen/Qwen3-Reranker-4B`）：在 CUDA compose worker
-  上通过 sentence-transformers `CrossEncoder` 以 `local_files_only=True` 加载（CPU
-  compose 变体自动回退到 CPU），使用官方 raw-logit CrossEncoder 算法打分。
+- `qwen3-cross-encoder` rerank（`Qwen/Qwen3-Reranker-4B`）：可由独立部署的可选
+  worker 通过 `local_files_only=True` 与官方 raw-logit CrossEncoder 算法加载。
+  `pp-compute-node` 控制容器本身不内置 PyTorch、Triton、CUDA library 或模型权重。
 
 Model weight 必须已经位于操作者选择的本地缓存，或由安装向导显式下载；节点启动时
 不会静默拉取或替换模型。
@@ -212,9 +212,9 @@ Windows 上的
 调用 `wsl.exe -d <distro> -e docker`；宿主全局 `socat` context 只允许显式选择。JSON
 报告采用 fail-closed 合同，只有 `ready=true` 才允许持久化引导继续。
 
-Windows 构建会在 compose 前检查 `Python.h`、`gcc` 和 `g++`。旧缓存镜像缺少 Triton
-JIT 依赖时，只增加有界 overlay 修复层并再次验证；在 `-NoStart` 返回前，镜像已经
-别名到所选 CPU/CUDA compose image。WSL 原生 compose env 使用 `/mnt/*` 模型路径，
+Windows 构建会在 compose 前检查 Python package toolchain。模型 worker 的依赖由其
+独立安装流程提供并验证，不再修补进 compute 控制容器；在 `-NoStart` 返回前，镜像
+已经别名到所选 CPU/CUDA control image。WSL 原生 compose env 使用 `/mnt/*` 模型路径，
 Windows 宿主操作仍保留原生盘符路径。
 
 ## Source recipe / 目标 Docker 和 WSL2 boundary（PR 3）
@@ -231,8 +231,8 @@ build policy 要求 non-root、read-only-rootfs descriptor 与 loopback listener
 layer 的 model weight、任意 shell/tool access 与 canonical authority。CPU/CUDA 保持在相同
 `embedding/v1` / `rerank/v1` contract 之后；CUDA 限于其支持的 platform policy。
 
-`node-tmp` 挂载必须保持 `exec`，因为 Triton JIT 需要从该目录映射编译出的 CUDA
-shim；有界 `node-runtime` tmpfs 仍保持不可执行。
+compute 控制容器的 `node-tmp` 与 `node-runtime` tmpfs 均保持不可执行。真正需要 JIT
+可执行临时目录的 worker 必须在自己的独立 runtime boundary 中声明该例外。
 
 Buildx 获得任何 argument 前，builder 会通过
 [`validate_container_artifact_policy.py`](../../scripts/validate_container_artifact_policy.py)
@@ -241,6 +241,9 @@ Buildx 获得任何 argument 前，builder 会通过
 identity。resolver 提供 immutable base reference/digest、source revision、package version、
 build-policy digest、recipe-policy digest 与 expected label；不得以 local tag 或自行选择的
 base image 替换它。
+两个 control-node 变体都刻意使用精简 Python 基础镜像。CUDA 变体的区别是 GPU 可见性、
+资源遥测与路由策略；CUDA library 与模型执行由操作者管理的 llama.cpp worker 负责，
+避免在不执行 kernel 的控制容器中重复携带 CUDA/cuDNN 大层。
 
 Windows/WSL2 local builder 会校验构建后 image 的 source revision、base-image
 reference/digest、build-policy digest 与 recipe-policy digest label。该检查只确认 local image

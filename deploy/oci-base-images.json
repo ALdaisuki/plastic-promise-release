@@ -22,7 +22,7 @@
     {
       "role": "pp-compute-node",
       "variant": "cuda",
-      "reference": "nvidia/cuda@sha256:2fcc4280646484290cc50dce5e65f388dd04352b07cbe89a635703bd1f9aedb6",
+      "reference": "python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2",
       "platforms": ["linux/amd64"]
     }
   ]

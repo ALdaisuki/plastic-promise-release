@@ -253,7 +253,7 @@ def test_public_deployment_policy_import_does_not_require_http_adapter(tmp_path:
     assert "plastic-promise-container-recipe-policy/v1" in result.stdout
 
 
-def test_recipe_tmpfs_policy_allows_compute_jit_but_keeps_server_noexec():
+def test_recipe_tmpfs_policy_keeps_compute_control_and_server_noexec():
     repository_root = Path(__file__).resolve().parents[1]
     compute_paths = (
         "deploy/local-inference-node/compose.yaml",
@@ -263,8 +263,8 @@ def test_recipe_tmpfs_policy_allows_compute_jit_but_keeps_server_noexec():
 
     for relative_path in compute_paths:
         compose = (repository_root / relative_path).read_text(encoding="utf-8")
-        assert "/tmp:rw,exec,nosuid,size=512m" in compose
-        assert "/tmp:rw,noexec,nosuid,size=512m" not in compose
+        assert "/tmp:rw,noexec,nosuid,size=512m" in compose
+        assert "/tmp:rw,exec,nosuid,size=512m" not in compose
 
     server_compose = (repository_root / "deploy/server/compose.yaml").read_text(encoding="utf-8")
     assert "/tmp:rw,noexec,nosuid,size=256m" in server_compose

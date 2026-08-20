@@ -227,10 +227,10 @@ package extra supplies governed adapters behind the same fixed contract:
   excluded; exposing these vectors to a LanceDB generation still requires a
   separately verified shadow rebuild and promotion gate. Ollama never receives
   canonical-state access;
-- `qwen3-cross-encoder` rerank (`Qwen/Qwen3-Reranker-4B`): loaded through
-  sentence-transformers `CrossEncoder` with `local_files_only=True` on the CUDA
-  compose worker (the CPU compose variant falls back to CPU automatically),
-  scoring with the official raw-logit CrossEncoder algorithm.
+- `qwen3-cross-encoder` rerank (`Qwen/Qwen3-Reranker-4B`): an optional,
+  separately deployed worker may load it with `local_files_only=True` and the
+  official raw-logit CrossEncoder algorithm. The `pp-compute-node` control
+  container never embeds PyTorch, Triton, CUDA libraries, or model weights.
 
 Model weights must already exist in an operator-selected local cache or be
 downloaded by the installation wizard. Plastic Promise does not silently pull
@@ -272,11 +272,12 @@ and BuildKit when direct access is unavailable. The normal native path invokes
 Its JSON report is fail-closed: `ready=true` is required before the persisted
 bootstrap proceeds.
 
-The Windows build checks `Python.h`, `gcc`, and `g++` before composing the node.
-An old cache missing those Triton JIT dependencies receives a bounded overlay
-repair, is re-verified, and is aliased to the selected CPU/CUDA compose image
-before `-NoStart` may return. WSL-native compose environment files use `/mnt/*`
-model paths, while Windows host operations retain native drive paths.
+The Windows build checks the Python package toolchain before composing the
+control node. Model-worker dependencies are provisioned and verified by their
+own worker setup rather than repaired into this image. The selected CPU/CUDA
+control image is aliased before `-NoStart` may return. WSL-native compose
+environment files use `/mnt/*` model paths, while Windows host operations
+retain native drive paths.
 
 ## Source recipe / target Docker and WSL2 boundary (PR 3)
 
@@ -295,8 +296,9 @@ layers, arbitrary shell/tool access, and canonical authority. CPU and CUDA
 remain variants behind the same `embedding/v1` / `rerank/v1` contract; CUDA is
 limited to its supported platform policy.
 
-The `node-tmp` mount stays `exec` because Triton JIT maps its compiled CUDA
-shim from there; the bounded `node-runtime` tmpfs remains non-executable.
+The control node uses non-executable `node-tmp` and `node-runtime` tmpfs
+mounts. Any worker that genuinely requires executable JIT scratch space owns
+that exception in its separate runtime boundary.
 
 Before Buildx receives any arguments, the builder uses
 [`validate_container_artifact_policy.py`](../../scripts/validate_container_artifact_policy.py)
@@ -306,6 +308,11 @@ to derive the CPU or CUDA identity from the versioned
 resolver supplies the immutable base reference/digest, source revision, package
 version, build-policy digest, recipe-policy digest, and expected labels; it is
 not valid to substitute a local tag or independently selected base image.
+Both control-node variants intentionally use the slim Python base. The CUDA
+variant differs through GPU visibility, resource telemetry, and routing
+policy; operator-managed llama.cpp workers own CUDA and model execution. This
+keeps the published control image small and prevents CUDA/cuDNN layers from
+being duplicated in a container that never executes kernels.
 
 The Windows/WSL2 local builder checks the built image labels for source
 revision, base-image reference/digest, build-policy digest, and recipe-policy

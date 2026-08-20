@@ -130,8 +130,11 @@ jobs:
     environment: production-release
     needs: resolve-source
     outputs:
+      local_edge_digest: ${{ steps.local-edge.outputs.digest }}
       server_digest: ${{ steps.server.outputs.digest }}
+      inference_cpu_digest: ${{ steps.inference-cpu.outputs.digest }}
       inference_node_digest: ${{ steps.inference-node.outputs.digest }}
+      local_edge_repository: ${{ steps.images.outputs.local_edge_repository }}
       server_repository: ${{ steps.images.outputs.server_repository }}
       inference_node_repository: ${{ steps.images.outputs.inference_node_repository }}
     steps:
@@ -215,9 +218,11 @@ jobs:
               "${variant_args[@]}" \
               --output "dist/build-identities/${name}.json" >/dev/null
           }
+          resolve_identity local-edge pp-local-edge linux/amd64
           resolve_identity server pp-server-backend linux/amd64
+          resolve_identity compute-cpu pp-compute-node linux/amd64 cpu
           resolve_identity compute-cuda pp-compute-node linux/amd64 cuda
-          for role in server compute-cuda; do
+          for role in local-edge server compute-cpu compute-cuda; do
             file="dist/build-identities/${role}.json"
             prefix="${role//-/_}"
             echo "${prefix}_base_image=$(jq -er '.build_args.BASE_IMAGE' "$file")" >> "$GITHUB_OUTPUT"
@@ -227,6 +232,7 @@ jobs:
           done
       - id: images
         run: |
+          echo "local_edge_repository=ghcr.io/aldaisuki/plastic-promise-local-edge" >> "$GITHUB_OUTPUT"
           echo "server_repository=ghcr.io/aldaisuki/plastic-promise-server" >> "$GITHUB_OUTPUT"
           echo "inference_node_repository=ghcr.io/aldaisuki/plastic-promise-local-inference-node" >> "$GITHUB_OUTPUT"
       - name: Log in to GitHub Container Registry with the workflow token
@@ -235,6 +241,28 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: local-edge
+        name: Publish multi-architecture local-edge image by immutable digest
+        uses: docker/build-push-action@v6
+        with:
+          builder: plastic-promise-oci
+          context: .
+          file: deploy/local-edge/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.images.outputs.local_edge_repository }}:${{ needs.resolve-source.outputs.release_version }}
+            ${{ steps.images.outputs.local_edge_repository }}:sha-${{ needs.resolve-source.outputs.source_commit }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.resolve-source.outputs.source_commit }}
+            org.opencontainers.image.version=${{ needs.resolve-source.outputs.release_version }}
+          build-args: |
+            BASE_IMAGE=${{ steps.identities.outputs.local_edge_base_image }}
+            BASE_IMAGE_DIGEST=${{ steps.identities.outputs.local_edge_base_image_digest }}
+            SOURCE_REVISION=${{ needs.resolve-source.outputs.source_commit }}
+            PACKAGE_VERSION=${{ needs.resolve-source.outputs.release_version }}
+            BUILD_POLICY_DIGEST=${{ steps.identities.outputs.local_edge_build_policy_digest }}
+            RECIPE_POLICY_DIGEST=${{ steps.identities.outputs.local_edge_recipe_policy_digest }}
       - id: server
         name: Publish multi-architecture server image by immutable digest
         uses: docker/build-push-action@v6
@@ -257,6 +285,30 @@ jobs:
             PACKAGE_VERSION=${{ needs.resolve-source.outputs.release_version }}
             BUILD_POLICY_DIGEST=${{ steps.identities.outputs.server_build_policy_digest }}
             RECIPE_POLICY_DIGEST=${{ steps.identities.outputs.server_recipe_policy_digest }}
+      - id: inference-cpu
+        name: Publish multi-architecture CPU inference-node image by immutable digest
+        uses: docker/build-push-action@v6
+        with:
+          builder: plastic-promise-oci
+          context: .
+          file: deploy/local-inference-node/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.images.outputs.inference_node_repository }}:${{ needs.resolve-source.outputs.release_version }}-cpu
+            ${{ steps.images.outputs.inference_node_repository }}:sha-${{ needs.resolve-source.outputs.source_commit }}-cpu
+          labels: |
+            org.opencontainers.image.revision=${{ needs.resolve-source.outputs.source_commit }}
+            org.opencontainers.image.version=${{ needs.resolve-source.outputs.release_version }}
+            org.plastic-promise.compute.variant=cpu
+          build-args: |
+            BASE_IMAGE=${{ steps.identities.outputs.compute_cpu_base_image }}
+            BASE_IMAGE_DIGEST=${{ steps.identities.outputs.compute_cpu_base_image_digest }}
+            SOURCE_REVISION=${{ needs.resolve-source.outputs.source_commit }}
+            PACKAGE_VERSION=${{ needs.resolve-source.outputs.release_version }}
+            COMPUTE_VARIANT=cpu
+            BUILD_POLICY_DIGEST=${{ steps.identities.outputs.compute_cpu_build_policy_digest }}
+            RECIPE_POLICY_DIGEST=${{ steps.identities.outputs.compute_cpu_recipe_policy_digest }}
       - id: inference-node
         name: Publish Linux NVIDIA inference-node image by immutable digest
         uses: docker/build-push-action@v6
@@ -267,11 +319,12 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ${{ steps.images.outputs.inference_node_repository }}:${{ needs.resolve-source.outputs.release_version }}
-            ${{ steps.images.outputs.inference_node_repository }}:sha-${{ needs.resolve-source.outputs.source_commit }}
+            ${{ steps.images.outputs.inference_node_repository }}:${{ needs.resolve-source.outputs.release_version }}-cuda
+            ${{ steps.images.outputs.inference_node_repository }}:sha-${{ needs.resolve-source.outputs.source_commit }}-cuda
           labels: |
             org.opencontainers.image.revision=${{ needs.resolve-source.outputs.source_commit }}
             org.opencontainers.image.version=${{ needs.resolve-source.outputs.release_version }}
+            org.plastic-promise.compute.variant=cuda
           build-args: |
             BASE_IMAGE=${{ steps.identities.outputs.compute_cuda_base_image }}
             BASE_IMAGE_DIGEST=${{ steps.identities.outputs.compute_cuda_base_image_digest }}
@@ -280,6 +333,38 @@ jobs:
             COMPUTE_VARIANT=cuda
             BUILD_POLICY_DIGEST=${{ steps.identities.outputs.compute_cuda_build_policy_digest }}
             RECIPE_POLICY_DIGEST=${{ steps.identities.outputs.compute_cuda_recipe_policy_digest }}
+      - name: Enforce the compressed CUDA control-image size budget
+        env:
+          IMAGE_REPOSITORY: ${{ steps.images.outputs.inference_node_repository }}
+          IMAGE_DIGEST: ${{ steps.inference-node.outputs.digest }}
+          MAX_COMPRESSED_BYTES: "1073741824"
+        run: |
+          set -euo pipefail
+          image="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          docker buildx imagetools inspect --raw "$image" > /tmp/cuda-index.json
+          manifest_digest="$(
+            jq -r '
+              if .manifests then
+                .manifests[]
+                | select(.platform.os == "linux" and .platform.architecture == "amd64")
+                | .digest
+              else empty end
+            ' /tmp/cuda-index.json | head -n 1
+          )"
+          if [ -n "$manifest_digest" ]; then
+            docker buildx imagetools inspect --raw \
+              "${IMAGE_REPOSITORY}@${manifest_digest}" > /tmp/cuda-manifest.json
+          else
+            cp /tmp/cuda-index.json /tmp/cuda-manifest.json
+          fi
+          compressed_bytes="$(
+            jq -er '[.config.size, (.layers[] | .size)] | add' /tmp/cuda-manifest.json
+          )"
+          echo "CUDA control image compressed bytes: ${compressed_bytes}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$compressed_bytes" -gt "$MAX_COMPRESSED_BYTES" ]; then
+            echo "stable_cuda_control_image_size_budget_exceeded:${compressed_bytes}" >&2
+            exit 1
+          fi
 
   publish-pypi:
     name: Publish the exact stable Python distribution to PyPI
@@ -339,7 +424,9 @@ jobs:
             --source-commit "${{ needs.resolve-source.outputs.source_commit }}" \
             --dist-dir dist \
             --sbom dist/sbom.cdx.json \
+            --image "local-edge=${{ needs.publish-oci-images.outputs.local_edge_repository }}@${{ needs.publish-oci-images.outputs.local_edge_digest }}" \
             --image "server=${{ needs.publish-oci-images.outputs.server_repository }}@${{ needs.publish-oci-images.outputs.server_digest }}" \
+            --image "inference-cpu=${{ needs.publish-oci-images.outputs.inference_node_repository }}@${{ needs.publish-oci-images.outputs.inference_cpu_digest }}" \
             --image "inference-node=${{ needs.publish-oci-images.outputs.inference_node_repository }}@${{ needs.publish-oci-images.outputs.inference_node_digest }}" \
             --workflow-ref "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --output dist/release-manifest.json

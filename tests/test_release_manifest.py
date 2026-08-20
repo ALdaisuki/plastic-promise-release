@@ -57,7 +57,11 @@ def _release_inputs(tmp_path: Path) -> dict[str, object]:
         "dist_directory": dist_directory,
         "sbom_path": sbom_path,
         "image_references": {
+            "local-edge": "ghcr.io/aldaisuki/plastic-promise-local-edge@sha256:"
+            + ("d" * 64),
             "server": "ghcr.io/aldaisuki/plastic-promise-server@sha256:" + ("b" * 64),
+            "inference-cpu": "ghcr.io/aldaisuki/plastic-promise-local-inference-node@sha256:"
+            + ("e" * 64),
             "inference-node": "ghcr.io/aldaisuki/plastic-promise-local-inference-node@sha256:"
             + ("c" * 64),
         },
@@ -78,7 +82,9 @@ def test_release_manifest_binds_semver_source_python_artifacts_and_oci_digests(t
     assert {artifact["kind"] for artifact in payload["artifacts"]} == {"wheel", "sdist"}
     image_platforms = {image["name"]: image["platforms"] for image in payload["images"]}
     assert image_platforms == {
+        "local-edge": ["linux/amd64", "linux/arm64"],
         "server": ["linux/amd64", "linux/arm64"],
+        "inference-cpu": ["linux/amd64", "linux/arm64"],
         "inference-node": ["linux/amd64"],
     }
 

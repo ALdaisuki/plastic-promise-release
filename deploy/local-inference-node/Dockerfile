@@ -2,7 +2,10 @@
 
 # ``BASE_IMAGE`` and ``COMPUTE_VARIANT`` form an explicit CPU/CUDA build
 # matrix. The caller must supply the immutable base reference declared in
-# deploy/oci-base-images.json. Host Ollama is intentionally not embedded: it
+# deploy/oci-base-images.json. The control node does not execute CUDA kernels;
+# the CUDA variant grants GPU visibility for resource telemetry while the
+# operator-managed llama.cpp workers own model execution and CUDA libraries.
+# Host Ollama is intentionally not embedded: it
 # remains an external compatibility adapter rather than a model/runtime
 # dependency of this image. The node's supported local default is llama.cpp,
 # whose OpenAI-compatible embedding and rerank servers are operator-managed

@@ -1325,7 +1325,7 @@ class StaticRecipePolicyValidator:
         ]:
             raise ContainerArtifactError("container_recipe_compute_contract_invalid")
         if service.get("tmpfs") != [
-            "/tmp:rw,exec,nosuid,size=512m",
+            "/tmp:rw,noexec,nosuid,size=512m",
             "/var/lib/plastic-promise/compute-node:rw,noexec,nosuid,size=128m",
         ]:
             raise ContainerArtifactError("container_recipe_compute_contract_invalid")
