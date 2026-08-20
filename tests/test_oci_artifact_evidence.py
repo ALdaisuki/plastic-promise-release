@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -22,6 +23,11 @@ from plastic_promise.endpoint_roles import PP_SERVER_BACKEND, endpoint_role_cont
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 VERIFY_SCRIPT = REPOSITORY_ROOT / "scripts" / "verify_oci_artifact_evidence.py"
+_VERIFY_SPEC = importlib.util.spec_from_file_location("verify_oci_artifact_evidence", VERIFY_SCRIPT)
+assert _VERIFY_SPEC is not None and _VERIFY_SPEC.loader is not None
+_VERIFY_MODULE = importlib.util.module_from_spec(_VERIFY_SPEC)
+_VERIFY_SPEC.loader.exec_module(_VERIFY_MODULE)
+_apply_layer = _VERIFY_MODULE._apply_layer
 SOURCE_REVISION = "a" * 40
 CATALOG_DIGEST = "sha256:" + ("b" * 64)
 COLLABORATION_FILES = tuple(
@@ -57,6 +63,28 @@ def _tar_layer(paths: tuple[str, ...] | dict[str, bytes]) -> bytes:
             info.size = len(value)
             archive.addfile(info, BytesIO(value))
     return payload.getvalue()
+
+
+def _tar_layer_with_symlink() -> bytes:
+    payload = BytesIO()
+    with tarfile.open(fileobj=payload, mode="w") as archive:
+        target = tarfile.TarInfo("bin/busybox")
+        target.size = len(b"busybox")
+        archive.addfile(target, BytesIO(b"busybox"))
+        link = tarfile.TarInfo("bin/sh")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "bin//bin/busybox"
+        archive.addfile(link)
+    return payload.getvalue()
+
+
+def test_oci_layer_inventory_does_not_dereference_symlink_targets(tmp_path: Path):
+    """Base-image symlinks must not make evidence parsing fail closed."""
+
+    payload = _tar_layer_with_symlink()
+    rootfs_paths: set[str] = set()
+    _apply_layer(rootfs_paths, payload)
+    assert rootfs_paths == {"bin/busybox", "bin/sh"}
 
 
 def _write_oci_layout(

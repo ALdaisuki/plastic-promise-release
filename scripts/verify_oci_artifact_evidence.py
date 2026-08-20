@@ -194,7 +194,14 @@ def _apply_layer(
             member_data = []
             for member in archive.getmembers():
                 data = None
-                if not member.isdir():
+                # OCI base images commonly contain absolute or normalized
+                # symlink targets (for example ``bin/sh -> bin/busybox``).
+                # ``TarFile.extractfile`` follows those links and can reject
+                # an otherwise valid layer when the target is represented
+                # with a different path spelling.  Evidence needs the
+                # logical inventory and bytes of regular files only; retain
+                # symlink/hardlink entries without dereferencing them.
+                if member.isfile():
                     extracted = archive.extractfile(member)
                     if extracted is None:
                         raise OciEvidenceError("container_artifact_oci_layer_invalid")
