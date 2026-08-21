@@ -141,5 +141,33 @@ class ResolveEndpointsPathTest(unittest.TestCase):
             self.assertIsNone(hs.resolve_endpoints_path(None, None, home=Path(tmp)))
 
 
+class ProbeHeaderTest(unittest.TestCase):
+    def test_bearer_prefix_idempotent(self) -> None:
+        import urllib.request
+        captured = {}
+        class FakeResponse:
+            status = 200
+            def read(self, n=-1):
+                return b"{}"
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+        def fake_urlopen(request, timeout=None):
+            captured["headers"] = dict(request.header_items())
+            return FakeResponse()
+        original = hs.urllib.request.urlopen
+        hs.urllib.request.urlopen = fake_urlopen
+        try:
+            hs.probe_health("http://127.0.0.1:1", "Bearer abc", 2)
+            once = captured["headers"].get("Authorization")
+            hs.probe_health("http://127.0.0.1:1", "abc", 2)
+            twice = captured["headers"].get("Authorization")
+        finally:
+            hs.urllib.request.urlopen = original
+        self.assertEqual(once, "Bearer abc")
+        self.assertEqual(twice, "Bearer abc")
+
+
 if __name__ == "__main__":
     unittest.main()

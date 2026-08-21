@@ -145,7 +145,8 @@ def probe_health(base_url: str, token: str | None, timeout: float) -> dict[str, 
 
     headers = {"Accept": "application/json"}
     if token:
-        headers["Authorization"] = "Bearer " + token
+        # Keychain may store the full header value; keep the prefix idempotent.
+        headers["Authorization"] = token if token.startswith("Bearer ") else "Bearer " + token
     request = urllib.request.Request(
         base_url.rstrip("/") + "/health", headers=headers, method="GET"
     )
