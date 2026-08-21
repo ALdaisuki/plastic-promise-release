@@ -356,5 +356,4 @@ step-closure(
   one-time onboard trust bootstrap with a launchd-managed tunnel service,
   canonical endpoints-file resolution, and bearer-prefix idempotency fixes
   through PR #10.
-- Verification status is **Draft/BLOCK**. Final whole-repository verification and
-  mandatory high-risk review complete before release synchronization.
+- Release verification for `0.2.16` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.

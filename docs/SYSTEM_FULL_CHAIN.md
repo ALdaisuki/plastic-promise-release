@@ -2,7 +2,7 @@
 
 > Release-facing overview. This document describes the system shape and operating principles without exposing private planning artifacts.
 >
-> 版本: 0.2.15 | 日期: 2026-08-19
+> 版本: 0.2.16 | 日期: 2026-08-22
 
 ## 1. What this system is
 
