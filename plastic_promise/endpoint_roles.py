@@ -452,6 +452,10 @@ _ROLE_CONTRACTS: Mapping[str, EndpointRoleContract] = MappingProxyType(
                     "plastic-promise-canonical-runtime",
                     "plastic_promise.deployment.runtime_lock:main",
                 ),
+                (
+                    "plastic-promise-streamable-http",
+                    "plastic_promise:main_streamable_http",
+                ),
             ),
         ),
         PP_COMPUTE_NODE: EndpointRoleContract(
