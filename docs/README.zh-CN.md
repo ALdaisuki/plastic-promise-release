@@ -103,8 +103,13 @@ Plastic Promise 面向需要长期上下文、明确治理规则和可审计任�
 
 ### 安装
 
-> 当前尚未发布到 PyPI。请使用源码安装，或使用经过审查的 wheel/OCI 制品。
-> 只有 stable PyPI 发行完成后，`pip install plastic-promise` 才是有效安装命令。
+从 PyPI 安装已审查的稳定包：
+
+```bash
+pip install plastic-promise
+```
+
+源码检出或本地开发请改用仓库安装：
 
 ```bash
 git clone https://github.com/ALdaisuki/plastic-promise-release.git

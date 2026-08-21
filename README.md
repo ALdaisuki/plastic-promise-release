@@ -300,9 +300,13 @@ Full architecture diagrams:
 
 ### Install
 
-> PyPI publication is not available yet. Use a source checkout or a reviewed
-> wheel/OCI artifact. The command `pip install plastic-promise` becomes valid
-> only after the stable PyPI release is published.
+Install the reviewed stable package from PyPI:
+
+```bash
+pip install plastic-promise
+```
+
+For a source checkout or local development, install from the repository instead:
 
 ```bash
 # From source
