@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Released version: `0.2.15`.
+## [0.2.16] - 2026-08-21
+
+### Added
+
+- Added one-click compute-node private-transport handshake tooling:
+  `plastic-promise-deploy.sh handshake` establishes or verifies the governed
+  node retrieval route through the deployment endpoints file, and `onboard`
+  performs one-time SSH key trust bootstrap plus a launchd-managed tunnel
+  service (`KeepAlive`) that survives reboots and network interruptions.
+- Added canonical endpoints-file resolution: explicit flag, then
+  `PP_NODE_PRIVATE_ENDPOINTS_FILE`, then the deployed mac-server default, so
+  routine invocations no longer need `--endpoints`.
+
+### Changed
+
+- Handshake `--mode verify` is now the idempotent health-check entry point;
+  mutation is reserved for `establish`/`onboard` modes.
+
+### Fixed
+
+- Kept the `Bearer` authorization prefix idempotent when the deployment
+  keychain stores the complete header value.
+- Made handshake `--dry-run` strictly side-effect free (no runtime kickstart).
 
 ## [0.2.15] - 2026-08-19
 
