@@ -475,7 +475,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: stable-python-evidence
-          path: dist
+          path: .
       - name: Create the immutable release manifest
         run: |
           python scripts/create_release_manifest.py \
