@@ -38,6 +38,7 @@ DEFAULT_KEYCHAIN_SERVICE = "plastic-promise-compute-windows-5080"
 DEFAULT_RUNTIME_SERVICE = "org.plastic-promise.mac-canonical-runtime"
 DEFAULT_SSH_USER = "plastic"
 DEFAULT_SSH_KEY = "~/.ssh/id_ed25519_plastic_promise"
+DEFAULT_ENDPOINTS_PATH = "~/.local/share/plastic-promise/mac-server/private-node-endpoints.json"
 COMMON_REMOTE_PORTS = (8080, 8000, 1337, 5000, 11434, 7860, 3000, 9000)
 SSH_FORWARDED_PREFIX = "ssh-local-forward-"
 
@@ -411,6 +412,21 @@ def run_onboard(args, *, local_port: int, base_url: str, token: str | None) -> d
     return result
 
 
+def resolve_endpoints_path(
+    explicit: str | Path | None,
+    env_value: str | None = None,
+    home: Path | None = None,
+) -> Path | None:
+    # Resolve endpoints file: explicit flag, then env, then canonical default.
+
+    if explicit:
+        return Path(explicit).expanduser()
+    if env_value:
+        return Path(env_value).expanduser()
+    base = (home or Path.home()) / ".local/share/plastic-promise/mac-server/private-node-endpoints.json"
+    return base if base.exists() else None
+
+
 # ------------------------------------------------------------------------ main
 
 
@@ -435,10 +451,14 @@ def main(argv: list[str] | None = None) -> int:
 
     verdict: dict[str, Any] = {"tool": "compute_node_handshake", "ok": False}
     try:
-        endpoints_path = args.endpoints or os.environ.get("PP_NODE_PRIVATE_ENDPOINTS_FILE")
+        endpoints_path = resolve_endpoints_path(
+            args.endpoints, os.environ.get("PP_NODE_PRIVATE_ENDPOINTS_FILE")
+        )
         if not endpoints_path:
-            raise ValueError("endpoints_source_unspecified")
-        nodes = load_nodes(Path(endpoints_path).expanduser())
+            raise ValueError(
+                "endpoints_source_unspecified: pass --endpoints or install the mac deployment"
+            )
+        nodes = load_nodes(endpoints_path)
         node = select_node(nodes, args.node_id)
         node_id = str(node.get("node_id"))
         transport_id = str(node.get("transport_id"))
@@ -462,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
             onboard = run_onboard(args, local_port=local_port, base_url=base_url, token=token)
             verdict.update(onboard)
             verdict["ok"] = bool(onboard.get("ok"))
-            if verdict["ok"] and args.restart_runtime:
+            if verdict["ok"] and args.restart_runtime and not args.dry_run:
                 verdict["restart"] = restart_runtime(args.runtime_service)
             print(json.dumps(verdict, ensure_ascii=False))
             return 0 if verdict.get("ok") else 1

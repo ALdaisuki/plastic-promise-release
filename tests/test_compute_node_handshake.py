@@ -114,5 +114,32 @@ class OnboardHelpersTest(unittest.TestCase):
         self.assertEqual(plist["ProgramArguments"], ["/usr/bin/ssh", "-N"])
 
 
+
+
+class ResolveEndpointsPathTest(unittest.TestCase):
+    def test_explicit_wins(self) -> None:
+        resolved = hs.resolve_endpoints_path("/tmp/e.json", "/tmp/other.json")
+        self.assertEqual(resolved, Path("/tmp/e.json"))
+
+    def test_env_second(self) -> None:
+        resolved = hs.resolve_endpoints_path(None, "/tmp/env.json")
+        self.assertEqual(resolved, Path("/tmp/env.json"))
+
+    def test_canonical_default_when_present(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            target = home / ".local/share/plastic-promise/mac-server"
+            target.mkdir(parents=True)
+            (target / "private-node-endpoints.json").write_text("{}", encoding="utf-8")
+            resolved = hs.resolve_endpoints_path(None, None, home=home)
+            self.assertEqual(resolved, target / "private-node-endpoints.json")
+
+    def test_none_when_missing(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(hs.resolve_endpoints_path(None, None, home=Path(tmp)))
+
+
 if __name__ == "__main__":
     unittest.main()
