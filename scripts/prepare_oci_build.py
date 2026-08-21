@@ -29,6 +29,9 @@ DEFAULT_BUILDER_NAME = "plastic-promise-oci"
 RETENTION_LABEL = "com.plastic-promise.retention"
 RETENTION_PROTECT_VALUE = "protect"
 _MANAGED_REPOSITORY_PREFIXES = (
+    "ghcr.io/aldaisuki/plastic-promise-edge",
+    "ghcr.io/aldaisuki/plastic-promise-server",
+    "ghcr.io/aldaisuki/plastic-promise-compute",
     "plastic-promise-local-edge",
     "plastic-promise-server",
     "plastic-promise-compute-node",

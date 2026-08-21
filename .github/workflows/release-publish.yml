@@ -232,9 +232,36 @@ jobs:
           done
       - id: images
         run: |
-          echo "local_edge_repository=ghcr.io/aldaisuki/plastic-promise-local-edge" >> "$GITHUB_OUTPUT"
-          echo "server_repository=ghcr.io/aldaisuki/plastic-promise-server" >> "$GITHUB_OUTPUT"
-          echo "inference_node_repository=ghcr.io/aldaisuki/plastic-promise-local-inference-node" >> "$GITHUB_OUTPUT"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          from plastic_promise.release_package_naming import OCI_PACKAGE_REPOSITORIES
+
+          print(f"local_edge_repository={OCI_PACKAGE_REPOSITORIES['local-edge']}")
+          print(f"server_repository={OCI_PACKAGE_REPOSITORIES['server']}")
+          print(f"inference_node_repository={OCI_PACKAGE_REPOSITORIES['inference-cpu']}")
+          PY
+      - name: Verify canonical versioned package naming
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from plastic_promise.release_package_naming import (
+              GHCR_NAMESPACE,
+              OCI_PACKAGE_REPOSITORIES,
+          )
+
+          expected = {
+              "local-edge": f"{GHCR_NAMESPACE}/plastic-promise-edge",
+              "server": f"{GHCR_NAMESPACE}/plastic-promise-server",
+              "compute-node": f"{GHCR_NAMESPACE}/plastic-promise-compute",
+          }
+          actual = {
+              "local-edge": OCI_PACKAGE_REPOSITORIES["local-edge"],
+              "server": OCI_PACKAGE_REPOSITORIES["server"],
+              "compute-node": OCI_PACKAGE_REPOSITORIES["inference-cpu"],
+          }
+          if actual != expected:
+              raise SystemExit(f"oci_package_naming_contract_mismatch:{actual!r}")
+          print("canonical OCI package namespace:", GHCR_NAMESPACE)
+          PY
       - name: Log in to GitHub Container Registry with the workflow token
         uses: docker/login-action@v3
         with:
