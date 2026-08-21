@@ -1356,6 +1356,16 @@ def _index_file_bytes(release_repo: Path, filepath: str) -> bytes | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def _head_file_bytes(release_repo: Path, filepath: str) -> bytes | None:
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{filepath}"],
+        cwd=release_repo,
+        capture_output=True,
+        env={**os.environ, **_GIT_NO_INTERACTIVE},
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
 def _commit_file_bytes(release_repo: Path, commit: str, filepath: str) -> bytes | None:
     result = subprocess.run(
         ["git", "show", f"{commit}:{filepath}"],
@@ -1418,7 +1428,18 @@ def _validate_staged_release_paths(
     unexpected = sorted(set(staged_paths) - set(allowed))
     if unexpected:
         raise ValueError(f"release_unexpected_staged_paths:{','.join(unexpected)}")
-    if set(staged_paths) != set(allowed):
+    # Same-checkout delta syncs legitimately leave already-current files
+    # unstaged: require exactly the allowed paths whose computed release bytes
+    # differ from HEAD, never more and never fewer.
+    if expected_index_bytes is None:
+        required = sorted(set(allowed))
+    else:
+        required = sorted(
+            filepath
+            for filepath in allowed
+            if _head_file_bytes(release_repo, filepath) != expected_index_bytes[filepath]
+        )
+    if set(staged_paths) != set(required):
         raise ValueError("release_staged_path_scope_mismatch")
     if not staged_paths:
         raise ValueError("release_no_staged_changes")
