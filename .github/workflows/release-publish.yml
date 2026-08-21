@@ -427,9 +427,38 @@ jobs:
           print("stable distributions:", ", ".join(distributions))
           PY
       - name: Publish the exact stable distributions with PyPI trusted publishing
+        id: pypi-publish
         uses: pypa/gh-action-pypi-publish@release/v1
+        continue-on-error: true
         with:
           packages-dir: dist/
+      - name: Accept an already published identical stable release
+        if: steps.pypi-publish.outcome == 'failure'
+        env:
+          EXPECTED_VERSION: ${{ needs.resolve-source.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          version="${EXPECTED_VERSION#v}"
+          status="$(curl -fsSL -o /tmp/plastic-promise-release.json -w '%{http_code}' "https://pypi.org/pypi/plastic-promise/${version}/json")"
+          if [ "$status" != "200" ]; then
+            echo "stable_pypi_publication_missing:$status" >&2
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          import os
+
+          payload = json.load(open('/tmp/plastic-promise-release.json', encoding='utf-8'))
+          expected = os.environ['EXPECTED_VERSION'].removeprefix('v')
+          filenames = {item['filename'] for item in payload['urls']}
+          required = {
+              f'plastic_promise-{expected}-py3-none-any.whl',
+              f'plastic_promise-{expected}.tar.gz',
+          }
+          if filenames != required:
+              raise SystemExit(f'stable_pypi_artifact_mismatch:{sorted(filenames)}')
+          print('stable PyPI release already published:', expected)
+          PY
 
   create-release-manifest:
     name: Bind release evidence to source, hashes, and OCI digests
