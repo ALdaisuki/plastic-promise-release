@@ -409,7 +409,7 @@ def validate_recall(
 ) -> dict[str, Any]:
     if recall.get("success") is False:
         raise SmokeFailure("memory_recall reported success=false")
-    if recall.get("degraded") is True:
+    if recall.get("degraded") is True and not expect_text_only:
         raise SmokeFailure(f"memory_recall degraded: {recall.get('warnings')}")
     audit = recall.get("audit") or {}
     vector_search = audit.get("vector_search")
@@ -438,7 +438,7 @@ def validate_context(
     expect_text_only: bool = False,
 ) -> dict[str, Any]:
     project_context = context.get("project_context") or {}
-    if context.get("degraded") is True:
+    if context.get("degraded") is True and not expect_text_only:
         raise SmokeFailure(f"context_supply degraded: {context.get('warnings')}")
     if project_context.get("degraded") is True:
         raise SmokeFailure(f"context project degraded: {project_context.get('warnings')}")
