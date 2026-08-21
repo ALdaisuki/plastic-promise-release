@@ -21,6 +21,7 @@ PP_NODE_PRIVATE_ENDPOINTS_FILE; --endpoints overrides.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import socket
@@ -30,9 +31,9 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 DEFAULT_KEYCHAIN_SERVICE = "plastic-promise-compute-windows-5080"
 DEFAULT_RUNTIME_SERVICE = "org.plastic-promise.mac-canonical-runtime"
@@ -82,23 +83,40 @@ def select_node(nodes: list[dict[str, Any]], node_id: str | None) -> dict[str, A
 
 
 def build_ssh_command(
-    *, host: str, user: str, key: Path, local_port: int, remote_port: int,
+    *,
+    host: str,
+    user: str,
+    key: Path,
+    local_port: int,
+    remote_port: int,
     include_fork: bool = True,
 ) -> list[str]:
     command: list[str] = [
         "/usr/bin/ssh",
-        "-F", "/dev/null",
-        "-N", "-T",
-        "-o", "BatchMode=yes",
-        "-o", "ExitOnForwardFailure=yes",
-        "-o", "ServerAliveInterval=30",
-        "-o", "ServerAliveCountMax=3",
-        "-o", "IdentitiesOnly=yes",
-        "-o", "AddKeysToAgent=yes",
-        "-o", "UseKeychain=yes",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-i", str(key),
-        "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
+        "-F",
+        "/dev/null",
+        "-N",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "AddKeysToAgent=yes",
+        "-o",
+        "UseKeychain=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-i",
+        str(key),
+        "-L",
+        f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
         f"{user}@{host}",
     ]
     if include_fork:
@@ -172,11 +190,16 @@ def discover_remote_ports(host: str, user: str, key: Path) -> list[int]:
         completed = subprocess.run(
             [
                 "/usr/bin/ssh",
-                "-F", "/dev/null",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=5",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-i", str(key),
+                "-F",
+                "/dev/null",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-i",
+                str(key),
                 user + "@" + host,
                 "netstat -an | findstr LISTENING",
             ],
@@ -214,7 +237,7 @@ def establish_tunnel(
     )
     errpath = tempfile.mkstemp(suffix=".err")[1]
     try:
-        with open(errpath, "w+t") as errfile:
+        with open(errpath, "w+") as errfile:
             completed = subprocess.run(
                 command,
                 stdout=subprocess.DEVNULL,
@@ -224,15 +247,13 @@ def establish_tunnel(
                 timeout=30,
             )
         if completed.returncode != 0:
-            with open(errpath, "r+t") as errfile:
+            with open(errpath, "r+") as errfile:
                 detail = (errfile.read() or completed.stderr or "").strip().splitlines()
             reason = detail[-1] if detail else "ssh_forward_failed"
             return {"state": "ssh_failed", "ok": False, "reason": reason[:200]}
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(errpath)
-        except OSError:
-            pass
     deadline = time.time() + 10
     while time.time() < deadline:
         if port_open(local_port):
@@ -260,7 +281,6 @@ def restart_runtime(service: str) -> dict[str, Any]:
         return {"performed": False, "service": service, "reason": str(exc)[:120]}
 
 
-
 TUNNEL_SERVICE_LABEL = "org.plastic-promise.node-tunnel"
 
 
@@ -268,16 +288,26 @@ def key_authorized(host: str, user: str, key: Path) -> bool:
     try:
         completed = subprocess.run(
             [
-                "/usr/bin/ssh", "-F", "/dev/null",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=5",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "IdentitiesOnly=yes",
-                "-i", str(key),
+                "/usr/bin/ssh",
+                "-F",
+                "/dev/null",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-i",
+                str(key),
                 user + "@" + host,
                 "echo __pp_ok__",
             ],
-            capture_output=True, text=True, check=False, timeout=15,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -311,8 +341,12 @@ def install_tunnel_service(
     logs_dir.mkdir(parents=True, exist_ok=True)
     plist_path = agents_dir / (TUNNEL_SERVICE_LABEL + ".plist")
     ssh_args = build_ssh_command(
-        host=host, user=user, key=key, local_port=local_port,
-        remote_port=remote_port, include_fork=False,
+        host=host,
+        user=user,
+        key=key,
+        local_port=local_port,
+        remote_port=remote_port,
+        include_fork=False,
     )
     plist = build_tunnel_plist(
         label=TUNNEL_SERVICE_LABEL,
@@ -325,11 +359,16 @@ def install_tunnel_service(
     target = "gui/" + str(uid) + "/" + TUNNEL_SERVICE_LABEL
     subprocess.run(
         ["/bin/launchctl", "bootout", target],
-        capture_output=True, check=False, timeout=15,
+        capture_output=True,
+        check=False,
+        timeout=15,
     )
     completed = subprocess.run(
         ["/bin/launchctl", "bootstrap", "gui/" + str(uid), str(plist_path)],
-        capture_output=True, text=True, check=False, timeout=15,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
     )
     if completed.returncode != 0:
         return {
@@ -369,11 +408,15 @@ def run_onboard(args, *, local_port: int, base_url: str, token: str | None) -> d
             return result
         subprocess.run(
             [
-                "/usr/bin/ssh-copy-id", "-i", str(key),
-                "-o", "StrictHostKeyChecking=accept-new",
+                "/usr/bin/ssh-copy-id",
+                "-i",
+                str(key),
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 user + "@" + host,
             ],
-            check=False, timeout=120,
+            check=False,
+            timeout=120,
         )
         if not key_authorized(host, user, key):
             result["key_authorization"] = "failed"
@@ -393,10 +436,16 @@ def run_onboard(args, *, local_port: int, base_url: str, token: str | None) -> d
     result["remote_port"] = remote_port
     subprocess.run(
         ["/usr/bin/pkill", "-f", "127.0.0.1:" + str(local_port) + ":127.0.0.1:" + str(remote_port)],
-        capture_output=True, check=False, timeout=10,
+        capture_output=True,
+        check=False,
+        timeout=10,
     )
     service = install_tunnel_service(
-        key=key, host=host, user=user, local_port=local_port, remote_port=remote_port,
+        key=key,
+        host=host,
+        user=user,
+        local_port=local_port,
+        remote_port=remote_port,
     )
     result["service"] = service
     deadline = time.time() + 15
@@ -424,7 +473,9 @@ def resolve_endpoints_path(
         return Path(explicit).expanduser()
     if env_value:
         return Path(env_value).expanduser()
-    base = (home or Path.home()) / ".local/share/plastic-promise/mac-server/private-node-endpoints.json"
+    base = (
+        home or Path.home()
+    ) / ".local/share/plastic-promise/mac-server/private-node-endpoints.json"
     return base if base.exists() else None
 
 

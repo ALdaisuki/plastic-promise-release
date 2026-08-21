@@ -49,13 +49,13 @@ class BuildSshCommandTest(unittest.TestCase):
 
 class LoadNodesTest(unittest.TestCase):
     def _write(self, text: str) -> Path:
-        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-        handle.write(text)
-        handle.close()
-        return Path(handle.name)
+        fd, name = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        return Path(name)
 
     def test_load_and_select(self) -> None:
-        payload = "{\"nodes\": [{\"node_id\": \"n1\", \"transport_id\": \"ssh-local-forward-29130\", \"base_url\": \"http://127.0.0.1:29130\"}]}"
+        payload = '{"nodes": [{"node_id": "n1", "transport_id": "ssh-local-forward-29130", "base_url": "http://127.0.0.1:29130"}]}'
         path = self._write(payload)
         try:
             node = hs.select_node(hs.load_nodes(path), None)
@@ -64,7 +64,7 @@ class LoadNodesTest(unittest.TestCase):
             os.unlink(path)
 
     def test_unknown_id_fails(self) -> None:
-        path = self._write("{\"nodes\": [{\"node_id\": \"n1\"}]}")
+        path = self._write('{"nodes": [{"node_id": "n1"}]}')
         try:
             with self.assertRaises(ValueError):
                 hs.select_node(hs.load_nodes(path), "missing")
@@ -91,10 +91,18 @@ class BearerTokenTest(unittest.TestCase):
 class OnboardHelpersTest(unittest.TestCase):
     def test_launchd_mode_omits_fork(self) -> None:
         base = hs.build_ssh_command(
-            host="h", user="u", key=Path("/tmp/k"), local_port=1, remote_port=2,
+            host="h",
+            user="u",
+            key=Path("/tmp/k"),
+            local_port=1,
+            remote_port=2,
         )
         daemon = hs.build_ssh_command(
-            host="h", user="u", key=Path("/tmp/k"), local_port=1, remote_port=2,
+            host="h",
+            user="u",
+            key=Path("/tmp/k"),
+            local_port=1,
+            remote_port=2,
             include_fork=False,
         )
         self.assertIn("-f", base)
@@ -114,8 +122,6 @@ class OnboardHelpersTest(unittest.TestCase):
         self.assertEqual(plist["ProgramArguments"], ["/usr/bin/ssh", "-N"])
 
 
-
-
 class ResolveEndpointsPathTest(unittest.TestCase):
     def test_explicit_wins(self) -> None:
         resolved = hs.resolve_endpoints_path("/tmp/e.json", "/tmp/other.json")
@@ -127,6 +133,7 @@ class ResolveEndpointsPathTest(unittest.TestCase):
 
     def test_canonical_default_when_present(self) -> None:
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             target = home / ".local/share/plastic-promise/mac-server"
@@ -137,25 +144,31 @@ class ResolveEndpointsPathTest(unittest.TestCase):
 
     def test_none_when_missing(self) -> None:
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(hs.resolve_endpoints_path(None, None, home=Path(tmp)))
 
 
 class ProbeHeaderTest(unittest.TestCase):
     def test_bearer_prefix_idempotent(self) -> None:
-        import urllib.request
         captured = {}
+
         class FakeResponse:
             status = 200
+
             def read(self, n=-1):
                 return b"{}"
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 return False
+
         def fake_urlopen(request, timeout=None):
             captured["headers"] = dict(request.header_items())
             return FakeResponse()
+
         original = hs.urllib.request.urlopen
         hs.urllib.request.urlopen = fake_urlopen
         try:
