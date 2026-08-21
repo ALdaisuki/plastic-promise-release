@@ -108,7 +108,8 @@ jobs:
           python -m pip install --upgrade build twine cyclonedx-bom
           python -m build --outdir dist
           python -m twine check dist/*
-          cyclonedx-py environment --of JSON --output-file dist/sbom.cdx.json
+          mkdir release-evidence
+          cyclonedx-py environment --of JSON --output-file release-evidence/sbom.cdx.json
       - name: Rehearse an exact wheel installation before publishing
         run: |
           python -m venv .stable-wheel-venv
@@ -117,7 +118,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: stable-python-evidence
-          path: dist/
+          path: |
+            dist/
+            release-evidence/
           if-no-files-found: error
       - name: Attest Python release artifacts
         uses: actions/attest-build-provenance@v2
@@ -405,7 +408,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: stable-python-evidence
-          path: dist
+          path: .
       - name: Verify the downloaded stable distributions
         env:
           EXPECTED_VERSION: ${{ needs.resolve-source.outputs.release_version }}
@@ -450,7 +453,7 @@ jobs:
             --release-version "${{ needs.resolve-source.outputs.release_version }}" \
             --source-commit "${{ needs.resolve-source.outputs.source_commit }}" \
             --dist-dir dist \
-            --sbom dist/sbom.cdx.json \
+            --sbom release-evidence/sbom.cdx.json \
             --image "local-edge=${{ needs.publish-oci-images.outputs.local_edge_repository }}@${{ needs.publish-oci-images.outputs.local_edge_digest }}" \
             --image "server=${{ needs.publish-oci-images.outputs.server_repository }}@${{ needs.publish-oci-images.outputs.server_digest }}" \
             --image "inference-cpu=${{ needs.publish-oci-images.outputs.inference_node_repository }}@${{ needs.publish-oci-images.outputs.inference_cpu_digest }}" \
