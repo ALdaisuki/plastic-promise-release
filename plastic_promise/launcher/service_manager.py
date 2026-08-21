@@ -43,7 +43,14 @@ def canonical_source_root(path: str | Path) -> str:
 
 
 def resolve_source_revision(source_root: str | Path) -> str | None:
-    """Resolve the checked-out Git revision when source control is available."""
+    """Resolve the checked-out Git revision when source control is available.
+
+    Immutable deployments without a .git directory (OCI images) declare the
+    revision through the PP_SOURCE_REVISION environment variable instead.
+    """
+    declared = os.environ.get("PP_SOURCE_REVISION", "").strip().lower()
+    if re.fullmatch(r"[0-9a-fA-F]{40,64}", declared or ""):
+        return declared
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],

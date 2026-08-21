@@ -51,6 +51,7 @@ LABEL org.opencontainers.image.title="Plastic Promise server backend" \
       org.plastic-promise.server.source-exclusions="plastic_promise/core/backend_inference.py,plastic_promise/core/embedder.py,plastic_promise/core/inference_provider.py,plastic_promise/core/inference_jobs.py,plastic_promise/core/provider_http.py,plastic_promise/core/reranker.py,plastic_promise/client/local_rerank_executor.py,plastic_promise/local_inference_node,plastic_promise/mcp/inference_gateway.py,plastic_promise/mcp/inference_gateway_server.py"
 
 ENV TZ=UTC \
+    PP_SOURCE_REVISION=${SOURCE_REVISION} \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
