@@ -25,6 +25,8 @@ Deployments use the digest returned by the build, never a mutable version or
 source tag. The canonical mapping is maintained in
 `plastic_promise/release_package_naming.py` and consumed by the stable
 workflow, so a package rename cannot silently drift from release manifests.
+PyPI remains the separate `plastic-promise` distribution and is published only
+through the protected workflow's Trusted Publisher exchange.
 
 ## Compatibility
 

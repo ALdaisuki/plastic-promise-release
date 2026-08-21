@@ -24,6 +24,8 @@ sha-<完整源码提交>-cuda
 部署始终使用构建返回的 digest，不使用可变的版本 tag 或源码 tag。规范映射
 由 `plastic_promise/release_package_naming.py` 维护，并由 stable workflow
 消费，从而避免包改名后发行 manifest 静默漂移。
+PyPI 仍是独立的 `plastic-promise` 发行包，只能通过受保护 workflow 的 Trusted
+Publisher 交换发布。
 
 ## 兼容性
 
