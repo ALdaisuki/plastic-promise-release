@@ -144,6 +144,7 @@ _ROOT_RUNTIME_FILES = (
     "plastic_promise/issue.py",
     "plastic_promise/pack.py",
     "plastic_promise/py.typed",
+    "plastic_promise/release_package_naming.py",
     "plastic_promise/release_manifest.py",
     "plastic_promise/release_readiness.py",
     "plastic_promise/smart_extractor.py",
