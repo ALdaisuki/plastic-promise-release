@@ -157,9 +157,10 @@ def test_release_workflow_roles_keep_pr_rc_and_stable_publishing_separate():
     assert "docker/login-action@v3" in stable
     assert "registry: ghcr.io" in stable
     assert "password: ${{ secrets.GITHUB_TOKEN }}" in stable
-    assert "ghcr.io/aldaisuki/plastic-promise-local-edge" in stable
-    assert "ghcr.io/aldaisuki/plastic-promise-server" in stable
-    assert "ghcr.io/aldaisuki/plastic-promise-local-inference-node" in stable
+    assert "from plastic_promise.release_package_naming import OCI_PACKAGE_REPOSITORIES" in stable
+    assert "OCI_PACKAGE_REPOSITORIES['local-edge']" in stable
+    assert "OCI_PACKAGE_REPOSITORIES['server']" in stable
+    assert "OCI_PACKAGE_REPOSITORIES['inference-cpu']" in stable
     assert ":sha-${{ needs.resolve-source.outputs.source_commit }}" in stable
     assert ":sha-${{ needs.resolve-source.outputs.source_commit }}-cpu" in stable
     assert ":sha-${{ needs.resolve-source.outputs.source_commit }}-cuda" in stable

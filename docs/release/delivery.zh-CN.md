@@ -52,7 +52,8 @@ Release Bundle 与发布工件不得包含 SQLite 数据库或其他 canonical m
 目标 `production-release` selected-evidence gate 属于 **GitHub 受保护工作流**，不能由 PR 合并推定。
 它必须独立验证 selected Release Bundle、Model Catalog、artifact binding 与 RC attestation 后，
 并在目标支持 trusted publishing 时使用 GitHub OIDC 身份而非持久化 registry/PyPI token，
-才**可能**发布 `plastic-promise-server` 和 `plastic-promise-local-inference-node` 这两个 OCI role，
+才**可能**发布规范的 `ghcr.io/aldaisuki/plastic-promise-server` 和
+`ghcr.io/aldaisuki/plastic-promise-compute` OCI package，
 或把 TestPyPI candidate 推进到 stable channel。
 
 **当前实现边界：**`.github/workflows/release-publish.yml` 是一个独立受保护的过渡期 stable
@@ -60,6 +61,10 @@ publisher。它只接受 `source_ref` 与 `release_version`，目前**不会**�
 Bundle、Model Catalog、artifact binding 或 RC attestation。因此它不是上文的 selected-evidence
 gate，不能作为 PR 6 stable handoff 已完成的证据。上述 release role 与 selected-evidence gate
 在该 workflow 完成接线并获得独立验证前，仍都只是目标。
+
+历史部署 receipt 仍可能引用旧的
+`ghcr.io/aldaisuki/plastic-promise-local-inference-node` 仓库。Release manifest
+校验器为读取兼容继续接受它；新的 stable 发布统一使用上面的规范 compute package。
 
 ## PR 6 目标：Model Catalog 与 Release Bundle
 

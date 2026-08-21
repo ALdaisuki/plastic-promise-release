@@ -56,8 +56,9 @@ The target `production-release` selected-evidence gate is one of the **GitHub pr
 not an inference from a merged PR. It must independently
 verify the selected Release Bundle, Model Catalog, artifact binding, and RC
 attestation, using GitHub OIDC identities rather than stored registry or PyPI
-tokens where the target supports trusted publishing, before it may publish the `plastic-promise-server` and
-`plastic-promise-local-inference-node` OCI roles or advance a package from a
+tokens where the target supports trusted publishing, before it may publish the canonical
+`ghcr.io/aldaisuki/plastic-promise-server` and
+`ghcr.io/aldaisuki/plastic-promise-compute` OCI packages or advance a package from a
 TestPyPI candidate to a stable channel.
 
 **Current implementation boundary:** `.github/workflows/release-publish.yml`
@@ -68,6 +69,11 @@ It is therefore not the selected-evidence gate described above and must not be
 used as evidence that the PR 6 stable handoff is complete. Those role names and
 the selected-evidence gate remain target-only until the workflow is wired and
 independently verified.
+
+Historical deployment receipts may still reference the legacy
+`ghcr.io/aldaisuki/plastic-promise-local-inference-node` repository. The release
+manifest validator accepts that repository for read compatibility, while new
+stable publications use the canonical compute package above.
 
 ## PR 6 target: Model Catalog and Release Bundle
 

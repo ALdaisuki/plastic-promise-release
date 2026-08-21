@@ -21,6 +21,8 @@ from email.parser import BytesParser
 from email.policy import default
 from typing import TYPE_CHECKING, Any
 
+from plastic_promise.release_package_naming import is_known_oci_repository
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -39,8 +41,8 @@ _REQUIRED_IMAGE_PLATFORMS = {
     "inference-node": ("linux/amd64",),
 }
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_SERVER_IMAGE_REFERENCE = re.compile(
-    r"^ghcr\.io/aldaisuki/plastic-promise-server@sha256:[0-9a-f]{64}$"
+_IMMUTABLE_OCI_REFERENCE = re.compile(
+    r"^ghcr\.io/aldaisuki/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$"
 )
 SERVER_DEPLOYMENT_RECEIPT_SCHEMA_VERSION = "plastic-promise-server-deployment-receipt/v1"
 _REQUIRED_SERVER_DEPLOYMENT_CHECKS = frozenset(
@@ -177,7 +179,12 @@ def _image_record(name: str, reference: str) -> dict[str, object]:
     if "@" not in reference:
         raise ReleaseManifestError("release_manifest_image_reference_not_immutable")
     repository, digest = reference.rsplit("@", maxsplit=1)
-    if not repository or not _OCI_DIGEST.fullmatch(digest):
+    if (
+        not repository
+        or not _IMMUTABLE_OCI_REFERENCE.fullmatch(reference)
+        or not _OCI_DIGEST.fullmatch(digest)
+        or not is_known_oci_repository(repository, name)
+    ):
         raise ReleaseManifestError("release_manifest_image_reference_invalid")
     return {
         "name": name,
@@ -230,7 +237,10 @@ def validate_server_deployment_receipt(
         raise ReleaseManifestError("server_deployment_receipt_manifest_mismatch")
 
     server_image = payload["server_image"]
-    if not isinstance(server_image, str) or not _SERVER_IMAGE_REFERENCE.fullmatch(server_image):
+    if not isinstance(server_image, str) or not _IMMUTABLE_OCI_REFERENCE.fullmatch(server_image):
+        raise ReleaseManifestError("server_deployment_receipt_server_image_invalid")
+    server_repository, _ = server_image.rsplit("@", maxsplit=1)
+    if not is_known_oci_repository(server_repository, "server"):
         raise ReleaseManifestError("server_deployment_receipt_server_image_invalid")
 
     checks = payload["checks"]
