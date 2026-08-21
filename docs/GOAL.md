@@ -348,3 +348,13 @@ step-closure(
 - 批处理键固定为 `(project_id, visibility, config_revision, job_kind, provider_identity)`；不会为了凑满 20 条而跨项目、跨可见性、跨修订或跨 Provider 混批。
 - `PP_STRUCTURED_MEMORY_FUSION=off` 仍为默认值。`shadow` 不创建 synthesis draft，`on` 也只创建未验证 draft；proposal promotion、synthesis verification、Maintenance Daemon 与 LanceDB generation promotion 不由该 worker 执行。
 - Dashboard V2 只读显示当前项目的 queue depth、oldest age、leased/retry/dead 计数。当前改动没有迁移或启用生产服务器数据库。
+
+## 2026-08-21 Compute-Node Handshake Release Note
+
+- Release version `0.2.16` follows the highest immutable public release tag
+  `v0.2.14` and carries the one-click compute-node private-transport handshake,
+  one-time onboard trust bootstrap with a launchd-managed tunnel service,
+  canonical endpoints-file resolution, and bearer-prefix idempotency fixes
+  through PR #10.
+- Verification status is **Draft/BLOCK**. Final whole-repository verification and
+  mandatory high-risk review complete before release synchronization.
