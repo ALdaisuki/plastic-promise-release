@@ -728,6 +728,7 @@ def _project_memory_recall_payload(
         "project_policy": payload.get("project_policy", ""),
         "request_scope_id": payload.get("request_scope_id", ""),
         "trace": trace,
+        "audit": audit,
         "mode": payload.get("mode"),
         "budget": payload.get("budget") or {},
         "total_items": payload.get("total_items", 0),

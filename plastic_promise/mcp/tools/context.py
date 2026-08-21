@@ -545,6 +545,7 @@ async def handle_context_supply(
             "request_scope_id": request_scope["request_scope_id"],
             "project_id": project_ctx.project_id,
             "trace": audit_metadata.get("trace", {}),
+            "audit_metadata": audit_metadata,
             "degraded": response_degraded,
             "degradation_reason": embedding_degradation_reason,
             "retrieval_embedding": retrieval_embedding,
