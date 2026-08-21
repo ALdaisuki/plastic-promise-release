@@ -88,5 +88,31 @@ class BearerTokenTest(unittest.TestCase):
         self.assertIn(source, ["keychain_error", "unavailable"])
 
 
+class OnboardHelpersTest(unittest.TestCase):
+    def test_launchd_mode_omits_fork(self) -> None:
+        base = hs.build_ssh_command(
+            host="h", user="u", key=Path("/tmp/k"), local_port=1, remote_port=2,
+        )
+        daemon = hs.build_ssh_command(
+            host="h", user="u", key=Path("/tmp/k"), local_port=1, remote_port=2,
+            include_fork=False,
+        )
+        self.assertIn("-f", base)
+        self.assertNotIn("-f", daemon)
+        self.assertIn("127.0.0.1:1:127.0.0.1:2", daemon)
+
+    def test_tunnel_plist_is_persistent(self) -> None:
+        plist = hs.build_tunnel_plist(
+            label="org.plastic-promise.node-tunnel",
+            ssh_args=["/usr/bin/ssh", "-N"],
+            log_path=Path("/tmp/a.log"),
+            err_path=Path("/tmp/b.log"),
+        )
+        self.assertTrue(plist["KeepAlive"])
+        self.assertTrue(plist["RunAtLoad"])
+        self.assertEqual(plist["Label"], "org.plastic-promise.node-tunnel")
+        self.assertEqual(plist["ProgramArguments"], ["/usr/bin/ssh", "-N"])
+
+
 if __name__ == "__main__":
     unittest.main()

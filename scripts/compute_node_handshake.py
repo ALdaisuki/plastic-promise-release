@@ -81,12 +81,13 @@ def select_node(nodes: list[dict[str, Any]], node_id: str | None) -> dict[str, A
 
 
 def build_ssh_command(
-    *, host: str, user: str, key: Path, local_port: int, remote_port: int
+    *, host: str, user: str, key: Path, local_port: int, remote_port: int,
+    include_fork: bool = True,
 ) -> list[str]:
-    return [
+    command: list[str] = [
         "/usr/bin/ssh",
         "-F", "/dev/null",
-        "-f", "-N", "-T",
+        "-N", "-T",
         "-o", "BatchMode=yes",
         "-o", "ExitOnForwardFailure=yes",
         "-o", "ServerAliveInterval=30",
@@ -99,6 +100,9 @@ def build_ssh_command(
         "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
         f"{user}@{host}",
     ]
+    if include_fork:
+        command.insert(3, "-f")
+    return command
 
 
 def bearer_token(authorization_env: str, keychain_service: str) -> tuple[str | None, str]:
@@ -254,6 +258,159 @@ def restart_runtime(service: str) -> dict[str, Any]:
         return {"performed": False, "service": service, "reason": str(exc)[:120]}
 
 
+
+TUNNEL_SERVICE_LABEL = "org.plastic-promise.node-tunnel"
+
+
+def key_authorized(host: str, user: str, key: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            [
+                "/usr/bin/ssh", "-F", "/dev/null",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=5",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "IdentitiesOnly=yes",
+                "-i", str(key),
+                user + "@" + host,
+                "echo __pp_ok__",
+            ],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0 and "__pp_ok__" in completed.stdout
+
+
+def build_tunnel_plist(
+    *, label: str, ssh_args: list[str], log_path: Path, err_path: Path
+) -> dict[str, Any]:
+    return {
+        "Label": label,
+        "ProgramArguments": ssh_args,
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Background",
+        "ThrottleInterval": 10,
+        "StandardOutPath": str(log_path),
+        "StandardErrorPath": str(err_path),
+    }
+
+
+def install_tunnel_service(
+    *, key: Path, host: str, user: str, local_port: int, remote_port: int
+) -> dict[str, Any]:
+    import plistlib
+
+    uid = os.getuid()
+    agents_dir = Path.home() / "Library" / "LaunchAgents"
+    logs_dir = Path.home() / "Library" / "Logs" / "plastic-promise"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    plist_path = agents_dir / (TUNNEL_SERVICE_LABEL + ".plist")
+    ssh_args = build_ssh_command(
+        host=host, user=user, key=key, local_port=local_port,
+        remote_port=remote_port, include_fork=False,
+    )
+    plist = build_tunnel_plist(
+        label=TUNNEL_SERVICE_LABEL,
+        ssh_args=ssh_args,
+        log_path=logs_dir / "node-tunnel.log",
+        err_path=logs_dir / "node-tunnel.error.log",
+    )
+    with plist_path.open("wb") as handle:
+        plistlib.dump(plist, handle)
+    target = "gui/" + str(uid) + "/" + TUNNEL_SERVICE_LABEL
+    subprocess.run(
+        ["/bin/launchctl", "bootout", target],
+        capture_output=True, check=False, timeout=15,
+    )
+    completed = subprocess.run(
+        ["/bin/launchctl", "bootstrap", "gui/" + str(uid), str(plist_path)],
+        capture_output=True, text=True, check=False, timeout=15,
+    )
+    if completed.returncode != 0:
+        return {
+            "plist_path": str(plist_path),
+            "bootstrapped": False,
+            "reason": (completed.stderr or "bootstrap_failed")[:160],
+        }
+    return {
+        "plist_path": str(plist_path),
+        "bootstrapped": True,
+        "service": TUNNEL_SERVICE_LABEL,
+    }
+
+
+def run_onboard(args, *, local_port: int, base_url: str, token: str | None) -> dict[str, Any]:
+    host = args.host
+    user = args.ssh_user
+    key = args.ssh_key
+    result: dict[str, Any] = {"mode": "onboard"}
+    if args.dry_run:
+        result["dry_run"] = True
+        result["would"] = {
+            "authorize_key": user + "@" + host,
+            "service": TUNNEL_SERVICE_LABEL,
+            "local_port": local_port,
+            "remote_port": args.remote_port,
+        }
+        result["ok"] = True
+        return result
+    if key_authorized(host, user, key):
+        result["key_authorization"] = "already_authorized"
+    else:
+        if not sys.stdin.isatty():
+            result["key_authorization"] = "failed"
+            result["reason"] = "interactive_password_unavailable_non_tty"
+            result["ok"] = False
+            return result
+        subprocess.run(
+            [
+                "/usr/bin/ssh-copy-id", "-i", str(key),
+                "-o", "StrictHostKeyChecking=accept-new",
+                user + "@" + host,
+            ],
+            check=False, timeout=120,
+        )
+        if not key_authorized(host, user, key):
+            result["key_authorization"] = "failed"
+            result["reason"] = "key_authorization_failed"
+            result["ok"] = False
+            return result
+        result["key_authorization"] = "copied"
+    remote_port = args.remote_port
+    if remote_port is None:
+        discovered = discover_remote_ports(host, user, key)
+        remote_port = discovered[0] if discovered else None
+        result["discovered_remote_ports"] = discovered[:5]
+    if remote_port is None:
+        result["reason"] = "remote_port_unresolved"
+        result["ok"] = False
+        return result
+    result["remote_port"] = remote_port
+    subprocess.run(
+        ["/usr/bin/pkill", "-f", "127.0.0.1:" + str(local_port) + ":127.0.0.1:" + str(remote_port)],
+        capture_output=True, check=False, timeout=10,
+    )
+    service = install_tunnel_service(
+        key=key, host=host, user=user, local_port=local_port, remote_port=remote_port,
+    )
+    result["service"] = service
+    deadline = time.time() + 15
+    tunnel_ok = False
+    while time.time() < deadline:
+        if port_open(local_port):
+            tunnel_ok = True
+            break
+        time.sleep(0.5)
+    result["tunnel"] = {"state": "listening" if tunnel_ok else "not_listening", "ok": tunnel_ok}
+    probe = probe_health(base_url, token, args.timeout)
+    result["probe"] = probe
+    result["ok"] = tunnel_ok and bool(probe.get("ok"))
+    return result
+
+
 # ------------------------------------------------------------------------ main
 
 
@@ -268,11 +425,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ssh-user", default=DEFAULT_SSH_USER)
     parser.add_argument("--ssh-key", type=Path, default=Path(DEFAULT_SSH_KEY).expanduser())
     parser.add_argument("--remote-port", type=int, default=None)
-    parser.add_argument("--mode", choices=("establish", "verify"), default="establish")
+    parser.add_argument("--mode", choices=("establish", "verify", "onboard"), default="establish")
     parser.add_argument("--keychain-service", default=DEFAULT_KEYCHAIN_SERVICE)
     parser.add_argument("--restart-runtime", action="store_true")
     parser.add_argument("--runtime-service", default=DEFAULT_RUNTIME_SERVICE)
     parser.add_argument("--timeout", type=float, default=8.0)
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     verdict: dict[str, Any] = {"tool": "compute_node_handshake", "ok": False}
@@ -298,6 +456,16 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.mode == "verify":
             tunnel = {"state": "verify_only", "ok": port_open(local_port)}
+        elif args.mode == "onboard":
+            if not args.host:
+                raise ValueError("node_host_required_for_onboard")
+            onboard = run_onboard(args, local_port=local_port, base_url=base_url, token=token)
+            verdict.update(onboard)
+            verdict["ok"] = bool(onboard.get("ok"))
+            if verdict["ok"] and args.restart_runtime:
+                verdict["restart"] = restart_runtime(args.runtime_service)
+            print(json.dumps(verdict, ensure_ascii=False))
+            return 0 if verdict.get("ok") else 1
         else:
             if not args.host:
                 raise ValueError("node_host_required_for_establish")
