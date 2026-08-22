@@ -619,3 +619,74 @@ def test_rrf_fused_ceiling_is_derived_not_hardcoded():
     arms = len(config.channels)
     ceiling = sum(config.weights.values()) / (config.k + 1)
     assert ceiling == pytest.approx(arms / (config.k + 1))
+
+
+# ---------------------------------------------------------------------------
+# Phase A wrap-up: shadow comparison metrics + explain field allowlist
+# ---------------------------------------------------------------------------
+
+
+def _shadow_config():
+    return FusionConfig(
+        k=20,
+        weights={"vector": 1.0, "bm25": 1.0},
+        windows={"vector": 80, "bm25": 80},
+        channels=("vector", "bm25"),
+        config_hash="",
+    )
+
+
+def test_shadow_comparison_reports_bounded_metrics():
+    from plastic_promise.core.fusion_shadow import compare_fusion_strategies
+
+    rankings = {
+        "vector": [("consensus", 9.0), ("vec_only", 8.0), ("weak_v", 1.0)],
+        "bm25": [("exact_hit", 30.0), ("consensus", 10.0), ("weak_b", 2.0)],
+    }
+    report = compare_fusion_strategies(rankings, _shadow_config())
+    assert set(report) == {
+        "rrf_order",
+        "legacy_order",
+        "top_k_overlap",
+        "kendall_tau",
+        "fused_ceiling",
+        "top_k",
+    }
+    assert -1.0 <= report["kendall_tau"] <= 1.0
+    assert 0.0 <= report["top_k_overlap"] <= 1.0
+    assert abs(report["fused_ceiling"] - 2.0 / 21) < 1e-12
+
+
+def test_shadow_comparison_is_deterministic():
+    from plastic_promise.core.fusion_shadow import compare_fusion_strategies
+
+    rankings = {
+        "vector": [("a", 9.0), ("b", 5.0)],
+        "bm25": [("c", 7.0), ("a", 3.0)],
+    }
+    first = compare_fusion_strategies(rankings, _shadow_config())
+    second = compare_fusion_strategies(rankings, _shadow_config())
+    assert first == second
+
+
+def test_shadow_consensus_case_ranks_shared_item_first_under_rrf():
+    from plastic_promise.core.fusion_shadow import compare_fusion_strategies
+
+    rankings = {
+        "vector": [("noise1", 9.5), ("noise2", 9.0), ("shared_star", 8.5)],
+        "bm25": [("exact", 40.0), ("noise3", 20.0), ("shared_star", 15.0)],
+    }
+    report = compare_fusion_strategies(rankings, _shadow_config())
+    # RRF: two rank-3 ballots beat every single-arm hit.
+    assert report["rrf_order"][0] == "shared_star"
+    # Legacy blend crowns the exact BM25 bypass instead.
+    assert report["legacy_order"][0] == "exact"
+
+
+def test_explain_allowlist_includes_fusion_fields():
+    import plastic_promise.core.retrieval_explain as rx
+
+    for field in ("fusion_rrf_k", "fusion_ceiling"):
+        assert field in rx._PIPELINE_NUMBER_FIELDS
+    for field in ("fusion_algorithm", "fusion_channels", "fusion_policy"):
+        assert field in rx._PIPELINE_TEXT_FIELDS

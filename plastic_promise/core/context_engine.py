@@ -5026,6 +5026,7 @@ class ContextEngine:
             fusion_decision.effective_policy if fusion_decision is not None else "legacy-auto"
         )
         _using_default_fusion = False
+        _fusion_explain: dict[str, Any] = {"fusion_policy": "legacy-auto"}
         if (
             fusion_config is None
             and effective_policy == "legacy-auto"
@@ -5035,13 +5036,30 @@ class ContextEngine:
             # default; PP_FUSION_DEFAULT=legacy restores the weighted-max path.
             fusion_config = default_fusion_config(retrieval_plan)
             _using_default_fusion = fusion_config is not None
+            if fusion_config is not None:
+                _fusion_explain.update(
+                    {
+                        "fusion_algorithm": "weighted_rrf_default",
+                        "fusion_rrf_k": fusion_config.k,
+                        "fusion_channels": ",".join(fusion_config.channels),
+                    }
+                )
         _default_fusion_ceiling = 0.0
         if fusion_config is not None and _using_default_fusion:
             # Derived per call, never hardcoded (derived-ceiling law): ballots
             # are normalized onto the legacy 0..1 currency so downstream
             # absolute gates keep their calibrated meaning.
             _default_fusion_ceiling = sum(fusion_config.weights.values()) / (fusion_config.k + 1)
+            _fusion_explain["fusion_ceiling"] = _default_fusion_ceiling
         if fusion_config is not None:
+            if not _using_default_fusion:
+                _fusion_explain.update(
+                    {
+                        "fusion_algorithm": "weighted_rrf_manifest",
+                        "fusion_rrf_k": fusion_config.k,
+                        "fusion_channels": ",".join(fusion_config.channels),
+                    }
+                )
             channel_results = {
                 "vector": vector_results,
                 "bm25": text_results,
@@ -5068,6 +5086,7 @@ class ContextEngine:
                     for memory_id, score, *rest in fused_results
                 ]
         elif effective_policy == "max-v1":
+            _fusion_explain["fusion_algorithm"] = "weighted_max_v1"
             vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
             rankings = {
                 "vector": [(str(row[0]), float(row[1])) for row in vector_results],
@@ -5098,6 +5117,8 @@ class ContextEngine:
             )
         else:
             # Legacy no-vector fallback remains unchanged.
+            if "fusion_algorithm" not in _fusion_explain:
+                _fusion_explain["fusion_algorithm"] = "legacy_weighted_no_vector"
             fused: dict[str, tuple[float, str, str]] = {}
             for mid, score, content, source in text_results:
                 fused[mid] = (score * 0.8, content, source)
@@ -5487,6 +5508,7 @@ class ContextEngine:
                 retrieval_degradations=retrieval_degradations,
             )
             pack.pipeline_stats = {
+                **_fusion_explain,
                 "vector_count": len(vector_results),
                 "bm25_count": len(text_results),
                 "fts_count": len(fts_results),

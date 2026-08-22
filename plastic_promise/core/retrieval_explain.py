@@ -87,6 +87,8 @@ _PIPELINE_NUMBER_FIELDS = (
     "minimum_score",
     "maximum_score",
     "mean_score",
+    "fusion_rrf_k",
+    "fusion_ceiling",
 )
 _PIPELINE_TEXT_FIELDS = (
     "engine_mode",
@@ -95,6 +97,7 @@ _PIPELINE_TEXT_FIELDS = (
     "fusion_policy",
     "fusion_runtime",
     "fusion_algorithm",
+    "fusion_channels",
     "fallback_reason",
     "degradation_state",
 )
