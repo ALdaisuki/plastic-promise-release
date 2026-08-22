@@ -52,3 +52,24 @@ list` + `collaboration_lease_heartbeat`。
 - **DSH 子 Agent**: 会话内执行通道（见 CLAUDE.md 进度心跳协议）。协作子系统
   派发的是"工作项"，执行体可以是 DSH 子 Agent——两层正交。
 - **sp-stage**: 过程治理 receipt 链，与本子系统的 AcceptanceReceipt 是不同凭证。
+
+
+## 生产激活环境契约 (2026-08-22 实测沉淀)
+
+协作面从"代码存在"到"实际通电"需要四层全部就位, 缺一层即静默降级:
+
+| 层 | 配置 | 缺失症状 |
+|---|---|---|
+| 进程身份 | `PP_MCP_RUNTIME_ACTOR=claude` (launchd plist) | `task_runtime_actor_unconfigured` |
+| Durable schema | `scripts/collab_schema_migrate.py <canonical-db>` | `durable_collaboration_schema_missing` |
+| 健康门禁 | `PP_HEALTH_ALLOW_TEXT_ONLY=1` (env 文件) | `retrieval_lancedb_live_index_blocked` (store_outbox 有 failed/pending 时) |
+| Supply 路径 | `PP_FORCE_PYTHON_SUPPLY=1` (env 文件) | `rust_runtime_identity_unavailable` (无编译 Rust 扩展时) |
+
+关键陷阱:
+- launchd 改 plist 后必须 bootout+bootstrap; kickstart -k 不重读配置。
+- runtime-checkout 的 `run_canonical_runtime.py` 会用 `runtime/plastic-promise.env`
+  **覆盖** plist 环境变量 —— 该文件才是运行时环境的权威源。
+- AgentSession presence 120s 过期翻 stale。重注册(同 transport 确定性 session_id,
+  身份已验证)是唯一合法复活通道: heartbeat 与旧 UPDATE 都拒绝 stale。
+- 验收子委托创建后停在 pending, 长老不能直接 verify (task_state_conflict), 需先 claim。
+
