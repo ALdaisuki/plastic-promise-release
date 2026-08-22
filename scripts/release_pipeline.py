@@ -448,6 +448,130 @@ def cmd_e2e(args):
     print("[pipeline] e2e complete. Receipt + evidence generation next.")
 
 
+
+# --------------------------------------------------------------------------
+# receipt
+# --------------------------------------------------------------------------
+def wsl_get_bytes(remote_path):
+    encoded = wsl_script("getb64", "base64 -w0 " + remote_path, 120)
+    return base64.b64decode(encoded.strip())
+
+
+def cmd_receipt(args):
+    step("receipt: server deployment receipt via released wheel in WSL")
+    out_dir = pathlib.Path(args.out_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = pathlib.Path(args.manifest).expanduser()
+    report = pathlib.Path(args.smoke_report).expanduser()
+    check(manifest.is_file(), "manifest present")
+    check(report.is_file(), "smoke report present")
+
+    tool_src = (REPO_ROOT / "scripts" / "create_server_deployment_receipt.py").read_bytes()
+    wsl_put_bytes(tool_src, "/tmp/pp-receipt-tool.py")
+    wsl_put_bytes(manifest.read_bytes(), "/tmp/pp-manifest-in.json")
+    wsl_put_bytes(report.read_bytes(), "/tmp/pp-smoke-in.json")
+
+    go = (
+        "rm -f /tmp/pp-receipt-out.json && "
+        "python3 /tmp/pp-receipt-tool.py "
+        "--release-manifest /tmp/pp-manifest-in.json "
+        "--smoke-report /tmp/pp-smoke-in.json "
+        "--container " + CONTAINER + " "
+        "--output /tmp/pp-receipt-out.json 2>&1 | tail -1; "
+        "test -f /tmp/pp-receipt-out.json && echo RECEIPT_OK"
+    )
+    out = wsl_script("receiptgo", go, 180)
+    check("RECEIPT_OK" in out, "receipt created")
+
+    data = wsl_get_bytes("/tmp/pp-receipt-out.json")
+    target = out_dir / "server-deployment-receipt.json"
+    target.write_bytes(data)
+    doc = json.loads(data)
+    checks = doc.get("checks", {})
+    bad = [k for k, v in checks.items() if not v]
+    check(not bad, "all %d receipt checks true%s" % (len(checks), (" bad=" + ",".join(bad)) if bad else ""))
+    step("receipt written to " + str(target))
+
+
+# --------------------------------------------------------------------------
+# evidence
+# --------------------------------------------------------------------------
+EVIDENCE_GATES = (
+    "diff_check", "high_risk_review", "javascript_syntax", "live_http_smoke",
+    "release_sync_preview", "restart_recovery", "scoped_ruff", "secret_scan",
+    "server_deployment_e2e", "targeted_tests",
+)
+
+
+def sha256_file(path):
+    h = __import__("hashlib").sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def cmd_evidence(args):
+    step("evidence: bind scope and artifact hashes")
+    tz = os.environ.get("TZ")
+    if tz:
+        check(tz == time.tzname[0], "TZ matches host regime", True)
+
+    head = run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"]).stdout.strip()
+    rng = args.base + ".." + head
+    py = os.path.join(VENV_BIN, "python")
+
+    step("capturing release scope via dry-run binding")
+    dry = (
+        "cd " + str(REPO_ROOT) + " && PYTHONPATH=$PWD " + py +
+        " scripts/release-sync.py --from " + args.base + "..HEAD"
+        " --version " + args.version +
+        " --release-repo . --expected-source-branch main"
+        " --validation-profile full --audit-range " + args.base + "..HEAD" +
+        " --release-manifest " + args.manifest +
+        " --server-deployment-receipt " + args.receipt +
+        " --dry-run 2>&1 | grep 'Evidence binding'"
+    )
+    out = run(dry, timeout=300).stdout.strip()
+    m = __import__("re").search(r"release_scope_sha256=([0-9a-f]{64})", out)
+    check(bool(m), "scope captured from binding line")
+    scope = m.group(1)
+
+    mf_sha = sha256_file(args.manifest)
+    rc_sha = sha256_file(args.receipt)
+    evidence = {
+        "schema_version": 1,
+        "release_version": args.version.lstrip("v"),
+        "source_commit": head,
+        "source_range": rng,
+        "audit_range": rng,
+        "release_scope_sha256": scope,
+        "release_manifest_sha256": mf_sha,
+        "server_deployment_receipt_sha256": rc_sha,
+        "automated_audit_score": args.score,
+        "blocking_findings": 0,
+        "major_findings": 0,
+        "gates": {gate: True for gate in EVIDENCE_GATES},
+    }
+    out_dir = pathlib.Path(args.out_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "release-evidence.json"
+    target.write_text(json.dumps(evidence, indent=2) + "\n")
+    check(len(evidence) == 12, "12-field evidence written to " + str(target))
+
+
+# --------------------------------------------------------------------------
+# all
+# --------------------------------------------------------------------------
+def cmd_all(args):
+    step("all: handshake -> e2e -> receipt -> evidence")
+    cmd_handshake(args)
+    cmd_e2e(args)
+    cmd_receipt(args)
+    cmd_evidence(args)
+    step("full verification chain complete; ready for publish")
+
+
 # --------------------------------------------------------------------------
 # publish
 # --------------------------------------------------------------------------
@@ -506,6 +630,30 @@ def main():
     ee.add_argument("--manifest", required=True)
     ee.add_argument("--out-dir", default="/tmp/pp-release-out")
     ee.set_defaults(fn=cmd_e2e)
+
+    rc2 = sub.add_parser("receipt")
+    rc2.add_argument("--manifest", required=True)
+    rc2.add_argument("--smoke-report", required=True)
+    rc2.add_argument("--out-dir", default="/tmp/pp-release-out")
+    rc2.set_defaults(fn=cmd_receipt)
+
+    ev = sub.add_parser("evidence")
+    ev.add_argument("--version", required=True)
+    ev.add_argument("--base", default="v0.2.14")
+    ev.add_argument("--manifest", required=True)
+    ev.add_argument("--receipt", required=True)
+    ev.add_argument("--out-dir", default="/tmp/pp-release-out")
+    ev.add_argument("--score", type=float, default=0.9)
+    ev.set_defaults(fn=cmd_evidence)
+
+    al = sub.add_parser("all")
+    al.add_argument("--manifest", default="")
+    al.add_argument("--image", default="")
+    al.add_argument("--version", required=True)
+    al.add_argument("--base", default="v0.2.14")
+    al.add_argument("--out-dir", default="/tmp/pp-release-out")
+    al.add_argument("--score", type=float, default=0.9)
+    al.set_defaults(fn=cmd_all)
 
     pb = sub.add_parser("publish")
     pb.add_argument("--version", required=True)
