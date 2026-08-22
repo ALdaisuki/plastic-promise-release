@@ -5526,6 +5526,17 @@ class ContextEngine:
                 pack.divergent = self._compute_divergent_quality(pack.divergent, all_retrieved)
             record_stage_timing("divergent_quality", divergent_quality_started)
 
+            # D7: deal the core layer along the attention curve so the
+            # strongest memories are not buried mid-injection. Off-switch kept
+            # for A/B (PP_CONTEXT_DEAL_ORDER=off restores score order).
+            if (
+                len(pack.core) >= 3
+                and os.environ.get("PP_CONTEXT_DEAL_ORDER", "on").strip().lower() != "off"
+            ):
+                pack.core[:] = self._deal_lost_in_middle(list(pack.core))
+
+
+
         final_items = pack.core + pack.related + pack.divergent
         if debug:
             rank_sources = {
@@ -5560,6 +5571,9 @@ class ContextEngine:
             )
             pack.pipeline_stats = {
                 **_fusion_explain,
+                # D8 abstain discipline: an empty delivery pool is stated
+                # outright instead of returning silent low-score noise.
+                "fusion_abstain": not pack.core and not pack.related,
                 "vector_count": len(vector_results),
                 "bm25_count": len(text_results),
                 "fts_count": len(fts_results),
@@ -7096,6 +7110,22 @@ class ContextEngine:
                 combined.items(), key=lambda x: x[1][0], reverse=True
             )
         ]
+
+    @staticmethod
+    def _deal_lost_in_middle(items: list) -> list:
+        """Attention-curve dealing (Three-Librarians D7).
+
+        Strongest items sit at the two ends of the delivered sequence and the
+        weakest sink to the middle: for five items the order becomes
+        1st, 3rd, 5th, 4th, 2nd. Pure reordering - nothing added or dropped.
+        """
+        dealt: list = []
+        for index, item in enumerate(items):
+            if index == 0:
+                dealt.append(item)
+            else:
+                dealt.insert((index + 1) // 2, item)
+        return dealt
 
     @staticmethod
     def _is_guaranteed_memory(memory_id: str, record: Any) -> bool:

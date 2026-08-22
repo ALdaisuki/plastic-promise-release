@@ -103,7 +103,7 @@ _PIPELINE_TEXT_FIELDS = (
     "fallback_reason",
     "degradation_state",
 )
-_PIPELINE_BOOL_FIELDS = ("degraded",)
+_PIPELINE_BOOL_FIELDS = ("degraded", "fusion_abstain")
 _PIPELINE_STAGE_TIMING_FIELDS = (
     "principle_injection",
     "snapshot_parse",

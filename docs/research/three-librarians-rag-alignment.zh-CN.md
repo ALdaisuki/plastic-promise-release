@@ -143,5 +143,18 @@ worth_score=0.0 的 EntityGraph 占位节点 (memory_ids=principle:1..4), 无任
 
 ### 核对后剩余欠账 (按优先级)
 
-D7 发牌定序 → D8 abstain → chunking overlap 双端同步(Phase D) →
+~~D7 发牌定序 → D8 abstain~~ (已落地, 见下) → chunking overlap 双端同步(Phase D) →
 D9 占位实体治理 → Rust 热路径 explain 对齐。
+
+### Phase C 收官 — D7 发牌定序 + D8 abstain 纪律
+
+- D7: _deal_lost_in_middle —— core 层 ≥3 条时按注意力曲线重排
+  (1st,3rd,5th,…,4th,2nd), 最强置两端最弱埋中; 纯重排不增删;
+  PP_CONTEXT_DEAL_ORDER=off 回退。冒烟实证: 六条 core 由分数序
+  变为 [0,2,4,5,3,1], 与文章演示序一致。
+- D8: 分层完成后 core+related 全空时 pipeline_stats.fusion_abstain=true
+  —— "交付集为空"的诚实声明, 不用静默低分噪音填充; 白名单进 explain。
+  实现注意: 标记必须在 pipeline_stats 整体赋值处计算, 提前写入会被覆盖。
+
+至此文章 16 点中 **13 点完全对齐、2 点有意偏离(漏斗出口分层、保位席位)、
+1 点待双端同步(chunking overlap)**。

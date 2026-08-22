@@ -817,3 +817,39 @@ def test_both_ends_window_shared_with_engine():
     long = "a" * 3000 + "TAIL-SENTENCE"
     windowed = both_ends_window(long, 1200)
     assert "TAIL-SENTENCE" in windowed and len(windowed) <= 1200
+
+# ---------------------------------------------------------------------------
+# Phase C wrap-up: D7 attention-curve dealing + D8 abstain discipline
+# ---------------------------------------------------------------------------
+
+
+def test_deal_order_matches_reference_sequence():
+    from plastic_promise.core.context_engine import ContextEngine
+
+    items = [f"rank{r}" for r in range(1, 6)]  # strongest first
+    dealt = ContextEngine._deal_lost_in_middle(items)
+    assert dealt == ["rank1", "rank3", "rank5", "rank4", "rank2"]
+
+
+def test_deal_order_edge_cases_are_identity():
+    from plastic_promise.core.context_engine import ContextEngine
+
+    assert ContextEngine._deal_lost_in_middle([]) == []
+    assert ContextEngine._deal_lost_in_middle(["only"]) == ["only"]
+    assert ContextEngine._deal_lost_in_middle(["a", "b"]) == ["a", "b"]
+
+
+def test_deal_preserves_membership():
+    from plastic_promise.core.context_engine import ContextEngine
+
+    items = list(range(9))
+    dealt = ContextEngine._deal_lost_in_middle(list(items))
+    assert sorted(dealt) == sorted(items)
+    # ends carry the strongest and second strongest
+    assert dealt[0] == 0 and dealt[-1] == 1
+
+
+def test_explain_allowlist_includes_abstain():
+    import plastic_promise.core.retrieval_explain as rx
+
+    assert "fusion_abstain" in rx._PIPELINE_BOOL_FIELDS
