@@ -1054,7 +1054,14 @@ async def handle_task_verify(
                 ),
             )
         ]
-    if task["status"] != "done":
+    # A verification subtask is created 'pending' for the elder and has no
+    # meaningful claim/complete loop of its own; a server-owned reviewer may
+    # verify it directly.  Regular tasks still require the hunter's 'done'.
+    is_pending_verification_subtask = (
+        str(task["status"] or "") == "pending"
+        and str(task["task_type"] or "") == "verify_task"
+    )
+    if task["status"] != "done" and not is_pending_verification_subtask:
         current_status = str(task["status"] or "")
         conn.rollback()
         conn.close()
@@ -1071,10 +1078,12 @@ async def handle_task_verify(
     reassign_to = str(args.get("reassign_to_agent") or task["to_agent"])
 
     if verdict == "accepted":
+        # CAS over both legal pre-verify states: 'done' for regular tasks,
+        # 'pending' for elder-direct verification subtasks.
         transition = conn.execute(
             "UPDATE task_queue SET status='verified', verified_at=?, verified_by=?, "
             "verify_verdict='accepted', updated_at=? "
-            "WHERE project_id=? AND id=? AND status='done'",
+            "WHERE project_id=? AND id=? AND status IN ('done','pending')",
             (now, verified_by, now, project_id, task_id),
         )
         new_status = "verified"
