@@ -70,8 +70,22 @@ fusion_channels/fusion_ceiling, dispatch 四分支就地捕获; fusion_shadow �
   principle 类本体仍走激活注入通道, 检索层 guarantee 针对 pinned/governance。
 - 冒烟实证: m_pinned 从 rank 50 提至 8 (fired=1) 且 pinned_visible=true。
 
-待办: D3 增强 (最近命中统计作为提名信号), D6 rerank 读两端, D7 发牌定序,
-D8 abstain, D9 服务端占位实体治理, Rust 热路径同步 (Phase D)。
+### Phase C (第一刀) — read both ends (D6 关闭, commit 见 main)
+
+reranker.py 四个 provider (cloud/jina/siliconflow/ollama) 的候选文本全部是头部
+截断 (`[:max_chars]`), 深埋中后段的关键行对重排器不可见——Monopoly 回合规则教训
+的精确复刻。新增 `_both_ends_window(text, max_chars)`: 头+显式省略标记
+\[…\]+尾, 短文原样、确定性、预算有界; 四处截断点统一替换。
+测试 test_reranker_both_ends.py ×4 (头尾保留/joiner 显式/确定性单调/边界),
+reranker 三套件 58 passed。
+
+切片(chunking)本体对照结论: structure-v1 的结构感知/逐字保源/heading 上下文已优于
+文章基线; 真实差距是 **超长块切分零重叠** (相邻片边界句腰斩)。因 Rust 端
+context-engine-core/src/chunking.rs 为镜像实现且有 parity 测试, 单端改动会破坏
+Python/Rust 一致性 —— overlap 需双端同步, 与 Phase D 合并执行。
+
+待办: chunking overlap 双端同步(随 Phase D), D3 提名信号增强, D7 发牌定序,
+D8 abstain, D9 占位实体治理。
 Phase B 第三臂与 guarantees: 会话活跃 domain/project 过道臂 (每源限额防淹没);
 principle/governance 与 pin 记忆保位, explain 标注 guarantee 触发。
 Phase C 重排与组装: rerank 输入头尾拼接; 注入文本 lost-in-the-middle 定序; abstain。

@@ -560,7 +560,7 @@ class MultiProviderReranker:
             "model": self._cloud.model,
             "query": str(query)[: self._cloud.max_query_chars],
             "documents": [
-                _candidate_content(candidate)[: self._cloud.max_document_chars]
+                _both_ends_window(_candidate_content(candidate), self._cloud.max_document_chars)
                 for candidate in limited
             ],
             "top_n": len(limited),
@@ -590,7 +590,7 @@ class MultiProviderReranker:
         """Jina AI Reranker API (legacy opt-in provider)."""
 
         url = "https://api.jina.ai/v1/rerank"
-        documents = [_candidate_content(c)[:500] for c in candidates[:30]]
+        documents = [_both_ends_window(_candidate_content(c), 500) for c in candidates[:30]]
         payload = json.dumps(
             {
                 "model": "jina-reranker-v2-base-multilingual",
@@ -623,7 +623,7 @@ class MultiProviderReranker:
         """SiliconFlow Reranker API (legacy opt-in provider)."""
 
         url = "https://api.siliconflow.cn/v1/rerank"
-        documents = [_candidate_content(c)[:500] for c in candidates[:30]]
+        documents = [_both_ends_window(_candidate_content(c), 500) for c in candidates[:30]]
         payload = json.dumps(
             {
                 "model": "BAAI/bge-reranker-v2-m3",
@@ -663,7 +663,7 @@ class MultiProviderReranker:
         model = self._ollama_model
         limited_candidates = candidates[:30]
         passages = "\n\n".join(
-            f"[{i}] {_candidate_content(c)[:300]}" for i, c in enumerate(limited_candidates)
+            f"[{i}] {_both_ends_window(_candidate_content(c), 300)}" for i, c in enumerate(limited_candidates)
         )
         prompt = (
             f"Query: {query[:200]}\n\n"
@@ -738,6 +738,30 @@ def _candidate_content(candidate) -> str:
     return str(getattr(candidate, "content", ""))
 
 
+
+_BOTH_ENDS_JOINER = "\n[…]\n"
+
+
+def _both_ends_window(text: str, max_chars: int) -> str:
+    """Read-both-ends window (Three-Librarians alignment).
+
+    Deep-buried conclusions live near the end of long documents; the
+    Monopoly turn-order lesson showed a head-only cut makes the ranker
+    abstain on real evidence. Keep the head and the tail inside the same
+    budget with an explicit elision marker. Short texts pass verbatim.
+    Deterministic and allocation-bounded.
+    """
+    text = str(text)
+    limit = int(max_chars)
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    joiner = _BOTH_ENDS_JOINER
+    keep = max(limit - len(joiner), 64)
+    tail = min(keep // 2 + 1, keep - 1)
+    head_keep = keep - tail
+    return f"{text[:head_keep]}{joiner}{text[-tail:]}"
 def _candidate_relevance(candidate) -> float:
     if isinstance(candidate, tuple):
         return float(candidate[2]) if len(candidate) > 2 else 0.0
