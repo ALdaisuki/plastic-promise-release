@@ -293,3 +293,74 @@ def test_accept_without_trust_target_marks_skipped(e2e_db_path):
     trust_adjustment = payload["trust_adjustment"]
     assert trust_adjustment["skipped_reason"] == "no_trust_target"
     assert trust_adjustment["agent"] is None
+
+
+def test_accept_prefers_parent_claimed_by_over_payload(e2e_db_path):
+    import sqlite3
+
+    engine = MockEngine()
+    # Hand-plant a done parent row claimed by the real hunter plus a pending
+    # verification subtask whose payload carries an impostor original_agent.
+    parent_id = "t_test_parent_real"
+    sub_id = "t_test_sub_parent_attr"
+    conn = sqlite3.connect(e2e_db_path)
+    conn.execute(
+        "INSERT INTO task_queue (id, project_id, task_type, title, to_agent, "
+        "priority, from_agent, status, claimed_by) "
+        "VALUES (?, ?, 'fix_memory', ?, 'pi_hunter_real', 3, 'claude', 'done', ?)",
+        (parent_id, PROJECT, "主委托: 真实猎人", "pi_hunter_real"),
+    )
+    conn.execute(
+        "INSERT INTO task_queue (id, project_id, task_type, title, to_agent, "
+        "priority, from_agent, status, description, parent_task_id, payload) "
+        "VALUES (?, ?, 'verify_task', ?, 'claude', 3, 'system', 'pending', ?, ?, ?)",
+        (
+            sub_id,
+            PROJECT,
+            "验收委托: 父任务归因优先",
+            "payload 冒名顶替者不得覆盖父任务 claimed_by",
+            parent_id,
+            __import__("json").dumps(
+                {"original_task_id": parent_id, "original_agent": "impostor_agent"}
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    result = _verify(engine, sub_id, "accepted")
+    payload = __import__("json").loads(result[0].text)
+    assert payload["success"] is True, payload
+    trust_adjustment = payload["trust_adjustment"]
+    assert trust_adjustment["agent"] == "pi_hunter_real", trust_adjustment
+
+
+def test_accept_falls_back_to_payload_when_parent_missing(e2e_db_path):
+    import sqlite3
+
+    engine = MockEngine()
+    # Subtask points at a nonexistent parent row; the only attribution source
+    # left is the caller-declarative payload original_agent (legacy rows).
+    sub_id = "t_test_sub_orphan_parent"
+    conn = sqlite3.connect(e2e_db_path)
+    conn.execute(
+        "INSERT INTO task_queue (id, project_id, task_type, title, to_agent, "
+        "priority, from_agent, status, description, parent_task_id, payload) "
+        "VALUES (?, ?, 'verify_task', ?, 'claude', 3, 'system', 'pending', ?, ?, ?)",
+        (
+            sub_id,
+            PROJECT,
+            "验收委托: 父任务缺失回退",
+            "parent_task_id 指向不存在的行，回退到 payload.original_agent",
+            "t_test_missing_parent",
+            __import__("json").dumps({"original_agent": "pi_legacy"}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    result = _verify(engine, sub_id, "accepted")
+    payload = __import__("json").loads(result[0].text)
+    assert payload["success"] is True, payload
+    trust_adjustment = payload["trust_adjustment"]
+    assert trust_adjustment["agent"] == "pi_legacy", trust_adjustment

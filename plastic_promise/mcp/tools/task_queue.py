@@ -1076,10 +1076,17 @@ async def handle_task_verify(
     max_escalations = int(task["max_escalations"] or 3)
     reassign_to = str(args.get("reassign_to_agent") or task["to_agent"])
 
-    # Trust attribution falls back to the original hunter recorded on the
-    # verification subtask's payload when claimed_by is absent (auto-created
-    # subtasks are never claimed).
+    # Trust attribution: claimed_by first, then the parent task's server-side
+    # claimed_by (payload original_agent is caller-declarative and only used
+    # as a last-resort fallback for legacy rows).
     trust_target = task["claimed_by"]
+    if not trust_target and task["parent_task_id"]:
+        _trust_parent = conn.execute(
+            "SELECT claimed_by FROM task_queue WHERE project_id=? AND id=?",
+            (project_id, str(task["parent_task_id"])),
+        ).fetchone()
+        if _trust_parent is not None and _trust_parent["claimed_by"]:
+            trust_target = _trust_parent["claimed_by"]
     if not trust_target:
         try:
             _trust_payload = json.loads(task["payload"]) if task["payload"] else {}
