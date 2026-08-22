@@ -624,3 +624,18 @@ pack_export(name="<feature>-<date>", tags=["domain:<域>", "task:done"], author=
 ```
 
 确认导出成功后将包文件提交到 `experience_packs/` 目录。
+
+## 子 Agent 进度心跳协议 (subagent progress protocol)
+
+DSH 后台子 Agent 只在结束时回报, 运行中 `list_agents` 仅提供三态(running/idle/ready),
+`send_message` 需排队至其当前 turn 结束 —— 运行过程对父会话是黑盒。
+
+因此凡预计超过 ~3 分钟的后台子 Agent 任务, 派发 prompt 必须包含:
+
+1. **专属进度文件**: `/tmp/pp_agent_<task-slug>/progress.md`
+2. **分段落盘**: 每完成一个任务段立即 append 阶段产出(发现/证据/未决问题), 不许攒到最后一次写入
+3. **终态即收尾**: 最终回复是进度文件的收尾摘要, 而非唯一载体
+
+父会话据此可随时 read 该文件获取实时快照; 读到方向偏差时用 send_message 下发纠偏,
+在其当前段结束时生效。此为 workspace-as-durable-memory 的最小实现, 与 Hunter Guild
+task_heartbeat 同一设计哲学。
