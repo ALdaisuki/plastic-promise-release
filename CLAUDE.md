@@ -639,3 +639,19 @@ DSH 后台子 Agent 只在结束时回报, 运行中 `list_agents` 仅提供三�
 父会话据此可随时 read 该文件获取实时快照; 读到方向偏差时用 send_message 下发纠偏,
 在其当前段结束时生效。此为 workspace-as-durable-memory 的最小实现, 与 Hunter Guild
 task_heartbeat 同一设计哲学。
+
+## 架构漂移扫描 (architecture drift scan)
+
+背景: collaboration/ 子系统 (25 文件) 曾以单提交进入发行仓而无任何叙事文档,
+导致长期运营 Agent 对其零认知 —— 代码即文档失效于"没人读它等于不存在"。
+
+约定:
+
+1. **新子系统落地必须同时产出叙事文档** 到 `docs/architecture/<name>.md`
+   (组件地图 / 状态机 / MCP 面 / 激活路径), 单文件 PR 不许只带代码。
+2. **定期漂移扫描** (建议随发行准备执行): 对照 `plastic_promise/*/ 包结构与
+   docs/architecture/ 覆盖, 无文档的包列入当轮修复。
+3. **重大架构发现即时入池**: smart-remember/memory_store 存"组件-位置-机制-
+   激活状态"四元组, 保证下一个 Agent 经 memory_recall 可达。
+4. 权威规范源 (如 union-six-pr-contract.json) 变更时, 其可读投影文档必须
+   同步重生成或修订。
