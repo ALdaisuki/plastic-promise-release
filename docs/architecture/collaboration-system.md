@@ -71,5 +71,8 @@ list` + `collaboration_lease_heartbeat`。
   **覆盖** plist 环境变量 —— 该文件才是运行时环境的权威源。
 - AgentSession presence 120s 过期翻 stale。重注册(同 transport 确定性 session_id,
   身份已验证)是唯一合法复活通道: heartbeat 与旧 UPDATE 都拒绝 stale。
-- 验收子委托创建后停在 pending, 长老不能直接 verify (task_state_conflict), 需先 claim。
+- 验收子任务自 af30484 起可由长老直接验收或打回（pending+verify_task 在预检与
+  两分支 CAS 均放行）；普通任务仍必须先 done 才能验收。旧『需先 claim』死锁表述已废弃。
+- 打回验收子任务会生成 task_type 继承的重派孙委托（escalation_count++，超限升级给 claude）。
+- 子任务信任归因回退 payload.original_agent；无目标时响应带 skipped_reason=no_trust_target。
 

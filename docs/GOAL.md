@@ -358,6 +358,19 @@ step-closure(
   through PR #10.
 - Release verification for `0.2.16` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
 
+## 2026-08-23 Guild Verification Deadlock Release Note
+
+- Release version `0.2.17` follows the highest immutable public release tag
+  `v0.2.16` and carries elder-direct verification **and** rejection for pending
+  verification subtasks (state gate plus both branch CAS symmetric),
+  trust-attribution fallback to `payload.original_agent` with explicit
+  `skipped_reason` surfacing, four regression tests, and main-CI parity fixes
+  through PR #11 and #12.
+- Release verification for `0.2.17` ran the full Stable OCI Release Evidence
+  pipeline (immutable source binding, multi-arch image publish, PyPI
+  distribution, evidence-to-source-hash-digest binding); production runtime
+  health converged on `4d3efcc`.
+
 
 ## 2026-08-22 Release Pipeline and Governed Vector Smoke Note
 

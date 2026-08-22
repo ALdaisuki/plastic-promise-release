@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-08-23
+
+### Fixed
+
+- Hunter Guild verification subtasks can now be verified **and** rejected
+  directly by the elder: the rejected/reassigned CAS accepts pending
+  `verify_task` rows symmetrically with accepted (#11).
+- Trust attribution for verification subtasks falls back to
+  `payload.original_agent` when `claimed_by` is absent; an empty target is
+  surfaced as `trust_adjustment.skipped_reason=no_trust_target` instead of a
+  silently swallowed adjustment (#11).
+
+### Added
+
+- Regression tests: rejection re-dispatch, second-accept conflict,
+  attribution fallback, and skipped marker.
+- Main-CI parity restored: ruff formatting and resealed
+  union-six-pr-derived-documents content digest (#12).
+
 ## [0.2.16] - 2026-08-21
 
 ### Added
