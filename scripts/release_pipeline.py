@@ -169,12 +169,12 @@ def node_bearer():
     return token
 
 
-def image_ref_from_manifest(manifest_path):
+def image_ref_from_manifest(manifest_path, role="server"):
     doc = json.loads(manifest_path.read_text())
     for img in doc.get("images", []):
-        if img.get("name") == "server":
+        if img.get("name") == role:
             return img["reference"]
-    raise SystemExit("manifest has no server image")
+    raise SystemExit("manifest has no " + role + " image")
 
 
 # --------------------------------------------------------------------------
@@ -560,6 +560,56 @@ def cmd_evidence(args):
     check(len(evidence) == 12, "12-field evidence written to " + str(target))
 
 
+
+# --------------------------------------------------------------------------
+# edge
+# --------------------------------------------------------------------------
+def cmd_edge(args):
+    step("edge: one-command local-edge deployment from release manifest")
+    ref = image_ref_from_manifest(pathlib.Path(args.manifest).expanduser(), "local-edge")
+    check(ref.startswith("ghcr.io/") and "@sha256:" in ref, "edge image is digest-pinned: " + ref[:72])
+    port = str(args.port)
+    name = args.container
+
+    run_lines = [
+        "#!/bin/bash",
+        "set -e",
+        "REF=" + ref,
+        'docker rm -f "' + name + '" >/dev/null 2>&1 || true',
+        'for cid in $(docker ps -q --filter publish=' + port + '); do docker rm -f $cid >/dev/null 2>&1 || true; done',
+        'docker pull -q "$REF" >/dev/null || { echo EDGE_PULL_FAIL; docker pull "$REF" 2>&1 | tail -2; exit 64; }',
+        "echo EDGE_PULL_OK",
+        "docker run -d --name \"" + name + "\"" +
+        " --read-only --cap-drop ALL --security-opt no-new-privileges:true" +
+        " --pids-limit 128 --tmpfs /tmp:rw,noexec,nosuid,size=64m,mode=1777" +
+        ' -p ' + port + ':8080 "$REF" >/dev/null',
+        "echo EDGE_RUN_OK",
+        "HZ=000",
+        "for i in $(seq 1 30); do "
+        'HZ=$(curl -s -o /dev/null -w %{http_code} --max-time 4 http://127.0.0.1:' + port + '/healthz); '
+        '[ "$HZ" = 200 ] && break; sleep 2; done',
+        '[ "$HZ" = 200 ] || { echo EDGE_HEALTH_FAIL:$HZ; docker logs ' + name + ' 2>&1 | tail -5; exit 65; }',
+        "echo EDGE_HEALTHZ_200",
+        'IDX=$(curl -s --max-time 8 http://127.0.0.1:' + port + '/ | wc -c)',
+        '[ "$IDX" -gt 1000 ] || { echo EDGE_INDEX_FAIL; exit 66; }',
+        "echo EDGE_INDEX_BYTES:$IDX",
+        'docker ps --filter name=' + name + " --format '{{.Status}}'",
+    ]
+    out = wsl_script("edgedeploy", "\n".join(run_lines), 300)
+    check("EDGE_PULL_OK" in out, "edge image pulled")
+    check("EDGE_RUN_OK" in out, "edge container started with hardened flags")
+    check("EDGE_HEALTHZ_200" in out, "healthz 200 on port " + port)
+    m = __import__("re").search(r"EDGE_INDEX_BYTES:(\d+)", out)
+    check(bool(m) and int(m.group(1)) > 1000, "dashboard index served (" + (m.group(1) if m else "?") + " bytes)")
+    st = [ln for ln in out.strip().splitlines() if ln.startswith("Up ")]
+    print((st[0] if st else out.strip().splitlines()[-1]))
+    print("")
+    print("edge dashboard: http://127.0.0.1:" + port + "/  (inside WSL host network)")
+    print("cross-machine access from this Mac requires a Windows-side forward:")
+    print('  netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=' + port + ' connectaddress=localhost connectport=' + port + '   # admin PowerShell on Windows')
+    print("then open http://192.168.5.6:" + port + "/")
+
+
 # --------------------------------------------------------------------------
 # all
 # --------------------------------------------------------------------------
@@ -630,6 +680,12 @@ def main():
     ee.add_argument("--manifest", required=True)
     ee.add_argument("--out-dir", default="/tmp/pp-release-out")
     ee.set_defaults(fn=cmd_e2e)
+
+    ed = sub.add_parser("edge")
+    ed.add_argument("--manifest", required=True)
+    ed.add_argument("--port", type=int, default=19021)
+    ed.add_argument("--container", default="pp-local-edge")
+    ed.set_defaults(fn=cmd_edge)
 
     rc2 = sub.add_parser("receipt")
     rc2.add_argument("--manifest", required=True)
