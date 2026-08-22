@@ -3476,6 +3476,16 @@ class ContextEngine:
             retrieval_mode=retrieval_mode,
             has_vector=any(v != 0.0 for v in task_vector),
             has_graph=bool(self._graph_edges),
+            has_aisle=(
+                os.environ.get("PP_FUSION_AISLE", "on").strip().lower() != "off"
+                and str(os.environ.get("PP_FUSION_DEFAULT", "rrf")).strip().lower() == "rrf"
+                and str(
+                    fusion_policy
+                    or os.environ.get("PP_RETRIEVAL_FUSION_POLICY", "legacy-auto")
+                ).strip()
+                == "legacy-auto"
+                and not os.environ.get("PP_RETRIEVAL_RRF_WEIGHTS_JSON")
+            ),
             has_fts=(
                 self._ldb is not None
                 and os.environ.get("PP_FTS_DISABLED", "") != "1"
@@ -5029,6 +5039,7 @@ class ContextEngine:
         effective_policy = (
             fusion_decision.effective_policy if fusion_decision is not None else "legacy-auto"
         )
+        aisle_results: list[tuple] = []
         _using_default_fusion = False
         _fusion_explain: dict[str, Any] = {"fusion_policy": "legacy-auto"}
         if (
@@ -7163,7 +7174,22 @@ class ContextEngine:
             record = getattr(self, "_memories", {}).get(memory_id)
             if not self._is_guaranteed_memory(memory_id, record):
                 continue
-            displaced = kept.pop()
+            # Displace the highest-ranked NON-guarantee seat. A blind pop of
+            # the last seat would evict a guarantee lifted by an earlier
+            # iteration (adversarial-review finding): guarantees already in
+            # the window are immune to further displacement.
+            displace_at = None
+            for seat in range(len(kept) - 1, -1, -1):
+                seat_id = str(kept[seat][0])
+                if not self._is_guaranteed_memory(
+                    seat_id, getattr(self, "_memories", {}).get(seat_id)
+                ):
+                    displace_at = seat
+                    break
+            if displace_at is None:
+                # Every retained seat is itself guaranteed; keep them all.
+                continue
+            displaced = kept.pop(displace_at)
             moved = tail.pop(index)
             kept.append(moved)
             fired.append(

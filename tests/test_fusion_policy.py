@@ -853,3 +853,65 @@ def test_explain_allowlist_includes_abstain():
     import plastic_promise.core.retrieval_explain as rx
 
     assert "fusion_abstain" in rx._PIPELINE_BOOL_FIELDS
+
+# ---------------------------------------------------------------------------
+# Adversarial review findings (external fresh-eyes reviewer): fixes
+# ---------------------------------------------------------------------------
+
+
+def _engine_with_memories_local(memories):
+    from plastic_promise.core.context_engine import ContextEngine
+
+    engine = ContextEngine.__new__(ContextEngine)
+    engine._memories = memories
+    return engine
+
+
+def test_guarantee_lift_does_not_clobber_earlier_guarantee():
+    engine = _engine_with_memories_local(
+        {
+            f"m{i}": {"domain": "d", "memory_type": "experience"} for i in range(12)
+        }
+        | {
+            "g1": {"domain": "d", "memory_type": "experience", "tags": ["pinned"]},
+            "g2": {"domain": "d", "memory_type": "experience", "tags": ["pinned"]},
+        }
+    )
+    ids = [f"m{i}" for i in range(10)] + ["g1", "g2"]
+    fused = [(mid, 0.5) for mid in ids]
+
+    kept, fired = engine._apply_fusion_guarantees(fused, retention_window=8)
+
+    kept_ids = [str(item[0]) for item in kept]
+    assert "g1" in kept_ids and "g2" in kept_ids, (
+        f"guarantee clobbered: kept={kept_ids} fired={fired}"
+    )
+    # displaced seats must never be guarantees themselves
+    for entry in fired:
+        seat_rec = {"tags": ["pinned"]} if str(entry["displaced"]).startswith("g") else None
+        assert not engine._is_guaranteed_memory(str(entry["displaced"]), {}), (
+            f"guarantee was displaced: {entry}"
+        )
+
+
+def test_debug_rank_sources_safe_when_fusion_disabled(monkeypatch):
+    import plastic_promise.core.context_engine as ce
+
+    monkeypatch.setenv("PP_FUSION_DEFAULT", "legacy")
+    engine = ce.ContextEngine(use_sqlite=False)
+    engine._ensure_heavy_init = lambda: None
+    engine._activate_principles = lambda task, dom, **k: []
+    engine._inject_activated_to_graph = lambda a, t: 0
+    engine._graph_traversal = lambda task: []
+    engine._vector_retrieval = lambda vec, scope=None: []
+    engine._text_retrieval = lambda q, trust_boost=1.0, domain_hint=None: []
+    engine._fts_retrieval = lambda q, scope="global": []
+    engine._apply_edge_feedback = lambda: None
+    engine._apply_decay_awareness = lambda s, m, ct, tb: s
+    engine._apply_mmr = lambda items, threshold=0.85, penalty=0.70: items
+    engine._compute_divergent_quality = lambda items, all_items: items
+    engine._calc_freshness = lambda i: "valid"
+    engine._calc_decay_status = lambda i, m: "healthy"
+    engine._memories = {}
+    pack = engine._supply_python("probe", [], "general", "all", debug=True)
+    assert getattr(pack, "pipeline_stats", {}).get("fusion_policy") == "legacy-auto"
