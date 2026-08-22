@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from plastic_promise.core.constants import RRF_K
+
 if TYPE_CHECKING:
     from plastic_promise.core.retrieval_planner import RetrievalPlan
 
@@ -274,6 +276,48 @@ def resolve_cli_fusion_policy(policy: str, candidate_manifest: Any | None) -> st
 
     raise FusionConfigurationError("fusion_policy_invalid")
 
+
+DEFAULT_FUSION_WINDOW = 80
+
+
+def default_fusion_config(
+	plan: "RetrievalPlan",
+	env: Mapping[str, str] = os.environ,
+) -> "FusionConfig | None":
+	"""Zero-config equal-vote RRF for the legacy-auto retrieval path.
+
+	Three-Librarians alignment: every channel casts one equal ballot of
+	``weight / (k + rank)``; raw channel scores only order candidates within
+	their own channel and are never averaged across currencies. Returns None
+	when the plan carries no fusion channels so callers keep legacy behavior.
+	"""
+	channels = tuple(plan.fusion_channels)
+	if not channels:
+		return None
+	raw_k = str(env.get("PP_RETRIEVAL_RRF_K", "")).strip() or str(RRF_K)
+	try:
+		k = int(raw_k)
+	except ValueError as exc:
+		raise FusionConfigurationError("invalid_k:must_be_positive_integer") from exc
+	try:
+		window = int(str(env.get("PP_FUSION_DEFAULT_WINDOW", str(DEFAULT_FUSION_WINDOW))).strip())
+	except ValueError as exc:
+		raise FusionConfigurationError("invalid_windows:must_be_positive_integer") from exc
+	windows = {
+		channel: min(int(plan.channel_windows.get(channel, window)), window)
+		for channel in channels
+	}
+	weights = {channel: 1.0 for channel in channels}
+	return _validated_config(
+		FusionConfig(
+			k=k,
+			weights=weights,
+			windows=windows,
+			channels=channels,
+			config_hash="",
+		),
+		planner_limits=plan.channel_windows,
+	)
 
 def weighted_rrf(
     rankings: Mapping[str, Sequence[tuple[str, float]]],

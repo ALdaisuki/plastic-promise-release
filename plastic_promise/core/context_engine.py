@@ -36,6 +36,7 @@ from plastic_promise.core.constants import (
 from plastic_promise.core.fusion_policy import (
     FusionConfig,
     FusionDecision,
+    default_fusion_config,
     load_fusion_config,
     weighted_max_v1,
     weighted_rrf,
@@ -5024,6 +5025,22 @@ class ContextEngine:
         effective_policy = (
             fusion_decision.effective_policy if fusion_decision is not None else "legacy-auto"
         )
+        _using_default_fusion = False
+        if (
+            fusion_config is None
+            and effective_policy == "legacy-auto"
+            and str(os.environ.get("PP_FUSION_DEFAULT", "rrf")).strip().lower() == "rrf"
+        ):
+            # Three-Librarians alignment: equal-vote RRF is the zero-config
+            # default; PP_FUSION_DEFAULT=legacy restores the weighted-max path.
+            fusion_config = default_fusion_config(retrieval_plan)
+            _using_default_fusion = fusion_config is not None
+        _default_fusion_ceiling = 0.0
+        if fusion_config is not None and _using_default_fusion:
+            # Derived per call, never hardcoded (derived-ceiling law): ballots
+            # are normalized onto the legacy 0..1 currency so downstream
+            # absolute gates keep their calibrated meaning.
+            _default_fusion_ceiling = sum(fusion_config.weights.values()) / (fusion_config.k + 1)
         if fusion_config is not None:
             channel_results = {
                 "vector": vector_results,
@@ -5045,6 +5062,11 @@ class ContextEngine:
                 for memory_id, score in fused_scores
                 if memory_id in hydrated
             ]
+            if _default_fusion_ceiling > 0.0:
+                fused_results = [
+                    (memory_id, min(score / _default_fusion_ceiling, 1.0), *rest)
+                    for memory_id, score, *rest in fused_results
+                ]
         elif effective_policy == "max-v1":
             vector_weight = float(os.environ.get("PP_VECTOR_WEIGHT", "0.50"))
             rankings = {

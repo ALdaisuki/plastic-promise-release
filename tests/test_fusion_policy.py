@@ -540,3 +540,82 @@ def test_final_gate_keeps_admitted_channel_tail_and_drops_cross_project_id():
     assert result.channel_rankings["vector"] == [
         {"memory_id": "vector-only-tail", "score": 0.5, "rank": 1}
     ]
+
+
+# ---------------------------------------------------------------------------
+# Three-Librarians alignment: default equal-vote RRF (PP_FUSION_DEFAULT=rrf)
+# ---------------------------------------------------------------------------
+
+
+def _default_plan(channels=("vector", "bm25", "fts")):
+    return plan_retrieval(
+        has_vector="vector" in channels,
+        has_graph=False,
+        has_fts="fts" in channels,
+    )
+
+
+def test_default_fusion_config_is_equal_vote_with_bounded_windows():
+    from plastic_promise.core.fusion_policy import default_fusion_config
+
+    config = default_fusion_config(_default_plan(), env={})
+    assert config is not None
+    assert set(config.channels) == {"vector", "bm25", "fts"}
+    assert all(weight == 1.0 for weight in config.weights.values())
+    assert all(0 < window <= 80 for window in config.windows.values())
+
+
+def test_default_fusion_config_respects_env_overrides():
+    from plastic_promise.core.fusion_policy import default_fusion_config
+
+    config = default_fusion_config(
+        _default_plan(),
+        env={"PP_RETRIEVAL_RRF_K": "60", "PP_FUSION_DEFAULT_WINDOW": "16"},
+    )
+    assert config is not None
+    assert config.k == 60
+    assert all(window <= 16 for window in config.windows.values())
+
+
+def test_default_fusion_config_returns_none_without_channels():
+    from plastic_promise.core.fusion_policy import default_fusion_config
+
+    # the planner always keeps at least bm25; simulate a truly channel-less plan
+    plan = SimpleNamespace(fusion_channels=(), channel_windows={})
+    assert default_fusion_config(plan, env={}) is None
+
+
+def test_rrf_consensus_beats_single_arm_enthusiasm():
+    """Two arms agreeing at rank 3 outrank one arm's rank 1 (RuleSage law)."""
+    from plastic_promise.core.fusion_policy import weighted_rrf
+
+    k = 20
+    weights = {"vector": 1.0, "bm25": 1.0}
+    windows = {"vector": 80, "bm25": 80}
+    channels = ("vector", "bm25")
+    config = FusionConfig(k=k, weights=weights, windows=windows, channels=channels, config_hash="")
+
+    rankings = {
+        "vector": [("consensus_a", 9.1), ("noise_v1", 8.0), ("both_third", 7.0)],
+        "bm25": [("exact_bm25", 30.0), ("noise_b1", 20.0), ("both_third", 10.0)],
+    }
+    fused = dict(weighted_rrf(rankings, config))
+    consensus = fused["both_third"]
+    single = max(fused["consensus_a"], fused["exact_bm25"])
+    # both_third sits at rank 3 on each arm: 2 * 1/(k+3)
+    assert abs(consensus - 2.0 / (k + 3)) < 1e-12
+    # any lone top hit caps at 1/(k+1); the pair beats it comfortably
+    assert consensus > single
+
+
+def test_rrf_fused_ceiling_is_derived_not_hardcoded():
+    """Per-rulebook ceiling law: arms/(k+1), computed from live parameters."""
+    from plastic_promise.core.fusion_policy import default_fusion_config
+
+    env = {"PP_RETRIEVAL_RRF_K": "60"}
+    plan = _default_plan()
+    config = default_fusion_config(plan, env=env)
+    assert config is not None
+    arms = len(config.channels)
+    ceiling = sum(config.weights.values()) / (config.k + 1)
+    assert ceiling == pytest.approx(arms / (config.k + 1))

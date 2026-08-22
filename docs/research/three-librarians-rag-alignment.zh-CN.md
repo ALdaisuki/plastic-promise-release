@@ -38,9 +38,24 @@
 
 ## 三、分阶段改造计划
 
-Phase A 融合正确性 (Python): _hybrid_fuse 加 RRF 路径 (PP_FUSION_MODE=rrf|weighted,
-shadow 对比先行); bypass 退役为 guarantee; explain 加 arms/rrf_k/fused_ceiling;
-recall_quality 回归 + 共识/单臂上界性质测试。
+### Phase A 融合正确性 — 部分落地 (2026-08-22, commit 见 main)
+
+实施中的认知修正: `weighted_rrf` (fusion_policy.py:278) 是完整正确的加权 RRF
+(通道内排名投票 weight/(k+rank)、窗口截断、确定性排序), D1 的"非 RRF"表述撤回;
+真正差距是 **启用条件苛刻** (需 candidate manifest hash + PP_RETRIEVAL_RRF_*_JSON 三件套,
+默认 legacy-auto 落旧加权法) 与 **票值/旧分数币种错配** (RRF top≈1/(k+1)≈0.048 撞
+HARD_MIN_SCORE=0.30 绝对门)。
+
+已落地:
+- `default_fusion_config(plan, env)`: 零配置等权 RRF 工厂 (k=PP_RETRIEVAL_RRF_K→RRF_K,
+  等权 1.0, 窗口 min(plan,80)); legacy-auto 且 PP_FUSION_DEFAULT=rrf (新默认) 时生效,
+  =legacy 一键回退; max-v1 显式策略不受影响。
+- 派生 ceiling 归一: default 路径票值除以 Σweights/(k+1) 映射回 0..1 币种,
+  下游绝对门语义保持; manifest 路径原始票值不变 (golden 契约不动)。
+- 性质测试 ×5: 共识胜单臂 (两臂#3 > 单臂#1)、上界 arms/(k+1) 派生、env 覆盖、
+  空通道 None、等权断言; tests/test_fusion_policy.py 43 passed。
+
+待办: explain 补 strategy/k/arms/ceiling 字段 (D5); shadow 对比基准; D3/D6-D9。
 Phase B 第三臂与 guarantees: 会话活跃 domain/project 过道臂 (每源限额防淹没);
 principle/governance 与 pin 记忆保位, explain 标注 guarantee 触发。
 Phase C 重排与组装: rerank 输入头尾拼接; 注入文本 lost-in-the-middle 定序; abstain。
