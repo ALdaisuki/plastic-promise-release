@@ -1058,8 +1058,7 @@ async def handle_task_verify(
     # meaningful claim/complete loop of its own; a server-owned reviewer may
     # verify it directly.  Regular tasks still require the hunter's 'done'.
     is_pending_verification_subtask = (
-        str(task["status"] or "") == "pending"
-        and str(task["task_type"] or "") == "verify_task"
+        str(task["status"] or "") == "pending" and str(task["task_type"] or "") == "verify_task"
     )
     if task["status"] != "done" and not is_pending_verification_subtask:
         current_status = str(task["status"] or "")

@@ -5,6 +5,7 @@ task_verify only accepted 'done' rows -- a deadlock: nobody can meaningfully
 claim and complete their own verification request. A server-owned reviewer
 authority may verify a pending verify_task subtask directly.
 """
+
 import asyncio
 
 import pytest
@@ -43,9 +44,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_elder_can_directly_verify_pending_verification_subtask(
-    e2e_db_path, monkeypatch
-):
+def test_elder_can_directly_verify_pending_verification_subtask(e2e_db_path, monkeypatch):
     engine = MockEngine()
     hunter_trust = 0.60
 
@@ -94,9 +93,7 @@ def test_elder_can_directly_verify_pending_verification_subtask(
 
     conn = sqlite3.connect(e2e_db_path)
     conn.row_factory = sqlite3.Row
-    sub = conn.execute(
-        "SELECT status, task_type FROM task_queue WHERE id=?", (sub_id,)
-    ).fetchone()
+    sub = conn.execute("SELECT status, task_type FROM task_queue WHERE id=?", (sub_id,)).fetchone()
     conn.close()
     assert sub["status"] == "pending", "subtask is created pending"
     assert sub["task_type"] == "verify_task"
@@ -119,9 +116,7 @@ def test_elder_can_directly_verify_pending_verification_subtask(
     assert payload["new_status"] == "verified"
 
 
-def test_regular_pending_task_still_rejects_direct_verification(
-    e2e_db_path, monkeypatch
-):
+def test_regular_pending_task_still_rejects_direct_verification(e2e_db_path, monkeypatch):
     engine = MockEngine()
     enq = _run(
         handle_task_enqueue(
@@ -150,6 +145,7 @@ def test_regular_pending_task_still_rejects_direct_verification(
     payload = __import__("json").loads(result[0].text)
     assert payload["success"] is False
     assert payload["reason"] == "task_state_conflict"
+
 
 # ═══════════════════════════════════════════════════════════════
 # CAS relaxation + trust attribution fallback regression tests
@@ -258,9 +254,7 @@ def test_second_accept_conflicts(e2e_db_path):
 
 def test_accept_trust_target_falls_back_to_original_agent(e2e_db_path):
     engine = MockEngine()
-    _, sub_id = _make_pending_verification_subtask(
-        e2e_db_path, agent_name="pi_hunter_a"
-    )
+    _, sub_id = _make_pending_verification_subtask(e2e_db_path, agent_name="pi_hunter_a")
 
     result = _verify(engine, sub_id, "accepted")
     payload = __import__("json").loads(result[0].text)
