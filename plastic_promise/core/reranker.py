@@ -1266,3 +1266,6 @@ def cross_encode_rerank(
 
 
 atexit.register(_reset_shared_cloud_clients)
+
+# Public re-export for engine-side document construction.
+both_ends_window = _both_ends_window

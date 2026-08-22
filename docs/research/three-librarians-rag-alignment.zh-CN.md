@@ -110,3 +110,38 @@ worth_score=0.0 的 EntityGraph 占位节点 (memory_ids=principle:1..4), 无任
 教训: (a) 占位实体不得进入 before_invoke 结果 (服务端待修, 记 D9);
 (b) 客户端必须解包 MCP text 内嵌 JSON 再判断 (cadence 已修);
 (c) 命中门控是注入质量的最后防线。
+
+
+## 六、全文逐项核对矩阵 (2026-08-22 全面审计)
+
+| # | 文章要点 | 状态 | 证据/说明 |
+|---|---|---|---|
+| 1 | 词面臂 | ✅ | BM25 CJK-bigram (_tokenize :6810) + SQLite FTS5, 中文可用 |
+| 2 | 语义臂 | ✅ | LanceDB + governed-node Qwen3 2560 维, 控制面路由 |
+| 3 | 结构化过道臂 (每书8席/≤32候选) | ✅ B | aisle 通道 per-domain 8 席 + 窗口 32 (a55f582); PP_FUSION_AISLE 回退 |
+| 4 | RRF 一臂一票 | ✅ A | weighted_rrf; k 默认 20 可调 —— k 为派生参数而非教条照抄 60 |
+| 5 | consensus beats enthusiasm | ✅ | 性质测试: 两臂#3 > 单臂#1 |
+| 6 | 提名算术上界 arms/(k+1) | ✅ | 派生 ceiling + 上界性质测试 |
+| 7 | 漏斗 每臂≤80→融合截80 | ◐ | 结构等价数字不同: 通道窗 32, candidate_limit = Σ层预算×overfetch (MODE_BUDGETS 按模式派生, 非硬编码教条) |
+| 8 | cross-encoder 成对重排 | ✅ | cloud API 天然 pair; 本地 governed-node llama.cpp :19132 |
+| 9 | 出口 top 8 | ◐ | 层出口 core6/related10/divergent6 (global) ≈22, 按注意力层分配比单一 8 更细 —— 有意偏离 |
+| 10 | read both ends (头595+尾600) | ✅ C | _both_ends_window 统一四 provider + governed node (env 1200), 显式省略标记 (64e2ef7 + 本次) |
+| 11 | guarantees 覆盖 ranker | ✅ B | principle/pinned/governance 窗口保位 + hard-min/层下限豁免; 语义差异: 窗口末位保位而非 top1 (通用检索防查询意图扭曲, 有意偏离) |
+| 12 | lost-in-the-middle 发牌 (1,3,5,4,2) | ❌ D7 | 未做 |
+| 13 | 可派生常量律 | ✅ | ceiling 现场推导 + fusion_ceiling_formula 公式串(本次) + 硬编码上界反例测试 |
+| 14 | abstain 纪律 | ❌ D8 | 未做 |
+| 15 | wrench 面板显示 guarantee 触发 | ✅ | fusion_guarantee_fired 进 pipeline_stats/retrieval_explain_v1, MCP debug 输出可达 |
+| 16 | confess-with-receipt 文化 | ✅ | step-closure 执行者四字段责任制 + audit_run + 信任分联动 (项目既有, 与文章同构) |
+
+### 本轮核对新发现并修复
+
+1. **governed node rerank documents 全量透传** (:5432): 生产主路径 WSL 重排
+   收到未窗口化全文 —— 客户端不截断时服务端模型上下文成为隐性上限。
+   已加 both_ends_window(env PP_RERANK_GOVERNED_DOC_CHARS=1200)。
+2. **explain 缺公式串**: 数值 ceiling 已有但无推导过程 —— 补
+   fusion_ceiling_formula ("N arms / (k + 1) = x") 落实"打印公式"要求。
+
+### 核对后剩余欠账 (按优先级)
+
+D7 发牌定序 → D8 abstain → chunking overlap 双端同步(Phase D) →
+D9 占位实体治理 → Rust 热路径 explain 对齐。

@@ -99,6 +99,7 @@ _PIPELINE_TEXT_FIELDS = (
     "fusion_runtime",
     "fusion_algorithm",
     "fusion_channels",
+    "fusion_ceiling_formula",
     "fallback_reason",
     "degradation_state",
 )

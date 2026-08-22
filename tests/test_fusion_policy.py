@@ -803,3 +803,17 @@ def test_guarantee_noop_when_pool_within_window_or_unqualified():
     results, fired = engine._apply_fusion_guarantees(list(small), retention_window=8)
     assert [r[0] for r in results] == [r[0] for r in small]
     assert fired == []
+
+def test_explain_allowlist_includes_ceiling_formula():
+    import plastic_promise.core.retrieval_explain as rx
+
+    assert "fusion_ceiling_formula" in rx._PIPELINE_TEXT_FIELDS
+
+
+def test_both_ends_window_shared_with_engine():
+    from plastic_promise.core.reranker import _both_ends_window, both_ends_window
+
+    assert both_ends_window is _both_ends_window
+    long = "a" * 3000 + "TAIL-SENTENCE"
+    windowed = both_ends_window(long, 1200)
+    assert "TAIL-SENTENCE" in windowed and len(windowed) <= 1200

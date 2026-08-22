@@ -33,6 +33,7 @@ from plastic_promise.core.constants import (
     SOURCE_EXCLUDE,
     SYMBOL_RULE_KEYWORDS,
 )
+from plastic_promise.core.reranker import both_ends_window
 from plastic_promise.core.fusion_policy import (
     FusionConfig,
     FusionDecision,
@@ -5054,6 +5055,10 @@ class ContextEngine:
             # absolute gates keep their calibrated meaning.
             _default_fusion_ceiling = sum(fusion_config.weights.values()) / (fusion_config.k + 1)
             _fusion_explain["fusion_ceiling"] = _default_fusion_ceiling
+            _fusion_explain["fusion_ceiling_formula"] = (
+                f"{len(fusion_config.channels)} arms / ({fusion_config.k} + 1)"
+                f" = {round(_default_fusion_ceiling, 6)}"
+            )
         if fusion_config is not None:
             if not _using_default_fusion:
                 _fusion_explain.update(
@@ -5429,7 +5434,13 @@ class ContextEngine:
                     outcome = governed_rerank(
                         project_id=project_id,
                         query=task_description,
-                        documents=[str(item.content) for item in all_items],
+                        documents=[
+                            both_ends_window(
+                                str(item.content),
+                                int(os.environ.get("PP_RERANK_GOVERNED_DOC_CHARS", "1200")),
+                            )
+                            for item in all_items
+                        ],
                     )
                     if outcome.scores:
                         all_items = reranker._apply_rerank_scores(all_items, outcome.scores)
