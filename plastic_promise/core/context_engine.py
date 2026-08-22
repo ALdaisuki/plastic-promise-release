@@ -4922,6 +4922,9 @@ class ContextEngine:
                     and os.environ.get("PP_FTS_DISABLED", "") != "1"
                     and os.environ.get("PP_FTS_FUSION", "1") == "1"
                 ),
+                # Aisle arm is a Python-path metadata prior; PP_FUSION_AISLE=off
+                # removes the channel entirely for A/B or rollback.
+                has_aisle=os.environ.get("PP_FUSION_AISLE", "on").strip().lower() != "off",
             )
         candidate_limit = self._candidate_budget(retrieval_plan)
 
@@ -5060,10 +5063,21 @@ class ContextEngine:
                         "fusion_channels": ",".join(fusion_config.channels),
                     }
                 )
+            aisle_window = int(fusion_config.windows.get("aisle", 0) or 0)
+            aisle_results: list[tuple] = (
+                self._aisle_retrieval(
+                    task_type=task_type,
+                    domain_hint=getattr(self, "_domain_hint", None),
+                    limit=aisle_window,
+                )
+                if "aisle" in fusion_config.channels
+                else []
+            )
             channel_results = {
                 "vector": vector_results,
                 "bm25": text_results,
                 "fts": fts_results,
+                "aisle": aisle_results,
             }
             rankings = {
                 channel: [(str(row[0]), float(row[1])) for row in channel_results[channel]]
@@ -5139,6 +5153,11 @@ class ContextEngine:
         all_results = self._merge_ranked_results(all_results, code_results)
         if canonical_hot_enforce:
             all_results = self._merge_ranked_results(all_results, canonical_hot_results)
+        # Guarantees apply after every merge: no later stage may un-seat a
+        # principle/pinned memory that fused into the pool.
+        all_results, _guarantees_fired = self._apply_fusion_guarantees(all_results)
+        if _guarantees_fired:
+            _fusion_explain["fusion_guarantee_fired"] = len(_guarantees_fired)
         all_results, synthesis_degradations = self._filter_synthesis_result_tuples(
             all_results[:candidate_limit]
         )
@@ -5447,7 +5466,17 @@ class ContextEngine:
             record_stage_timing("mmr", mmr_started)
             hard_min_score = float(os.environ.get("PP_HARD_MIN_SCORE", str(HARD_MIN_SCORE)))
             if hard_min_score > 0:
-                all_items = [item for item in all_items if item.relevance >= hard_min_score]
+                # Fired guarantees bypass the absolute gate: their seat was
+                # earned by the guarantee, not by the normalized ballot.
+                _fired_gate_ids = {
+                    str(entry.get("id"))
+                    for entry in (_guarantees_fired if isinstance(_guarantees_fired, list) else [])
+                }
+                all_items = [
+                    item
+                    for item in all_items
+                    if item.relevance >= hard_min_score or str(item.id) in _fired_gate_ids
+                ]
             preservation_floor = max(CONTEXT_LAYERS["divergent"]["min_relevance"], hard_min_score)
             all_items, keyword_preserved_count = _restore_keyword_candidates(
                 all_items,
@@ -5458,6 +5487,10 @@ class ContextEngine:
             pack.core.clear()
             pack.related.clear()
             pack.divergent.clear()
+            _fired_ids = {
+                str(entry.get("id"))
+                for entry in (_guarantees_fired if isinstance(_guarantees_fired, list) else [])
+            }
             for item in all_items:
                 if not item.is_principle:
                     if item.relevance >= CONTEXT_LAYERS["core"]["min_relevance"]:
@@ -5466,7 +5499,13 @@ class ContextEngine:
                     elif item.relevance >= CONTEXT_LAYERS["related"]["min_relevance"]:
                         item.layer = "related"
                         pack.related.append(item)
-                    elif item.relevance >= CONTEXT_LAYERS["divergent"]["min_relevance"]:
+                    elif (
+                        item.relevance >= CONTEXT_LAYERS["divergent"]["min_relevance"]
+                        or str(item.id) in _fired_ids
+                    ):
+                        # Guarantee floor: a fired (window-lifted) memory is
+                        # never silenced by the layer gates — it lands in the
+                        # lowest delivered layer at minimum.
                         item.layer = "divergent"
                         pack.divergent.append(item)
             # Compute divergent quality
@@ -5482,6 +5521,7 @@ class ContextEngine:
                 "vector": vector_results,
                 "bm25": text_results,
                 "fts": fts_results,
+                "aisle": aisle_results,
             }
             pack.channel_rankings = {
                 channel: [
@@ -7044,6 +7084,107 @@ class ContextEngine:
             for mid, (score, content, source) in sorted(
                 combined.items(), key=lambda x: x[1][0], reverse=True
             )
+        ]
+
+    @staticmethod
+    def _is_guaranteed_memory(memory_id: str, record: Any) -> bool:
+        """Guarantee predicate: principles and explicitly pinned memories."""
+        if memory_id.startswith("principle:"):
+            return True
+        if not isinstance(record, dict):
+            return False
+        if str(record.get("memory_type", "")) == "principle":
+            return True
+        tags = record.get("tags") or []
+        return any(str(tag) in ("pinned", "governance") for tag in tags)
+
+    def _apply_fusion_guarantees(
+        self,
+        fused_results: list[tuple],
+        retention_window: int = 8,
+    ) -> tuple[list[tuple], list[dict[str, Any]]]:
+        """Keep guaranteed memories inside the retained window, never drop them.
+
+        Guarantees override rank order (RuleSage law): a principle or pinned
+        memory that fused into the candidate pool but landed outside the
+        retention window is lifted to the window's last seat; the seat it
+        displaces falls out. Returns (results, fired annotations).
+        """
+        if len(fused_results) <= retention_window:
+            return fused_results, []
+        kept = list(fused_results[:retention_window])
+        tail = list(fused_results[retention_window:])
+        fired: list[dict[str, Any]] = []
+        # Walk the tail so later ties resolve deterministically.
+        for index in range(len(tail) - 1, -1, -1):
+            item = tail[index]
+            memory_id = str(item[0])
+            record = getattr(self, "_memories", {}).get(memory_id)
+            if not self._is_guaranteed_memory(memory_id, record):
+                continue
+            displaced = kept.pop()
+            moved = tail.pop(index)
+            kept.append(moved)
+            fired.append(
+                {
+                    "id": memory_id,
+                    "from_rank": retention_window + 1 + index,
+                    "to_rank": retention_window,
+                    "displaced": str(displaced[0]),
+                }
+            )
+        return kept + tail, fired
+
+    def _aisle_retrieval(
+        self,
+        task_type: str,
+        domain_hint: str | None = None,
+        limit: int = 32,
+        per_domain_cap: int = 8,
+    ) -> list[tuple]:
+        """Structured aisle arm: metadata prior, not similarity.
+
+        Three-Librarians third arm — candidates are nominated because of where
+        the session stands (active domain / task type), not because their text
+        matches. Principles are a global aisle. Per-domain seats prevent one
+        large domain from flooding the ballot. Score is only used to order
+        within this channel; RRF never mixes it with other currencies.
+        """
+        results: list[tuple[str, float, str, str]] = []
+        domain_seats: dict[str, int] = {}
+        for mid, record in list(getattr(self, "_memories", {}).items()):
+            if not isinstance(record, dict):
+                continue
+            memory_type = str(record.get("memory_type", ""))
+            record_domain = str(record.get("domain", "uncategorized"))
+            is_principle = memory_type == "principle" or mid.startswith("principle:")
+            tags = record.get("tags") or []
+            in_aisle = (
+                is_principle
+                or (domain_hint is not None and record_domain == domain_hint)
+                or (domain_hint is None and task_type in str(record.get("tags", [])))
+            )
+            if not in_aisle:
+                continue
+            if domain_seats.get(record_domain, 0) >= per_domain_cap and not is_principle:
+                continue
+            worth_net = float(record.get("worth_success", 0)) - float(
+                record.get("worth_failure", 0)
+            )
+            results.append((str(mid), worth_net, str(record.get("content", "")), "aisle"))
+            domain_seats[record_domain] = domain_seats.get(record_domain, 0) + 1
+        # Order by net worth desc, id asc for determinism; cap the channel.
+        results.sort(key=lambda row: (-row[1], row[0]))
+        trimmed = results[:limit]
+        if not trimmed:
+            return trimmed
+        floor = min(row[1] for row in trimmed)
+        span = max(row[1] for row in trimmed) - floor
+        if span <= 0:
+            return [(mid, 1.0, content, source) for mid, _s, content, source in trimmed]
+        return [
+            (mid, round((score - floor) / span, 6), content, source)
+            for mid, score, content, source in trimmed
         ]
 
     def _graph_traversal(self, task_type: str) -> list[tuple]:

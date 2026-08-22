@@ -690,3 +690,116 @@ def test_explain_allowlist_includes_fusion_fields():
         assert field in rx._PIPELINE_NUMBER_FIELDS
     for field in ("fusion_algorithm", "fusion_channels", "fusion_policy"):
         assert field in rx._PIPELINE_TEXT_FIELDS
+
+
+# ---------------------------------------------------------------------------
+# Phase B: aisle arm (third channel) + fusion guarantees
+# ---------------------------------------------------------------------------
+
+
+def test_validator_accepts_aisle_and_rejects_unknown():
+    from plastic_promise.core.fusion_policy import (
+        FusionConfigurationError,
+        _validated_config,
+    )
+
+    ok = _validated_config(
+        FusionConfig(
+            k=20,
+            weights={"vector": 1.0, "bm25": 1.0, "fts": 1.0, "aisle": 1.0},
+            windows={"vector": 32, "bm25": 32, "fts": 32, "aisle": 16},
+            channels=("vector", "bm25", "fts", "aisle"),
+            config_hash="",
+        )
+    )
+    assert "aisle" in ok.channels
+    with pytest.raises(FusionConfigurationError):
+        _validated_config(
+            FusionConfig(
+                k=20,
+                weights={"vector": 1.0, "ghost": 1.0},
+                windows={"vector": 8, "ghost": 8},
+                channels=("vector", "ghost"),
+                config_hash="",
+            )
+        )
+
+
+def test_default_fusion_config_covers_aisle_when_plan_carries_it():
+    from plastic_promise.core.constants import RRF_K
+    from plastic_promise.core.fusion_policy import default_fusion_config
+
+    plan = plan_retrieval(has_vector=True, has_graph=False, has_fts=True, has_aisle=True)
+    config = default_fusion_config(plan, env={})
+    assert config is not None
+    assert config.channels == ("vector", "bm25", "fts", "aisle")
+    assert config.k == RRF_K
+    assert all(weight == 1.0 for weight in config.weights.values())
+
+
+def test_four_arm_consensus_beats_single_arm_top():
+    from plastic_promise.core.fusion_policy import weighted_rrf
+
+    config = FusionConfig(
+        k=20,
+        weights={c: 1.0 for c in ("vector", "bm25", "fts", "aisle")},
+        windows={c: 32 for c in ("vector", "bm25", "fts", "aisle")},
+        channels=("vector", "bm25", "fts", "aisle"),
+        config_hash="",
+    )
+    rankings = {
+        "vector": [("n1", 9.0), ("shared4", 3.0)],
+        "bm25": [("n2", 30.0), ("shared4", 10.0)],
+        "fts": [("n3", 5.0), ("shared4", 2.0)],
+        "aisle": [("n4", 1.0), ("shared4", 0.9)],
+    }
+    fused = dict(weighted_rrf(rankings, config))
+    # four arms agreeing at rank 2 beats any single arm's rank 1
+    assert fused["shared4"] > max(fused["n1"], fused["n2"], fused["n3"], fused["n4"])
+
+
+def _engine_with_memories(memories):
+    from plastic_promise.core.context_engine import ContextEngine
+
+    engine = ContextEngine(use_sqlite=False)
+    engine._memories = memories
+    return engine
+
+
+def test_aisle_retrieval_nominates_domain_and_principles_with_caps():
+    engine = _engine_with_memories(
+        {
+            "m_building_1": {"domain": "building", "memory_type": "experience", "worth_success": 5, "content": "building memory one"},
+            "m_building_2": {"domain": "building", "memory_type": "experience", "worth_success": 3, "content": "building memory two"},
+            "m_design_1": {"domain": "designing", "memory_type": "experience", "worth_success": 9, "content": "designing memory one"},
+            "principle:7": {"domain": "governing", "memory_type": "principle", "content": "a principle"},
+        }
+    )
+    results = engine._aisle_retrieval(task_type="general", domain_hint="building", limit=32, per_domain_cap=1)
+    ids = [row[0] for row in results]
+    # per-domain cap of 1 keeps only the top building memory; designing is a different aisle
+    assert "m_building_1" in ids and "m_building_2" not in ids
+    assert "m_design_1" not in ids
+    # principles ride every aisle regardless of cap
+    assert "principle:7" in ids
+
+
+def test_guarantee_lifts_principle_into_window_and_reports_fire():
+    rows = [(f"m{i}", float(10 - i), f"content {i}", "bm25") for i in range(12)]
+    rows.append(("principle:2", 0.01, "the principle", "aisle"))
+    engine = _engine_with_memories({"principle:2": {"memory_type": "principle"}})
+    results, fired = engine._apply_fusion_guarantees(rows, retention_window=8)
+    ids_in_window = [str(row[0]) for row in results[:8]]
+    assert "principle:2" in ids_in_window
+    assert len(fired) == 1
+    assert fired[0]["id"] == "principle:2"
+    assert fired[0]["from_rank"] == 13
+    assert fired[0]["to_rank"] == 8
+
+
+def test_guarantee_noop_when_pool_within_window_or_unqualified():
+    engine = _engine_with_memories({})
+    small = [(f"m{i}", float(i), "c", "bm25") for i in range(5)]
+    results, fired = engine._apply_fusion_guarantees(list(small), retention_window=8)
+    assert [r[0] for r in results] == [r[0] for r in small]
+    assert fired == []

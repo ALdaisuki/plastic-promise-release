@@ -16,6 +16,10 @@ if TYPE_CHECKING:
 
 
 FUSION_CHANNEL_ORDER = ("vector", "bm25", "fts")
+# Extended validation universe. The three-channel tuple above is the frozen
+# golden/experiment contract (recall_experiment locks it); the aisle arm is a
+# metadata-prior channel that only plans which opt in will carry.
+FUSION_CHANNELS_ALL = ("vector", "bm25", "fts", "aisle")
 _CANDIDATE_RE = re.compile(r"^wrrf-v1:([0-9a-f]{64})$")
 
 
@@ -108,9 +112,9 @@ def _validate_channels(channels: Sequence[str]) -> tuple[str, ...]:
     normalized = tuple(str(channel) for channel in channels)
     if not normalized or len(set(normalized)) != len(normalized):
         raise FusionConfigurationError("invalid_channels:duplicate_or_empty")
-    if any(channel not in FUSION_CHANNEL_ORDER for channel in normalized):
+    if any(channel not in FUSION_CHANNELS_ALL for channel in normalized):
         raise FusionConfigurationError("invalid_channels:unknown_channel")
-    expected_order = tuple(channel for channel in FUSION_CHANNEL_ORDER if channel in normalized)
+    expected_order = tuple(channel for channel in FUSION_CHANNELS_ALL if channel in normalized)
     if normalized != expected_order:
         raise FusionConfigurationError("invalid_channels:noncanonical_order")
     return normalized

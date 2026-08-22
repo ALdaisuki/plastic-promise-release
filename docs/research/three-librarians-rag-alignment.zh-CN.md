@@ -55,7 +55,23 @@ HARD_MIN_SCORE=0.30 绝对门)。
 - 性质测试 ×5: 共识胜单臂 (两臂#3 > 单臂#1)、上界 arms/(k+1) 派生、env 覆盖、
   空通道 None、等权断言; tests/test_fusion_policy.py 43 passed。
 
-待办: explain 补 strategy/k/arms/ceiling 字段 (D5); shadow 对比基准; D3/D6-D9。
+Phase A 收尾 (ea96455): explain 白名单放行 fusion_algorithm/fusion_rrf_k/
+fusion_channels/fusion_ceiling, dispatch 四分支就地捕获; fusion_shadow 纯函数对比
+模块 (top-k overlap / Kendall tau / 派生 ceiling) + 确定性性质测试。
+
+### Phase B 过道臂与 guarantees — 落地
+
+- 第三臂 aisle: FUSION_CHANNELS_ALL 校验宇宙隔离 golden 三通道契约;
+  planner has_aisle opt-in; engine _aisle_retrieval 按 domain/principle 元数据提名,
+  per-domain 8 席防淹没, worth 排序, 分数仅作通道内序; PP_FUSION_AISLE=off 回退。
+- Guarantees override ranker: principle/pinned/governance 记忆若入池但落在
+  retention window(8) 外, 提升至窗口末位并记 fired 计数进 explain;
+  hard-min 绝对门与层下限对 fired 项豁免, 保证最终交付层可见。
+  principle 类本体仍走激活注入通道, 检索层 guarantee 针对 pinned/governance。
+- 冒烟实证: m_pinned 从 rank 50 提至 8 (fired=1) 且 pinned_visible=true。
+
+待办: D3 增强 (最近命中统计作为提名信号), D6 rerank 读两端, D7 发牌定序,
+D8 abstain, D9 服务端占位实体治理, Rust 热路径同步 (Phase D)。
 Phase B 第三臂与 guarantees: 会话活跃 domain/project 过道臂 (每源限额防淹没);
 principle/governance 与 pin 记忆保位, explain 标注 guarantee 触发。
 Phase C 重排与组装: rerank 输入头尾拼接; 注入文本 lost-in-the-middle 定序; abstain。

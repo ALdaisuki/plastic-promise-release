@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from plastic_promise.core.fusion_policy import FUSION_CHANNEL_ORDER
+from plastic_promise.core.fusion_policy import FUSION_CHANNELS_ALL
 
 VALID_RETRIEVAL_MODES = {
     "local",
@@ -87,6 +87,7 @@ def plan_retrieval(
     has_vector: bool = True,
     has_graph: bool = True,
     has_fts: bool = True,
+    has_aisle: bool = False,
 ) -> RetrievalPlan:
     normalized_task = (task_type or "general").lower()
     normalized_scope = scope or "global"
@@ -129,6 +130,8 @@ def plan_retrieval(
         channels.append("fts")
     if has_graph:
         channels.append("graph")
+    if has_aisle:
+        channels.append("aisle")
     if mode == "principle":
         channels.append("principle")
     if mode == "audit":
@@ -136,7 +139,7 @@ def plan_retrieval(
     if mode == "code":
         channels.append("code")
 
-    fusion_channels = tuple(channel for channel in FUSION_CHANNEL_ORDER if channel in channels)
+    fusion_channels = tuple(channel for channel in FUSION_CHANNELS_ALL if channel in channels)
     channel_windows = dict.fromkeys(fusion_channels, 32)
 
     return RetrievalPlan(

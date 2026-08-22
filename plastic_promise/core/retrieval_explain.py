@@ -82,6 +82,7 @@ _PIPELINE_INT_FIELDS = (
     "divergent_count",
     "canonical_hot_count",
     "context_gate_evaluated",
+    "fusion_guarantee_fired",
 )
 _PIPELINE_NUMBER_FIELDS = (
     "minimum_score",
