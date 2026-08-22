@@ -320,9 +320,17 @@ fn split_oversized_block(block: StructuralBlock, hard_chars: usize) -> Vec<Struc
             start,
             end: piece_end,
         });
+        let previous_cursor = cursor;
         cursor += actual_end;
         while cursor < chars.len() && chars[cursor].is_whitespace() {
             cursor += 1;
+        }
+        // Overlap window: adjacent slices share a tail/head band so a
+        // sentence cut at the boundary stays complete in at least one
+        // neighbor. Kept in lockstep with the python splitter (parity).
+        if cursor < chars.len() {
+            let overlap = (hard_chars / 6).min(80).max(1);
+            cursor = cursor.saturating_sub(overlap).max(previous_cursor + 1);
         }
     }
     pieces

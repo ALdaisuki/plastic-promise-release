@@ -143,3 +143,24 @@ def test_chunk_manifest_marks_bounded_middle_omission_as_resource_limited():
     assert manifest["resource_limited"] is True
     assert manifest["truncated"] is True
     assert "Body 9" in manifest["chunks"][-1]["text"]
+
+def test_oversized_slices_overlap_and_stay_verbatim():
+    sentences = " ".join(f"Sentence {i:02d} carries some words." for i in range(1, 15))
+    text = f"# Long Topic\n\n{sentences}"
+
+    chunks = structure_aware_chunks(text, target_chars=40, hard_chars=60)
+
+    assert len(chunks) >= 3
+    bodies = [c.text.split("\n", 1)[-1] for c in chunks]
+    # verbatim invariant holds per slice
+    for chunk, body in zip(chunks, bodies):
+        assert text[chunk.source_start : chunk.source_end] == body
+    # adjacent slices share a tail/head band (overlap present)
+    overlaps = 0
+    for prev, nxt in zip(bodies, bodies[1:]):
+        shared = set(prev.split()) & set(nxt.split())
+        if shared:
+            overlaps += 1
+    assert overlaps >= 1
+    # coverage still reaches the end of the source
+    assert chunks[-1].source_end == len(text)

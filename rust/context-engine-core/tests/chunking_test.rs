@@ -128,3 +128,43 @@ fn structure_v1_accepts_whitespace_after_list_markers() {
         assert_eq!(chunks[0].kind, "list", "source={source:?}");
     }
 }
+
+#[test]
+fn oversized_slices_share_overlap_band() {
+    let mut sentences = String::new();
+    for i in 1..15 {
+        sentences.push_str(&format!("Sentence {:02d} carries some words. ", i));
+    }
+    let text = format!("# Long Topic\n\n{}", sentences);
+
+    let chunks = structure_aware_chunks(&text, 40, Some(60), None);
+
+    assert!(chunks.len() >= 3);
+    // verbatim invariant holds per slice
+    for chunk in &chunks {
+        let body = char_slice(&text, chunk.source_start, chunk.source_end);
+        let contextual_body = match chunk.text.split_once('\n') {
+            Some((_prefix, rest)) => rest.to_string(),
+            None => chunk.text.clone(),
+        };
+        assert_eq!(body, contextual_body);
+    }
+    // adjacent slices share a tail/head band (overlap present)
+    let words: Vec<Vec<String>> = chunks
+        .iter()
+        .map(|chunk| {
+            let body = match chunk.text.split_once('\n') {
+                Some((_p, rest)) => rest.to_string(),
+                None => chunk.text.clone(),
+            };
+            body.split_whitespace().map(|w| w.to_string()).collect()
+        })
+        .collect();
+    let overlaps = words.windows(2).filter(|pair| pair[0].iter().any(|w| pair[1].contains(w))).count();
+    assert!(overlaps >= 1);
+    assert_eq!(
+        chunks.last().unwrap().source_end,
+        char_len(&text),
+        "coverage still reaches the end of the source"
+    );
+}

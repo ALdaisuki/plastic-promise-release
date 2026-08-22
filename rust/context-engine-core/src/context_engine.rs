@@ -1358,6 +1358,19 @@ impl ContextEngine {
         stage_timing_ms.insert("total".into(), elapsed_ms(supply_started));
         pack.pipeline_stats.insert("engine_mode".into(), "snapshot".into());
         pack.pipeline_stats.insert("fallback_reason".into(), "none".into());
+        if let Some(config) = fusion_config.as_ref() {
+            // Explain parity with the python path (Phase A/D): which strategy
+            // ran, with which k, over which channels, and its derived ceiling.
+            let arms = config.weights.len().max(1);
+            let k = config.k.max(1);
+            pack.pipeline_stats.insert("fusion_policy".into(), "legacy-auto".into());
+            pack.pipeline_stats.insert("fusion_algorithm".into(), "weighted_rrf_rust".into());
+            pack.pipeline_stats.insert("fusion_rrf_k".into(), k.to_string());
+            pack.pipeline_stats.insert(
+                "fusion_ceiling_formula".into(),
+                format!("{} arms / ({} + 1) = {:.6}", arms, k, arms as f64 / (k as f64 + 1.0)),
+            );
+        }
         pack.pipeline_stats.insert("input_memory_count".into(), input_memory_count.to_string());
         pack.pipeline_stats.insert("after_input_noise_filter".into(), memory_index.len().to_string());
         pack.pipeline_stats.insert("vector_count".into(), real_vector.len().to_string());
@@ -1645,15 +1658,27 @@ impl ContextEngine {
     /// Returns `Vec<(id, score, source_description)>` for principle entities
     /// reachable from the task_type node.
     fn graph_traversal(&self, task_type: &str) -> Vec<(String, f64, String)> {
+        // D9 (Three-Librarians alignment): the graph arm nominates nodes with
+        // real payload only. A node whose description merely echoes its id
+        // ("Entity from graph: X") carries no readable content and used to
+        // flood the fused pool with placeholder text. Principle entities keep
+        // their delivery path through principle activation instead.
         let start_id = format!("task_type:{}", task_type);
         let traversed = self.graph.borrow().traverse(&start_id, 3);
+        let graph = self.graph.borrow();
 
         traversed
             .into_iter()
-            .map(|(id, weight, _hops)| {
-                // Attempt to fetch entity name/description from graph for context
-                let description = format!("Entity from graph: {}", id);
-                (id, weight.clamp(0.0, 1.0), description)
+            .filter_map(|(id, weight, _hops)| {
+                if id.starts_with("principle:") || id.starts_with("task_type:") {
+                    return None;
+                }
+                let node = graph.get_node(&id)?;
+                let description = node.description.trim().to_string();
+                if description.is_empty() {
+                    return None;
+                }
+                Some((id, weight.clamp(0.0, 1.0), description))
             })
             .collect()
     }

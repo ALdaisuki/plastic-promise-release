@@ -537,6 +537,10 @@ def _split_oversized_block(block: StructuralBlock, hard_chars: int) -> list[Stru
     if len(_contextual_text(block)) <= hard_chars:
         return [block]
     text = block.text
+    # Overlap window: adjacent slices share a tail/head band so a sentence
+    # cut at the boundary stays complete in at least one neighbor. Kept in
+    # lockstep with rust/context-engine-core/src/chunking.rs (parity-tested).
+    overlap = min(80, max(hard_chars // 6, 1))
     pieces: list[StructuralBlock] = []
     cursor = 0
     while cursor < len(text):
@@ -557,9 +561,12 @@ def _split_oversized_block(block: StructuralBlock, hard_chars: int) -> list[Stru
                 end=start + len(piece_text),
             )
         )
+        previous_cursor = cursor
         cursor += end
         while cursor < len(text) and text[cursor].isspace():
             cursor += 1
+        if cursor < len(text):
+            cursor = max(cursor - overlap, previous_cursor + 1)
     return pieces
 
 

@@ -158,3 +158,23 @@ D9 占位实体治理 → Rust 热路径 explain 对齐。
 
 至此文章 16 点中 **13 点完全对齐、2 点有意偏离(漏斗出口分层、保位席位)、
 1 点待双端同步(chunking overlap)**。
+
+### Phase D — chunking overlap 双端同步 + D9 源头治理 + Rust explain 对齐
+
+- **chunking overlap 双端**: python _split_oversized_block 与 rust
+  split_oversized_block 同步加入相邻片重叠带 (min(80, hard/6), 保证前进不回死),
+  边界句在至少一个邻居片中完整; 逐字保源 span 断言与文末覆盖断言保持通过。
+  双端测试各补一条 (python: 重叠存在+verbatim; rust: 镜像断言, cargo check 过,
+  本机 arm64 链接为预存环境问题由 CI 兜底)。
+- **D9 占位实体治理 (源头)**: 根因在 rust context_engine.rs graph_traversal ——
+  对遍历到的每个节点生成 "Entity from graph: {id}" 占位描述, 空壳节点涌入融合池。
+  修法: principle:/task_type: 节点交还原通道; 其余节点取 Entity.description
+  实质内容, 空描述跳过不提名。
+- **Rust explain 对齐**: 主路径 pipeline_stats 补 fusion_policy /
+  fusion_algorithm=weighted_rrf_rust / fusion_rrf_k / fusion_ceiling_formula,
+  与 Python 路径字段一一对应。
+
+### 最终状态
+
+文章 16 点全部处置完毕: 14 完全对齐 (含 D9 源头治理与双端 overlap),
+2 有意偏离并记录理由 (漏斗出口分层化、保位席位制)。
