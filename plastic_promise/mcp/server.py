@@ -3252,7 +3252,13 @@ def _bind_durable_collaboration_runtime_for_project(
             or current_session.identity.agent_id != f"agent:{actor}"
         ):
             return False, "durable_collaboration_transport_binding_conflict"
-        return True, ""
+        if str(getattr(current_session, "state", "") or "") != "active":
+            # A lapsed presence window must not deadlock the cached binding:
+            # fall through to re-registration below, which revives the exact
+            # deterministic session row via its verified stored identity.
+            pass
+        else:
+            return True, ""
 
     if str(continuation_token or "").strip():
         resumed, reason = _resume_durable_collaboration_continuation(

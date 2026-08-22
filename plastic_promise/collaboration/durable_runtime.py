@@ -1275,9 +1275,23 @@ class DurableCollaborationRuntime:
                 )
                 if state == "closed":
                     raise DurableCollaborationError("agent_session_closed")
-                if state == "stale":
-                    raise DurableCollaborationError("agent_session_stale")
                 try:
+                    # A stale row is revived by this verified re-registration:
+                    # identity and scope were checked against the stored
+                    # projection above and the transport binding is
+                    # server-owned.  The presence window is re-issued from the
+                    # server clock; closed rows remain terminal.
+                    revived_expires_at = (
+                        canonical_text(
+                            now + timedelta(
+                                seconds=max(
+                                    self._presence_timeout_seconds, 24 * 60 * 60
+                                )
+                            )
+                        )
+                        if state == "stale"
+                        else str(existing["expires_at"])
+                    )
                     server_session = AgentSession(
                         session_id=session.session_id,
                         identity=identity,
@@ -1286,7 +1300,7 @@ class DurableCollaborationRuntime:
                         state="active",
                         started_at=str(existing["started_at"]),
                         last_heartbeat_at=now_text,
-                        expires_at=str(existing["expires_at"]),
+                        expires_at=revived_expires_at,
                     )
                 except CollaborationContractError as exc:
                     raise DurableCollaborationError("agent_session_projection_corrupt") from exc
@@ -1391,10 +1405,15 @@ class DurableCollaborationRuntime:
                     actor_session_id=session.session_id,
                 )
             else:
+                # A stale row is revived by exact re-registration: identity and
+                # scope were verified against the stored projection above and
+                # the transport binding is server-owned, so this replay is the
+                # re-authentication channel for a lapsed presence window.
+                # Closed rows stay terminal by design.
                 updated = self._connection.execute(
                     "UPDATE collaboration_agent_sessions SET state='active', "
                     "last_heartbeat_at=?, policy_json=?, updated_at=? "
-                    "WHERE session_id=? AND state IN ('registered','active','idle')",
+                    "WHERE session_id=? AND state IN ('registered','active','idle','stale')",
                     (now_text, policy_json, now_text, session.session_id),
                 )
                 if updated.rowcount != 1:
