@@ -43,7 +43,7 @@ Plastic Promise 是一个本地优先的 AI Agent 行为治理与协作运行时
   Rust context-engine-core 可选加速路径，Python 管线仍是权威完整路径；Rust snapshot 入口过滤 audit telemetry，Python 转换边界保留最终防线
 ```
 
-## 三、当前状态 (2026-07-04)
+## 三、当前状态 (2026-08-22)
 
 ### 稳定/活跃
 
@@ -357,3 +357,21 @@ step-closure(
   canonical endpoints-file resolution, and bearer-prefix idempotency fixes
   through PR #10.
 - Release verification for `0.2.16` is **audited and approved**. Final whole-repository verification and mandatory high-risk review completed before release synchronization. Release-specific benchmark and runtime evidence are recorded in the release notes.
+
+
+## 2026-08-22 Release Pipeline and Governed Vector Smoke Note
+
+- v0.2.16 已通过完整受控链发布：GitHub Actions 构建摘要固定镜像并发布 PyPI；
+  `release-sync.py --push` 原子推送 `main` 与附注标签（sync commit + tag 对象重审）。
+- `scripts/release_pipeline.py` 提供一键发行验证链：`doctor`（环境预检）、
+  `handshake`（计算节点接线：控制面材料同步、Keychain bearer、governance schema
+  迁移、节点注册断言）、`e2e`（治理路由金丝雀 + strict 只读冒烟）、`receipt`
+  （wheel 原生回执，8 检查全真）、`evidence`（12 字段证据，dry-run 抓取 scope）、
+  `all`（以上串联）与 `publish`（经受证路径推送）。该管线只固化操作编排，不弱化
+  任何质量门禁；`publish` 仍走 release-sync 的完整 fail-closed 校验。
+- 发行容器可通过控制面路由接入异构推理节点：`PP_CONTROL_PLANE=1` + 固定节点身份 +
+  私有传输探针；健康策略 strict 时 `vector_ready=true` 且 provider 为 `governed-node`
+  （Qwen3-Embedding-4B, 2560 维, L2）。server 进程保持 `pp-server-backend` 角色，
+  永远不是推理执行面；text-only 冒烟仅作为无计算节点环境的显式降级路径保留。
+- 节点接线材料以 Mac 控制面为源：deployment manifest、私有端点文件（0600）、
+  keychain bearer；容器内以 uid 1000 运行，挂载材料需对应属主。

@@ -88,17 +88,46 @@ Palette: #0F172A → #1E293B, cyan #22D3EE, violet #A78BFA, green #34D399.
 
 </details>
 
-## Controlled release delivery (target / unverified)
+## Controlled release delivery (verified as of v0.2.16)
 
 <p align="center">
   <img src=".github/readme-release-delivery.svg" alt="Plastic Promise release delivery controls" width="960">
 </p>
 
-This diagram describes a **target/unverified** release-control design. It does
-not assert that an RC, signature, attestation, PyPI/GHCR publication, or
-production deployment has occurred. The current `release-publish.yml` stable
-publisher is not yet connected to the PR 6 selected Release Bundle/Model
-Catalog/RC-attestation gate.
+Stable releases are published through an attested, fail-closed chain that was
+exercised end to end for **v0.2.16**: GitHub Actions builds digest-pinned OCI
+images and publishes the exact Python distribution to PyPI; a governed
+compute-node vector smoke (strict health policy, no text-only fallback) runs
+against the published image; a no-secret server deployment receipt and a
+12-field evidence object bind source commit, scope hash, and artifact hashes;
+and `release-sync.py --push` atomically publishes `main` plus the annotated
+tag only after every gate passes.
+
+### One-command release verification
+
+```bash
+# Environment preflight (toolchain, proxy, TZ policy, WSL link, node services)
+python scripts/release_pipeline.py doctor
+
+# After CI finishes: wire the compute node into a release container, seed a
+# canary through the governed route, run the strict read-only smoke, produce
+# the receipt and the evidence JSON:
+python scripts/release_pipeline.py all \
+  --manifest <downloaded release-manifest.json> \
+  --version v0.2.17 --base v0.2.16
+
+# Review /tmp/pp-release-out/ then publish through the attested path:
+python scripts/release_pipeline.py publish \
+  --version v0.2.17 --base v0.2.16 \
+  --evidence /tmp/pp-release-out/release-evidence.json \
+  --manifest <downloaded release-manifest.json> \
+  --receipt /tmp/pp-release-out/server-deployment-receipt.json
+```
+
+The `handshake` step wires a running release container to the heterogeneous
+inference node through the control plane (`PP_CONTROL_PLANE=1`, pinned node
+identity, private transport probe); embedding inference stays on the compute
+node — the server process is never an inference execution plane.
 
 <details>
 <summary>View release-delivery infographic brief</summary>

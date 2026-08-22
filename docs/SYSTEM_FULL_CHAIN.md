@@ -147,6 +147,28 @@ fields. The same process commits, creates the annotated tag, revalidates pinned
 object IDs and remote state, then atomically pushes `main` and the exact tag.
 Never replace this attested path with a manual push or `git push --tags`.
 
+### One-command release pipeline
+
+`scripts/release_pipeline.py` wraps the whole verification chain that feeds
+the attested push. It encodes the v0.2.16 field lessons as built-in checks;
+none of them are optional.
+
+| Subcommand | Purpose |
+|---|---|
+| `doctor` | Preflight: runtime-venv modules (`build`, `twine`, pytest plugins), `maturin`, proxy, TZ policy (no `TZ=UTC` override), WSL link, compute-node ports, keychain bearer, control-plane files. |
+| `handshake` | One-step compute-node wiring for a release container: stage the Mac control-plane materials, rewrite the private endpoint to the direct in-host address, resolve the keychain bearer (auto Bearer prefix), rebuild the container with the full governed env, pre-create state dirs, apply the node-governance schema migration transactionally, then assert `node_routing_ready`, `vector_ready: true` and provider `governed-node`. |
+| `e2e` | Seed a canary through the governed MCP route and run the official read-only smoke in strict mode (no `--allow-text-only`). |
+| `receipt` | Run `create_server_deployment_receipt.py` under the released wheel inside WSL against the digest-pinned container; pull back the no-secret receipt JSON. |
+| `evidence` | Capture the dry-run scope binding and assemble the 12-field evidence object bound to source HEAD and artifact hashes. |
+| `all` | handshake → e2e → receipt → evidence in one command. |
+| `publish` | Clean-tree assert plus the proven push environment around `release-sync.py --push`. |
+
+Governance invariants that the pipeline enforces but never weakens: the MCP
+server process stays `pp-server-backend` and is never an inference execution
+plane; vector retrieval reaches the pinned inference node only through the
+control-plane route with a verified node identity; the receipt and evidence
+remain no-secret artifacts.
+
 ```bash
 python scripts/release-sync.py --from <base>..<merged> --audit-range <base>..<merged> \
   --version v0.2.15 --release-repo ../plastic-promise-release \

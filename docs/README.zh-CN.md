@@ -50,32 +50,43 @@
 
 </details>
 
-## 受控发行交付（目标/未验证）
+## 受控发行交付（v0.2.16 起已实测）
 
 <p align="center">
   <img src="../.github/readme-release-delivery.zh-CN.svg" alt="Plastic Promise 发行交付控制" width="960">
 </p>
 
-下图只描述目标/未验证的发行控制设计：证据从不可变源码经过 PR 验证和 RC 制品，才可能进入
-受保护的 stable 发布；它不表示 RC、签名、证明、PyPI/GHCR 发布或生产部署已经发生。
+稳定版本通过一条经实测的 fail-closed 链发布：GitHub Actions 构建以摘要固定的
+OCI 镜像并把精确的 Python 分发物发布到 PyPI；随后在已发布镜像上运行**治理计算
+节点向量冒烟**（strict 健康策略，不允许 text-only 降级豁免）；生成无密钥的服务
+器部署回执与 12 字段证据对象，绑定源码提交、scope 摘要和制品哈希；最后
+`release-sync.py --push` 在全部门禁通过后原子推送 `main` 与附注标签。
 
-<details>
-<summary>查看发行交付图示说明</summary>
+### 一键发行验证
 
-```text
-画布：1280 x 640，深色基础设施配色与青色流程箭头。
-目的：说明发行证据从不可变源码经过 PR 验证和 RC 制品，才会到达受保护的 stable 发布。
+```bash
+# 环境预检（工具链、代理、TZ 策略、WSL 连通、计算节点服务）
+python scripts/release_pipeline.py doctor
 
-区块：
-1. 标题：Plastic Promise — 证据优先；仅经显式批准后发布。
-2. 流程：源码 -> 不推送的 PR 验证 -> RC 制品 -> 受保护 GHCR -> stable 发行版仓库。
-3. 证据：源码 SHA、wheel/sdist 哈希、SBOM、OCI 摘要、证明。
-4. 边界：SQLite、LanceDB、模型、日志、密钥和运行时文件不进入发行制品。
+# CI 完成后：把计算节点接入发行容器、经治理路由写入金丝雀记忆、
+# 运行 strict 只读冒烟，并产出回执与证据 JSON：
+python scripts/release_pipeline.py all \
+  --manifest <下载的 release-manifest.json> \
+  --version v0.2.17 --base v0.2.16
 
-样式：高对比度、紧凑矢量排版；不使用照片，不暗示发行已经完成。
+# 审阅 /tmp/pp-release-out/ 后经受证路径发布：
+python scripts/release_pipeline.py publish \
+  --version v0.2.17 --base v0.2.16 \
+  --evidence /tmp/pp-release-out/release-evidence.json \
+  --manifest <下载的 release-manifest.json> \
+  --receipt /tmp/pp-release-out/server-deployment-receipt.json
 ```
 
-</details>
+**简化的是操作编排，不是质量门。** `handshake` 通过控制面（`PP_CONTROL_PLANE=1`、
+固定节点身份、私有传输探针）把运行中的发行容器接入异构推理节点；嵌入推理始终留
+在计算节点上——server 进程永远不是推理执行面。`publish` 仍然走 
+`release-sync.py --push` 的完整 fail-closed 校验：干净树、预期 origin、全量验
+证档案、12 字段证据绑定、提交/标签对象重审与原子推送；任何一步失败都中止发行。
 
 ## 这是什么
 
