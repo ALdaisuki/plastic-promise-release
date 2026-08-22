@@ -3252,13 +3252,20 @@ def _bind_durable_collaboration_runtime_for_project(
             or current_session.identity.agent_id != f"agent:{actor}"
         ):
             return False, "durable_collaboration_transport_binding_conflict"
-        if str(getattr(current_session, "state", "") or "") != "active":
-            # A lapsed presence window must not deadlock the cached binding:
-            # fall through to re-registration below, which revives the exact
-            # deterministic session row via its verified stored identity.
-            pass
-        else:
-            return True, ""
+        # The cached binding holds the session snapshot from registration
+        # time; its state never tracks later canonical changes. Probe
+        # canonical liveness with a heartbeat instead: success refreshes the
+        # presence window and the cached binding stays authoritative; a stale
+        # row falls through to re-registration below, which revives the exact
+        # deterministic session row via its verified stored identity.
+        runtime = getattr(getattr(existing, "host", None), "runtime", None)
+        session_id = str(current_session.session_id or "")
+        if runtime is not None and session_id:
+            try:
+                runtime.heartbeat(session_id)
+                return True, ""
+            except Exception:
+                pass
 
     if str(continuation_token or "").strip():
         resumed, reason = _resume_durable_collaboration_continuation(
