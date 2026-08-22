@@ -1077,6 +1077,19 @@ async def handle_task_verify(
     max_escalations = int(task["max_escalations"] or 3)
     reassign_to = str(args.get("reassign_to_agent") or task["to_agent"])
 
+    # Trust attribution falls back to the original hunter recorded on the
+    # verification subtask's payload when claimed_by is absent (auto-created
+    # subtasks are never claimed).
+    trust_target = task["claimed_by"]
+    if not trust_target:
+        try:
+            _trust_payload = json.loads(task["payload"]) if task["payload"] else {}
+            if isinstance(_trust_payload, dict):
+                trust_target = _trust_payload.get("original_agent") or None
+        except (TypeError, ValueError):
+            trust_target = None
+    trust_skipped = trust_target is None
+
     if verdict == "accepted":
         # CAS over both legal pre-verify states: 'done' for regular tasks,
         # 'pending' for elder-direct verification subtasks.
@@ -1091,10 +1104,12 @@ async def handle_task_verify(
         event_type = "task:verified"
     else:
         new_esc += 1
+        # Rejection/reassignment of a pending verification subtask must also pass;
+        # the pre-check already guarantees regular tasks arrive here only 'done'.
         transition = conn.execute(
             "UPDATE task_queue SET status='reassigned', verified_at=?, verified_by=?, "
             "verify_verdict=?, escalation_count=?, last_escalation_at=?, updated_at=? "
-            "WHERE project_id=? AND id=? AND status='done'",
+            "WHERE project_id=? AND id=? AND status IN ('done','pending')",
             (now, verified_by, verdict, new_esc, now, now, project_id, task_id),
         )
         new_status = "reassigned"
@@ -1177,17 +1192,18 @@ async def handle_task_verify(
         conn.close()
 
     try:
-        from plastic_promise.defense.soul_enforcer import TrustManager
+        if not trust_skipped:
+            from plastic_promise.defense.soul_enforcer import TrustManager
 
-        tm = TrustManager()
-        if delta > 0:
-            tm.boost(delta, f"委托验收通过: {task_id}", target=task["claimed_by"])
-        else:
-            tm.decay(
-                delta,
-                f"委托被打回: {task_id} — {comment[:100]}",
-                target=task["claimed_by"],
-            )
+            tm = TrustManager()
+            if delta > 0:
+                tm.boost(delta, f"委托验收通过: {task_id}", target=trust_target)
+            else:
+                tm.decay(
+                    delta,
+                    f"委托被打回: {task_id} — {comment[:100]}",
+                    target=trust_target,
+                )
     except Exception:
         pass
 
@@ -1224,9 +1240,10 @@ async def handle_task_verify(
         "new_status": new_status,
         "sse_notified": sse_notified,
         "trust_adjustment": {
-            "agent": task["claimed_by"],
+            "agent": trust_target,
             "delta": delta,
             "reason": trust_reason,
+            **({"skipped_reason": "no_trust_target"} if trust_skipped else {}),
         },
     }
     if verdict != "accepted":
