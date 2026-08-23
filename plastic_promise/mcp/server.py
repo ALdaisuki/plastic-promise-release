@@ -4932,7 +4932,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "pack_import":
             from plastic_promise.mcp.tools.management import handle_pack_import
 
-            return await handle_pack_import(engine, arguments)
+            return await handle_pack_import(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         # Domain federation
         elif name == "domain":
             from plastic_promise.mcp.tools.domain import handle_domain
@@ -5436,7 +5443,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "review_run":
             from plastic_promise.mcp.tools.review import handle_review_run
 
-            return await handle_review_run(engine, arguments)
+            return await handle_review_run(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         elif name == "knowledge_search":
             from plastic_promise.mcp.tools.knowledge import handle_knowledge_search
 
@@ -6177,7 +6191,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "market_install":
             from plastic_promise.mcp.tools.market import handle_market_install
 
-            return await handle_market_install(engine, arguments)
+            return await handle_market_install(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
 
         elif name == "market_upgrade":
             from plastic_promise.mcp.tools.market import handle_market_upgrade
@@ -6187,17 +6208,38 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "market_remove":
             from plastic_promise.mcp.tools.market import handle_market_remove
 
-            return await handle_market_remove(engine, arguments)
+            return await handle_market_remove(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
 
         elif name == "market_enable":
             from plastic_promise.mcp.tools.market import handle_market_enable
 
-            return await handle_market_enable(engine, arguments)
+            return await handle_market_enable(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
 
         elif name == "market_disable":
             from plastic_promise.mcp.tools.market import handle_market_disable
 
-            return await handle_market_disable(engine, arguments)
+            return await handle_market_disable(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
 
         elif name == "market_status":
             from plastic_promise.mcp.tools.market import handle_market_status

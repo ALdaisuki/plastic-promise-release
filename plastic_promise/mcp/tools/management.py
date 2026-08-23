@@ -504,8 +504,17 @@ async def handle_pack_export(engine: Any, args: dict) -> list[TextContent]:
 
 
 # ---- pack_import ----
-async def handle_pack_import(engine: Any, args: dict) -> list[TextContent]:
-    """Import a JSON experience pack into the memory pool with optional strategy."""
+async def handle_pack_import(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
+    from plastic_promise.mcp.tools.audit_defense import reviewer_rejection
+
+    rejection = reviewer_rejection(_runtime_context)
+    if rejection is not None:
+        return rejection
     try:
         from plastic_promise.core.pack_index import pack_import_with_strategy
 
