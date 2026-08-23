@@ -20,6 +20,29 @@ from mcp.types import TextContent
 # _TASK_REVIEWER_ACTORS in task_queue.py (server-bound transport identity).
 _DEFENSE_REVIEWER_ACTORS = frozenset({"claude", "codex"})
 
+
+def runtime_actor(_runtime_context: dict | None) -> str:
+    return str((_runtime_context or {}).get("actor") or "")
+
+
+def reviewer_rejection(_runtime_context: dict | None) -> list[TextContent] | None:
+    """Reject public dispatches whose bound actor lacks reviewer authority."""
+    if _runtime_context is None:
+        return None
+    actor = runtime_actor(_runtime_context)
+    if actor in _DEFENSE_REVIEWER_ACTORS:
+        return None
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {"success": False, "error": "reviewer_authority_required", "actor": actor},
+                ensure_ascii=False,
+            ),
+        )
+    ]
+
+
 if TYPE_CHECKING:
     from plastic_promise.defense.soul_enforcer import TrustManager
 

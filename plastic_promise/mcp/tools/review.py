@@ -14,7 +14,12 @@ from typing import Any
 from mcp.types import TextContent
 
 
-async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
+async def handle_review_run(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """执行结构化代码审查 — 审查统一入口。
 
     三阶段管线:
@@ -35,6 +40,12 @@ async def handle_review_run(engine: Any, args: dict) -> list[TextContent]:
     Returns:
         list[TextContent]: JSON 编码的审查结果
     """
+    from plastic_promise.mcp.tools.audit_defense import reviewer_rejection
+
+    rejection = reviewer_rejection(_runtime_context)
+    if rejection is not None:
+        return rejection
+
     action = args.get("action", "full")
     commit_range = args.get("commit_range", "HEAD~1..HEAD")
     review_output = args.get("review_output", "")

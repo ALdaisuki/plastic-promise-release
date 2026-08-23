@@ -93,8 +93,17 @@ async def handle_market_list(engine: Any, args: dict) -> list[TextContent]:
         ]
 
 
-async def handle_market_install(engine: Any, args: dict) -> list[TextContent]:
-    """Install a pack from the market."""
+async def handle_market_install(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
+    from plastic_promise.mcp.tools.audit_defense import reviewer_rejection
+
+    rejection = reviewer_rejection(_runtime_context)
+    if rejection is not None:
+        return rejection
     name = args.get("name", "")
     if not name:
         return [
@@ -231,8 +240,17 @@ async def handle_market_upgrade(engine: Any, args: dict) -> list[TextContent]:
         ]
 
 
-async def handle_market_remove(engine: Any, args: dict) -> list[TextContent]:
-    """Remove an installed pack."""
+async def handle_market_remove(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
+    from plastic_promise.mcp.tools.audit_defense import reviewer_rejection
+
+    rejection = reviewer_rejection(_runtime_context)
+    if rejection is not None:
+        return rejection
     name = args.get("name", "")
     if not name:
         return [
@@ -281,8 +299,17 @@ async def handle_market_remove(engine: Any, args: dict) -> list[TextContent]:
         ]
 
 
-async def handle_market_enable(engine: Any, args: dict) -> list[TextContent]:
-    """Enable a disabled plugin."""
+async def handle_market_enable(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
+    from plastic_promise.mcp.tools.audit_defense import reviewer_rejection
+
+    rejection = reviewer_rejection(_runtime_context)
+    if rejection is not None:
+        return rejection
     name = args.get("name", "")
     if not name:
         return [
@@ -314,8 +341,17 @@ async def handle_market_enable(engine: Any, args: dict) -> list[TextContent]:
         ]
 
 
-async def handle_market_disable(engine: Any, args: dict) -> list[TextContent]:
-    """Disable a plugin at runtime."""
+async def handle_market_disable(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
+    from plastic_promise.mcp.tools.audit_defense import reviewer_rejection
+
+    rejection = reviewer_rejection(_runtime_context)
+    if rejection is not None:
+        return rejection
     name = args.get("name", "")
     if not name:
         return [
