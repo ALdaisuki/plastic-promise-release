@@ -12,7 +12,12 @@ from plastic_promise.core.mgp_shadow import MgpShadowBridge
 _bridge = MgpShadowBridge()
 
 
-async def handle_mgp_shadow_bridge(engine: Any, args: dict) -> list[TextContent]:
+async def handle_mgp_shadow_bridge(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     action = args.get("action", "status")
 
     try:

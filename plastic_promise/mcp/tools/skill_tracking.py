@@ -986,7 +986,12 @@ async def handle_skill_session_trace(engine: Any, args: dict) -> list[TextConten
 # ---------------------------------------------------------------------------
 
 
-async def handle_skill_session_start(engine: Any, args: dict) -> list[TextContent]:
+async def handle_skill_session_start(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """Create a skill_session entity and record the start of a skill execution.
 
     Internal steps:
@@ -1205,7 +1210,12 @@ async def record_attested_composite_skills(
 # ---------------------------------------------------------------------------
 
 
-async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextContent]:
+async def handle_skill_session_complete(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """Mark a skill session as complete, handling tag transitions and worth updates.
 
     Three outcomes based on the ``outcome`` argument:
@@ -1639,7 +1649,12 @@ async def handle_skill_session_complete(engine: Any, args: dict) -> list[TextCon
 # ---------------------------------------------------------------------------
 
 
-async def handle_skill_session_audit(engine: Any, args: dict) -> list[TextContent]:
+async def handle_skill_session_audit(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """Post-hoc gap scan for skill sessions, with optional auto-remediation.
 
     Scans the context graph for existing skill_session entities, searches
