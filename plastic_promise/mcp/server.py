@@ -4784,7 +4784,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_store":
             from plastic_promise.mcp.tools.memory import handle_memory_store
 
-            return await handle_memory_store(engine, arguments)
+            return await handle_memory_store(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         elif name == "memory_update":
             from plastic_promise.mcp.tools.memory import handle_memory_update
 
@@ -4808,7 +4815,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "memory_gc":
             from plastic_promise.mcp.tools.memory import handle_memory_gc
 
-            return await handle_memory_gc(engine, arguments)
+            return await handle_memory_gc(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         elif name == "memory_correct":
             from plastic_promise.mcp.tools.memory import handle_memory_correct
 
@@ -4867,7 +4881,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "mgp_shadow_bridge":
             from plastic_promise.mcp.tools.mgp_shadow import handle_mgp_shadow_bridge
 
-            return await handle_mgp_shadow_bridge(engine, arguments)
+            return await handle_mgp_shadow_bridge(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
 
         # Audit and defense
         elif name == "audit_run":
@@ -4912,11 +4933,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "runtime_mode":
             from plastic_promise.mcp.tools.runtime import handle_runtime_mode
 
-            return await handle_runtime_mode(engine, arguments)
+            return await handle_runtime_mode(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         elif name == "issue_create":
             from plastic_promise.mcp.tools.management import handle_issue_create
 
-            return await handle_issue_create(engine, arguments)
+            return await handle_issue_create(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         elif name == "issue_transition":
             from plastic_promise.mcp.tools.management import handle_issue_transition
 
@@ -4944,7 +4979,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "domain":
             from plastic_promise.mcp.tools.domain import handle_domain
 
-            return await handle_domain(engine, arguments)
+            return await handle_domain(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
 
         # Task queue
         elif name == "task_enqueue":
@@ -5026,11 +5068,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "skill_session_start":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_start
 
-            return await handle_skill_session_start(engine, arguments)
+            return await handle_skill_session_start(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         elif name == "skill_session_complete":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_complete
 
-            return await handle_skill_session_complete(engine, arguments)
+            return await handle_skill_session_complete(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         elif name == "skill_session_trace":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_trace
 
@@ -5038,7 +5094,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "skill_session_audit":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_session_audit
 
-            return await handle_skill_session_audit(engine, arguments)
+            return await handle_skill_session_audit(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
         elif name == "skill_auto_track":
             from plastic_promise.mcp.tools.skill_tracking import handle_skill_auto_track
 

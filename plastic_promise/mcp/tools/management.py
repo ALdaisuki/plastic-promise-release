@@ -405,7 +405,12 @@ async def handle_system_migrate(engine: Any, args: dict) -> list[TextContent]:
 
 
 # ---- issue_create ----
-async def handle_issue_create(engine: Any, args: dict) -> list[TextContent]:
+async def handle_issue_create(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """Create a new Issue with optional principle and dependency links."""
     try:
         im = engine.get_issue_manager()

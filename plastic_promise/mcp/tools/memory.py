@@ -1499,7 +1499,12 @@ def _handle_governed_synthesis_store(
         return [TextContent(type="text", text=json.dumps(response, ensure_ascii=False))]
 
 
-async def handle_memory_store(engine: Any, args: dict) -> list[TextContent]:
+async def handle_memory_store(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """Store a memory: create MemoryRecord, persist to SQLite, embed and index.
 
     Args:
@@ -2841,7 +2846,12 @@ async def handle_memory_list(engine: Any, args: dict) -> list[TextContent]:
 
 
 # ---- memory_gc ----
-async def handle_memory_gc(engine: Any, args: dict) -> list[TextContent]:
+async def handle_memory_gc(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """Run garbage collection on decaying memories.
 
     Delegates to MemoryGC.collect() which performs:

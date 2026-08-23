@@ -14,7 +14,12 @@ from plastic_promise.launcher.runtime_mode import (
 )
 
 
-async def handle_runtime_mode(engine: Any, args: dict) -> list[TextContent]:
+async def handle_runtime_mode(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """Get or hot-update the current MCP process runtime mode."""
     action = args.get("action", "get")
     if action == "get":

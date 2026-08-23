@@ -165,7 +165,12 @@ def _get_agent_id(engine: Any) -> str:
     return getattr(engine, "_agent_owner", "") or os.environ.get("AGENT_OWNER", "")
 
 
-async def handle_domain(engine: Any, args: dict) -> list[TextContent]:
+async def handle_domain(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
     """域联邦统一入口。action: stats|merge|unmerge|rename|rebuild|reset_throttle"""
     action = args.get("action", "stats")
     if action == "stats":
