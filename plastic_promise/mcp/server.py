@@ -4881,7 +4881,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "defense":
             from plastic_promise.mcp.tools.audit_defense import handle_defense
 
-            return await handle_defense(engine, arguments)
+            return await handle_defense(
+                engine,
+                arguments,
+                _runtime_context={
+                    "actor": _feedback_runtime_actor(),
+                    "authority_source": "server_dispatch",
+                },
+            )
 
         # Reflection
         elif name == "scarf_reflect":

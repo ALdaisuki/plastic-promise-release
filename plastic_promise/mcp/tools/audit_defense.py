@@ -16,6 +16,10 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.types import TextContent
 
+# Actors allowed to move trust scores through a public dispatch; mirrors
+# _TASK_REVIEWER_ACTORS in task_queue.py (server-bound transport identity).
+_DEFENSE_REVIEWER_ACTORS = frozenset({"claude", "codex"})
+
 if TYPE_CHECKING:
     from plastic_promise.defense.soul_enforcer import TrustManager
 
@@ -332,9 +336,44 @@ async def handle_defense_status(engine: Any, args: dict) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 
 
-async def handle_defense(engine: Any, args: dict) -> list[TextContent]:
-    """防线统一入口。action: get|history|adjust|status"""
+async def handle_defense(
+    engine: Any,
+    args: dict,
+    *,
+    _runtime_context: dict | None = None,
+) -> list[TextContent]:
+    """防线统一入口。action: get|history|adjust|status|evaluate_tool.
+
+    ``_runtime_context is None`` marks the trusted in-process path (scanners,
+    daemons); every public MCP dispatch supplies the server-bound actor so
+    adjust stays reviewer-gated and evaluate_tool cannot be self-graded.
+    """
     action = args.get("action", "get")
+    if (
+        action == "adjust"
+        and _runtime_context is not None
+        and str((_runtime_context or {}).get("actor") or "") not in _DEFENSE_REVIEWER_ACTORS
+    ):
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "success": False,
+                        "error": "defense_reviewer_authority_required",
+                        "actor": str((_runtime_context or {}).get("actor") or ""),
+                        "target": str(args.get("target") or "default"),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+    if action == "adjust" and _runtime_context is not None:
+        actor = str((_runtime_context or {}).get("actor") or "")
+        args = {
+            **args,
+            "reason": f"[{actor}] " + str(args.get("reason") or "manual adjustment"),
+        }
     if action == "evaluate_tool":
         from plastic_promise.core.tool_manifest import (
             evaluate_tool_decision,
@@ -343,8 +382,15 @@ async def handle_defense(engine: Any, args: dict) -> list[TextContent]:
 
         target = args.get("target", "")
         tm = _get_trust_manager()
-        trust_score = float(args.get("trust_score", tm.get(target)))
-        trust_tier = str(args.get("trust_tier") or tm.tier(target))
+        # Args overrides are an in-process diagnostic affordance; public
+        # dispatches always see server-held values so a caller cannot grade
+        # its own permission oracle.
+        if _runtime_context is None:
+            trust_score = float(args.get("trust_score", tm.get(target)))
+            trust_tier = str(args.get("trust_tier") or tm.tier(target))
+        else:
+            trust_score = float(tm.get(target))
+            trust_tier = str(tm.tier(target))
         manifest = manifest_for_tool(str(args.get("tool_name", "")))
         decision = evaluate_tool_decision(
             manifest,
