@@ -3480,8 +3480,7 @@ class ContextEngine:
                 os.environ.get("PP_FUSION_AISLE", "on").strip().lower() != "off"
                 and str(os.environ.get("PP_FUSION_DEFAULT", "rrf")).strip().lower() == "rrf"
                 and str(
-                    fusion_policy
-                    or os.environ.get("PP_RETRIEVAL_FUSION_POLICY", "legacy-auto")
+                    fusion_policy or os.environ.get("PP_RETRIEVAL_FUSION_POLICY", "legacy-auto")
                 ).strip()
                 == "legacy-auto"
                 and not os.environ.get("PP_RETRIEVAL_RRF_WEIGHTS_JSON")
@@ -4578,6 +4577,8 @@ class ContextEngine:
         retrieval_plan: RetrievalPlan,
     ) -> None:
         code_results = self._code_memory_retrieval(task_description, retrieval_plan)
+        # adoption-audit: code echoes bury curated memories
+        code_results = code_results[:2]
         if self._code_index is not None:
             pack.audit_metadata = dict(getattr(pack, "audit_metadata", {}) or {})
             pack.audit_metadata["code_memory"] = self._code_index.to_audit()
@@ -4588,7 +4589,7 @@ class ContextEngine:
             ContextItem(
                 id=item_id,
                 content=content,
-                relevance=float(score),
+                relevance=float(score) * 0.5,
                 source=source,
                 freshness="fresh",
                 layer="related",
@@ -5545,8 +5546,6 @@ class ContextEngine:
                 and os.environ.get("PP_CONTEXT_DEAL_ORDER", "on").strip().lower() != "off"
             ):
                 pack.core[:] = self._deal_lost_in_middle(list(pack.core))
-
-
 
         final_items = pack.core + pack.related + pack.divergent
         if debug:

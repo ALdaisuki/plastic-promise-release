@@ -274,6 +274,12 @@ def _light_context_status(ctx, params: dict) -> dict:
             break
         if not isinstance(mem, dict) or _is_deleted_or_forgotten(mem):
             continue
+        # adoption-audit: light preview must not surface code_memory echoes
+        if (
+            str(mem.get("source_kind", "") or "") == "code_memory"
+            or str(mem.get("source", "") or "") == "code_memory"
+        ):
+            continue
         mid = str(mem.get("id") or f"memory:{index}")
         content = str(mem.get("content", "") or "")
         if not content.strip():
@@ -309,11 +315,17 @@ def _light_context_status(ctx, params: dict) -> dict:
                 "content": content[:500],
                 "relevance": round(relevance, 4),
                 "source": str(mem.get("source", "") or ""),
+                "memory_type": str(mem.get("memory_type", "") or ""),
                 "worth_score": round(worth, 4),
             }
         )
 
-    items = sorted(scored, key=lambda item: item["relevance"], reverse=True)[:_LIGHT_CONTEXT_LIMIT]
+    def _preview_rank(item: dict) -> tuple:
+        # adoption-audit: prefer experience/reflection memories, worth descending
+        preferred = item.get("memory_type") in {"experience", "reflection"}
+        return (1 if preferred else 0, item["worth_score"], item["relevance"])
+
+    items = sorted(scored, key=_preview_rank, reverse=True)[:_LIGHT_CONTEXT_LIMIT]
     status = "ready" if items else ("degraded" if timed_out else "deferred")
     reason = (
         "light lexical memory preview; call context_supply before material decisions"

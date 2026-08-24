@@ -21,8 +21,10 @@ import logging
 import math
 import os
 import secrets
+import sqlite3
 import sys
 import threading
+import time
 import weakref
 from collections.abc import Mapping
 from contextlib import suppress
@@ -4706,8 +4708,89 @@ def _delegated_policy_error(
     ]
 
 
+def _ensure_tool_usage_table(conn) -> None:
+    """Create the tool usage telemetry table if it does not exist."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_usage_events(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT,
+            tool TEXT,
+            actor TEXT,
+            duration_ms REAL,
+            ok INTEGER,
+            response_bytes INTEGER,
+            error TEXT
+        )
+        """
+    )
+
+
+def _record_tool_usage(conn, tool, actor, duration_ms, ok, response_bytes, error) -> None:
+    """Insert one tool usage event row; callers commit explicitly."""
+    conn.execute(
+        "INSERT INTO tool_usage_events"
+        "(ts, tool, actor, duration_ms, ok, response_bytes, error)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            str(tool or ""),
+            str(actor or ""),
+            float(duration_ms),
+            int(ok),
+            int(response_bytes),
+            str(error or "")[:200],
+        ),
+    )
+    conn.commit()
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    """Route MCP tool calls through best-effort usage telemetry.
+
+    Telemetry never alters dispatch behavior: recording failures are
+    silently swallowed and every exit path lands exactly one event.
+    """
+    started = time.monotonic()
+    ok_flag = 1
+    error_summary = ""
+    result: list[TextContent] | None = None
+    try:
+        result = await _call_tool_dispatch(name, arguments)
+        return result
+    except BaseException as exc:
+        ok_flag = 0
+        error_summary = f"{type(exc).__name__}: {exc}"[:200]
+        raise
+    finally:
+        try:
+            duration_ms = (time.monotonic() - started) * 1000.0
+            response_bytes = sum(
+                len(str(getattr(item, "text", "")).encode("utf-8", "ignore"))
+                for item in (result or [])
+            )
+            from plastic_promise.core.paths import get_db_path
+
+            conn = sqlite3.connect(get_db_path())
+            try:
+                _ensure_tool_usage_table(conn)
+                _record_tool_usage(
+                    conn,
+                    name,
+                    _feedback_runtime_actor(),
+                    duration_ms,
+                    ok_flag,
+                    response_bytes,
+                    error_summary,
+                )
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+
+async def _call_tool_dispatch(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Route MCP tool calls to handler modules.
 
     Each tool domain is delegated to its own module under
