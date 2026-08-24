@@ -335,6 +335,19 @@ def _light_context_status(ctx, params: dict) -> dict:
     if timed_out:
         reason += "; light preview hit its timeout"
 
+    # injection tracking: record what the brief actually surfaced
+    try:
+        from plastic_promise.mcp.tools.injection_tracking import record_injection
+
+        record_injection(
+            str(params.get("stage_session_id") or "adhoc"),
+            "session_brief",
+            [str(item.get("id") or "") for item in items],
+            sum(len(str(item.get("content", "") or "")) for item in items),
+        )
+    except Exception:
+        pass
+
     return {
         "status": status,
         "mode": "light",
