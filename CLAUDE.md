@@ -29,7 +29,7 @@
    - 启动器同时拉起 MCP Server (:9020) + Maintenance Daemon + Watchdog 守护
    - 仍不可用 → 告警，本次会话使用文件系统降级（写入 `.md` 需加 `[[pending-sync]]` 标记）
 
-1. `session-init(task_description="<当前任务>", context_mode="light")` — **Phase 1 技能：一条调用替代原有 5 步**（原则激活 + SCARF 基线自省 + domain stats + system stats + defense + memory_gc preview + chain_state + context_status）。`context_mode="light"` 只返回 1-2 条本地词面记忆预览；`context_mode="none"` 纯启动；`context_mode="full"` 才显式运行完整 `context_supply`。启动后按需显式调用 `context_supply` 获取任务上下文，用 `memory_store` 写入记忆。
+1. `session-init(task_description="<当前任务>", context_mode="none")` — **按需调用（2026-08 采纳度修正）**：仅当任务需要跨会话状态时才执行——委托操作、issue 跟踪、chain_state 续接。原则激活与 SCARF 基线默认跳过（要什么显式开什么）；纯编码/审查/发布会话可以完全不调用。需要任务上下文时显式 `context_supply`，值得长期保存的事实用 `memory_store`。采纳度以 `scripts/tool_usage_report.py` 的真实使用遥测为准，不再靠强制仪式。
 
 > **重要**: 具体任务时重新调用 `context_supply(task_description, task_type, scope)` 获取针对性上下文。
 > - 编码/实施 → `task_type="code_generation"`
@@ -377,9 +377,9 @@ task:pending  → task:accepted → task:active → task:done → task:review �
 
 **为什么**: 子 Agent 有独立上下文窗口，看不到当前会话的记忆和历史。不注入上下文 = 让 Agent 盲目编码。违反此约定会导致子 Agent 重复已修复的 bug、忽略已有设计决策。
 
-## 每步闭环（自演化引擎）
+## 每步闭环（自演化引擎 · 2026-08 采纳度修正）
 
-**每次产生实质产出（git commit / 设计决策 / 修复完成 / 记忆写入）后，必须执行**：
+**闭环按需触发**：仅重大产出（架构决策 / 跨会话契约变更 / 事故复盘）执行 full 闭环；常规 commit 与查询步骤免闭环——采纳度信号改由 `scripts/tool_usage_report.py` 的真实使用遥测承载（强制仪式产生模板化噪音，adoption audit 已证实）：
 
 ```
 step-closure(
@@ -409,7 +409,7 @@ step-closure(task_description="...", mode="light")
 ```
 仅执行原则对齐 + 上下文注入，跳过 SCARF/激素/信任联动。
 
-**为什么**: 没有闭环就没有自演化。每步完成后的反馈信号是信任分波动、记忆 worth 分化、SCARF 趋势的唯一数据源。不闭环 = 79 条记忆全部 L1、信任分永远 0.6、系统退化为被动档案库。
+**为什么**: 自演化的信号源从强制仪式迁移到真实使用遥测——被实际调用的能力才值得投入。模板化闭环的噪音已被 adoption audit 证实（记忆池 6 条 vs 图谱 9088 节点的倒挂）；遥测基线运行两周后再决定进一步取舍。
 
 ## 信任分驱动权限（奖惩机制）
 
@@ -569,10 +569,10 @@ scan_scheduler_health 发现问题
 
 ## 关键约定
 
-- **先查再问** — 决策前先 principle_activate + memory_recall
+- **先查再问** — 需要历史/约定上下文时用 memory_recall + context_supply，按需而非强制
 - **子Agent必带上下文** — 派发前必须 memory_recall + context_supply，结果写入派发 prompt
 - **每步有 git** — 可追溯、可复现
-- **每步有闭环** — 实质产出后必须 `step-closure`，不跳过
+- **每步有信号** — 重大产出走 full 闭环；常规步骤由 tool_usage_report 使用遥测承载
 - **写前查信任** — 写操作前 `defense(action="get")`，低于阈值拒绝或确认
 - **信任动态** — 信任分影响检索范围 (high=1.3x, critical=0.5x)
 - **域联邦** — 同名域自动融合, 信号 ≤200字符不深入细节
