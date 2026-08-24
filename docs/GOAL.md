@@ -372,6 +372,16 @@ step-closure(
   health converged on `4d3efcc`.
 
 
+## 2026-08-23 Memory System Direction Note: From Active Invocation to Background Infrastructure
+
+- Adoption audit conclusion (memory pool 6 entries vs graph 9088 nodes; heavy engineering sessions had ~15 MCP calls of which ritual calls accounted for two-thirds) shows that the "agents actively call memory tools" paradigm has failed: having tools ≠ being used, having memory ≠ being consulted.
+- The development route is hereby revised to **background infrastructure**: automatic injection + automatic storage, agents need no awareness and no explicit calls.
+  - Injection surfaces (partially in place): session-init light briefing preferring curated memories (e564017); DSH profile pp-memory-cadence auto-injects every 5 steps; UserPromptSubmit hook auto_context_inject.
+  - Storage surfaces: passive semantic capture and proposal promotion gatechain progressively replace manual memory_store / step-closure ceremonies.
+  - Measurement: tool_usage_events telemetry (f086962) — after two weeks, use data to evaluate injection reference rate and auto-storage precision; ritual surfaces that remain unused will be archived.
+- Success metrics are revised accordingly: no longer assess "whether agents proactively call", but instead assess "injection→referenced rate" and "auto-storage precision".
+- Implementation prerequisites: enable \`PP_PASSIVE_SEMANTIC_CAPTURE=shadow\` on production (measurement only, does not write canonical), observe for two weeks before evaluating upgrade to on; promotion always requires \`evaluate_auto_promotion()\` as the sole policy authority.
+
 ## 2026-08-22 Release Pipeline and Governed Vector Smoke Note
 
 - v0.2.16 已通过完整受控链发布：GitHub Actions 构建摘要固定镜像并发布 PyPI；
