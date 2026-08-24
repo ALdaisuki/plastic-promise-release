@@ -1201,6 +1201,20 @@ async def handle_memory_recall(engine: Any, args: dict) -> list[TextContent]:
             fusion_policy,
         )
 
+        # injection tracking: mark recalled memories as referenced by this scope
+        try:
+            from plastic_promise.mcp.tools.injection_tracking import mark_references
+
+            recall_ids = [
+                str(item.get("id") or "")
+                for layer in ("core", "related", "divergent")
+                for item in list(response_payload.get(layer) or [])
+                if isinstance(item, dict) and item.get("id")
+            ]
+            mark_references(request_scope.get("stage_session_id") or "unknown", recall_ids)
+        except Exception:
+            pass
+
         return [TextContent(type="text", text=result_json)]
     except Exception as e:
         return [
