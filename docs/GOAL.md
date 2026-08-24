@@ -374,8 +374,8 @@ step-closure(
 
 ## 2026-08-23 Memory System Direction Note: From Active Invocation to Background Infrastructure
 
-- Adoption audit conclusion (memory pool 6 entries vs graph 9088 nodes; heavy engineering sessions had ~15 MCP calls of which ritual calls accounted for two-thirds) shows that the "agents actively call memory tools" paradigm has failed: having tools ≠ being used, having memory ≠ being consulted.
-- The development route is hereby revised to **background infrastructure**: automatic injection + automatic storage, agents need no awareness and no explicit calls.
+- Adoption audit conclusion (memory pool 6 entries vs graph 9088 nodes; heavy engineering sessions had ~15 MCP calls of which ritual calls accounted for two-thirds) shows that relying on agents proactively calling memory tools cannot serve as the primary dependency: having tools ≠ being used, having memory ≠ being consulted.
+- The development route is hereby revised to **background infrastructure as the primary path**: automatic injection + automatic storage. Explicit invocation tools are **not removed** — they remain the precision-control and fallback channel for cases automation does not cover; development focus simply moves to automation.
   - Injection surfaces (partially in place): session-init light briefing preferring curated memories (e564017); DSH profile pp-memory-cadence auto-injects every 5 steps; UserPromptSubmit hook auto_context_inject.
   - Storage surfaces: passive semantic capture and proposal promotion gatechain progressively replace manual memory_store / step-closure ceremonies.
   - Measurement: tool_usage_events telemetry (f086962) — after two weeks, use data to evaluate injection reference rate and auto-storage precision; ritual surfaces that remain unused will be archived.
