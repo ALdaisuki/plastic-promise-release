@@ -24,7 +24,7 @@ DEFAULT_PROFILE = PROFILE_CORE
 # (retrieval, guild lifecycle, Issue flow, context supply).
 CORE_KEEP: frozenset[str] = frozenset(
     {
-        # 真实使用面（16）
+        # ── A 档：40 天真实使用面（16）─────────────────────────────
         "auto_context_inject",
         "audit_pre_check",
         "step-closure",
@@ -41,11 +41,13 @@ CORE_KEEP: frozenset[str] = frozenset(
         "collaboration_work_claim",
         "collaboration_work_review",
         "market_list",
-        # 零调用但属核心能力（保留可用）
+        # ── B 档：零遥测但属活跃能力通道（18，T1 分档 KEEP-CORE）────
         "memory_recall",
+        "memory_update",
+        "memory_forget",
         "memory_list",
-        "issue_list",
         "issue_transition",
+        "issue_list",
         "task_enqueue",
         "task_claim",
         "task_complete",
@@ -53,8 +55,40 @@ CORE_KEEP: frozenset[str] = frozenset(
         "task_inbox",
         "task_heartbeat",
         "task_abandon",
+        "collaboration_work_list",
+        "collaboration_lease_heartbeat",
+        "collaboration_work_accept",
+        "review_run",
         "smart-remember",
     }
+)
+
+# Hidden from list_tools but invoked by the engine/daemons directly, so their
+# zero telemetry does NOT mean dead code (T1 classification, INTERNAL-ONLY 13).
+# Keeping them out of the visible surface trims agent confusion without
+# removing capability: dispatch stays fail-open and full profile lists them.
+INTERNAL_LIVE: frozenset[str] = frozenset(
+    {
+        "memory_gc",
+        "memory_reclassify",
+        "memory_sync_files",
+        "principle_activate",
+        "context_inject",
+        "feedback_apply",
+        "system",
+        "domain",
+        "skill_session_start",
+        "skill_session_complete",
+        "skill_session_trace",
+        "skill_auto_track",
+        "audit_rollover",
+    }
+)
+
+# Overlapping or paired surfaces collapsed out of the default view
+# (T1 classification, ALIAS-MERGE 4).
+ALIAS_MERGE_HIDDEN: frozenset[str] = frozenset(
+    {"memory_correct", "market_enable", "market_disable", "market_status"}
 )
 
 # Aliases collapse to a canonical entry; the alias keeps working at dispatch.

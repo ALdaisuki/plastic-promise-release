@@ -6,8 +6,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from plastic_promise.mcp.tool_profile import (  # noqa: E402
+    ALIAS_MERGE_HIDDEN,
     ALIAS_TO_CANONICAL,
     CORE_KEEP,
+    INTERNAL_LIVE,
     active_profile,
     filter_tools,
     is_hidden,
@@ -42,3 +44,21 @@ def test_hidden_semantics():
     assert is_hidden("memory_recall", "core") is False
     # 归档面确实仍在 CORE_KEEP 之外
     assert "pack_export" not in CORE_KEEP and "market_status" not in CORE_KEEP
+
+
+def test_internal_live_hidden_but_dispatchable():
+    """T1: zero telemetry does not mean dead code.
+
+    Engine-invoked atom surfaces stay invisible yet dispatchable (fail-open),
+    and reappear under the full profile.
+    """
+    names = sorted(INTERNAL_LIVE)
+    assert filter_tools(names, "core") == []
+    assert set(filter_tools(names, "full")) == set(names)
+    for n in names:
+        assert is_hidden(n, "core") is True and is_hidden(n, "full") is False
+
+
+def test_alias_merge_surfaces_hidden():
+    assert filter_tools(sorted(ALIAS_MERGE_HIDDEN), "core") == []
+    assert "memory_recall" in CORE_KEEP and "task_verify" in CORE_KEEP
