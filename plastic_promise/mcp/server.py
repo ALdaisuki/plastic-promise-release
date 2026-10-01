@@ -2777,6 +2777,14 @@ async def list_tools() -> list[Tool]:
         "description": "Allow prepare/full without project_id and accept degraded review guard behavior",
     }
 
+    # Tool-surface profile (audit 2026-10-02): core hides zero-call surface and
+    # collapses aliases without deleting handlers — archived tools remain
+    # dispatchable and return in PP_TOOL_PROFILE=full.
+    from plastic_promise.mcp.tool_profile import filter_tools
+
+    visible = set(filter_tools([tool.name for tool in tools]))
+    tools = [tool for tool in tools if tool.name in visible]
+
     return tools
 
 
