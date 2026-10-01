@@ -129,36 +129,50 @@ def _check_zero_vectors(engine: Any, findings: list[dict]):
 
 
 def _check_principle_injection(engine: Any, findings: list[dict]):
-    """Check that principle activation returns full content."""
+    """Check that principle activation injects resolvable, non-empty names.
+
+    The production contract is ``list[str]`` of principle names
+    (context_engine._activate_principles); consumers resolve content from
+    CORE_PRINCIPLES by name (to_prompt, ContextPack, graph injection).  A
+    coarser check that demanded dicts was reporting the correct contract as a
+    high-severity defect (audit 2026-10-02, D1).
+    """
     try:
         principles = engine.activate_principles("code_generation", "test probe")
         if not principles:
+            # 空激活才是真正的静默失效
             findings.append(
                 {
                     "dimension": "principle_injection",
-                    "severity": "medium",
+                    "severity": "high",
                     "summary": "No principles activated for code_generation task type",
                     "fix": "Check CORE_PRINCIPLES and TASK_TYPE_PRINCIPLE_MAP in constants.py",
                 }
             )
             return
-        for p in principles:
-            if isinstance(p, str):
-                findings.append(
-                    {
-                        "dimension": "principle_injection",
-                        "severity": "high",
-                        "summary": "Principles are strings, not dicts -- content not injected",
-                        "fix": "Update _activate_principles() to return dicts with name+content",
-                    }
-                )
-                return
-            if not p.get("content"):
+        from plastic_promise.core.constants import CORE_PRINCIPLES
+
+        by_name = {p.get("name"): p for p in CORE_PRINCIPLES} if CORE_PRINCIPLES else {}
+        for name in principles:
+            if isinstance(name, dict):
+                name = name.get("name") or ""
+            entry = by_name.get(str(name))
+            if entry is None:
                 findings.append(
                     {
                         "dimension": "principle_injection",
                         "severity": "medium",
-                        "summary": f"Principle '{p.get('name')}' has empty content",
+                        "summary": f"Activated principle '{name}' is not resolvable in CORE_PRINCIPLES",
+                        "fix": "Check TASK_TYPE_PRINCIPLE_MAP for stale principle names",
+                    }
+                )
+                return
+            if not entry.get("content"):
+                findings.append(
+                    {
+                        "dimension": "principle_injection",
+                        "severity": "medium",
+                        "summary": f"Principle '{name}' has empty content",
                         "fix": "Check CORE_PRINCIPLES entry for missing content field",
                     }
                 )
@@ -176,7 +190,9 @@ def _check_principle_injection(engine: Any, findings: list[dict]):
 def _check_rust_health(engine: Any, findings: list[dict]):
     """Check Rust engine availability."""
     try:
-        healthy = engine.check_rust_health()
+        # Audit 2026-10-02 D2: the public name never existed on ContextEngine;
+        # the implementation is the private _check_rust_health (TTL cached).
+        healthy = engine._check_rust_health()
         if not healthy:
             findings.append(
                 {
