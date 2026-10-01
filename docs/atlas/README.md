@@ -12,6 +12,13 @@
 | 05 | 05-runtime-topology.md | Mac launchd 服务群 + WSL 计算节点 + edge + 数据流图 | 4 |
 | 06 | 06-dsh-integration.md | Day-0 DSH 集成契约（7 触点 + 双向检查清单 + 反模式） | — |
 
+## 自动化边界（2026-08-23 校准）
+
+自动化仅覆盖**记忆面**：注入（简报/cadence/hook）、被动存储（capture→proposal→promotion）、衰减与 GC。
+
+**子代理系统保持全显式**：task 委托的 claim/complete/verify 决策、agent 派发、reviewer 门
+不纳入自动转正对象——相关工具作为一等显式面保留，reviewer authority 必须在场。
+
 ## 深度优化候选汇总（待排期）
 
 | 优先级 | 候选 | 来源章节 | 一句话 |

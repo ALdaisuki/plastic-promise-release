@@ -380,6 +380,7 @@ step-closure(
   - Storage surfaces: passive semantic capture and proposal promotion gatechain progressively replace manual memory_store / step-closure ceremonies.
   - Measurement: tool_usage_events telemetry (f086962) — after two weeks, use data to evaluate injection reference rate and auto-storage precision; ritual surfaces that remain unused will be archived.
 - Success metrics are revised accordingly: no longer assess "whether agents proactively call", but instead assess "injection→referenced rate" and "auto-storage precision".
+- **Automation boundary (2026-08-23 refinement)**: automation covers the memory plane only — injection, passive storage, decay/GC. The **subagent system stays fully explicit**: task claim/complete/verify decisions, agent dispatch and reviewer gates are never automated, never promoted to `on` by the passive pipeline; their tools remain first-class explicit surfaces with reviewer authority required.
 - Implementation prerequisites: enable \`PP_PASSIVE_SEMANTIC_CAPTURE=shadow\` on production (measurement only, does not write canonical), observe for two weeks before evaluating upgrade to on; promotion always requires \`evaluate_auto_promotion()\` as the sole policy authority.
 
 ## 2026-08-22 Release Pipeline and Governed Vector Smoke Note
